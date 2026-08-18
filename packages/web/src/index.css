@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Backgrounds — depth hierarchy */
+  --bg-primary:    #0f0f0f;
+  --bg-secondary:  #141414;
+  --bg-tertiary:   #1c1c1c;
+  --bg-elevated:   #242424;
+
+  /* Borders */
+  --border:        rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-glow:   rgba(107, 159, 255, 0.3);
+
+  /* Text */
+  --text-primary:   #f0f0f0;
+  --text-secondary: #878787;
+  --text-muted:     #7a7a7a;
+
+  /* Accent */
+  --accent:       #6b9fff;
+  --accent-hover: #89b4ff;
+  --accent-dim:   rgba(107, 159, 255, 0.12);
+  --accent-2:     #8b5cf6;
+
+  /* Gradients */
+  --accent-gradient:       linear-gradient(135deg, #6b9fff 0%, #8b5cf6 100%);
+  --accent-gradient-hover: linear-gradient(135deg, #89b4ff 0%, #a78bfa 100%);
+
+  /* Glows */
+  --accent-glow:        0 0 20px rgba(107, 159, 255, 0.25);
+  --accent-glow-strong: 0 0 32px rgba(107, 159, 255, 0.40);
+  --success-glow:       0 0 16px rgba(74, 222, 128, 0.20);
+
+  /* Glass */
+  --glass-bg:     rgba(20, 20, 20, 0.72);
+  --glass-blur:   12px;
+  --glass-border: rgba(255, 255, 255, 0.08);
+
+  /* Semantic */
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-error:   #f87171;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Ambient aurora background - fixed, pure CSS, zero JS overhead */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 800px 600px at 0% 0%,   rgba(107, 159, 255, 0.05) 0%, transparent 60%),
+    radial-gradient(ellipse 700px 500px at 100% 100%, rgba(139, 92, 246, 0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 500px 400px at 50% 50%,  rgba(107, 159, 255, 0.02) 0%, transparent 70%);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(107, 159, 255, 0.3), rgba(139, 92, 246, 0.3));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(107, 159, 255, 0.5), rgba(139, 92, 246, 0.5));
+  box-shadow: 0 0 8px rgba(107, 159, 255, 0.3);
+}
+
+/* Selection */
+::selection {
+  background: rgba(107, 159, 255, 0.25);
+  color: #fff;
+}

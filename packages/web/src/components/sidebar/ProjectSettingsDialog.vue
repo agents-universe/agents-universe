@@ -1,0 +1,367 @@
+<template>
+  <Teleport to="body">
+    <div class="modal-overlay" @click.self="emit('close')" @keydown.esc="emit('close')">
+      <div class="modal-dialog project-settings-dialog">
+        <div class="modal-header">
+          <div class="modal-header-left">
+            <span class="modal-header-icon"><Settings :size="18" /></span>
+            <h3 class="modal-title">项目设置</h3>
+          </div>
+          <button class="modal-close" @click="emit('close')" title="关闭">
+            <X :size="16" />
+          </button>
+        </div>
+
+        <div class="settings-section">
+          <h4 class="settings-section-title">访问权限</h4>
+          <p class="hint">公开项目对所有登录用户可见可访问；私有项目仅创建人和名单内成员可见。</p>
+          <div v-if="project.is_owner" class="visibility-toggle">
+            <button
+              :class="['toggle-btn', { active: localVisibility === 'public' }]"
+              :disabled="saving"
+              @click="handleVisibility('public')"
+            >公开</button>
+            <button
+              :class="['toggle-btn', { active: localVisibility === 'private' }]"
+              :disabled="saving"
+              @click="handleVisibility('private')"
+            >私有</button>
+          </div>
+          <p v-else class="hint">仅项目创建者可切换可见性。</p>
+          <p v-if="visibilityError" class="error-text">{{ visibilityError }}</p>
+        </div>
+
+        <div v-if="project.can_manage" class="settings-section">
+          <div class="section-header">
+            <h4 class="settings-section-title">访问名单</h4>
+            <button class="btn-sm" @click="showAddForm = !showAddForm">
+              {{ showAddForm ? '取消' : '+ 添加成员' }}
+            </button>
+          </div>
+          <p class="hint">
+            私有项目仅创建人和名单内成员可以访问。成员可以添加/移除其他成员。user_id 为对方在 SSO 中的用户标识（直接输入，无法按名字搜索）。
+          </p>
+
+          <div v-if="showAddForm" class="add-form">
+            <input
+              v-model="newUserId"
+              placeholder="输入对方 user_id"
+              class="input"
+              autocomplete="off"
+              @keydown.enter="handleAdd"
+            />
+            <button class="btn-primary" :disabled="!newUserId.trim() || adding" @click="handleAdd">
+              {{ adding ? '添加中...' : '添加' }}
+            </button>
+          </div>
+          <p v-if="memberError" class="error-text">{{ memberError }}</p>
+
+          <div v-if="membersStore.loading" class="loading">加载中...</div>
+          <p v-else-if="membersStore.error" class="error-text">{{ membersStore.error }}</p>
+          <ul v-else class="member-list">
+            <li v-if="project.created_by" class="member-item">
+              <span class="member-user">{{ project.created_by }}</span>
+              <span class="owner-badge">创建者</span>
+            </li>
+            <li v-for="m in membersStore.members" :key="m.user_id" class="member-item">
+              <span class="member-user">{{ m.user_id }}</span>
+              <span class="member-meta">由 {{ m.added_by }} 添加</span>
+              <button
+                class="btn-danger-sm"
+                :disabled="removing === m.user_id"
+                @click="handleRemove(m.user_id)"
+              >移除</button>
+            </li>
+          </ul>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-ghost" @click="emit('close')">关闭</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+</template>
+
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { Settings, X } from 'lucide-vue-next'
+import type { Project } from '@/types'
+import { projectsApi } from '@/api/projects'
+import { ApiError } from '@/api/client'
+import { useProjectStore } from '@/stores/project'
+import { useProjectMembersStore } from '@/stores/projectMembers'
+
+const props = defineProps<{ project: Project }>()
+const emit = defineEmits<{ close: []; changed: [] }>()
+
+const projectStore = useProjectStore()
+const membersStore = useProjectMembersStore()
+
+const localVisibility = ref<'public' | 'private'>(props.project.visibility)
+const saving = ref(false)
+const visibilityError = ref('')
+const showAddForm = ref(false)
+const newUserId = ref('')
+const adding = ref(false)
+const removing = ref('')
+const memberError = ref('')
+
+watch(() => props.project.visibility, (v) => { localVisibility.value = v })
+
+watch(() => props.project.project_id, (id) => {
+  if (id) membersStore.load(id)
+}, { immediate: true })
+
+const CODE_MAP: Record<string, string> = {
+  MEMBER_EXISTS: '该用户已在访问名单中。',
+  MEMBER_IS_OWNER: '创建人已拥有访问权限，无需操作。',
+  MEMBER_NOT_FOUND: '该用户不在访问名单中。',
+  INVALID_USER_ID: 'user_id 不能为空。',
+  PROJECT_NOT_MEMBER: '仅项目创建者或成员可以管理访问名单。',
+  PROJECT_PRIVATE: '该项目为私有项目，您没有访问权限。',
+  PROJECT_NOT_OWNER: '只有项目创建者可以修改项目可见性。',
+}
+
+function messageOf(e: unknown, fallback: string): string {
+  if (e instanceof ApiError && e.code && CODE_MAP[e.code]) return CODE_MAP[e.code]
+  return e instanceof Error ? e.message : fallback
+}
+
+async function handleVisibility(v: 'public' | 'private') {
+  if (saving.value || v === localVisibility.value) return
+  saving.value = true
+  visibilityError.value = ''
+  try {
+    const updated = await projectsApi.updateProjectVisibility(props.project.project_id, v)
+    localVisibility.value = updated.visibility
+    projectStore.patchProject(updated)
+    emit('changed')
+  } catch (e) {
+    visibilityError.value = messageOf(e, '切换可见性失败，请重试。')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function handleAdd() {
+  const uid = newUserId.value.trim()
+  if (!uid || adding.value) return
+  adding.value = true
+  memberError.value = ''
+  try {
+    await membersStore.add(props.project.project_id, uid)
+    newUserId.value = ''
+    showAddForm.value = false
+  } catch (e) {
+    memberError.value = messageOf(e, '添加失败，请重试。')
+  } finally {
+    adding.value = false
+  }
+}
+
+async function handleRemove(userId: string) {
+  if (removing.value) return
+  removing.value = userId
+  memberError.value = ''
+  try {
+    await membersStore.remove(props.project.project_id, userId)
+  } catch (e) {
+    memberError.value = messageOf(e, '移除失败，请重试。')
+  } finally {
+    removing.value = ''
+  }
+}
+</script>
+
+<style scoped>
+.project-settings-dialog {
+  max-width: 480px;
+}
+
+.settings-section {
+  margin-bottom: 20px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.visibility-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.toggle-btn {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.toggle-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.toggle-btn.active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+.toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error-text {
+  font-size: 12px;
+  color: var(--color-error, #e53e3e);
+  margin: 8px 0 0;
+}
+
+.add-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-secondary);
+  color: var(--text-primary);
+}
+
+.btn-sm {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.btn-primary {
+  font-size: 13px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 4px;
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-danger-sm {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-danger, #e53e3e);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #e53e3e);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-danger-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.loading {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.member-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.member-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.member-item:last-child {
+  border-bottom: none;
+}
+
+.member-user {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.owner-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--color-accent);
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.btn-ghost {
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+</style>

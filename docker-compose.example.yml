@@ -1,0 +1,123 @@
+# Docker Compose example — copy to docker-compose.yml, fill .env, then:
+#   docker compose up --build
+#
+# This example runs the full stack locally on localhost. For production
+# deployment (custom domain, HTTPS, SSO), adapt the URLs and add your own
+# reverse proxy / tunnel — see the api service env vars below.
+services:
+  api:
+    build:
+      context: .
+      target: final
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=sqlserver
+      - DB_PORT=1433
+      - DB_NAME=agentsuniverse
+      - DB_USER=sa
+      - DB_PASSWORD=${DB_PASSWORD:-YourPassword}
+      - DB_DRIVER=ODBC Driver 17 for SQL Server
+      - DB_TRUST_CERT=true
+      - REDIS_URL=redis://redis:6379/0
+      - APP_BASE_URL=http://localhost:8000
+      - WEB_BASE_URL=http://localhost:5173
+      - CORS_ORIGINS=http://localhost:5173
+      - PROJECTS_ROOT=/app/projects
+      - JAVA_HOME=/usr/lib/jvm/msopenjdk-21-amd64
+      - HOME=/home/appuser
+      - MAVEN_USER_HOME=/home/appuser/.m2
+      - GRADLE_USER_HOME=/home/appuser/.gradle
+    env_file:
+      - .env
+    volumes:
+      # All persistent data lives under the DOCKER_VOLUME_ROOT host directory
+      - ${DOCKER_VOLUME_ROOT:-./data}/projects:/app/projects
+      - ${DOCKER_VOLUME_ROOT:-./data}/maven:/home/appuser/.m2
+      - ${DOCKER_VOLUME_ROOT:-./data}/gradle:/home/appuser/.gradle
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Dev web server (hot-reload, local dev only — start with: docker compose --profile dev up)
+  web:
+    build:
+      context: .
+      target: web-dev
+    profiles:
+      - dev
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5173 || curl -f http://localhost:5173 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Production-style nginx frontend (use to test the production image locally)
+  # Run: docker compose --profile prod-web up --build
+  web-prod:
+    build:
+      context: packages/web
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE_PATH=${VITE_API_BASE_PATH:-}
+        - VITE_BASE_PATH=${VITE_BASE_PATH:-./}
+    ports:
+      - "8080:8080"
+    profiles:
+      - prod-web
+    depends_on:
+      api:
+        condition: service_healthy
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=${DB_PASSWORD:-YourPassword}
+      - MSSQL_PID=Express
+    ports:
+      - "1433:1433"
+    volumes:
+      # Named volume, NOT a bind mount: SQL Server's PAL crashes on Windows
+      # bind mounts (Docker Desktop gRPC-FUSE incompatibility).
+      - sqlserver_data:/var/opt/mssql
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${DB_PASSWORD:-YourPassword}" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ${DOCKER_VOLUME_ROOT:-./data}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Persistent data: bind mounts under DOCKER_VOLUME_ROOT (see .env) for
+# everything EXCEPT SQL Server — which uses a named volume because its PAL
+# crashes on Windows bind mounts (Docker Desktop gRPC-FUSE incompatibility).
+volumes:
+  sqlserver_data:

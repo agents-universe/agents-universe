@@ -1,0 +1,251 @@
+<template>
+  <div class="app-layout">
+    <!-- Mobile Top Bar (visible only on small screens) -->
+    <div class="mobile-topbar">
+      <button class="mobile-topbar-btn" @click="toggleLeft" title="菜单">
+        <Menu :size="20" />
+      </button>
+      <span class="mobile-topbar-title"><Bot :size="16" class="sidebar-title-icon" /> Agents Universe</span>
+      <button class="mobile-topbar-btn" @click="toggleRight" title="面板">
+        <PanelRight :size="20" />
+      </button>
+    </div>
+
+    <!-- Mobile Backdrop — tap to close any open sidebar -->
+    <Transition name="fade">
+      <div
+        v-if="showBackdrop"
+        class="mobile-backdrop"
+        @click="closeMobilePanels"
+      />
+    </Transition>
+
+    <!-- Left Sidebar -->
+    <aside class="sidebar-left" :class="{ collapsed: leftCollapsed }">
+      <div class="sidebar-header">
+        <span v-if="!leftCollapsed" class="sidebar-title"><Bot :size="16" class="sidebar-title-icon" /> Agents Universe</span>
+        <button class="sidebar-toggle" @click="toggleLeft" title="Toggle sidebar">
+          <ChevronLeft v-if="!leftCollapsed" :size="16" />
+          <ChevronRight v-else :size="16" />
+        </button>
+      </div>
+      <template v-if="!leftCollapsed">
+        <ProjectTree />
+        <AgentSwitcher />
+        <SidebarFooter />
+      </template>
+    </aside>
+
+    <!-- Center panel -->
+    <main class="center-panel">
+      <Transition name="route-fade" mode="out-in">
+        <RouterView />
+      </Transition>
+    </main>
+
+    <!-- Right Panel -->
+    <aside class="panel-right" :class="{ collapsed: rightCollapsed }">
+      <div class="panel-right-header">
+        <div class="panel-tabs" v-if="!rightCollapsed">
+          <button
+            v-for="tab in tabs"
+            :key="tab.id"
+            class="panel-tab"
+            :class="{ active: activeTab === tab.id }"
+            @click="activeTab = tab.id"
+          ><component :is="tab.icon" :size="13" /> {{ tab.label }}</button>
+        </div>
+        <button class="sidebar-toggle" @click="toggleRight" title="Toggle panel">
+          <ChevronRight v-if="!rightCollapsed" :size="16" />
+          <ChevronLeft v-else :size="16" />
+        </button>
+      </div>
+
+      <template v-if="!rightCollapsed">
+        <ContextMeter />
+        <component
+          :is="panelComponent"
+          :key="activeTab"
+          v-bind="panelProps"
+          @new-conversation="handleNewConversation"
+        />
+      </template>
+    </aside>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { RouterView, useRouter, useRoute } from 'vue-router'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain } from 'lucide-vue-next'
+import { useProjectStore } from '@/stores/project'
+import { useAgentStore } from '@/stores/agent'
+import { useConversationStore } from '@/stores/conversation'
+import { projectsApi } from '@/api/projects'
+import ProjectTree from '@/components/sidebar/ProjectTree.vue'
+import AgentSwitcher from '@/components/sidebar/AgentSwitcher.vue'
+import SidebarFooter from '@/components/sidebar/SidebarFooter.vue'
+import ContextMeter from '@/components/knowledge/ContextMeter.vue'
+import ConversationTreePanel from '@/components/conversations/ConversationTreePanel.vue'
+import KnowledgePanel from '@/components/knowledge/KnowledgePanel.vue'
+import MemoryPanel from '@/components/memory/MemoryPanel.vue'
+import { closeAllConnections } from '@/composables/useWebSocket'
+import { invalidateLatestConversation } from '@/pages/ChatPage.vue'
+import { useProjectData } from '@/composables/useProjectData'
+
+useProjectData()
+
+/* ── Sidebar state ────────────────────────────────────────────── */
+const MOBILE_BREAKPOINT = 1024
+const leftCollapsed = ref(false)
+const rightCollapsed = ref(false)
+const isMobile = ref(false)
+const activeTab = ref<'conversations' | 'knowledge' | 'memory'>('conversations')
+
+/** Sync isMobile flag and auto-collapse sidebars when entering mobile. */
+function checkMobile() {
+  const wasMobile = isMobile.value
+  isMobile.value = window.innerWidth <= MOBILE_BREAKPOINT
+  // When transitioning to mobile, collapse both sidebars so the center panel is visible.
+  if (!wasMobile && isMobile.value) {
+    leftCollapsed.value = true
+    rightCollapsed.value = true
+  }
+}
+
+/** Update --app-height CSS var from visualViewport for accurate mobile height (keyboard support). */
+function updateAppHeight() {
+  if (window.visualViewport) {
+    document.documentElement.style.setProperty(
+      '--app-height',
+      `${window.visualViewport.height}px`,
+    )
+  }
+}
+
+/** Backdrop is visible on mobile when at least one sidebar is open. */
+const showBackdrop = computed(() =>
+  isMobile.value && (!leftCollapsed.value || !rightCollapsed.value),
+)
+
+/** Toggle left sidebar — on mobile, ensure mutual exclusion with right. */
+function toggleLeft() {
+  if (isMobile.value) {
+    if (leftCollapsed.value) {
+      leftCollapsed.value = false
+      rightCollapsed.value = true
+    } else {
+      leftCollapsed.value = true
+    }
+  } else {
+    leftCollapsed.value = !leftCollapsed.value
+  }
+}
+
+/** Toggle right sidebar — on mobile, ensure mutual exclusion with left. */
+function toggleRight() {
+  if (isMobile.value) {
+    if (rightCollapsed.value) {
+      rightCollapsed.value = false
+      leftCollapsed.value = true
+    } else {
+      rightCollapsed.value = true
+    }
+  } else {
+    rightCollapsed.value = !rightCollapsed.value
+  }
+}
+
+/** Close both sidebars (used by backdrop tap and route change on mobile). */
+function closeMobilePanels() {
+  leftCollapsed.value = true
+  rightCollapsed.value = true
+}
+
+onMounted(() => {
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+  updateAppHeight()
+  window.visualViewport?.addEventListener('resize', updateAppHeight)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile)
+  window.visualViewport?.removeEventListener('resize', updateAppHeight)
+})
+
+/* ── Auto-close sidebars on navigation (mobile) ───────────────── */
+const route = useRoute()
+watch(() => route.fullPath, () => {
+  if (isMobile.value) closeMobilePanels()
+})
+
+/* ── Panel tabs & content ─────────────────────────────────────── */
+const tabs = [
+  { id: 'conversations' as const, label: '会话', icon: MessageSquare },
+  { id: 'knowledge' as const, label: '知识', icon: BookOpen },
+  { id: 'memory' as const, label: '记忆', icon: Brain },
+]
+
+const projectStore = useProjectStore()
+const agentStore = useAgentStore()
+const convStore = useConversationStore()
+const router = useRouter()
+
+/* ── Route param ↔ project store sync ─────────────────────────── */
+// ProjectTree pushes both together, but direct URL navigation / back-forward
+// (same route record, component reused) changes only route.params.projectId.
+// Without this, pages reading currentProject (ChatPage, ScriptExecutorPage)
+// keep showing the OLD project while the URL says otherwise, and
+// KnowledgeBrowserPage could even save edits into the wrong project.
+const routePid = computed(() => route.params.projectId as string | undefined)
+let pidSyncSeq = 0
+watch(routePid, async (pid) => {
+  if (!pid) return
+  if (projectStore.currentProject?.project_id === pid) return
+  const seq = ++pidSyncSeq
+  let list = projectStore.projects
+  if (list.length === 0) {
+    try {
+      list = await projectsApi.getProjects()
+      projectStore.setProjects(list)
+    } catch {
+      return // auth/network errors surface via the route guard; leave as-is
+    }
+  }
+  if (seq !== pidSyncSeq) return
+  const match = list.find((p) => p.project_id === pid)
+  if (match) projectStore.setCurrentProject(match)
+}, { immediate: true })
+
+const currentProjectId = computed(() => projectStore.currentProject?.project_id)
+const currentAgentSlug = computed(() => agentStore.currentAgent?.slug)
+
+const panelComponent = computed(() => {
+  switch (activeTab.value) {
+    case 'knowledge': return KnowledgePanel
+    case 'memory': return MemoryPanel
+    default: return ConversationTreePanel
+  }
+})
+
+const panelProps = computed(() => {
+  switch (activeTab.value) {
+    case 'knowledge': return { projectId: currentProjectId.value }
+    case 'memory': return {}
+    default: return { projectId: currentProjectId.value, agentSlug: currentAgentSlug.value }
+  }
+})
+
+function handleNewConversation() {
+  closeAllConnections()
+  convStore.reset()
+  // Invalidate any in-flight latest-conversation load: its response would
+  // otherwise resurrect the old conversation over the fresh empty state
+  // . The ?new=1 marker stops the (possibly re-mounted) ChatPage
+  // from auto-restoring the latest conversation after a non-chat-page click.
+  invalidateLatestConversation()
+  const id = projectStore.currentProject?.project_id
+  if (id) router.push(`/projects/${id}/chat?new=1`)
+}
+</script>

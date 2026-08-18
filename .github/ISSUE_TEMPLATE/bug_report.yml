@@ -1,0 +1,47 @@
+name: Bug report
+description: 报告一个问题，帮助改进平台
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 问题描述
+      description: 发生了什么？预期是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 尽量提供最小复现。如果是 Agent 行为问题，请附上会话中的关键步骤。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      description: 部署方式（docker compose / 本地开发）、版本、OS
+      placeholder: "docker compose, v0.1.0, Ubuntu 22.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响模块
+      options:
+        - Agent Core（规划 / 工具 / 知识加载）
+        - API（认证 / 数据库 / WebSocket）
+        - Web UI
+        - 技能 / 工作流 / 知识
+        - 部署 / Docker
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与截图
+      description: 粘贴相关日志或截图。注意不要包含任何 API Key / 令牌。

@@ -1,0 +1,55 @@
+# 项目分类注册表 —— 前后端共用(api 加载;web 通过 GET /api/projects/categories 读取)。
+# templates 列表项为 knowledge/_template/ 下知识条目的 frontmatter slug。
+# software 未列出知识条目时为"全量拷贝 _template/"语义,此处写全便于核对。
+categories:
+  - slug: software
+    label: 软件项目
+    description: 软件开发、测试、部署与运维等工程类项目
+    templates:
+      - domain/context
+      - domain/glossary
+      - system/history
+      - environment/environment
+      - technical/technical-stack
+      - technical/system-architecture
+      - technical/api-map
+      - technical/kong-map
+      - technical/login-and-user-switch
+      - technical/page-map
+      - technical/permission-matrix
+      - domain/role-matrix
+      - skills/test-patterns
+      - skills/ui-patterns
+      - integrations/custom-api
+      - integrations/mcp-servers
+  - slug: data-analysis
+    label: 数据分析
+    description: 指标分析、报表看板、取数与数据治理等数据类项目
+    templates:
+      - domain/context
+      - domain/glossary
+      - system/history
+      - integrations/custom-api
+      - integrations/mcp-servers
+      - technical/data-source-map
+      - technical/data-model
+      - technical/data-pipelines
+      - domain/metric-catalog
+      - domain/analysis-scenarios
+      - skills/sql-patterns
+      - skills/analysis-patterns
+  - slug: docs
+    label: 文档知识库
+    description: 以文档沉淀、规范、知识整理为主的非工程类项目
+    templates:
+      - domain/context
+      - domain/glossary
+      - system/history
+      - environment/environment
+      - technical/system-architecture
+  - slug: other
+    label: 其他
+    description: 无法归入以上分类的项目，知识由项目定制专家访谈后逐步填充
+    templates:
+      - domain/context
+      - system/history

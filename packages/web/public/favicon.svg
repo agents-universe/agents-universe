@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="tile-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1a1a"/>
+      <stop offset="1" stop-color="#0f0f0f"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded tile, matches the dark UI + blue accent -->
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#tile-bg)"/>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="none" stroke="rgba(107,159,255,0.35)" stroke-width="1.5"/>
+  <!-- bot mark (lucide `bot` geometry), accent blue -->
+  <g transform="translate(6.5,6.5) scale(0.7917)" fill="none" stroke="#6b9fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 8V4H8"/>
+    <rect width="16" height="12" x="4" y="8" rx="2"/>
+    <path d="M2 14h2"/>
+    <path d="M20 14h2"/>
+    <path d="M15 13v2"/>
+    <path d="M9 13v2"/>
+  </g>
+</svg>

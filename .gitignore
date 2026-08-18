@@ -1,0 +1,76 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.claude/worktrees/
+
+# Local deployment configs (contain environment-specific domains/DB names)
+docker-compose.yml
+docker-compose.local.yml
+docker-compose.*.yml
+!docker-compose.example.yml
+push-image.sh
+buildkitd.toml
+build-push.ps1
+build-push.local.ps1
+build-deploy.local.ps1
+deploy-local.ps1
+
+# Logs
+*.log
+
+# Local scratch output (test logs, redirect targets)
+.tmp/
+
+# Generated analysis output
+graphify-out/
+
+# Test runner artifacts
+test-results/
+
+# Sub-project workspaces (user data, not application code)
+dev-projects/
+
+# Pre-downloaded wheels, debs, and browsers (generated, not committed)
+packages/api/wheels/
+packages/api/debs/
+packages/api/playwright-browsers/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+packages/web/dist/
+packages/web/.vite/
+
+# DB
+*.db
+*.sqlite
+
+# API test runtime workspace (SQLite file + PROJECTS_ROOT under tests/_tmp)
+packages/api/tests/_tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Alembic compiled
+packages/api/alembic/__pycache__/
+
+# Local dev startup script (machine-specific overrides)
+/dev-start.ps1

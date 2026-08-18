@@ -1,0 +1,40 @@
+# Build context should be small and stable so Docker layer caching stays
+# effective — a changing context hash re-sends files every build and can
+# invalidate COPY layers that come before expensive download steps.
+
+# Version control
+.git
+.gitignore
+
+# Secrets / local configs
+.env
+.env.*
+!.env.example
+*.log
+dev-projects/
+
+# Node (host node_modules is Windows-built and must never shadow the
+# Linux npm install in the image; dist is rebuilt inside the image)
+**/node_modules
+packages/web/dist
+packages/web/.vite
+
+# Python
+**/__pycache__
+**/*.py[cod]
+.venv
+**/.venv
+*.egg-info
+.pytest_cache
+.ruff_cache
+htmlcov
+.coverage
+
+# Test artifacts
+test-results/
+packages/api/tests/_tmp/
+
+# IDE / tooling
+.idea/
+.vscode/
+.claude/

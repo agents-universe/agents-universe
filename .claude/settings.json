@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uvicorn*)",
+      "Bash(alembic*)",
+      "Bash(python -m*)",
+      "Bash(npm run*)",
+      "Bash(npm install*)",
+      "Bash(pip install*)",
+      "Bash(docker compose*)",
+      "Bash(docker build*)",
+      "Bash(mkdir -p*)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)"
+    ],
+    "deny": []
+  }
+}

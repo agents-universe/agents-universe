@@ -368,4 +368,3 @@ class ConversationSession:
                 entry.attachment_records = attachment_records
             if entry.persisted is not None and not entry.persisted.done():
                 entry.persisted.set_result(ok)
-

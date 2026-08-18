@@ -40,7 +40,7 @@ Only blocking ambiguities (audience or core flow) require questions; everything 
 The demo must follow the visual style of the **project's own business system** — never the platform's own UI. Three paths, in priority order:
 
 - **Path A — existing demo**: list `demos/*.html` in the project workspace with `filesystem`; read the `<style>` block of each to extract the style baseline: CSS variables, color palette (hex/hsl/rgb), font stack and sizes, radius/shadow/spacing rhythm, component styles (buttons/cards/tables/nav/tabs).
-- **Path B — no demo**: 
+- **Path B — no demo**:
   1. Read the project's **CSS source files** first when the frontend source is reachable (via `git_repo`/`github`/`web_fetch`/`filesystem`) — the palette and variables extracted from source are exact, prefer them over screenshots.
   2. Otherwise check `knowledge/ui-patterns.md` for an existing **Visual Style Baseline** section (previously deposited by QA).
   3. Otherwise **delegate to QA**: end the reply with a request to `@quality-assurance` to investigate the project business system's visual style. QA reads CSS sources first, extracts computed styles (`getComputedStyle`) second, and screenshots with annotations last; QA returns a compact baseline list (palette with contrast hints, font stack/sizes/weights, button/card/table/nav/tab styles, layout, hover/active/focus states) and appends it to `knowledge/ui-patterns.md` under a **Visual Style Baseline** section (`[verified]` from real system/computed styles, `[inferred]` from estimation) plus `history.md`. This is the QA→PO hand-off: the baseline and the deposit confirmation.

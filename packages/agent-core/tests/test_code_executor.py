@@ -1176,4 +1176,3 @@ async def test_pw_network_all_by_default(sibling_projects, guarded_temp):
     )
     stderr = result.get("stderr", "")
     assert "agent-guard" not in stderr, stderr
-

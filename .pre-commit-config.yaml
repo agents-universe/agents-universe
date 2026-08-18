@@ -1,0 +1,29 @@
+# Pre-commit hooks — see https://pre-commit.com
+# Install: pre-commit install   |   Update: pre-commit autoupdate
+exclude: >-
+  (^node_modules/|^packages/web/node_modules/|^packages/web/dist/|^dist/)
+repos:
+  # ---- Secret scanning (the reason this file exists) ----
+  # Local hook: gitleaks binary must be on PATH (avoids Go toolchain download,
+  # which proxy.golang.org blocks on this machine). Install:
+  #   curl -LO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scanning)
+        description: Detect hardcoded secrets in staged changes
+        entry: gitleaks git --pre-commit --redact --staged --verbose
+        language: system
+        pass_filenames: false
+
+  # ---- Basic hygiene ----
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: check-toml

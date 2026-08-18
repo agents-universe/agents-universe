@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "agents-universe-api"
 version = "0.1.0"
 description = "Agents Universe — FastAPI web service"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "agent-core",

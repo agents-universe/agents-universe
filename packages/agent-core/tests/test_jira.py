@@ -1,11 +1,11 @@
 """Jira tool: JIRA_PROJECT_KEY must come from integration settings — cfg()'s
 credential-key guard (final segment "KEY") would never return it."""
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from agent_core.tools.base import ToolContext
-from agent_core.tools.jira import JiraTool
+from agent_core.tools.jira import JiraTool, _JiraClient
 
 
 def _ctx(**over) -> ToolContext:
@@ -80,3 +80,26 @@ async def test_create_test_issue_requires_project_key():
 
     assert result == {"error": "project_key is required"}
     client.create_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_comment_posts_wiki_markup_not_markdown():
+    """Jira's v2 API renders a string body as wiki markup — a Markdown
+    '### heading' would come back as a '1.1.1' nested numbered list."""
+    http = AsyncMock()
+    resp = Mock()
+    resp.raise_for_status = Mock()
+    resp.json.return_value = {"id": "10042"}
+    http.post.return_value = resp
+
+    client = _JiraClient(
+        api_token="t", email="e", base_url="https://jira.example.com",
+        jira_path="/jira", auth_type="basic", http=http,
+    )
+    await client.add_comment(
+        "DDM-7",
+        "### 执行结果\n\n- 通过\n- **回归通过**",
+    )
+
+    sent = http.post.call_args.kwargs["json"]["body"]
+    assert sent == "h3. 执行结果\n\n* 通过\n* *回归通过*"

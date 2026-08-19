@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from agent_core.tools._wiki import markdown_to_wiki
 from api.config import get_settings
 
 
@@ -76,7 +77,8 @@ class JiraClient:
             resp = await client.post(
                 f"{self.base_url}/rest/api/2/issue/{issue_key}/comment",
                 headers=self._headers,
-                json={"body": body},
+                # v2 API renders string bodies as wiki markup, not Markdown.
+                json={"body": markdown_to_wiki(body)},
             )
             resp.raise_for_status()
             return resp.json()
@@ -96,7 +98,7 @@ class JiraClient:
             "issuetype": {"name": issue_type},
         }
         if description:
-            fields["description"] = description
+            fields["description"] = markdown_to_wiki(description)
         if labels:
             fields["labels"] = labels
         if extra_fields:
@@ -170,6 +172,8 @@ class JiraClient:
             return resp.json().get("issues", [])
 
     async def update_issue(self, issue_key: str, fields: dict) -> None:
+        if fields.get("description"):
+            fields = {**fields, "description": markdown_to_wiki(fields["description"])}
         async with httpx.AsyncClient(timeout=self.timeout, verify=self.ssl_verify) as client:
             resp = await client.put(
                 f"{self.base_url}/rest/api/2/issue/{issue_key}",

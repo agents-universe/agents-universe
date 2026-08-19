@@ -13,6 +13,7 @@ import httpx
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token, get_token_optional
 from ._http import ensure_http_client
+from ._wiki import markdown_to_wiki
 
 _log = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class JiraTool(Tool):
             "release_url": {"type": "string"},
             "assignee_name": {"type": "string"},
             "assignee_account_id": {"type": "string"},
-            "comment_body": {"type": "string"},
+            "comment_body": {"type": "string", "description": "Comment body in Markdown — auto-converted to Jira wiki markup on write"},
             "cycle_name": {"type": "string"},
             "cycle_project_id": {"type": "string"},
             "test_kind": {"type": "string", "enum": ["api", "ui"]},
@@ -374,7 +375,8 @@ class _JiraClient:
             "issuetype": {"name": issue_type},
         }
         if description:
-            fields["description"] = description
+            # v2 API renders string bodies as wiki markup, not Markdown.
+            fields["description"] = markdown_to_wiki(description)
         if labels:
             fields["labels"] = labels
         resp = await self._http.post(
@@ -383,13 +385,17 @@ class _JiraClient:
         return resp.json()
 
     async def update_issue(self, key: str, fields: dict) -> None:
+        if "description" in fields and fields["description"]:
+            fields = {**fields, "description": markdown_to_wiki(fields["description"])}
         resp = await self._http.put(
             f"{self.base_url}/rest/api/2/issue/{key}", headers=self._headers, json={"fields": fields})
         resp.raise_for_status()
 
     async def add_comment(self, key: str, body: str) -> dict:
         resp = await self._http.post(
-            f"{self.base_url}/rest/api/2/issue/{key}/comment", headers=self._headers, json={"body": body})
+            f"{self.base_url}/rest/api/2/issue/{key}/comment",
+            # v2 API renders string bodies as wiki markup, not Markdown.
+            headers=self._headers, json={"body": markdown_to_wiki(body)})
         resp.raise_for_status()
         return resp.json()
 
@@ -433,7 +439,7 @@ class _JiraClient:
                                 description: str = "") -> dict:
         payload = {"name": name, "projectId": project_id, "versionId": version_id}
         if description:
-            payload["description"] = description
+            payload["description"] = markdown_to_wiki(description)
         resp = await self._http.post(
             f"{self.base_url}/rest/zapi/latest/cycle", headers=self._headers, json=payload)
         resp.raise_for_status()

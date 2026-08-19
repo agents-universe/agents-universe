@@ -82,7 +82,7 @@ This common document is a cross-project convention set. Whenever a task involves
 ## 4.5 Self-Adapt DB Red Marking
 
 - If a scenario, step, or execution note uses the self-adapt DB access service, the affected Jira lines must be highlighted in red.
-- There is no automatic conversion: wrap those lines in Jira wiki markup yourself, e.g. `{color:red}[SELF-ADAPT-DB] ...{color}`, in any body passed to `jira(operation="create_test_issue"|"update_description"|"add_comment"|"create_test_cycle", ...)`.
+- Jira bodies are written as Markdown and auto-converted to Jira wiki markup at write time (headings, lists, tables, etc.). For the red marking, the auto-converter passes wiki-markup lines through untouched, so wrap those lines yourself, e.g. `{color:red}[SELF-ADAPT-DB] ...{color}`, in any body passed to `jira(operation="create_test_issue"|"update_description"|"add_comment"|"create_test_cycle", ...)`.
 - Use this only for lines that truly depend on the self-adapt DB access service. Do not mark ordinary UI or product-API steps red.
 
 ## 5. General Bug Rules

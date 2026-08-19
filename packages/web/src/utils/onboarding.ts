@@ -1,6 +1,6 @@
 /**
  * Onboarding kickoff messages, branched by project category.
- * 「其他」分类项目知识条目最少,由项目定制专家访谈后填充。
+ * 「自定义」分类项目知识条目最少,由项目定制专家访谈后填充。
  */
 export const CUSTOMIZATION_EXPERT_SLUG = 'project-customization-expert'
 
@@ -14,7 +14,7 @@ export const ONBOARDING_KICKOFF = [
 ].join('\n')
 
 export const OTHER_ONBOARDING_KICKOFF = [
-  '这是一个「其他」分类的新建项目，仅有最基础的知识条目（项目背景与历史）。',
+  '这是一个「自定义」分类的新建项目，仅有最基础的知识条目（项目背景与历史）。',
   '请以「项目定制专家」身份启动知识定制访谈：',
   '1. 先读取当前知识文件与项目记忆，识别缺失项。',
   '2. 围绕业务领域、参与者、关键系统与工具、智能体职责做开放式访谈（每轮 3-5 个问题）。',

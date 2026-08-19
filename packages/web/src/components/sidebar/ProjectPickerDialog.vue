@@ -212,7 +212,7 @@ async function createProject() {
     projectStore.addProject(project)
     favoritesStore.toggleProjectFavorite(project.project_id)
     projectStore.setCurrentProject(project)
-    // 「其他」分类:自动路由到项目定制专家
+    // 「自定义」分类:自动路由到项目定制专家
     if (project.category === 'other') {
       try {
         await agentStore.fetchAgents(project.project_id)

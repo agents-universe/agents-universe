@@ -92,7 +92,7 @@ async function create() {
     const project = await projectsApi.createProject(name.value.trim(), selectedCategory.value)
     projectStore.addProject(project)
     projectStore.setCurrentProject(project)
-    // 「其他」分类:自动路由到项目定制专家
+    // 「自定义」分类:自动路由到项目定制专家
     if (project.category === 'other') {
       try {
         await agentStore.fetchAgents(project.project_id)

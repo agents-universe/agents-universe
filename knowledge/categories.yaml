@@ -48,7 +48,7 @@ categories:
       - environment/environment
       - technical/system-architecture
   - slug: other
-    label: 其他
+    label: 自定义项目
     description: 无法归入以上分类的项目，知识由项目定制专家访谈后逐步填充
     templates:
       - domain/context

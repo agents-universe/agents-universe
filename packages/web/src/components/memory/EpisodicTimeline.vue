@@ -1,7 +1,7 @@
 <template>
   <div class="memory-section">
-    <div class="section-label">情节记忆</div>
-    <div v-if="!memoryStore.episodes.length" class="memory-empty">暂无情节记录</div>
+    <div class="section-label">{{ t('memoryPanels.episodic') }}</div>
+    <div v-if="!memoryStore.episodes.length" class="memory-empty">{{ t('memoryPanels.noEpisodes') }}</div>
     <div
       v-for="ep in memoryStore.episodes"
       :key="ep.episode_id"
@@ -15,13 +15,13 @@
       </div>
       <div v-if="expanded.has(ep.episode_id)" class="episode-detail">
         <div v-if="ep.key_findings.length">
-          <div class="episode-section-label">关键发现</div>
+          <div class="episode-section-label">{{ t('memoryPanels.keyFindings') }}</div>
           <ul class="episode-list">
             <li v-for="f in ep.key_findings" :key="f">{{ f }}</li>
           </ul>
         </div>
         <div v-if="ep.open_questions.length">
-          <div class="episode-section-label">待解问题</div>
+          <div class="episode-section-label">{{ t('memoryPanels.openQuestions') }}</div>
           <ul class="episode-list">
             <li v-for="q in ep.open_questions" :key="q">{{ q }}</li>
           </ul>
@@ -33,10 +33,12 @@
 
 <script setup lang="ts">
 import { reactive } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import { useMemoryStore } from '@/stores/memory'
 import { relativeTime } from '@/utils/time'
 
+const { t } = useI18n()
 const memoryStore = useMemoryStore()
 const expanded = reactive(new Set<string>())
 

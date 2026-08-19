@@ -3,7 +3,7 @@
     <input
       v-model="query"
       class="mention-search"
-      placeholder="搜索智能体…"
+      :placeholder="t('mentionPopup.searchPlaceholder')"
       autofocus
       @keydown.esc="emit('close')"
       @keydown.enter="selectCurrent"
@@ -23,16 +23,18 @@
         <span class="mention-icon"><Bot :size="14" /></span>
         <span class="mention-title">{{ item.label }}</span>
       </div>
-      <div v-if="!filtered.length" class="mention-empty">无结果</div>
+      <div v-if="!filtered.length" class="mention-empty">{{ t('mentionPopup.noResults') }}</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Bot } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 
+const { t } = useI18n()
 const props = defineProps<{ excludeSlug?: string }>()
 
 const emit = defineEmits<{ select: [agent: { slug: string; label: string }]; close: [] }>()

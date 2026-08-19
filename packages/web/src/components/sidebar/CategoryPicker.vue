@@ -1,6 +1,6 @@
 <template>
   <div>
-    <label class="input-label">项目分类</label>
+    <label class="input-label">{{ t('categoryPicker.label') }}</label>
     <div v-if="variant === 'cards'" class="category-card-grid">
       <button
         v-for="cat in categories"
@@ -13,7 +13,7 @@
       >
         <span class="category-card-name">{{ cat.label }}</span>
         <span class="category-card-desc">{{ cat.description }}</span>
-        <span class="category-card-count">{{ cat.template_count }} 个知识条目</span>
+        <span class="category-card-count">{{ t('categoryPicker.entriesCount', { count: cat.template_count }) }}</span>
       </button>
     </div>
     <select
@@ -23,14 +23,17 @@
       @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
     >
       <option v-for="cat in categories" :key="cat.slug" :value="cat.slug">
-        {{ cat.label }}（{{ cat.template_count }} 个知识条目）
+        {{ cat.label }}{{ t('categoryPicker.entriesCountWrapped', { count: cat.template_count }) }}
       </option>
     </select>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { ProjectCategory } from '@/types'
+
+const { t } = useI18n()
 
 defineProps<{
   modelValue: string

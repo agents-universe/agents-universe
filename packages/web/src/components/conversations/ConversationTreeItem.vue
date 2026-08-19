@@ -6,29 +6,32 @@
         <ChevronRight v-else :size="12" />
       </button>
       <div class="conv-tree-info">
-        <span class="conv-tree-title">{{ conversation.title || '未命名对话' }}</span>
+        <span class="conv-tree-title">{{ conversation.title || t('conversations.untitled') }}</span>
         <div class="conv-tree-meta">
-          <span>{{ conversation.message_count }} 条消息</span>
-          <span v-if="isStreaming" class="conv-tree-live">运行中</span>
+          <span>{{ t('conversations.messageCount', { count: conversation.message_count }) }}</span>
+          <span v-if="isStreaming" class="conv-tree-live">{{ t('conversations.isStreaming') }}</span>
           <span>{{ relativeTime(conversation.updated_at ?? conversation.created_at) }}</span>
         </div>
       </div>
       <span v-if="isStreaming" class="conv-tree-pulse" />
-      <button class="conv-tree-delete-btn" title="删除" @click.stop="emit('delete')">🗑</button>
+      <button class="conv-tree-delete-btn" :title="t('conversations.deleteTitle')" @click.stop="emit('delete')">🗑</button>
     </div>
 
     <div v-if="isExpanded && tasks.length" class="conv-tree-tasks">
       <TaskTreeItem v-for="task in tasks" :key="task.id" :task="task" />
     </div>
-    <div v-else-if="isExpanded" class="conv-tree-tasks-empty">暂无任务规划</div>
+    <div v-else-if="isExpanded" class="conv-tree-tasks-empty">{{ t('conversations.noTaskPlan') }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 import { relativeTime } from '@/utils/time'
 import type { ConversationItem, AgentTask } from '@/types'
 import TaskTreeItem from './TaskTreeItem.vue'
+
+const { t } = useI18n()
 
 defineProps<{
   conversation: ConversationItem

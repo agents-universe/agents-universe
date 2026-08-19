@@ -3,9 +3,9 @@
     <p v-if="title" class="selection-title">{{ title }}</p>
     <p class="selection-question">{{ question }}</p>
     <p v-if="secret" class="secret-notice">
-      该值不会发送给大模型，将直接加密保存到数据库，由服务端工具内部使用。
-      <span v-if="saveToProjectSecrets">项目内有访问权限的用户也可通过对应工具间接使用。</span>
-      <span v-if="saveToUserTokens">密钥将保存到你的用户仓库，跨项目可用。</span>
+      {{ t('selectionDialog.secretNotice') }}
+      <span v-if="saveToProjectSecrets">{{ t('selectionDialog.secretProjectScope') }}</span>
+      <span v-if="saveToUserTokens">{{ t('selectionDialog.secretUserScope') }}</span>
     </p>
 
     <!-- Selection mode (radio options) -->
@@ -26,7 +26,7 @@
 
         <label v-if="allowOther" class="selection-option" :class="{ selected: selected === '__other__' }">
           <input type="radio" value="__other__" v-model="selected" />
-          <span class="option-label">其他</span>
+          <span class="option-label">{{ t('selectionDialog.other') }}</span>
         </label>
       </div>
 
@@ -34,7 +34,7 @@
         v-if="selected === '__other__'"
         v-model="otherText"
         class="selection-other-input input"
-        placeholder="请输入…"
+        :placeholder="t('selectionDialog.inputPlaceholder')"
       />
     </template>
 
@@ -44,22 +44,24 @@
         v-model="textValue"
         :type="secret ? 'password' : 'text'"
         class="text-input input"
-        :placeholder="secret ? '请输入密钥值…' : '请输入…'"
+        :placeholder="secret ? t('selectionDialog.secretPlaceholder') : t('selectionDialog.inputPlaceholder')"
         autocomplete="off"
         @keydown.enter="submit"
       />
     </template>
 
     <div class="selection-actions">
-      <button class="btn-cancel" @click="cancel">取消</button>
-      <button class="btn-primary" :disabled="!canSubmit || submitted" @click="submit">确认</button>
+      <button class="btn-cancel" @click="cancel">{{ t('common.cancel') }}</button>
+      <button class="btn-primary" :disabled="!canSubmit || submitted" @click="submit">{{ t('selectionDialog.confirm') }}</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const props = withDefaults(defineProps<{
   promptId: string
   fieldKey: string

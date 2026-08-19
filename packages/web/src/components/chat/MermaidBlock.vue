@@ -1,8 +1,8 @@
 <template>
   <div class="mermaid-diagram" @click="openFullscreen">
-    <div v-if="!rendered && !error" class="mermaid-loading">渲染中…</div>
+    <div v-if="!rendered && !error" class="mermaid-loading">{{ t('mermaid.rendering') }}</div>
     <div v-if="error" class="mermaid-error">
-      <summary>图表渲染失败</summary>
+      <summary>{{ t('mermaid.renderFailed') }}</summary>
       <pre>{{ errorMsg }}</pre>
     </div>
     <div ref="containerEl" />
@@ -34,8 +34,11 @@ let mermaidRenderSeq = 0
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{ code: string }>()
+
+const { t } = useI18n()
 
 const containerEl = ref<HTMLElement | null>(null)
 const fsEl = ref<HTMLElement | null>(null)
@@ -67,7 +70,7 @@ async function render() {
   const code = props.code?.trim()
   if (!code) {
     error.value = true
-    errorMsg.value = 'Empty mermaid code block'
+    errorMsg.value = t('mermaid.emptyCode')
     return
   }
 

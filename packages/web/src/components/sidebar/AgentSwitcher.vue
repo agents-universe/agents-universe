@@ -1,14 +1,14 @@
 <template>
   <div class="agent-switcher">
     <div class="nav-heading">
-      <span>智能体</span>
-      <button class="add-project-btn" title="管理收藏" @click="showPicker = true">
+      <span>{{ t('sidebar.agents.title') }}</span>
+      <button class="add-project-btn" :title="t('sidebar.common.manageFavorites')" @click="showPicker = true">
         <Plus :size="14" />
       </button>
     </div>
 
     <div v-if="favoritesStore.resolvedFavoriteAgents.length === 0" class="empty-hint">
-      点击 + 收藏智能体
+      {{ t('sidebar.agents.emptyHint') }}
     </div>
     <div
       v-for="agent in favoritesStore.resolvedFavoriteAgents"
@@ -38,7 +38,7 @@
         <div class="agent-tooltip__slug">{{ tooltipAgent.label }}</div>
         <div class="agent-tooltip__desc">{{ tooltipAgent.description }}</div>
         <div v-if="tooltipAgent.skills.length" class="agent-tooltip__section">
-          <span class="agent-tooltip__heading">技能</span>
+          <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipSkills') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="s in tooltipAgent.skills" :key="s.slug" class="agent-tooltip__item">
               <span class="agent-tooltip__slug">{{ s.slug }}</span>
@@ -47,7 +47,7 @@
           </div>
         </div>
         <div v-if="tooltipAgent.workflows.length" class="agent-tooltip__section">
-          <span class="agent-tooltip__heading">工作流</span>
+          <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipWorkflows') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="w in tooltipAgent.workflows" :key="w.slug" class="agent-tooltip__item">
               <span class="agent-tooltip__slug">{{ w.slug }}</span>
@@ -56,7 +56,7 @@
           </div>
         </div>
         <div v-if="staticTools.length" class="agent-tooltip__section">
-          <span class="agent-tooltip__heading">工具</span>
+          <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipTools') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="t in staticTools" :key="t" class="agent-tooltip__item">
               <span class="agent-tooltip__slug">{{ t }}</span>
@@ -64,7 +64,7 @@
           </div>
         </div>
         <div v-if="mcpServers.length" class="agent-tooltip__section">
-          <span class="agent-tooltip__heading">MCP 集成</span>
+          <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipMcp') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="s in mcpServers" :key="s" class="agent-tooltip__item">
               <span class="mcp-badge">MCP</span>
@@ -81,6 +81,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
@@ -88,6 +89,7 @@ import { useProjectStore } from '@/stores/project'
 import type { AgentInfo } from '@/types'
 import AgentPickerDialog from './AgentPickerDialog.vue'
 
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const favoritesStore = useFavoritesStore()
 const projectStore = useProjectStore()

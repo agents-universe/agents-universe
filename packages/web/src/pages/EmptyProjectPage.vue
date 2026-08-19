@@ -6,7 +6,7 @@
           <Bot :size="36" />
         </span>
         <h1 class="empty-project-brand">Agents Universe</h1>
-        <p class="empty-project-tagline">企业级 AI Agent 框架</p>
+        <p class="empty-project-tagline">{{ t('emptyProject.tagline') }}</p>
       </div>
 
       <div class="feature-cards">
@@ -15,8 +15,8 @@
             <MessageSquare :size="20" />
           </span>
           <div class="feature-card-body">
-            <h3 class="feature-card-title">智能对话</h3>
-            <p class="feature-card-desc">与 AI Agent 进行多轮对话，支持流式输出与工具调用</p>
+            <h3 class="feature-card-title">{{ t('emptyProject.featureChatTitle') }}</h3>
+            <p class="feature-card-desc">{{ t('emptyProject.featureChatDesc') }}</p>
           </div>
         </div>
 
@@ -25,8 +25,8 @@
             <BookOpen :size="20" />
           </span>
           <div class="feature-card-body">
-            <h3 class="feature-card-title">知识条目</h3>
-            <p class="feature-card-desc">为每个项目维护独立的知识文档，精准注入上下文</p>
+            <h3 class="feature-card-title">{{ t('emptyProject.featureKnowledgeTitle') }}</h3>
+            <p class="feature-card-desc">{{ t('emptyProject.featureKnowledgeDesc') }}</p>
           </div>
         </div>
 
@@ -35,17 +35,17 @@
             <Brain :size="20" />
           </span>
           <div class="feature-card-body">
-            <h3 class="feature-card-title">记忆系统</h3>
-            <p class="feature-card-desc">跨会话持久化个人偏好与情节记忆，越用越聪明</p>
+            <h3 class="feature-card-title">{{ t('emptyProject.featureMemoryTitle') }}</h3>
+            <p class="feature-card-desc">{{ t('emptyProject.featureMemoryDesc') }}</p>
           </div>
         </div>
       </div>
 
       <div class="empty-project-cta">
-        <p class="empty-project-hint">从左侧选择已有项目，或立即创建一个新项目开始使用</p>
+        <p class="empty-project-hint">{{ t('emptyProject.hint') }}</p>
         <button class="btn-primary empty-project-btn" @click="showCreate = true">
           <Plus :size="16" />
-          新建项目
+          {{ t('emptyProject.createProject') }}
         </button>
       </div>
     </div>
@@ -56,8 +56,10 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Bot, MessageSquare, BookOpen, Brain, Plus } from 'lucide-vue-next'
 import CreateProjectDialog from '@/components/sidebar/CreateProjectDialog.vue'
 
+const { t } = useI18n()
 const showCreate = ref(false)
 </script>

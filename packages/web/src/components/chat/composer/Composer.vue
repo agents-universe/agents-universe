@@ -23,8 +23,8 @@
         <img v-else-if="att.objectUrl" :src="att.objectUrl" class="attachment-thumb" :alt="att.file.name" />
         <FileText v-else :size="14" class="attachment-file-icon" />
         <span class="attachment-name" :title="att.file.name">{{ att.file.name }}</span>
-        <span v-if="att.error" class="attachment-error" :title="att.error">上传失败</span>
-        <button class="attachment-remove" type="button" title="移除" @click="removeAttachment(att.key)">
+        <span v-if="att.error" class="attachment-error" :title="att.error">{{ t('composer.uploadFailed') }}</span>
+        <button class="attachment-remove" type="button" :title="t('composer.remove')" @click="removeAttachment(att.key)">
           <X :size="12" />
         </button>
       </div>
@@ -45,10 +45,10 @@
 
     <!-- Actions -->
     <div class="composer-toolbar">
-      <button class="composer-new-chat" type="button" title="新建对话" @click="emit('new-conversation')">
+      <button class="composer-new-chat" type="button" :title="t('composer.newConversation')" @click="emit('new-conversation')">
         <Plus :size="16" />
       </button>
-      <button class="composer-attach" type="button" title="上传附件" @click="fileInput?.click()">
+      <button class="composer-attach" type="button" :title="t('composer.attach')" @click="fileInput?.click()">
         <Paperclip :size="16" />
       </button>
       <input
@@ -63,7 +63,7 @@
         v-if="isStreaming"
         class="submit-btn abort"
         @click="emit('abort')"
-        title="停止"
+        :title="t('composer.stop')"
       >
         <Square :size="14" />
       </button>
@@ -73,7 +73,7 @@
         class="submit-btn"
         :disabled="isEmpty || hasPending"
         @click="submit"
-        :title="hasPending ? '附件上传中…' : isStreaming ? '发送 (Enter) — 将加入当前执行' : '发送 (Enter)'"
+        :title="hasPending ? t('composer.uploadingTitle') : isStreaming ? t('composer.sendInjectionTitle') : t('composer.sendTitle')"
       >
         <Send :size="14" />
       </button>
@@ -83,6 +83,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Send, Square, Paperclip, FileText, X, Plus, Sparkles } from 'lucide-vue-next'
 import { EditorView, keymap } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
@@ -128,6 +129,7 @@ const emit = defineEmits<{
   'new-conversation': []
 }>()
 
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const editorWrap = ref<HTMLElement | null>(null)
 const showMention = ref(false)
@@ -144,7 +146,7 @@ const selectedConfigId = ref<string | null>(null)
 const modelOptions = computed<Array<{ id: string; label: string; auto?: boolean }>>(() => [
   // "auto" always sits first; the sentinel flows through localStorage and the
   // WS payload untouched and is resolved to a real config server-side.
-  { id: AUTO_MODEL_CONFIG_ID, label: '自动', auto: true },
+  { id: AUTO_MODEL_CONFIG_ID, label: t('composer.autoModel'), auto: true },
   ...agentStore.modelConfigs.map((c): { id: string; label: string; auto?: boolean } => ({
     id: c.config_id,
     label: c.is_system ? `${c.model_id} Default` : c.model_id,
@@ -170,7 +172,7 @@ function addFiles(files: FileList | File[]) {
         key: genKey(),
         file,
         status: 'error',
-        error: `超过 ${MAX_UPLOAD_MB}MB 限制`,
+        error: t('composer.sizeExceeded', { mb: MAX_UPLOAD_MB }),
       })
       continue
     }
@@ -204,8 +206,8 @@ async function upload(entry: PendingAttachment) {
     entry.error = e instanceof ApiError
       ? e.message
       : e instanceof DOMException && e.name === 'TimeoutError'
-        ? '上传超时'
-        : '上传失败'
+        ? t('composer.uploadTimeout')
+        : t('composer.uploadFailed')
   }
 }
 
@@ -373,7 +375,7 @@ function submit() {
   const { agentSlug: mentionedSlug, error: mentionError } =
     resolveMentionAgent(content, mentionedAgents)
   if (mentionError === 'multiple') {
-    mentionHint.value = '一条消息只能 @ 一个智能体；请只保留一个提及后发送。'
+    mentionHint.value = t('composer.mentionMultiple')
     window.setTimeout(() => { mentionHint.value = '' }, 3000)
     return
   }

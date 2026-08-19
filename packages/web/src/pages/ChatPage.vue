@@ -12,11 +12,11 @@
       </div>
       <template v-else>
         <p v-if="loadError" class="chat-empty-error">{{ loadError }}</p>
-        <p class="chat-empty-hint">开始一段新对话</p>
+        <p class="chat-empty-hint">{{ t('chatPage.newConversationHint') }}</p>
         <!-- without !agentSlug the button stayed clickable with no
         agent selected and created an agent-less conversation that the
         backend could never run. (loading already hides the button entirely.) -->
-        <button class="btn-primary" :disabled="!agentSlug" @click="startChat">开始聊天</button>
+        <button class="btn-primary" :disabled="!agentSlug" @click="startChat">{{ t('chatPage.startChat') }}</button>
       </template>
     </div>
   </div>
@@ -46,6 +46,7 @@ let pendingNew = false
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
@@ -58,6 +59,7 @@ import ChatPanel from '@/components/chat/ChatPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 const convStore = useConversationStore()
 const agentStore = useAgentStore()
 const projectStore = useProjectStore()
@@ -119,8 +121,8 @@ async function loadLatestConversation() {
     // its failure onto the now-active empty state.
     if (seq !== latestSeq) return
     loadError.value = e instanceof ApiError && e.status === 404
-      ? '项目不存在或已被删除，请从左侧重新选择项目。'
-      : '加载会话失败，请重试。'
+      ? t('chatPage.projectNotFound')
+      : t('chatPage.loadFailed')
     console.error('Failed to load latest conversation', e)
   } finally {
     if (seq === latestSeq) loading.value = false
@@ -248,8 +250,8 @@ async function startChat() {
     // only surface on the empty state it belongs to.
     if (seq !== latestSeq) return
     loadError.value = e instanceof ApiError && e.status === 404
-      ? '项目不存在或已被删除，请从左侧重新选择项目。'
-      : '创建会话失败，请重试。'
+      ? t('chatPage.projectNotFound')
+      : t('chatPage.createFailed')
     console.error('Failed to start conversation', e)
   } finally {
     if (seq === latestSeq) loading.value = false

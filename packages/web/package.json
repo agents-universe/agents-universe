@@ -29,6 +29,7 @@
     "pinia": "^2.2.2",
     "tailwind-merge": "^2.5.2",
     "vue": "^3.5.4",
+    "vue-i18n": "^11.4.8",
     "vue-router": "^4.4.3"
   },
   "devDependencies": {

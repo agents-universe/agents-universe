@@ -3,7 +3,7 @@
     <div class="context-meter-header">
       <span class="context-meter-label">
         <Gauge :size="11" />
-        上下文
+        {{ t('contextMeter.label') }}
       </span>
       <span class="context-meter-fraction">{{ tokensUsed.toLocaleString() }} / {{ tokenBudget.toLocaleString() }}</span>
     </div>
@@ -15,18 +15,20 @@
       />
     </div>
     <div v-if="convStore.contextUsage" class="context-meter-breakdown">
-      <span><FileStack :size="10" /> 静态 {{ convStore.contextUsage.staticFiles }}</span>
-      <span><Zap :size="10" /> 动态 {{ convStore.contextUsage.dynamicFiles }}</span>
-      <span><History :size="10" /> 历史 {{ convStore.contextUsage.conversationHistoryTokens }}</span>
+      <span><FileStack :size="10" /> {{ t('contextMeter.staticLabel') }} {{ convStore.contextUsage.staticFiles }}</span>
+      <span><Zap :size="10" /> {{ t('contextMeter.dynamicLabel') }} {{ convStore.contextUsage.dynamicFiles }}</span>
+      <span><History :size="10" /> {{ t('contextMeter.historyLabel') }} {{ convStore.contextUsage.conversationHistoryTokens }}</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Gauge, FileStack, Zap, History } from 'lucide-vue-next'
 import { useConversationStore } from '@/stores/conversation'
 
+const { t } = useI18n()
 const convStore = useConversationStore()
 
 const tokensUsed = computed(() => convStore.tokensUsed)

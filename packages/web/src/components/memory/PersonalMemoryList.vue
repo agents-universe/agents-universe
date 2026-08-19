@@ -1,21 +1,21 @@
 <template>
   <div class="memory-section">
     <div class="section-label">
-      个人记忆
-      <button class="icon-btn" title="添加" @click="showAdd = true">+</button>
+      {{ t('memoryPanels.personal') }}
+      <button class="icon-btn" :title="t('memoryPanels.addTitle')" @click="showAdd = true">+</button>
     </div>
 
     <div v-if="showAdd" class="memory-add-form">
-      <textarea v-model="newContent" class="input memory-textarea" placeholder="记忆内容…" rows="3" />
-      <input v-model="newTags" class="input" placeholder="标签（逗号分隔）" />
+      <textarea v-model="newContent" class="input memory-textarea" :placeholder="t('memoryPanels.memoryPlaceholder')" rows="3" />
+      <input v-model="newTags" class="input" :placeholder="t('memoryPanels.tagsPlaceholder')" />
       <div class="memory-add-actions">
-        <button class="btn-ghost" @click="showAdd = false">取消</button>
-        <button class="btn-primary" :disabled="!newContent.trim()" @click="addMemory">保存</button>
+        <button class="btn-ghost" @click="showAdd = false">{{ t('common.cancel') }}</button>
+        <button class="btn-primary" :disabled="!newContent.trim()" @click="addMemory">{{ t('common.save') }}</button>
       </div>
     </div>
 
     <div v-if="error" class="memory-error">{{ error }}</div>
-    <div v-if="!memoryStore.personalMemories.length" class="memory-empty">暂无记忆</div>
+    <div v-if="!memoryStore.personalMemories.length" class="memory-empty">{{ t('memoryPanels.noPersonal') }}</div>
     <div
       v-for="mem in memoryStore.personalMemories"
       :key="mem.memory_id"
@@ -24,7 +24,7 @@
       <p class="personal-memory-content">{{ mem.content }}</p>
       <div class="personal-memory-meta">
         <span v-for="tag in mem.tags" :key="tag" class="memory-tag">{{ tag }}</span>
-        <button class="icon-btn memory-archive" title="归档" @click="archive(mem.memory_id)">🗑</button>
+        <button class="icon-btn memory-archive" :title="t('memoryPanels.archiveTitle')" @click="archive(mem.memory_id)">🗑</button>
       </div>
     </div>
   </div>
@@ -32,10 +32,12 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useMemoryStore } from '@/stores/memory'
 import { useProjectStore } from '@/stores/project'
 import { memoriesApi } from '@/api/memories'
 
+const { t } = useI18n()
 const memoryStore = useMemoryStore()
 const projectStore = useProjectStore()
 
@@ -60,7 +62,7 @@ async function addMemory() {
     showAdd.value = false
     error.value = null
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '添加记忆失败'
+    error.value = e instanceof Error ? e.message : t('memoryPanels.addMemoryFailed')
     console.error('Failed to add memory', e)
   }
 }
@@ -73,7 +75,7 @@ async function archive(id: string) {
     memoryStore.archivePersonalMemory(id)
     error.value = null
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '归档记忆失败'
+    error.value = e instanceof Error ? e.message : t('memoryPanels.archiveFailed')
     console.error('Failed to archive memory', e)
   }
 }

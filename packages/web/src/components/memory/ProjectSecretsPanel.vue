@@ -1,32 +1,32 @@
 <template>
   <div class="project-secrets-panel">
     <div class="section-header">
-      <h4>项目密钥</h4>
+      <h4>{{ t('memoryPanels.projectSecrets') }}</h4>
       <button class="btn-sm" @click="showAddForm = !showAddForm">
-        {{ showAddForm ? '取消' : '+ 添加' }}
+        {{ showAddForm ? t('common.cancel') : t('memoryPanels.addToggle') }}
       </button>
     </div>
 
     <p class="hint">
-      密钥不会发送给大模型；保存后仅由对应工具在服务端内部读取使用。项目内有访问权限的用户也可通过对应 skill 间接使用。
+      {{ t('memoryPanels.secretHintProject') }}
     </p>
 
     <div v-if="showAddForm" class="add-form">
-      <input v-model="newKey.service_key" placeholder="service_key (如 kong:dev)" class="input" />
-      <input v-model="newKey.environment" placeholder="environment (可选)" class="input" />
-      <input v-model="newKey.display_name" placeholder="显示名称 (可选)" class="input" />
-      <input v-model="newKey.value" type="password" placeholder="密钥值" class="input" autocomplete="off" />
+      <input v-model="newKey.service_key" :placeholder="t('memoryPanels.serviceKeyPlaceholder')" class="input" />
+      <input v-model="newKey.environment" :placeholder="t('memoryPanels.envPlaceholder')" class="input" />
+      <input v-model="newKey.display_name" :placeholder="t('memoryPanels.displayNamePlaceholder')" class="input" />
+      <input v-model="newKey.value" type="password" :placeholder="t('memoryPanels.secretValuePlaceholder')" class="input" autocomplete="off" />
       <button class="btn-primary" :disabled="!newKey.service_key || !newKey.value" @click="handleAdd">
-        保存
+        {{ t('common.save') }}
       </button>
     </div>
 
-    <div v-if="store.loading" class="loading">加载中...</div>
+    <div v-if="store.loading" class="loading">{{ t('common.loading') }}</div>
 
     <div v-else-if="store.error" class="empty error-text">{{ store.error }}</div>
 
     <div v-else-if="store.secrets.length === 0" class="empty">
-      暂无项目密钥
+      {{ t('memoryPanels.noProjectSecrets') }}
     </div>
 
     <ul v-else class="secret-list">
@@ -38,7 +38,7 @@
         </div>
         <div class="secret-meta">
           <span v-if="s.display_name" class="display-name">{{ s.display_name }}</span>
-          <button class="btn-danger-sm" @click="handleDelete(s.secret_id)">删除</button>
+          <button class="btn-danger-sm" @click="handleDelete(s.secret_id)">{{ t('common.delete') }}</button>
         </div>
       </li>
     </ul>
@@ -47,9 +47,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useProjectSecretsStore } from '@/stores/projectSecrets'
 import { useProjectStore } from '@/stores/project'
 
+const { t } = useI18n()
 const store = useProjectSecretsStore()
 const projectStore = useProjectStore()
 const projectId = computed(() => projectStore.currentProject?.project_id)
@@ -77,7 +79,7 @@ async function handleAdd() {
     newKey.value = { service_key: '', environment: '', display_name: '', value: '' }
     showAddForm.value = false
   } catch (e) {
-    window.alert(e instanceof Error ? e.message : '保存失败，请重试')
+    window.alert(e instanceof Error ? e.message : t('memoryPanels.saveFailed'))
   }
 }
 
@@ -86,7 +88,7 @@ async function handleDelete(secretId: string) {
   try {
     await store.remove(projectId.value, secretId)
   } catch (e) {
-    window.alert(e instanceof Error ? e.message : '删除失败，请重试')
+    window.alert(e instanceof Error ? e.message : t('memoryPanels.deleteFailed'))
   }
 }
 </script>

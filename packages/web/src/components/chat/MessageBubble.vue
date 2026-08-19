@@ -10,7 +10,7 @@
         :title="collabBadgeTitle"
       >{{ collabAgentLabel }}</span>
       <span v-if="message.modelTier" class="model-tier-badge">{{ message.modelTier }}</span>
-      <span v-if="message.interrupted" class="interrupted-badge" title="输出被新消息中断">已中断</span>
+      <span v-if="message.interrupted" class="interrupted-badge" :title="t('messageBubble.interruptedTitle')">{{ t('messageBubble.interrupted') }}</span>
       <!-- new Date(ts).toISOString() threw RangeError on invalid/
       missing timestamps (locally recovered messages can lack one) and broke
       the whole message tree. relativeTime already guards null/invalid. -->
@@ -86,7 +86,7 @@
 
     <!-- Knowledge loaded -->
     <div v-if="message.knowledgeLoaded?.length" class="knowledge-loaded-bar">
-      <span class="knowledge-loaded-label">已加载知识：</span>
+      <span class="knowledge-loaded-label">{{ t('messageBubble.knowledgeLoaded') }}</span>
       <span v-for="slug in message.knowledgeLoaded" :key="slug" class="knowledge-slug-chip">{{ slug }}</span>
     </div>
   </div>
@@ -105,7 +105,7 @@
           class="lightbox-download"
           :href="withApi(lightboxImg.url)"
           :download="lightboxImg.alt || 'image'"
-        >下载</a>
+        >{{ t('messageBubble.download') }}</a>
         <button @click="zoomIn">+</button>
         <button @click="resetZoom">1:1</button>
         <button @click="zoomOut">−</button>
@@ -117,6 +117,7 @@
 
 <script setup lang="ts">
 import { computed, ref, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Download } from 'lucide-vue-next'
 import { renderMarkdown } from '@/utils/markdown'
 import { relativeTime } from '@/utils/time'
@@ -129,6 +130,7 @@ import MermaidBlock from './MermaidBlock.vue'
 
 const props = defineProps<{ message: Message }>()
 
+const { t } = useI18n()
 const agentStore = useAgentStore()
 
 // Badge label for an @-mention turn involving a different agent than the
@@ -138,7 +140,9 @@ const collabAgentLabel = computed(() => {
   const slug = props.message.agentSlug
   if (!slug || slug === agentStore.currentAgent?.slug) return null
   const label = agentStore.agents.find((a) => a.slug === slug)?.label ?? slug
-  return props.message.role === 'assistant' ? `🤖 ${label}` : `@给 ${label}`
+  return props.message.role === 'assistant'
+    ? `🤖 ${label}`
+    : `${t('messageBubble.sentTo')} ${label}`
 })
 
 const collabBadgeTitle = computed(() => {
@@ -146,8 +150,8 @@ const collabBadgeTitle = computed(() => {
   if (!slug) return ''
   const label = agentStore.agents.find((a) => a.slug === slug)?.label ?? slug
   return props.message.role === 'assistant'
-    ? `本条回复由 @ 提及的智能体 ${label} 生成`
-    : `本条消息 @ 给了智能体 ${label}`
+    ? t('messageBubble.answeredByTitle', { label })
+    : t('messageBubble.sentToTitle', { label })
 })
 
 function formatSize(bytes: number) {
@@ -210,9 +214,9 @@ const historicTasks = computed<AgentTask[]>(() => {
 })
 
 const roleLabel = computed(() => {
-  if (props.message.role === 'user') return '你'
-  if (props.message.role === 'assistant') return '助手'
-  return '工具'
+  if (props.message.role === 'user') return t('messageBubble.roleUser')
+  if (props.message.role === 'assistant') return t('messageBubble.roleAssistant')
+  return t('messageBubble.roleTool')
 })
 
 const renderedContent = computed(() => {

@@ -2,7 +2,7 @@
   <div class="knowledge-browser-page">
     <div class="knowledge-browser-sidebar">
       <div class="knowledge-browser-header">
-        <h2 class="page-title">知识条目</h2>
+        <h2 class="page-title">{{ t('knowledgePanel.allItems') }}</h2>
       </div>
       <div class="knowledge-tree">
         <div
@@ -22,22 +22,22 @@
 
     <div class="knowledge-browser-content">
       <div v-if="error" class="knowledge-browser-error">{{ error }}</div>
-      <div v-if="!selectedSlug" class="knowledge-browser-empty">请从左侧选择一个知识文件</div>
+      <div v-if="!selectedSlug" class="knowledge-browser-empty">{{ t('knowledgeBrowserPage.selectHint') }}</div>
       <template v-else>
         <div class="knowledge-content-header">
           <h3>{{ currentFile?.title ?? selectedSlug }}</h3>
           <div class="knowledge-content-actions">
-            <button v-if="!editing" class="btn-ghost" @click="startEdit">编辑</button>
+            <button v-if="!editing" class="btn-ghost" @click="startEdit">{{ t('knowledgeBrowserPage.edit') }}</button>
             <template v-else>
-              <button class="btn-ghost" @click="cancelEdit">取消</button>
+              <button class="btn-ghost" @click="cancelEdit">{{ t('common.cancel') }}</button>
               <button class="btn-primary" :disabled="saving" @click="saveEdit">
-                {{ saving ? '保存中…' : '保存' }}
+                {{ saving ? t('common.saving') : t('common.save') }}
               </button>
             </template>
           </div>
         </div>
 
-        <div v-if="loading" class="knowledge-content-loading">加载中…</div>
+        <div v-if="loading" class="knowledge-content-loading">{{ t('knowledgeFileViewer.loading') }}</div>
         <template v-else-if="currentFile">
           <template v-if="!editing">
             <div class="knowledge-content-body markdown-body" v-html="htmlContent" @click="handleKnowledgeLink" />
@@ -60,6 +60,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { knowledgeApi } from '@/api/knowledge'
@@ -68,6 +69,7 @@ import { useKnowledgeData } from '@/composables/useKnowledgeData'
 import MermaidBlock from '@/components/chat/MermaidBlock.vue'
 
 const route = useRoute()
+const { t } = useI18n()
 const knowledgeStore = useKnowledgeStore()
 
 const projectId = computed(() => route.params.projectId as string)
@@ -152,7 +154,7 @@ watch(selectedSlug, async (slug) => {
     editContent.value = file.content
   } catch (e) {
     if (seq === fileLoadSeq) {
-      error.value = e instanceof Error ? e.message : '加载知识文件失败'
+      error.value = e instanceof Error ? e.message : t('knowledgeBrowserPage.loadFailed')
       console.error('Failed to load file', e)
     }
   } finally {
@@ -203,7 +205,7 @@ async function saveEdit() {
     }
     knowledgeStore.triggerRefresh()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '保存知识文件失败，请重试'
+    error.value = e instanceof Error ? e.message : t('knowledgeBrowserPage.saveFailed')
     console.error('Failed to save file', e)
   } finally {
     saving.value = false

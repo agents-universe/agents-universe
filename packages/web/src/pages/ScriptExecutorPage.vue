@@ -1,7 +1,7 @@
 <template>
   <div class="script-executor-page">
     <div class="script-executor-header">
-      <h2 class="page-title">脚本执行器</h2>
+      <h2 class="page-title">{{ t('scriptExecutor.title') }}</h2>
     </div>
 
     <div class="script-executor-body">
@@ -17,11 +17,11 @@
           <span class="script-type">{{ script.script_type }}</span>
           <span class="script-status" :class="script.status">{{ script.status }}</span>
         </div>
-        <div v-if="!scripts.length" class="script-list-empty">暂无脚本</div>
+        <div v-if="!scripts.length" class="script-list-empty">{{ t('scriptExecutor.noScripts') }}</div>
       </div>
 
       <div class="script-log-panel">
-        <div v-if="!activeRunId" class="script-log-empty">请选择脚本</div>
+        <div v-if="!activeRunId" class="script-log-empty">{{ t('scriptExecutor.selectScript') }}</div>
         <div v-else class="script-log-output">
           <div
             v-for="(line, i) in logs"
@@ -37,6 +37,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/stores/project'
 import { apiFetch } from '@/api/client'
 import { apiBase } from '@/utils/basePath'
@@ -49,6 +50,7 @@ const logs = ref<LogLine[]>([])
 let ws: WebSocket | null = null
 const mounted = ref(true)
 const projectStore = useProjectStore()
+const { t } = useI18n()
 
 // Monotonic guard: a slow in-flight load must not clobber the result of a
 // newer one (rapid project switching) — same pattern as KnowledgeBrowserPage.
@@ -143,7 +145,7 @@ function connectToRun(runId: string) {
     // The run may still be executing server-side; never stamp 'completed'.
     if (script.status === 'running' || script.status === 'pending') {
       script.status = 'failed'
-      logs.value.push({ text: '连接中断，脚本最终状态未知（运行可能仍在后台执行）', level: 'error' })
+      logs.value.push({ text: t('scriptExecutor.connectionLost'), level: 'error' })
     }
   }
 }

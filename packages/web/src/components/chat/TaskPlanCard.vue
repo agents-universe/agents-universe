@@ -2,10 +2,10 @@
   <div class="task-plan-card">
     <div class="task-plan-header" @click="collapsed = !collapsed">
       <span class="task-plan-icon">{{ collapsed ? '▶' : '▼' }}</span>
-      <span class="task-plan-title">执行计划</span>
+      <span class="task-plan-title">{{ t('taskPlan.title') }}</span>
       <span class="task-plan-progress">
         {{ completedCount }}/{{ tasks.length }}
-        <span v-if="runningCount > 0" class="task-plan-running">· {{ runningCount }} 运行中</span>
+        <span v-if="runningCount > 0" class="task-plan-running">· {{ t('taskPlan.runningCount', { count: runningCount }) }}</span>
       </span>
     </div>
     <div v-if="!collapsed" class="task-plan-body">
@@ -23,7 +23,7 @@
         </div>
         <!-- 依赖提示：pending 任务显示等待哪些任务 -->
         <div v-if="task.status === 'pending' && waitingFor(task).length" class="task-plan-waiting">
-          ⏳ 等待: {{ waitingFor(task) }}
+          ⏳ {{ t('taskPlan.waitingFor') }}: {{ waitingFor(task) }}
         </div>
         <div v-if="task.status === 'failed' && task.error" class="task-plan-error">{{ task.error }}</div>
         <div v-if="task.status === 'completed' && task.summary" class="task-plan-summary">{{ task.summary }}</div>
@@ -47,10 +47,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useConversationStore } from '@/stores/conversation'
 import type { AgentTask, ToolCallRecord } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
 
+const { t } = useI18n()
 const props = defineProps<{
   tasks: AgentTask[]
   toolCalls: ToolCallRecord[]

@@ -7,14 +7,14 @@
             <span class="modal-header-icon">
               <KeyRound :size="18" />
             </span>
-            <h2 class="modal-title">密钥与集成配置</h2>
+            <h2 class="modal-title">{{ t('tokenConfig.title') }}</h2>
           </div>
-          <button class="modal-close" @click="emit('close')">
+          <button class="modal-close" @click="emit('close')" :title="t('common.close')">
             <X :size="16" />
           </button>
         </div>
 
-        <p class="modal-hint">配置 LLM 和外部服务的 API 密钥，数据加密存储</p>
+        <p class="modal-hint">{{ t('tokenConfig.hint') }}</p>
 
         <div class="token-tabs">
           <button
@@ -28,16 +28,16 @@
 
         <!-- LLM Models -->
         <div v-if="activeTab === 'llm'" class="token-section">
-          <p class="token-section-hint">你配置的模型仅自己可见，其他用户无法查看或使用</p>
+          <p class="token-section-hint">{{ t('tokenConfig.llmPrivateHint') }}</p>
           <!-- System default (read-only) -->
           <div v-if="systemDefault" class="token-service-row system-default-row">
             <div class="token-service-header">
               <Zap :size="16" class="token-service-icon" />
               <div class="token-service-info">
                 <span class="token-service-label">{{ systemDefault.model_id }} Default</span>
-                <span class="token-service-sub">系统默认模型（OpenAI 兼容）</span>
+                <span class="token-service-sub">{{ t('tokenConfig.systemDefault') }}</span>
               </div>
-              <span class="token-hint-badge system-badge">系统</span>
+              <span class="token-hint-badge system-badge">{{ t('tokenConfig.system') }}</span>
             </div>
           </div>
 
@@ -62,35 +62,35 @@
               <input
                 v-model="editForms[cfg.config_id].model_id"
                 class="input"
-                placeholder="模型 ID"
+                :placeholder="t('tokenConfig.modelIdPlaceholder')"
               />
               <div class="token-url-row">
                 <input
                   v-model="editForms[cfg.config_id].api_key"
                   class="input token-url-input"
                   type="password"
-                  :placeholder="cfg.key_hint ? '已配置，留空保持不变' : 'API Key'"
+                  :placeholder="cfg.key_hint ? t('tokenConfig.keyConfiguredKeepEmpty') : t('tokenConfig.apiKey')"
                 />
               </div>
               <div class="token-url-row">
                 <input
                   v-model="editForms[cfg.config_id].base_url"
                   class="input token-url-input"
-                  :placeholder="editForms[cfg.config_id].url_mode === 'full_url' ? '完整 API 地址' : 'Base URL（可选）'"
+                  :placeholder="editForms[cfg.config_id].url_mode === 'full_url' ? t('tokenConfig.fullUrlPlaceholder') : t('tokenConfig.baseUrlOptional')"
                 />
                 <select v-model="editForms[cfg.config_id].url_mode" class="input token-url-mode-select">
                   <option value="base_url">Base URL</option>
-                  <option value="full_url">完整地址</option>
+                  <option value="full_url">{{ t('tokenConfig.fullUrl') }}</option>
                 </select>
               </div>
               <div class="token-url-row">
                 <select v-model="editForms[cfg.config_id].complexity_tier" class="input token-tier-select">
-                  <option :value="null">未指定</option>
-                  <option value="low">轻量 (low)</option>
-                  <option value="mid">标准 (mid)</option>
-                  <option value="high">旗舰 (high)</option>
+                  <option :value="null">{{ t('tokenConfig.unspecified') }}</option>
+                  <option value="low">{{ t('tokenConfig.tier.low') }}</option>
+                  <option value="mid">{{ t('tokenConfig.tier.mid') }}</option>
+                  <option value="high">{{ t('tokenConfig.tier.high') }}</option>
                 </select>
-                <span class="token-url-hint">自动路由档位</span>
+                <span class="token-url-hint">{{ t('tokenConfig.tierHint') }}</span>
               </div>
               <div class="token-url-row">
                 <input
@@ -99,19 +99,19 @@
                   type="number"
                   min="1"
                   step="1000"
-                  placeholder="留空自动匹配"
+                  :placeholder="t('tokenConfig.contextPlaceholder')"
                 />
-                <span class="token-url-hint">上下文窗口（默认 {{ fmtWindow(cfg.default_context_window) }}）</span>
+                <span class="token-url-hint">{{ t('tokenConfig.contextHintDefault', { window: fmtWindow(cfg.default_context_window) }) }}</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveConfig(cfg.config_id)" :disabled="saving === cfg.config_id">
-                  {{ saving === cfg.config_id ? '保存中…' : '保存' }}
+                  {{ saving === cfg.config_id ? t('common.saving') : t('common.save') }}
                 </button>
                 <button class="btn-sm secondary" @click="testConfig(cfg.config_id)" :disabled="testing === cfg.config_id">
-                  {{ testing === cfg.config_id ? '测试中…' : '测试' }}
+                  {{ testing === cfg.config_id ? t('common.testing') : t('common.test') }}
                 </button>
                 <button class="btn-sm danger" @click="deleteConfig(cfg.config_id)" :disabled="saving === cfg.config_id">
-                  删除
+                  {{ t('common.delete') }}
                 </button>
                 <span v-if="messages[cfg.config_id]" class="token-inline-msg" :class="messages[cfg.config_id].ok ? 'success' : 'error'">
                   {{ messages[cfg.config_id].ok ? '✓' : '✗' }} {{ messages[cfg.config_id].text }}
@@ -122,36 +122,36 @@
 
           <!-- Empty state -->
           <div v-if="!userConfigs.length && !systemDefault" class="token-empty-state">
-            未配置任何模型，点击下方按钮添加
+            {{ t('tokenConfig.emptyModels') }}
           </div>
 
           <!-- Add model button -->
           <div class="token-add-section">
             <div v-if="showAddForm" class="token-add-form">
               <select v-model="newProvider" class="input">
-                <option value="" disabled>选择厂商类型</option>
+                <option value="" disabled>{{ t('tokenConfig.chooseProvider') }}</option>
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="azure_openai">Azure OpenAI</option>
                 <option value="google_gemini">Google Gemini</option>
               </select>
-              <input v-model="newModelId" class="input" placeholder="模型 ID（如 gpt-4o）" />
-              <input v-model="newApiKey" class="input" type="password" placeholder="API Key" />
+              <input v-model="newModelId" class="input" :placeholder="t('tokenConfig.modelIdHint')" />
+              <input v-model="newApiKey" class="input" type="password" :placeholder="t('tokenConfig.apiKey')" />
               <div class="token-url-row">
-                <input v-model="newBaseUrl" class="input token-url-input" :placeholder="newUrlMode === 'full_url' ? '完整 API 地址' : 'Base URL（可选）'" />
+                <input v-model="newBaseUrl" class="input token-url-input" :placeholder="newUrlMode === 'full_url' ? t('tokenConfig.fullUrlPlaceholder') : t('tokenConfig.baseUrlOptional')" />
                 <select v-model="newUrlMode" class="input token-url-mode-select">
                   <option value="base_url">Base URL</option>
-                  <option value="full_url">完整地址</option>
+                  <option value="full_url">{{ t('tokenConfig.fullUrl') }}</option>
                 </select>
               </div>
               <div class="token-url-row">
                 <select v-model="newTier" class="input token-tier-select" @change="newTierDirty = true">
-                  <option :value="null">未指定</option>
-                  <option value="low">轻量 (low)</option>
-                  <option value="mid">标准 (mid)</option>
-                  <option value="high">旗舰 (high)</option>
+                  <option :value="null">{{ t('tokenConfig.unspecified') }}</option>
+                  <option value="low">{{ t('tokenConfig.tier.low') }}</option>
+                  <option value="mid">{{ t('tokenConfig.tier.mid') }}</option>
+                  <option value="high">{{ t('tokenConfig.tier.high') }}</option>
                 </select>
-                <span class="token-url-hint">自动路由档位（随模型 ID 自动推断）</span>
+                <span class="token-url-hint">{{ t('tokenConfig.tierHintNew') }}</span>
               </div>
               <div class="token-url-row">
                 <input
@@ -160,33 +160,33 @@
                   type="number"
                   min="1"
                   step="1000"
-                  placeholder="留空自动匹配"
+                  :placeholder="t('tokenConfig.contextPlaceholder')"
                   @change="newContextWindowDirty = true"
                 />
-                <span class="token-url-hint">上下文窗口（随模型 ID 自动匹配）</span>
+                <span class="token-url-hint">{{ t('tokenConfig.contextHintNew') }}</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="addConfig" :disabled="!newProvider || !newModelId || saving === '__new__'">
-                  {{ saving === '__new__' ? '添加中…' : '添加' }}
+                  {{ saving === '__new__' ? t('common.adding') : t('common.add') }}
                 </button>
                 <button class="btn-sm secondary" @click="testNewConfig" :disabled="!newProvider || !newModelId || !newApiKey || testing === '__new__'">
-                  {{ testing === '__new__' ? '测试中…' : '测试' }}
+                  {{ testing === '__new__' ? t('common.testing') : t('common.test') }}
                 </button>
-                <button class="btn-sm secondary" @click="showAddForm = false">取消</button>
+                <button class="btn-sm secondary" @click="showAddForm = false">{{ t('common.cancel') }}</button>
                 <span v-if="messages['__new__']" class="token-inline-msg" :class="messages['__new__'].ok ? 'success' : 'error'">
                   {{ messages['__new__'].ok ? '✓' : '✗' }} {{ messages['__new__'].text }}
                 </span>
               </div>
             </div>
             <button v-else class="btn-sm add-model-btn" @click="showAddForm = true">
-              + 添加模型
+              {{ t('tokenConfig.addModel') }}
             </button>
           </div>
         </div>
 
         <!-- Integrations -->
         <div v-else-if="activeTab === 'integrations'" class="token-section">
-          <p class="token-section-hint">「用户密钥」跨项目；「项目密钥」由智能体保存，仅当前项目生效</p>
+          <p class="token-section-hint">{{ t('tokenConfig.integrationsHint') }}</p>
           <!-- User-configured integration rows -->
           <div
             v-for="svc in configuredIntegrations"
@@ -200,8 +200,8 @@
                 <span class="token-service-sub">{{ svc.description }}</span>
               </div>
               <span v-if="savedKeys[svc.key] || projectSecretByKey[svc.key]?.key_hint" class="token-hint-badge">{{ savedKeys[svc.key] || projectSecretByKey[svc.key]?.key_hint }}</span>
-              <span v-if="integrationScopes[svc.key] === 'user' || integrationScopes[svc.key] === 'both'" class="scope-badge user-scope">用户密钥</span>
-              <span v-if="integrationScopes[svc.key] === 'project' || integrationScopes[svc.key] === 'both'" class="scope-badge project-scope">项目密钥</span>
+              <span v-if="integrationScopes[svc.key] === 'user' || integrationScopes[svc.key] === 'both'" class="scope-badge user-scope">{{ t('tokenConfig.userScopeBadge') }}</span>
+              <span v-if="integrationScopes[svc.key] === 'project' || integrationScopes[svc.key] === 'both'" class="scope-badge project-scope">{{ t('tokenConfig.projectScopeBadge') }}</span>
             </div>
 
             <div class="token-edit-block">
@@ -210,32 +210,32 @@
                 v-model="formValues[svc.key + ':base_url']"
                 class="input"
                 type="text"
-                :placeholder="integrationDefaults[svc.key] ? `系统默认: ${integrationDefaults[svc.key]}` : 'Base URL'"
+                :placeholder="integrationDefaults[svc.key] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[svc.key] }) : 'Base URL'"
               />
               <input
                 v-model="formValues[svc.key]"
                 class="input"
                 :type="svc.sensitive === false ? 'text' : 'password'"
-                :placeholder="savedKeys[svc.key] || projectSecretByKey[svc.key] ? '已配置，留空保持不变' : svc.placeholder"
+                :placeholder="savedKeys[svc.key] || projectSecretByKey[svc.key] ? t('tokenConfig.keyConfiguredKeepEmpty') : svc.placeholder"
               />
               <div v-if="svc.extraFields" v-for="field in svc.extraFields" :key="field.key" class="token-url-row">
                 <input
                   v-model="formValues[field.key]"
                   class="input token-url-input"
                   :type="field.sensitive === false ? 'text' : 'password'"
-                  :placeholder="savedKeys[field.key] || projectSecretByKey[field.key] ? '已配置' : field.placeholder"
+                  :placeholder="savedKeys[field.key] || projectSecretByKey[field.key] ? t('tokenConfig.keyConfigured') : field.placeholder"
                 />
                 <span class="token-url-hint">{{ field.label }}</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveIntegration(svc)" :disabled="saving === svc.key">
-                  {{ saving === svc.key ? '保存中…' : '保存' }}
+                  {{ saving === svc.key ? t('common.saving') : t('common.save') }}
                 </button>
                 <button class="btn-sm secondary" @click="testService(svc.key)" :disabled="testing === svc.key">
-                  {{ testing === svc.key ? '测试中…' : '测试' }}
+                  {{ testing === svc.key ? t('common.testing') : t('common.test') }}
                 </button>
                 <button class="btn-sm danger" @click="deleteIntegration(svc.key)" :disabled="saving === svc.key">
-                  删除
+                  {{ t('common.delete') }}
                 </button>
                 <span v-if="messages[svc.key]" class="token-inline-msg" :class="messages[svc.key].ok ? 'success' : 'error'">
                   {{ messages[svc.key].ok ? '✓' : '✗' }} {{ messages[svc.key].text }}
@@ -246,14 +246,14 @@
 
           <!-- Empty state -->
           <div v-if="!configuredIntegrations.length" class="token-empty-state">
-            未配置任何外部集成，点击下方按钮添加
+            {{ t('tokenConfig.emptyIntegrations') }}
           </div>
 
           <!-- Add integration section -->
           <div class="token-add-section">
             <div v-if="showAddIntegrationForm" class="token-add-form">
               <select v-model="newIntegrationKey" class="input">
-                <option value="" disabled>选择集成类型</option>
+                <option value="" disabled>{{ t('tokenConfig.chooseIntegration') }}</option>
                 <option
                   v-for="svc in availableToAdd"
                   :key="svc.key"
@@ -265,7 +265,7 @@
                 v-model="formValues[newIntegrationKey + ':base_url']"
                 class="input"
                 type="text"
-                :placeholder="integrationDefaults[newIntegrationKey] ? `系统默认: ${integrationDefaults[newIntegrationKey]}` : 'Base URL'"
+                :placeholder="integrationDefaults[newIntegrationKey] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[newIntegrationKey] }) : 'Base URL'"
               />
               <input
                 v-if="newIntegrationKey"
@@ -287,19 +287,19 @@
               </template>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="addIntegration" :disabled="!newIntegrationKey || !formValues[newIntegrationKey] || saving === '__new_integration__'">
-                  {{ saving === '__new_integration__' ? '添加中…' : '添加' }}
+                  {{ saving === '__new_integration__' ? t('common.adding') : t('common.add') }}
                 </button>
                 <button class="btn-sm secondary" @click="testNewIntegration" :disabled="!newIntegrationKey || !formValues[newIntegrationKey] || testing === '__new_integration__'">
-                  {{ testing === '__new_integration__' ? '测试中…' : '测试' }}
+                  {{ testing === '__new_integration__' ? t('common.testing') : t('common.test') }}
                 </button>
-                <button class="btn-sm secondary" @click="cancelAddIntegration">取消</button>
+                <button class="btn-sm secondary" @click="cancelAddIntegration">{{ t('common.cancel') }}</button>
                 <span v-if="messages['__new_integration__']" class="token-inline-msg" :class="messages['__new_integration__'].ok ? 'success' : 'error'">
                   {{ messages['__new_integration__'].ok ? '✓' : '✗' }} {{ messages['__new_integration__'].text }}
                 </span>
               </div>
             </div>
             <button v-else-if="availableToAdd.length" class="btn-sm add-model-btn" @click="showAddIntegrationForm = true">
-              + 添加集成
+              {{ t('tokenConfig.addIntegration') }}
             </button>
           </div>
 
@@ -307,88 +307,84 @@
           <div class="token-section mcp-section">
             <div class="token-section-title">
               <Zap :size="14" class="token-section-icon" />
-              <span>MCP 服务器</span>
+              <span>{{ t('tokenConfig.mcpTitle') }}</span>
             </div>
-            <p class="token-section-hint">
-              全局服务器跨项目生效（本页维护）；项目服务器由项目知识库
-              <code>integrations/mcp-servers.md</code> 定义、随对话自动同步；同 slug 项目条目覆盖全局。智能体声明
-              <code>mcp</code> 或 <code>mcp:&lt;slug&gt;</code> 后自动接入
-            </p>
+            <p class="token-section-hint" v-html="t('tokenConfig.mcpHint')"></p>
 
             <!-- Global server add/edit form -->
             <div v-if="showMcpForm" class="token-edit-block mcp-edit-block">
               <div class="mcp-form-grid">
-                <input v-model="mcpForm.name" class="input" type="text" placeholder="名称（如 GitHub Copilot）" />
-                <input v-model="mcpForm.slug" class="input" type="text" placeholder="slug（唯一标识，如 github-copilot）" />
-                <input v-model="mcpForm.url" class="input" type="text" placeholder="URL（https://.../mcp）" />
+                <input v-model="mcpForm.name" class="input" type="text" :placeholder="t('tokenConfig.mcpNamePlaceholder')" />
+                <input v-model="mcpForm.slug" class="input" type="text" :placeholder="t('tokenConfig.mcpSlugPlaceholder')" />
+                <input v-model="mcpForm.url" class="input" type="text" :placeholder="t('tokenConfig.mcpUrlPlaceholder')" />
                 <select v-model="mcpForm.transport" class="input">
-                  <option value="auto">auto（streamable_http → SSE 回退）</option>
+                  <option value="auto">{{ t('tokenConfig.mcpTransportAuto') }}</option>
                   <option value="streamable_http">streamable_http</option>
                   <option value="sse">sse</option>
                 </select>
                 <select v-model="mcpForm.auth_type" class="input">
-                  <option value="none">无认证</option>
-                  <option value="bearer">Bearer Token</option>
-                  <option value="header">自定义 Header</option>
+                  <option value="none">{{ t('tokenConfig.authNone') }}</option>
+                  <option value="bearer">{{ t('tokenConfig.authBearer') }}</option>
+                  <option value="header">{{ t('tokenConfig.authHeader') }}</option>
                 </select>
                 <input
                   v-if="mcpForm.auth_type !== 'none'"
                   v-model="mcpForm.secret_ref"
                   class="input"
                   type="text"
-                  placeholder="密钥键（如 mcp:github-copilot，存于上方用户密钥）"
+                  :placeholder="t('tokenConfig.secretRefPlaceholder')"
                 />
                 <input
                   v-if="mcpForm.auth_type === 'header'"
                   v-model="mcpForm.auth_header_name"
                   class="input"
                   type="text"
-                  placeholder="Header 名（如 X-API-Key）"
+                  :placeholder="t('tokenConfig.headerNamePlaceholder')"
                 />
                 <label class="mcp-toggle">
                   <input v-model="mcpForm.enabled" type="checkbox" />
-                  启用
+                  {{ t('tokenConfig.enabled') }}
                 </label>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveMcpServer" :disabled="mcpSaving || !mcpForm.slug.trim()">
-                  {{ mcpSaving ? '保存中…' : '保存' }}
+                  {{ mcpSaving ? t('common.saving') : t('common.save') }}
                 </button>
-                <button class="btn-sm secondary" @click="cancelMcpForm">取消</button>
+                <button class="btn-sm secondary" @click="cancelMcpForm">{{ t('common.cancel') }}</button>
               </div>
             </div>
             <button v-else class="btn-sm add-model-btn" @click="openMcpForm()">
-              + 添加全局服务器
+              {{ t('tokenConfig.addGlobalServer') }}
             </button>
 
-            <div v-if="mcpLoading" class="token-empty-state">加载中...</div>
-            <div v-else-if="!mcpServers.length" class="token-empty-state">未配置 MCP 服务器</div>
+            <div v-if="mcpLoading" class="token-empty-state">{{ t('common.loading') }}</div>
+            <div v-else-if="!mcpServers.length" class="token-empty-state">{{ t('tokenConfig.emptyMcp') }}</div>
             <ul v-else class="mcp-list">
               <li v-for="s in mcpServers" :key="s.server_id || s.slug" class="mcp-item">
                 <div class="mcp-item-main">
                   <span class="mcp-name">{{ s.name }}</span>
                   <span class="mcp-slug">{{ s.slug }}</span>
                   <span class="scope-badge" :class="s.scope === 'global' ? 'user-scope' : 'project-scope'">
-                    {{ s.scope === 'global' ? '全局' : '项目' }}
+                    {{ s.scope === 'global' ? t('tokenConfig.scopeGlobal') : t('tokenConfig.scopeProject') }}
                   </span>
                 </div>
                 <div class="mcp-item-meta">
                   <span v-if="s.url" class="mcp-url" :title="s.url">{{ s.url }}</span>
-                  <span class="mcp-status" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '已启用' : '已停用' }}</span>
+                  <span class="mcp-status" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? t('tokenConfig.enabledStatus') : t('tokenConfig.disabledStatus') }}</span>
                   <span
                     v-if="s.auth_type && s.auth_type !== 'none'"
                     class="mcp-auth"
                     :class="s.has_secret ? 'ok' : 'warn'"
-                    :title="s.secret_ref ? `密钥键: ${s.secret_ref}` : ''"
+                    :title="s.secret_ref ? t('tokenConfig.secretKeyTitle', { key: s.secret_ref }) : ''"
                   >
-                    {{ s.has_secret ? '密钥已配置' : '密钥未配置' }}
+                    {{ s.has_secret ? t('tokenConfig.secretConfigured') : t('tokenConfig.secretMissing') }}
                   </span>
                   <template v-if="s.scope === 'global'">
-                    <button class="btn-sm" @click="openMcpForm(s)">编辑</button>
+                    <button class="btn-sm" @click="openMcpForm(s)">{{ t('tokenConfig.edit') }}</button>
                     <button class="btn-sm secondary" @click="testMcpServer(s)" :disabled="mcpTesting === s.server_id">
-                      {{ mcpTesting === s.server_id ? '测试中…' : '测试' }}
+                      {{ mcpTesting === s.server_id ? t('common.testing') : t('common.test') }}
                     </button>
-                    <button class="btn-sm secondary" @click="deleteMcpServer(s)">删除</button>
+                    <button class="btn-sm secondary" @click="deleteMcpServer(s)">{{ t('common.delete') }}</button>
                   </template>
                 </div>
               </li>
@@ -405,6 +401,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { KeyRound, X, Cpu, Zap, Cloud, GitBranch, BookOpen, Globe, Sparkles } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
 import { modelConfigsApi } from '@/api/modelConfigs'
@@ -416,13 +413,14 @@ import { inferContextWindow } from '@/utils/contextWindow'
 import type { ProjectSecret } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const projectStore = useProjectStore()
 
 const activeTab = ref<'llm' | 'integrations'>('llm')
 const tabs = [
-  { id: 'llm' as const, label: 'LLM 模型' },
-  { id: 'integrations' as const, label: '外部集成' },
+  { id: 'llm' as const, label: t('tokenConfig.tabLlm') },
+  { id: 'integrations' as const, label: t('tokenConfig.tabIntegrations') },
 ]
 
 // ── LLM Model Configs ──────────────────────────────────────────────
@@ -471,9 +469,9 @@ function providerLabel(provider: string) {
 
 function tierLabel(tier: 'low' | 'mid' | 'high'): string {
   switch (tier) {
-    case 'low': return '轻量'
-    case 'mid': return '标准'
-    case 'high': return '旗舰'
+    case 'low': return t('tokenConfig.tierBadge.low')
+    case 'mid': return t('tokenConfig.tierBadge.mid')
+    case 'high': return t('tokenConfig.tierBadge.high')
   }
 }
 
@@ -505,9 +503,9 @@ async function saveConfig(configId: string) {
     body.context_window = form.context_window && Number.isFinite(windowNum) ? windowNum : null
     await agentStore.updateModelConfig(configId, body)
     form.api_key = ''
-    messages[configId] = { ok: true, text: '已保存' }
+    messages[configId] = { ok: true, text: t('common.saved') }
   } catch (e) {
-    messages[configId] = { ok: false, text: e instanceof Error ? e.message : '保存失败' }
+    messages[configId] = { ok: false, text: e instanceof Error ? e.message : t('common.saveFailed') }
   } finally {
     saving.value = null
   }
@@ -519,10 +517,10 @@ async function testConfig(configId: string) {
   try {
     const res = await modelConfigsApi.test(configId)
     messages[configId] = res.ok
-      ? { ok: true, text: '连接成功' }
-      : { ok: false, text: res.error || '连接失败' }
+      ? { ok: true, text: t('common.connectionOk') }
+      : { ok: false, text: res.error || t('common.connectionFailed') }
   } catch (e) {
-    messages[configId] = { ok: false, text: e instanceof Error ? e.message : '测试失败' }
+    messages[configId] = { ok: false, text: e instanceof Error ? e.message : t('common.testFailed') }
   } finally {
     testing.value = null
   }
@@ -535,7 +533,7 @@ async function deleteConfig(configId: string) {
     await agentStore.removeModelConfig(configId)
     delete editForms[configId]
   } catch (e) {
-    messages[configId] = { ok: false, text: e instanceof Error ? e.message : '删除失败' }
+    messages[configId] = { ok: false, text: e instanceof Error ? e.message : t('common.deleteFailed') }
   } finally {
     saving.value = null
   }
@@ -598,9 +596,9 @@ async function addConfig() {
     newContextWindow.value = ''
     newContextWindowDirty.value = false
     showAddForm.value = false
-    messages['__new__'] = { ok: true, text: '已添加' }
+    messages['__new__'] = { ok: true, text: t('common.added') }
   } catch (e) {
-    messages['__new__'] = { ok: false, text: e instanceof Error ? e.message : '添加失败' }
+    messages['__new__'] = { ok: false, text: e instanceof Error ? e.message : t('common.addFailed') }
   } finally {
     saving.value = null
   }
@@ -618,10 +616,10 @@ async function testNewConfig() {
       url_mode: newUrlMode.value,
     })
     messages['__new__'] = res.ok
-      ? { ok: true, text: '连接成功' }
-      : { ok: false, text: res.error || '连接失败' }
+      ? { ok: true, text: t('common.connectionOk') }
+      : { ok: false, text: res.error || t('common.connectionFailed') }
   } catch (e) {
-    messages['__new__'] = { ok: false, text: e instanceof Error ? e.message : '测试失败' }
+    messages['__new__'] = { ok: false, text: e instanceof Error ? e.message : t('common.testFailed') }
   } finally {
     testing.value = null
   }
@@ -635,7 +633,7 @@ interface IntegrationService { key: string; label: string; description: string; 
 const integrationServices: IntegrationService[] = [
   { key: 'git', label: 'GitHub / Git', description: 'Personal Access Token', icon: GitBranch, placeholder: 'ghp_...' },
   { key: 'jira', label: 'Jira', description: 'Atlassian Token', icon: BookOpen, placeholder: 'API Token', extraFields: [{ key: 'jira:email', label: 'Email', placeholder: 'you@example.com', sensitive: false }] },
-  { key: 'confluence', label: 'Confluence', description: '与 Jira 共用 Atlassian Token', icon: Globe, placeholder: 'API Token' },
+  { key: 'confluence', label: 'Confluence', description: t('tokenConfig.confluenceDesc'), icon: Globe, placeholder: 'API Token' },
 ]
 
 /** System-configured default base URLs from GET /api/integrations/defaults */
@@ -727,12 +725,12 @@ async function saveMcpServer() {
       await apiFetch('/api/mcp/servers', { method: 'POST', body: JSON.stringify(body) })
     }
     mcpMessage.ok = true
-    mcpMessage.text = '已保存'
+    mcpMessage.text = t('common.saved')
     showMcpForm.value = false
     await loadMcpServers()
   } catch (e) {
     mcpMessage.ok = false
-    mcpMessage.text = e instanceof Error ? e.message : '保存失败'
+    mcpMessage.text = e instanceof Error ? e.message : t('common.saveFailed')
   } finally {
     mcpSaving.value = false
   }
@@ -748,27 +746,27 @@ async function testMcpServer(server: McpServerInfo) {
       { method: 'POST' }
     )
     mcpMessage.ok = res.ok
-    mcpMessage.text = res.ok ? `连接成功，发现 ${res.tools ?? 0} 个工具` : (res.error || '连接失败')
+    mcpMessage.text = res.ok ? t('tokenConfig.connectionOkTools', { count: res.tools ?? 0 }) : (res.error || t('common.connectionFailed'))
   } catch (e) {
     mcpMessage.ok = false
-    mcpMessage.text = e instanceof Error ? e.message : '测试失败'
+    mcpMessage.text = e instanceof Error ? e.message : t('common.testFailed')
   } finally {
     mcpTesting.value = null
   }
 }
 
 async function deleteMcpServer(server: McpServerInfo) {
-  if (!window.confirm(`删除 MCP 服务器「${server.name}」？`)) return
+  if (!window.confirm(t('tokenConfig.deleteConfirm', { name: server.name }))) return
   mcpMessage.ok = true
   mcpMessage.text = ''
   try {
     await apiFetch(`/api/mcp/servers/${server.server_id}`, { method: 'DELETE' })
     mcpMessage.ok = true
-    mcpMessage.text = '已删除'
+    mcpMessage.text = t('common.deleted')
     await loadMcpServers()
   } catch (e) {
     mcpMessage.ok = false
-    mcpMessage.text = e instanceof Error ? e.message : '删除失败'
+    mcpMessage.text = e instanceof Error ? e.message : t('common.deleteFailed')
   }
 }
 
@@ -939,9 +937,9 @@ async function saveIntegration(svc: IntegrationService) {
         formValues[field.key] = ''
       }
     }
-    messages[svc.key] = { ok: true, text: '已保存' }
+    messages[svc.key] = { ok: true, text: t('common.saved') }
   } catch (e) {
-    messages[svc.key] = { ok: false, text: e instanceof Error ? e.message : '保存失败' }
+    messages[svc.key] = { ok: false, text: e instanceof Error ? e.message : t('common.saveFailed') }
   } finally {
     saving.value = null
   }
@@ -957,7 +955,7 @@ async function testService(key: string) {
       await saveIntegration(svc)
       if (messages[svc.key] && !messages[svc.key].ok) return
     } else if (scope !== 'project' && !savedKeys[key]) {
-      messages[key] = { ok: false, text: '请先填写并保存 Token' }
+      messages[key] = { ok: false, text: t('tokenConfig.pleaseFillToken') }
       return
     }
     const projectId = projectStore.currentProject?.project_id
@@ -972,10 +970,10 @@ async function testService(key: string) {
       res = await apiFetch<{ ok: boolean; error?: string }>(`/api/tokens/${key}/test`, { method: 'POST' })
     }
     messages[key] = res.ok
-      ? { ok: true, text: '连接成功' }
-      : { ok: false, text: res.error || '连接失败' }
+      ? { ok: true, text: t('common.connectionOk') }
+      : { ok: false, text: res.error || t('common.connectionFailed') }
   } catch (e) {
-    messages[key] = { ok: false, text: e instanceof Error ? e.message : '测试失败' }
+    messages[key] = { ok: false, text: e instanceof Error ? e.message : t('common.testFailed') }
   } finally {
     testing.value = null
   }
@@ -1029,9 +1027,9 @@ async function deleteIntegration(key: string) {
     configuredIntegrationKeys.value = new Set(
       [...configuredIntegrationKeys.value].filter(k => k !== key)
     )
-    messages[key] = { ok: true, text: '已删除' }
+    messages[key] = { ok: true, text: t('common.deleted') }
   } catch (e) {
-    messages[key] = { ok: false, text: e instanceof Error ? e.message : '删除失败' }
+    messages[key] = { ok: false, text: e instanceof Error ? e.message : t('common.deleteFailed') }
   } finally {
     saving.value = null
   }
@@ -1097,9 +1095,9 @@ async function addIntegration() {
     }
     newIntegrationKey.value = ''
     showAddIntegrationForm.value = false
-    messages['__new_integration__'] = { ok: true, text: '已添加' }
+    messages['__new_integration__'] = { ok: true, text: t('common.added') }
   } catch (e) {
-    messages['__new_integration__'] = { ok: false, text: e instanceof Error ? e.message : '添加失败' }
+    messages['__new_integration__'] = { ok: false, text: e instanceof Error ? e.message : t('common.addFailed') }
   } finally {
     saving.value = null
   }
@@ -1116,11 +1114,11 @@ async function testNewIntegration() {
     if (messages['__new_integration__']?.ok) {
       const res = await apiFetch<{ ok: boolean; error?: string }>(`/api/tokens/${key}/test`, { method: 'POST' })
       messages['__new_integration__'] = res.ok
-        ? { ok: true, text: '连接成功' }
-        : { ok: false, text: res.error || '连接失败' }
+        ? { ok: true, text: t('common.connectionOk') }
+        : { ok: false, text: res.error || t('common.connectionFailed') }
     }
   } catch (e) {
-    messages['__new_integration__'] = { ok: false, text: e instanceof Error ? e.message : '测试失败' }
+    messages['__new_integration__'] = { ok: false, text: e instanceof Error ? e.message : t('common.testFailed') }
   } finally {
     testing.value = null
   }

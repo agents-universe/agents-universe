@@ -9,11 +9,13 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
 
 const props = defineProps<{ hideStepInfo?: boolean }>()
 
+const { t } = useI18n()
 const convStore = useConversationStore()
 const agentStore = useAgentStore()
 const now = ref(Date.now())
@@ -49,31 +51,31 @@ const collabLabel = computed(() => {
 const statusText = computed(() => {
   if (hasPendingPrompt.value) {
     const prompt = convStore.pendingPrompts[0]
-    return `等待输入：${prompt.title || prompt.question}`
+    return t('streamingStatus.waitingInput', { title: prompt.title || prompt.question })
   }
   if (collabLabel.value) {
     if (runningTools.value.length === 0) {
       return convStore.streamingContent
-        ? `@${collabLabel.value} 正在输出…`
-        : `正在调用 @${collabLabel.value}…`
+        ? t('streamingStatus.collabOutput', { name: collabLabel.value })
+        : t('streamingStatus.collabCalling', { name: collabLabel.value })
     }
     if (runningTools.value.length === 1) {
-      return `@${collabLabel.value} 正在调用 ${runningTools.value[0].tool}…`
+      return t('streamingStatus.collabCallingTool', { name: collabLabel.value, tool: runningTools.value[0].tool })
     }
-    return `@${collabLabel.value} 正在调用 ${runningTools.value.length} 个工具…`
+    return t('streamingStatus.collabCallingTools', { name: collabLabel.value, count: runningTools.value.length })
   }
   if (runningTools.value.length === 0) {
-    return convStore.streamingContent ? '正在输出…' : '正在思考…'
+    return convStore.streamingContent ? t('streamingStatus.output') : t('streamingStatus.thinking')
   }
   if (runningTools.value.length === 1) {
-    return `正在调用 ${runningTools.value[0].tool}…`
+    return t('streamingStatus.callingTool', { tool: runningTools.value[0].tool })
   }
-  return `正在调用 ${runningTools.value.length} 个工具…`
+  return t('streamingStatus.callingTools', { count: runningTools.value.length })
 })
 
 const stepInfo = computed(() => {
   if (runningTasks.value.length > 1) {
-    return `${runningTasks.value.length} 个任务并行运行中`
+    return t('streamingStatus.tasksParallel', { count: runningTasks.value.length })
   }
   const tool = runningTools.value[0]
   if (tool?.currentStep) {
@@ -85,7 +87,7 @@ const stepInfo = computed(() => {
     const progress = task.progressTotal
       ? ` (${task.progressCompleted ?? 0}/${task.progressTotal})`
       : ''
-    const next = task.nextStep ? ` -> 下一步: ${task.nextStep}` : ''
+    const next = task.nextStep ? t('streamingStatus.nextStep', { step: task.nextStep }) : ''
     return `${task.currentStep}${progress}${next}`
   }
   return null

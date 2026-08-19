@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { relativeTime } from './time'
+import { i18n } from '@/i18n'
 
 describe('relativeTime', () => {
+  beforeEach(() => {
+    i18n.global.locale.value = 'zh-CN'
+  })
+
   it('returns empty string for null / undefined / empty', () => {
     expect(relativeTime(null)).toBe('')
     expect(relativeTime(undefined)).toBe('')
@@ -27,5 +32,11 @@ describe('relativeTime', () => {
 
   it('formats days ago', () => {
     expect(relativeTime(new Date(Date.now() - 2 * 86_400_000).toISOString())).toBe('2天前')
+  })
+
+  it('formats relative times in en-US when locale switches', () => {
+    i18n.global.locale.value = 'en-US'
+    expect(relativeTime(new Date(Date.now() - 30_000).toISOString())).toBe('just now')
+    expect(relativeTime(new Date(Date.now() - 5 * 60_000).toISOString())).toBe('5m ago')
   })
 })

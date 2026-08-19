@@ -17,18 +17,21 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const emit = defineEmits<{ select: [slug: string]; close: [] }>()
 
+const { t } = useI18n()
+
 const COMMANDS = [
-  { slug: 'plan', description: '制定任务计划' },
-  { slug: 'review', description: '代码审查' },
-  { slug: 'summarize', description: '总结对话' },
-  { slug: 'test', description: '生成测试' },
-  { slug: 'refactor', description: '重构代码' },
-  { slug: 'explain', description: '解释代码' },
-  { slug: 'fix', description: '修复问题' },
-  { slug: 'generate', description: '生成代码' },
+  { slug: 'plan', description: t('slashCommands.plan') },
+  { slug: 'review', description: t('slashCommands.review') },
+  { slug: 'summarize', description: t('slashCommands.summarize') },
+  { slug: 'test', description: t('slashCommands.test') },
+  { slug: 'refactor', description: t('slashCommands.refactor') },
+  { slug: 'explain', description: t('slashCommands.explain') },
+  { slug: 'fix', description: t('slashCommands.fix') },
+  { slug: 'generate', description: t('slashCommands.generate') },
 ]
 
 const cursor = ref(0)

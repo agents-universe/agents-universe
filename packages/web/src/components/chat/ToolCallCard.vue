@@ -13,11 +13,11 @@
     </div>
     <div v-if="expanded" class="tool-call-body">
       <div class="tool-call-section">
-        <span class="tool-call-label">输入</span>
+        <span class="tool-call-label">{{ t('toolCall.input') }}</span>
         <pre class="tool-call-json">{{ JSON.stringify(call.input, null, 2) }}</pre>
       </div>
       <div v-if="call.output" class="tool-call-section">
-        <span class="tool-call-label">输出</span>
+        <span class="tool-call-label">{{ t('toolCall.output') }}</span>
         <pre class="tool-call-json">{{ JSON.stringify(call.output, null, 2) }}</pre>
       </div>
     </div>
@@ -26,9 +26,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ChevronDown, ChevronUp } from 'lucide-vue-next'
 import type { ToolCallRecord } from '@/types'
 
+const { t } = useI18n()
 const props = defineProps<{ call: ToolCallRecord; defaultExpanded?: boolean }>()
 const expanded = ref(props.defaultExpanded ?? false)
 

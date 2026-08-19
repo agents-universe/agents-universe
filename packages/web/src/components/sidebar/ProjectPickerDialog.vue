@@ -6,14 +6,14 @@
         <div class="modal-header">
           <div class="modal-header-left">
             <span class="modal-header-icon"><FolderHeart :size="18" /></span>
-            <h3 class="modal-title">管理收藏项目</h3>
+            <h3 class="modal-title">{{ t('projectPicker.title') }}</h3>
           </div>
-          <button class="modal-close" @click="emit('close')" title="关闭">
+          <button class="modal-close" @click="emit('close')" :title="t('common.close')">
             <X :size="16" />
           </button>
         </div>
 
-        <p class="modal-hint">选择要在侧边栏显示的项目，或创建新项目</p>
+        <p class="modal-hint">{{ t('projectPicker.hint') }}</p>
 
         <!-- Search -->
         <div class="picker-search-wrapper">
@@ -21,7 +21,7 @@
           <input
             v-model="search"
             class="picker-search"
-            placeholder="搜索项目…"
+            :placeholder="t('projectPicker.searchPlaceholder')"
             autofocus
             @keydown.esc="emit('close')"
           />
@@ -34,7 +34,7 @@
             :key="project.project_id"
             class="picker-item"
             :class="{ favorited: favoritesStore.isProjectFavorited(project.project_id) }"
-            title="点击收藏/取消收藏"
+            :title="t('sidebar.common.toggleFavorite')"
             @click="favoritesStore.toggleProjectFavorite(project.project_id)"
           >
             <Folder :size="14" class="picker-item-icon" />
@@ -43,7 +43,7 @@
             <button
               class="picker-star"
               :class="{ favorited: favoritesStore.isProjectFavorited(project.project_id) }"
-              title="收藏到侧边栏"
+              :title="t('sidebar.common.favoriteToSidebar')"
               @click.stop="favoritesStore.toggleProjectFavorite(project.project_id)"
             >
               <Star :size="14" />
@@ -51,7 +51,7 @@
             <button
               class="picker-settings-btn"
               :class="{ 'picker-settings-btn--hidden': !project.can_manage }"
-              title="项目设置（访问权限与成员）"
+              :title="t('projectPicker.projectSettingsTitle')"
               @click.stop="project.can_manage && (settingsProject = project)"
             >
               <Settings :size="14" />
@@ -59,21 +59,21 @@
             <button
               class="picker-delete-btn"
               :class="{ 'picker-delete-btn--hidden': !project.can_delete }"
-              title="永久删除项目"
+              :title="t('projectPicker.deleteTitle')"
               @click.stop="project.can_delete && openDeleteDialog(project)"
             >
               <Trash2 :size="14" />
             </button>
           </div>
           <div v-if="filteredProjects.length === 0" class="picker-empty">
-            没有匹配的项目
+            {{ t('projectPicker.noMatches') }}
           </div>
         </div>
 
         <!-- Create project inline -->
         <div v-if="!showCreateForm" class="picker-footer">
           <button class="btn-ghost picker-create-btn" @click="showCreateForm = true">
-            <Plus :size="14" /> 新建项目
+            <Plus :size="14" /> {{ t('projectPicker.newProject') }}
           </button>
         </div>
         <div v-else class="picker-create-form">
@@ -81,7 +81,7 @@
             <input
               v-model="newName"
               class="picker-search"
-              placeholder="输入项目名称…"
+              :placeholder="t('projectPicker.namePlaceholder')"
               @keydown.enter="createProject"
               @keydown.esc="showCreateForm = false"
               ref="createInput"
@@ -91,7 +91,7 @@
               :disabled="!newName.trim() || creating"
               @click="createProject"
             >
-              {{ creating ? '…' : '创建' }}
+              {{ creating ? '…' : t('common.create') }}
             </button>
           </div>
           <div v-if="categories.length" class="picker-create-category">
@@ -124,6 +124,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Folder, FolderHeart, Star, Search, Plus, X, Trash2, Settings } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
@@ -138,6 +139,7 @@ import CategoryPicker from './CategoryPicker.vue'
 
 const emit = defineEmits<{ close: [] }>()
 
+const { t } = useI18n()
 const projectStore = useProjectStore()
 const favoritesStore = useFavoritesStore()
 const agentStore = useAgentStore()
@@ -224,7 +226,7 @@ async function createProject() {
     router.push(`/projects/${project.project_id}/chat${query}`)
     emit('close')
   } catch (e) {
-    createError.value = e instanceof Error ? e.message : '创建失败'
+    createError.value = e instanceof Error ? e.message : t('common.createFailed')
   } finally {
     creating.value = false
   }

@@ -5,78 +5,78 @@
         <div class="modal-header">
           <div class="modal-header-left">
             <span class="modal-header-icon"><Settings :size="18" /></span>
-            <h3 class="modal-title">项目设置</h3>
+            <h3 class="modal-title">{{ t('projectSettingsDialog.title') }}</h3>
           </div>
-          <button class="modal-close" @click="emit('close')" title="关闭">
+          <button class="modal-close" @click="emit('close')" :title="t('common.close')">
             <X :size="16" />
           </button>
         </div>
 
         <div class="settings-section">
-          <h4 class="settings-section-title">访问权限</h4>
-          <p class="hint">公开项目对所有登录用户可见可访问；私有项目仅创建人和名单内成员可见。</p>
+          <h4 class="settings-section-title">{{ t('projectSettingsDialog.accessTitle') }}</h4>
+          <p class="hint">{{ t('projectSettingsDialog.accessHint') }}</p>
           <div v-if="project.is_owner" class="visibility-toggle">
             <button
               :class="['toggle-btn', { active: localVisibility === 'public' }]"
               :disabled="saving"
               @click="handleVisibility('public')"
-            >公开</button>
+            >{{ t('projectSettingsDialog.public') }}</button>
             <button
               :class="['toggle-btn', { active: localVisibility === 'private' }]"
               :disabled="saving"
               @click="handleVisibility('private')"
-            >私有</button>
+            >{{ t('projectSettingsDialog.private') }}</button>
           </div>
-          <p v-else class="hint">仅项目创建者可切换可见性。</p>
+          <p v-else class="hint">{{ t('projectSettingsDialog.ownerOnlyHint') }}</p>
           <p v-if="visibilityError" class="error-text">{{ visibilityError }}</p>
         </div>
 
         <div v-if="project.can_manage" class="settings-section">
           <div class="section-header">
-            <h4 class="settings-section-title">访问名单</h4>
+            <h4 class="settings-section-title">{{ t('projectSettingsDialog.membersTitle') }}</h4>
             <button class="btn-sm" @click="showAddForm = !showAddForm">
-              {{ showAddForm ? '取消' : '+ 添加成员' }}
+              {{ showAddForm ? t('common.cancel') : t('projectSettingsDialog.addMember') }}
             </button>
           </div>
           <p class="hint">
-            私有项目仅创建人和名单内成员可以访问。成员可以添加/移除其他成员。user_id 为对方在 SSO 中的用户标识（直接输入，无法按名字搜索）。
+            {{ t('projectSettingsDialog.membersHint') }}
           </p>
 
           <div v-if="showAddForm" class="add-form">
             <input
               v-model="newUserId"
-              placeholder="输入对方 user_id"
+              :placeholder="t('projectSettingsDialog.userIdPlaceholder')"
               class="input"
               autocomplete="off"
               @keydown.enter="handleAdd"
             />
             <button class="btn-primary" :disabled="!newUserId.trim() || adding" @click="handleAdd">
-              {{ adding ? '添加中...' : '添加' }}
+              {{ adding ? t('common.adding') : t('common.add') }}
             </button>
           </div>
           <p v-if="memberError" class="error-text">{{ memberError }}</p>
 
-          <div v-if="membersStore.loading" class="loading">加载中...</div>
+          <div v-if="membersStore.loading" class="loading">{{ t('common.loading') }}</div>
           <p v-else-if="membersStore.error" class="error-text">{{ membersStore.error }}</p>
           <ul v-else class="member-list">
             <li v-if="project.created_by" class="member-item">
               <span class="member-user">{{ project.created_by }}</span>
-              <span class="owner-badge">创建者</span>
+              <span class="owner-badge">{{ t('projectSettingsDialog.createdBy') }}</span>
             </li>
             <li v-for="m in membersStore.members" :key="m.user_id" class="member-item">
               <span class="member-user">{{ m.user_id }}</span>
-              <span class="member-meta">由 {{ m.added_by }} 添加</span>
+              <span class="member-meta">{{ t('projectSettingsDialog.addedBy', { user: m.added_by }) }}</span>
               <button
                 class="btn-danger-sm"
                 :disabled="removing === m.user_id"
                 @click="handleRemove(m.user_id)"
-              >移除</button>
+              >{{ t('projectSettingsDialog.remove') }}</button>
             </li>
           </ul>
         </div>
 
         <div class="modal-footer">
-          <button class="btn-ghost" @click="emit('close')">关闭</button>
+          <button class="btn-ghost" @click="emit('close')">{{ t('common.close') }}</button>
         </div>
       </div>
     </div>
@@ -85,6 +85,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Settings, X } from 'lucide-vue-next'
 import type { Project } from '@/types'
 import { projectsApi } from '@/api/projects'
@@ -95,6 +96,7 @@ import { useProjectMembersStore } from '@/stores/projectMembers'
 const props = defineProps<{ project: Project }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
 
+const { t } = useI18n()
 const projectStore = useProjectStore()
 const membersStore = useProjectMembersStore()
 
@@ -114,13 +116,13 @@ watch(() => props.project.project_id, (id) => {
 }, { immediate: true })
 
 const CODE_MAP: Record<string, string> = {
-  MEMBER_EXISTS: '该用户已在访问名单中。',
-  MEMBER_IS_OWNER: '创建人已拥有访问权限，无需操作。',
-  MEMBER_NOT_FOUND: '该用户不在访问名单中。',
-  INVALID_USER_ID: 'user_id 不能为空。',
-  PROJECT_NOT_MEMBER: '仅项目创建者或成员可以管理访问名单。',
-  PROJECT_PRIVATE: '该项目为私有项目，您没有访问权限。',
-  PROJECT_NOT_OWNER: '只有项目创建者可以修改项目可见性。',
+  MEMBER_EXISTS: t('projectSettingsDialog.codeMemberExists'),
+  MEMBER_IS_OWNER: t('projectSettingsDialog.codeMemberIsOwner'),
+  MEMBER_NOT_FOUND: t('projectSettingsDialog.codeMemberNotFound'),
+  INVALID_USER_ID: t('projectSettingsDialog.codeInvalidUserId'),
+  PROJECT_NOT_MEMBER: t('projectSettingsDialog.codeNotMember'),
+  PROJECT_PRIVATE: t('projectSettingsDialog.codePrivateNoAccess'),
+  PROJECT_NOT_OWNER: t('projectSettingsDialog.codeNotOwner'),
 }
 
 function messageOf(e: unknown, fallback: string): string {
@@ -138,7 +140,7 @@ async function handleVisibility(v: 'public' | 'private') {
     projectStore.patchProject(updated)
     emit('changed')
   } catch (e) {
-    visibilityError.value = messageOf(e, '切换可见性失败，请重试。')
+    visibilityError.value = messageOf(e, t('projectSettingsDialog.visibilityFailed'))
   } finally {
     saving.value = false
   }
@@ -154,7 +156,7 @@ async function handleAdd() {
     newUserId.value = ''
     showAddForm.value = false
   } catch (e) {
-    memberError.value = messageOf(e, '添加失败，请重试。')
+    memberError.value = messageOf(e, t('projectSettingsDialog.addFailed'))
   } finally {
     adding.value = false
   }
@@ -167,7 +169,7 @@ async function handleRemove(userId: string) {
   try {
     await membersStore.remove(props.project.project_id, userId)
   } catch (e) {
-    memberError.value = messageOf(e, '移除失败，请重试。')
+    memberError.value = messageOf(e, t('projectSettingsDialog.removeFailed'))
   } finally {
     removing.value = ''
   }

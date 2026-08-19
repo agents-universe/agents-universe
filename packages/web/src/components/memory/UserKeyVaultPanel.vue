@@ -1,44 +1,44 @@
 <template>
   <div class="user-key-vault-panel">
     <div class="section-header">
-      <h4>用户密钥</h4>
+      <h4>{{ t('memoryPanels.userKeys') }}</h4>
       <button class="btn-sm" @click="showAddForm = !showAddForm">
-        {{ showAddForm ? '取消' : '+ 添加' }}
+        {{ showAddForm ? t('common.cancel') : t('memoryPanels.addToggle') }}
       </button>
     </div>
 
     <p class="hint">
-      密钥跨项目跟随用户，不会发送给大模型；保存后仅由对应工具在服务端内部读取使用。
+      {{ t('memoryPanels.secretHintUser') }}
     </p>
 
     <div v-if="showAddForm" class="add-form">
-      <input v-model="newKey.service_key" placeholder="service_key (如 myapi:token)" class="input" />
-      <input v-model="newKey.display_name" placeholder="显示名称 (可选)" class="input" />
-      <input v-model="newKey.base_url" placeholder="base_url (可选)" class="input" />
-      <input v-model="newKey.value" type="password" placeholder="密钥值" class="input" autocomplete="off" />
+      <input v-model="newKey.service_key" :placeholder="t('memoryPanels.userServiceKeyPlaceholder')" class="input" />
+      <input v-model="newKey.display_name" :placeholder="t('memoryPanels.displayNamePlaceholder')" class="input" />
+      <input v-model="newKey.base_url" :placeholder="t('memoryPanels.baseUrlPlaceholder')" class="input" />
+      <input v-model="newKey.value" type="password" :placeholder="t('memoryPanels.secretValuePlaceholder')" class="input" autocomplete="off" />
       <button class="btn-primary" :disabled="!newKey.service_key || !newKey.value" @click="handleAdd">
-        保存
+        {{ t('common.save') }}
       </button>
     </div>
 
-    <div v-if="store.loading" class="loading">加载中...</div>
+    <div v-if="store.loading" class="loading">{{ t('common.loading') }}</div>
 
     <div v-else-if="store.error" class="empty error-text">{{ store.error }}</div>
 
     <div v-else-if="store.tokens.length === 0" class="empty">
-      暂无用户密钥
+      {{ t('memoryPanels.noUserKeys') }}
     </div>
 
     <ul v-else class="token-list">
-      <li v-for="t in store.tokens" :key="t.service_key" class="token-item">
+      <li v-for="token in store.tokens" :key="token.service_key" class="token-item">
         <div class="token-info">
-          <span class="service-key">{{ t.service_key }}</span>
-          <span v-if="t.key_hint" class="key-hint">{{ t.key_hint }}</span>
+          <span class="service-key">{{ token.service_key }}</span>
+          <span v-if="token.key_hint" class="key-hint">{{ token.key_hint }}</span>
         </div>
         <div class="token-meta">
-          <span v-if="t.display_name" class="display-name">{{ t.display_name }}</span>
-          <span v-if="t.base_url" class="base-url">{{ t.base_url }}</span>
-          <button class="btn-danger-sm" @click="handleDelete(t.service_key)">删除</button>
+          <span v-if="token.display_name" class="display-name">{{ token.display_name }}</span>
+          <span v-if="token.base_url" class="base-url">{{ token.base_url }}</span>
+          <button class="btn-danger-sm" @click="handleDelete(token.service_key)">{{ t('common.delete') }}</button>
         </div>
       </li>
     </ul>
@@ -47,8 +47,10 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useUserTokensStore } from '@/stores/userTokens'
 
+const { t } = useI18n()
 const store = useUserTokensStore()
 
 const showAddForm = ref(false)
@@ -69,7 +71,7 @@ async function handleAdd() {
     newKey.value = { service_key: '', display_name: '', base_url: '', value: '' }
     showAddForm.value = false
   } catch (e) {
-    window.alert(e instanceof Error ? e.message : '保存失败，请重试')
+    window.alert(e instanceof Error ? e.message : t('memoryPanels.saveFailed'))
   }
 }
 
@@ -77,7 +79,7 @@ async function handleDelete(serviceKey: string) {
   try {
     await store.remove(serviceKey)
   } catch (e) {
-    window.alert(e instanceof Error ? e.message : '删除失败，请重试')
+    window.alert(e instanceof Error ? e.message : t('memoryPanels.deleteFailed'))
   }
 }
 </script>

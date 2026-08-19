@@ -2,11 +2,11 @@
   <div class="app-layout">
     <!-- Mobile Top Bar (visible only on small screens) -->
     <div class="mobile-topbar">
-      <button class="mobile-topbar-btn" @click="toggleLeft" title="菜单">
+      <button class="mobile-topbar-btn" @click="toggleLeft" :title="t('layout.menu')">
         <Menu :size="20" />
       </button>
       <span class="mobile-topbar-title"><Bot :size="16" class="sidebar-title-icon" /> Agents Universe</span>
-      <button class="mobile-topbar-btn" @click="toggleRight" title="面板">
+      <button class="mobile-topbar-btn" @click="toggleRight" :title="t('layout.panel')">
         <PanelRight :size="20" />
       </button>
     </div>
@@ -76,6 +76,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
 import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
@@ -181,11 +182,12 @@ watch(() => route.fullPath, () => {
 })
 
 /* ── Panel tabs & content ─────────────────────────────────────── */
-const tabs = [
-  { id: 'conversations' as const, label: '会话', icon: MessageSquare },
-  { id: 'knowledge' as const, label: '知识', icon: BookOpen },
-  { id: 'memory' as const, label: '记忆', icon: Brain },
-]
+const { t } = useI18n()
+const tabs = computed(() => [
+  { id: 'conversations' as const, label: t('layout.tabConversations'), icon: MessageSquare },
+  { id: 'knowledge' as const, label: t('layout.tabKnowledge'), icon: BookOpen },
+  { id: 'memory' as const, label: t('layout.tabMemory'), icon: Brain },
+])
 
 const projectStore = useProjectStore()
 const agentStore = useAgentStore()

@@ -4,7 +4,7 @@
     <div class="knowledge-panel-section" v-if="Object.keys(knowledgeStore.completeness).length">
       <div class="section-label">
         <BarChart3 :size="12" class="section-label-icon" />
-        完整度
+        {{ t('knowledgePanel.completeness') }}
       </div>
       <CompletenessBar
         v-for="(score, cat) in knowledgeStore.completeness"
@@ -18,7 +18,7 @@
     <div class="knowledge-panel-section" v-if="knowledgeStore.loadedThisTurn.length">
       <div class="section-label">
         <Zap :size="12" class="section-label-icon" />
-        本轮已加载
+        {{ t('knowledgePanel.loadedThisTurn') }}
       </div>
       <div class="knowledge-slug-list">
         <span
@@ -37,7 +37,7 @@
     <div class="knowledge-panel-section" v-if="knowledgeStore.dynamicallyLoaded.length">
       <div class="section-label">
         <RefreshCw :size="12" class="section-label-icon" />
-        动态加载
+        {{ t('knowledgePanel.dynamicLoaded') }}
       </div>
       <div class="knowledge-slug-list">
         <span
@@ -56,7 +56,7 @@
     <div class="knowledge-panel-section">
       <div class="section-label">
         <Library :size="12" class="section-label-icon" />
-        知识条目
+        {{ t('knowledgePanel.allItems') }}
       </div>
       <div class="knowledge-item-list">
         <div
@@ -89,6 +89,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { BarChart3, Zap, FileCheck, RefreshCw, Sparkles, Library, FolderOpen, FileText } from 'lucide-vue-next'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useKnowledgeData } from '@/composables/useKnowledgeData'
@@ -96,6 +97,7 @@ import CompletenessBar from './CompletenessBar.vue'
 import KnowledgeFileViewer from './KnowledgeFileViewer.vue'
 
 const props = defineProps<{ projectId?: string }>()
+const { t } = useI18n()
 const knowledgeStore = useKnowledgeStore()
 const viewerSlug = ref<string | null>(null)
 

@@ -1,12 +1,12 @@
 <template>
   <div class="conv-tree">
     <div class="conv-tree-header">
-      <span class="conv-tree-header-title">对话历史</span>
-      <button class="conv-tree-new-btn" title="新建对话" @click="emit('new-conversation')">+</button>
+      <span class="conv-tree-header-title">{{ t('conversations.historyTitle') }}</span>
+      <button class="conv-tree-new-btn" :title="t('conversations.newConversation')" @click="emit('new-conversation')">+</button>
     </div>
 
     <div v-if="error" class="conv-tree-error">{{ error }}</div>
-    <div v-if="!conversations.length" class="conv-tree-empty">暂无对话</div>
+    <div v-if="!conversations.length" class="conv-tree-empty">{{ t('conversations.empty') }}</div>
     <div v-else class="conv-tree-list">
       <ConversationTreeItem
         v-for="conv in conversations"
@@ -26,6 +26,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useConversationStore } from '@/stores/conversation'
 import { conversationsApi } from '@/api/conversations'
 import { closeConnection } from '@/composables/useWebSocket'
@@ -37,6 +38,7 @@ const props = defineProps<{ projectId?: string; agentSlug?: string }>()
 const emit = defineEmits<{ 'new-conversation': [] }>()
 
 const convStore = useConversationStore()
+const { t } = useI18n()
 const conversations = ref<ConversationItem[]>([])
 const expandedIds = reactive(new Set<string>())
 const taskCache = reactive(new Map<string, AgentTask[]>())
@@ -58,7 +60,7 @@ async function load() {
     error.value = null
   } catch (e) {
     if (seq !== loadSeq) return
-    error.value = e instanceof Error ? e.message : '加载会话列表失败'
+    error.value = e instanceof Error ? e.message : t('conversations.listFailed')
     console.error('Failed to load conversations', e)
   }
 }
@@ -81,7 +83,7 @@ async function selectConversation(conv: ConversationItem) {
       taskCache.set(conv.conversation_id, mapDbTasks(tasks))
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载会话失败'
+    error.value = e instanceof Error ? e.message : t('conversations.loadFailed')
     console.error('Failed to load conversation', e)
   }
 }
@@ -118,7 +120,7 @@ function tasksFor(conv: ConversationItem): AgentTask[] {
 }
 
 async function deleteConversation(id: string) {
-  if (!confirm('确认删除此对话？')) return
+  if (!confirm(t('conversations.deleteConfirm'))) return
   try {
     await conversationsApi.delete(id)
     conversations.value = conversations.value.filter((c) => c.conversation_id !== id)
@@ -132,7 +134,7 @@ async function deleteConversation(id: string) {
     convStore.removeRuntime(id)
     if (convStore.conversationId === id) convStore.reset()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '删除会话失败'
+    error.value = e instanceof Error ? e.message : t('conversations.deleteFailed')
     console.error('Failed to delete conversation', e)
   }
 }

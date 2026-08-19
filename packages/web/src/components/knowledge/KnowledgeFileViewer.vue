@@ -40,7 +40,7 @@
 
           <div v-if="entry.loading" class="knowledge-viewer-loading">
             <Loader2 :size="18" class="spin" />
-            加载中…
+            {{ t('knowledgeFileViewer.loading') }}
           </div>
           <div v-else-if="entry.error" class="knowledge-viewer-error">
             <AlertCircle :size="14" />
@@ -66,7 +66,7 @@
             <div v-if="entry.children.length" class="knowledge-children-section">
               <div class="knowledge-children-header">
                 <FolderOpen :size="13" />
-                子文件
+                {{ t('knowledgeFileViewer.childrenTitle') }}
               </div>
               <div
                 v-for="child in entry.children"
@@ -89,6 +89,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { FileText, X, Loader2, AlertCircle, Tag, ChevronLeft, ChevronRight, FolderOpen } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { knowledgeApi } from '@/api/knowledge'
@@ -110,6 +111,7 @@ interface NavEntry {
 const props = defineProps<{ slug: string }>()
 const emit = defineEmits<{ close: [] }>()
 
+const { t } = useI18n()
 const projectStore = useProjectStore()
 const navStack = ref<NavEntry[]>([])
 
@@ -147,7 +149,7 @@ async function loadEntry(slug: string): Promise<NavEntry> {
 
   const pid = projectStore.currentProject?.project_id
   if (!pid) {
-    entry.error = '未选择项目'
+    entry.error = t('knowledgeFileViewer.noProject')
     entry.loading = false
     return entry
   }
@@ -164,7 +166,7 @@ async function loadEntry(slug: string): Promise<NavEntry> {
     entry.children = children
     entry.ancestors = ancestors
   } catch (e) {
-    entry.error = e instanceof Error ? e.message : '加载失败'
+    entry.error = e instanceof Error ? e.message : t('knowledgeFileViewer.loadFailed')
   } finally {
     entry.loading = false
   }

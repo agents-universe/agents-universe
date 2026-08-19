@@ -1,8 +1,8 @@
 <template>
   <div class="chat-panel">
     <!-- WS status banner -->
-    <div v-if="wsStatus === 'connecting'" class="ws-status reconnecting">正在连接…</div>
-    <div v-else-if="wsStatus === 'failed'" class="ws-status failed">连接失败，请刷新页面</div>
+    <div v-if="wsStatus === 'connecting'" class="ws-status reconnecting">{{ t('chatPanel.connecting') }}</div>
+    <div v-else-if="wsStatus === 'failed'" class="ws-status failed">{{ t('chatPanel.connectFailed') }}</div>
 
     <!-- Compress toolbar -->
     <div v-if="convStore.messages.length > 0" class="compress-toolbar">
@@ -12,7 +12,7 @@
         @click="handleCompress"
       >
         <Shrink :size="14" />
-        <span>{{ compressing ? '压缩中…' : '压缩上下文' }}</span>
+        <span>{{ compressing ? t('chatPanel.compressing') : t('chatPanel.compressContext') }}</span>
       </button>
     </div>
 
@@ -83,6 +83,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Shrink } from 'lucide-vue-next'
 import { conversationsApi } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversation'
@@ -105,6 +106,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'new-conversation': [] }>()
 
+const { t } = useI18n()
 const convStore = useConversationStore()
 const agentStore = useAgentStore()
 const projectStore = useProjectStore()
@@ -268,7 +270,7 @@ function handleSubmit(payload: { content: string; config_id?: string; attachment
     convStore.addMessage({
       id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
-      content: 'WebSocket 未连接，无法发送消息。请刷新页面重试。',
+      content: t('chatPanel.wsNotConnected'),
       isError: true,
       timestamp: Date.now(),
     })
@@ -297,7 +299,7 @@ function handleAbort() {
     convStore.addMessage({
       id: `abort-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
-      content: '连接已断开，无法停止执行。重新连接后将恢复服务器上的最新状态。',
+      content: t('chatPanel.abortFailed'),
       isError: true,
       timestamp: Date.now(),
     })
@@ -313,13 +315,13 @@ const isCompressDisabled = computed(
 
 async function handleCompress() {
   if (!props.conversationId || compressing.value) return
-  if (!window.confirm('将把早期对话压缩为摘要并替换，确定吗？')) return
+  if (!window.confirm(t('chatPanel.compressConfirm'))) return
   compressing.value = true
   try {
     const res = await conversationsApi.compress(props.conversationId)
     convStore.loadHistory(res.messages, props.conversationId)
   } catch (e) {
-    window.alert(e instanceof Error ? e.message : '压缩失败，请重试。')
+    window.alert(e instanceof Error ? e.message : t('chatPanel.compressFailed'))
   } finally {
     compressing.value = false
   }

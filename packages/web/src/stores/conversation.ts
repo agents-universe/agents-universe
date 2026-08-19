@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, reactive } from 'vue'
+import { i18n } from '@/i18n'
 import type {
   Message,
   ToolCallRecord,
@@ -322,7 +323,7 @@ export const useConversationStore = defineStore('conversation', () => {
           ...tc,
           status: (tc.status === 'running' || tc.status === 'preparing') ? 'error' as const : tc.status,
           output: (tc.status === 'running' || tc.status === 'preparing')
-            ? { error: '页面刷新时执行中断，以下为中断前记录' }
+            ? { error: i18n.global.t('conversationStore.interruptedOnRefresh') }
             : tc.output,
         })),
         images: draft.streamingImages?.length ? draft.streamingImages : undefined,
@@ -373,7 +374,7 @@ export const useConversationStore = defineStore('conversation', () => {
           const status = (storedStatus === 'running' || storedStatus === 'preparing')
             ? 'error'
             : storedStatus ?? (tc.output?.error ? 'error' : 'done')
-          const output = tc.output ?? (status === 'error' ? { error: '工具调用未正常结束' } : undefined)
+          const output = tc.output ?? (status === 'error' ? { error: i18n.global.t('conversationStore.toolCallAborted') } : undefined)
           return {
             callId: tc.call_id,
             tool: tc.tool,
@@ -607,7 +608,7 @@ export const useConversationStore = defineStore('conversation', () => {
             return {
               ...tc,
               status: 'error' as const,
-              output: { error: '工具调用未正常结束' },
+              output: { error: i18n.global.t('conversationStore.toolCallAborted') },
             }
           })
         : undefined,

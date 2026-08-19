@@ -1,15 +1,15 @@
 <template>
   <div class="project-tree">
     <div class="nav-heading">
-      <span>项目</span>
-      <button class="add-project-btn" title="管理收藏" @click="showPicker = true">
+      <span>{{ t('sidebar.projects.title') }}</span>
+      <button class="add-project-btn" :title="t('sidebar.common.manageFavorites')" @click="showPicker = true">
         <Plus :size="14" />
       </button>
     </div>
 
     <div class="project-list">
       <div v-if="favoritesStore.resolvedFavoriteProjects.length === 0" class="empty-hint">
-        点击 + 收藏项目
+        {{ t('sidebar.projects.emptyHint') }}
       </div>
       <div
         v-for="project in favoritesStore.resolvedFavoriteProjects"
@@ -30,6 +30,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Plus, Folder } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
@@ -37,6 +38,7 @@ import { useFavoritesStore } from '@/stores/favorites'
 import type { Project } from '@/types'
 import ProjectPickerDialog from './ProjectPickerDialog.vue'
 
+const { t } = useI18n()
 const projectStore = useProjectStore()
 const favoritesStore = useFavoritesStore()
 const router = useRouter()

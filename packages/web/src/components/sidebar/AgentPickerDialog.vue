@@ -6,14 +6,14 @@
         <div class="modal-header">
           <div class="modal-header-left">
             <span class="modal-header-icon"><Bot :size="18" /></span>
-            <h3 class="modal-title">管理收藏智能体</h3>
+            <h3 class="modal-title">{{ t('agentPicker.title') }}</h3>
           </div>
-          <button class="modal-close" @click="emit('close')" title="关闭">
+          <button class="modal-close" @click="emit('close')" :title="t('common.close')">
             <X :size="16" />
           </button>
         </div>
 
-        <p class="modal-hint">选择要在侧边栏显示的智能体</p>
+        <p class="modal-hint">{{ t('agentPicker.hint') }}</p>
 
         <!-- Search -->
         <div class="picker-search-wrapper">
@@ -21,7 +21,7 @@
           <input
             v-model="search"
             class="picker-search"
-            placeholder="搜索智能体…"
+            :placeholder="t('agentPicker.searchPlaceholder')"
             autofocus
             @keydown.esc="emit('close')"
           />
@@ -36,7 +36,7 @@
               :key="agent.agent_id"
               class="picker-item"
               :class="{ favorited: favoritesStore.isAgentFavorited(agent.slug) }"
-              title="点击收藏/取消收藏"
+              :title="t('sidebar.common.toggleFavorite')"
               @click="favoritesStore.toggleAgentFavorite(agent.slug)"
             >
             <div class="picker-agent-avatar" :style="{ background: avatarColor(agent.slug) }">
@@ -49,7 +49,7 @@
             <button
               class="picker-star"
               :class="{ favorited: favoritesStore.isAgentFavorited(agent.slug) }"
-              title="收藏到侧边栏"
+              :title="t('sidebar.common.favoriteToSidebar')"
               @click.stop="favoritesStore.toggleAgentFavorite(agent.slug)"
             >
               <Star :size="14" />
@@ -57,7 +57,7 @@
             </div>
           </template>
           <div v-if="filteredAgents.length === 0" class="picker-empty">
-            没有匹配的智能体
+            {{ t('agentPicker.noMatches') }}
           </div>
         </div>
       </div>
@@ -67,6 +67,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Bot, Star, Search, X } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
@@ -75,6 +76,7 @@ import type { AgentInfo } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
 
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const favoritesStore = useFavoritesStore()
 const projectStore = useProjectStore()
@@ -98,16 +100,16 @@ const filteredAgents = computed(() => {
 
 const categoryOrder = ['agile-development', 'platform-assistant', '']
 const categoryLabels: Record<string, string> = {
-  'agile-development': '敏捷开发',
-  'platform-assistant': '平台助手',
-  '': '未分类/未知',
+  'agile-development': t('agentPicker.categoryAgile'),
+  'platform-assistant': t('agentPicker.categoryPlatform'),
+  '': t('agentPicker.categoryUnknown'),
 }
 const groupedAgents = computed(() => {
   // Project-scoped agents form their own group, shown first.
   const projectAgents = filteredAgents.value.filter(a => a.project_id)
   const groups: Array<{ category: string; label: string; agents: AgentInfo[] }> = []
   if (projectAgents.length > 0) {
-    groups.push({ category: '__project__', label: '本项目专属', agents: projectAgents })
+    groups.push({ category: '__project__', label: t('agentPicker.groupProject'), agents: projectAgents })
   }
   groups.push(...categoryOrder
     .map(category => ({

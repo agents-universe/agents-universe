@@ -5,28 +5,28 @@
         <div class="modal-header">
           <div class="modal-header-left">
             <span class="modal-header-icon delete-icon"><Trash2 :size="18" /></span>
-            <h3 class="modal-title">永久删除项目</h3>
+            <h3 class="modal-title">{{ t('deleteProjectDialog.title') }}</h3>
           </div>
-          <button class="modal-close" :disabled="deleting" @click="emit('close')" title="关闭">
+          <button class="modal-close" :disabled="deleting" @click="emit('close')" :title="t('common.close')">
             <X :size="16" />
           </button>
         </div>
 
         <div class="delete-warning">
-          <p class="delete-warning-title">此操作不可撤销，将永久删除以下所有数据：</p>
+          <p class="delete-warning-title">{{ t('deleteProjectDialog.warningTitle') }}</p>
           <ul class="delete-warning-list">
-            <li>全部会话、消息和 Agent 任务</li>
-            <li>项目知识条目及所有历史版本</li>
-            <li>项目记忆和情节记忆</li>
-            <li>自动化脚本及运行记录</li>
-            <li>项目密钥</li>
-            <li>媒体文件、测试文件及整个工作区目录</li>
+            <li>{{ t('deleteProjectDialog.listConversations') }}</li>
+            <li>{{ t('deleteProjectDialog.listKnowledge') }}</li>
+            <li>{{ t('deleteProjectDialog.listMemories') }}</li>
+            <li>{{ t('deleteProjectDialog.listScripts') }}</li>
+            <li>{{ t('deleteProjectDialog.listSecrets') }}</li>
+            <li>{{ t('deleteProjectDialog.listWorkspace') }}</li>
           </ul>
         </div>
 
         <div class="delete-confirm-section">
           <label class="delete-confirm-label">
-            请输入项目 slug 确认删除：<span class="delete-slug-hint">{{ project.slug }}</span>
+            {{ t('deleteProjectDialog.confirmLabel') }}<span class="delete-slug-hint">{{ project.slug }}</span>
           </label>
           <input
             v-model="confirmInput"
@@ -42,14 +42,14 @@
         <p v-if="pendingMsg" class="delete-pending-msg">{{ pendingMsg }}</p>
 
         <div class="modal-footer">
-          <button class="btn-ghost" :disabled="deleting" @click="emit('close')">取消</button>
+          <button class="btn-ghost" :disabled="deleting" @click="emit('close')">{{ t('common.cancel') }}</button>
           <button
             class="btn-danger"
             :disabled="confirmInput !== project.slug || deleting"
             @click="handleDelete"
           >
             <span v-if="deleting" class="delete-spinner">…</span>
-            <span v-else>永久删除</span>
+            <span v-else>{{ t('deleteProjectDialog.title') }}</span>
           </button>
         </div>
       </div>
@@ -59,11 +59,13 @@
 
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Trash2, X } from 'lucide-vue-next'
 import type { Project } from '@/types'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
 
+const { t } = useI18n()
 const props = defineProps<{ project: Project }>()
 const emit = defineEmits<{ close: []; deleted: [projectId: string] }>()
 
@@ -86,21 +88,21 @@ async function handleDelete() {
   } catch (e) {
     if (e instanceof ApiError) {
       if (e.code === 'PROJECT_DELETE_PENDING') {
-        pendingMsg.value = `数据库记录已删除，但工作区文件清理尚未完成，系统将自动重试。如有疑问请联系管理员（ID：${e.deletionId ?? ''}）。`
+        pendingMsg.value = t('deleteProjectDialog.pendingMsg', { id: e.deletionId ?? '' })
         // Treat as partial success — project is gone from DB
         emit('deleted', props.project.project_id)
         return
       }
       const codeMap: Record<string, string> = {
-        PROJECT_HAS_CHILDREN: '请先删除该项目的所有子项目后再试。',
-        PROJECT_HAS_RUNNING_WORK: '项目还有正在运行的任务或脚本，请先停止后再试。',
-        SLUG_CONFIRMATION_MISMATCH: '确认文本与项目 slug 不匹配。',
-        PROJECT_NOT_OWNER: '只有项目创建者才能删除项目。',
-        UNSAFE_PATH: '工作区路径存在安全问题，请联系管理员。',
+        PROJECT_HAS_CHILDREN: t('deleteProjectDialog.codeHasChildren'),
+        PROJECT_HAS_RUNNING_WORK: t('deleteProjectDialog.codeRunningWork'),
+        SLUG_CONFIRMATION_MISMATCH: t('deleteProjectDialog.codeSlugMismatch'),
+        PROJECT_NOT_OWNER: t('deleteProjectDialog.codeNotOwner'),
+        UNSAFE_PATH: t('deleteProjectDialog.codeUnsafePath'),
       }
       errorMsg.value = codeMap[e.code ?? ''] ?? e.message
     } else {
-      errorMsg.value = e instanceof Error ? e.message : '删除失败，请重试。'
+      errorMsg.value = e instanceof Error ? e.message : t('deleteProjectDialog.deleteFailed')
     }
     deleting.value = false
   }

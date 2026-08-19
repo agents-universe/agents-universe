@@ -14,6 +14,26 @@ _log = logging.getLogger(__name__)
 # guard) — RGBA is 4 bytes/pixel, so a 20000x20000 PNG would allocate ~1.6GB.
 _MAX_IMAGE_DIMENSION = 8192
 
+# CJK-aware font chain: Linux containers ship fonts-noto-cjk (Noto Sans CJK),
+# Windows dev hosts provide arial.ttf. Pillow's default bitmap font carries no
+# CJK glyphs, so Chinese labels would render as boxes with it.
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "arial.ttf",
+)
+
+
+def _load_font(size: int) -> Any:
+    """Return the first loadable candidate font, else Pillow's bitmap default."""
+    from PIL import ImageFont
+
+    for path in _FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
 
 class ImageAnnotatorTool(Tool):
     name = "image_annotator"
@@ -152,14 +172,9 @@ class ImageAnnotatorTool(Tool):
 
         draw = ImageDraw.Draw(canvas)
 
-        try:
-            font = ImageFont.truetype("arial.ttf", 14)
-            font_small = ImageFont.truetype("arial.ttf", 11)
-            font_title = ImageFont.truetype("arial.ttf", 16)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-            font_small = font
-            font_title = font
+        font = _load_font(14)
+        font_small = _load_font(11)
+        font_title = _load_font(16)
 
         if title:
             draw.text((10, 6), title, fill=(30, 30, 30, 255), font=font_title)

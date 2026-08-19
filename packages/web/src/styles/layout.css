@@ -1193,6 +1193,11 @@
   margin-left: 4px;
 }
 .provider-pill {
+  /* inline-flex so the auto-routing icon and label share one line:
+     Tailwind preflight forces svg to display:block, which would stack
+     the icon above the text inside a plain button. */
+  display: inline-flex;
+  align-items: center;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-strong);
   color: var(--text-secondary);
@@ -1209,7 +1214,6 @@
 }
 .provider-pill-auto {
   margin-right: 4px;
-  vertical-align: -1px;
 }
 .provider-pill.active {
   background: var(--accent-gradient);

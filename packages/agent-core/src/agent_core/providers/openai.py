@@ -17,6 +17,7 @@ from .base import (
     StreamChunk,
     ToolDefinition,
 )
+from ..compressor import MAX_OUTPUT_RESERVE
 
 def _context_window(model: str) -> int:
     m = model.lower()
@@ -35,7 +36,7 @@ def _context_window(model: str) -> int:
 class OpenAIProvider(LLMProvider):
     """OpenAI via the openai SDK."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url") -> None:
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None) -> None:
         kwargs: dict = {"api_key": api_key}
         if base_url:
             b = base_url.rstrip("/")
@@ -51,6 +52,8 @@ class OpenAIProvider(LLMProvider):
         kwargs["http_client"] = httpx.AsyncClient(verify=ssl_verify, timeout=60.0)
         self._client = AsyncOpenAI(**kwargs)
         self._model = model
+        # Per-config override from Settings → AI Models; None = name-matched default.
+        self._context_window_override = context_window
 
     async def close(self) -> None:
         """Close the SDK's httpx client (connection pool).
@@ -70,7 +73,7 @@ class OpenAIProvider(LLMProvider):
 
     @property
     def context_window(self) -> int:
-        return _context_window(self._model)
+        return self._context_window_override or _context_window(self._model)
 
     @property
     def supports_tool_calls(self) -> bool:
@@ -135,6 +138,17 @@ class OpenAIProvider(LLMProvider):
         m = self._model.lower()
         return any(m.startswith(p) for p in ("o1", "o2", "o3", "o4")) or "gpt-5" in m
 
+    def _clamp_max_tokens(self, max_tokens: int) -> int:
+        """Cap output tokens at the non-reasoning ceiling.
+
+        Agent configs default max_tokens to 128000; gpt-4o-class models cap
+        output at 16384 and reject the raw value with a 400. Reasoning
+        models accept large max_completion_tokens and are left untouched.
+        """
+        if self._is_reasoning_model():
+            return max_tokens
+        return min(max_tokens, MAX_OUTPUT_RESERVE)
+
     async def complete(
         self,
         messages: list[Message],
@@ -142,6 +156,7 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> CompletionResult:
+        max_tokens = self._clamp_max_tokens(max_tokens)
         kwargs: dict = dict(
             model=self._model,
             messages=self._to_openai_messages(messages),
@@ -191,6 +206,7 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> AsyncIterator[StreamChunk]:
+        max_tokens = self._clamp_max_tokens(max_tokens)
         kwargs: dict = dict(
             model=self._model,
             messages=self._to_openai_messages(messages),
@@ -270,6 +286,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         model: str = "gpt-4o",
         api_version: str = "2024-08-01-preview",
         ssl_verify: bool = False,
+        context_window: int | None = None,
         **_kwargs,
     ) -> None:
         from openai import AsyncAzureOpenAI
@@ -288,6 +305,8 @@ class AzureOpenAIProvider(OpenAIProvider):
         )
         self._model = model
         self._display_model = model
+        # Per-config override from Settings → AI Models; None = name-matched default.
+        self._context_window_override = context_window
 
     def _is_reasoning_model(self) -> bool:
         m = self._model.lower()
@@ -300,6 +319,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> CompletionResult:
+        max_tokens = self._clamp_max_tokens(max_tokens)
         kwargs: dict = dict(
             model=self._model,
             messages=self._to_openai_messages(messages),
@@ -352,6 +372,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> AsyncIterator[StreamChunk]:
+        max_tokens = self._clamp_max_tokens(max_tokens)
         kwargs: dict = dict(
             model=self._model,
             messages=self._to_openai_messages(messages),

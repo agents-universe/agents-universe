@@ -55,6 +55,7 @@
               </div>
               <span v-if="cfg.key_hint" class="token-hint-badge">{{ cfg.key_hint }}</span>
               <span v-if="cfg.complexity_tier" class="token-hint-badge tier-badge" :class="'tier-' + cfg.complexity_tier">{{ tierLabel(cfg.complexity_tier) }}</span>
+              <span v-if="cfg.context_window" class="token-hint-badge">{{ fmtWindow(cfg.context_window) }}</span>
             </div>
 
             <div v-if="editForms[cfg.config_id]" class="token-edit-block">
@@ -90,6 +91,17 @@
                   <option value="high">旗舰 (high)</option>
                 </select>
                 <span class="token-url-hint">自动路由档位</span>
+              </div>
+              <div class="token-url-row">
+                <input
+                  v-model="editForms[cfg.config_id].context_window"
+                  class="input token-url-input"
+                  type="number"
+                  min="1"
+                  step="1000"
+                  placeholder="留空自动匹配"
+                />
+                <span class="token-url-hint">上下文窗口（默认 {{ fmtWindow(cfg.default_context_window) }}）</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveConfig(cfg.config_id)" :disabled="saving === cfg.config_id">
@@ -140,6 +152,18 @@
                   <option value="high">旗舰 (high)</option>
                 </select>
                 <span class="token-url-hint">自动路由档位（随模型 ID 自动推断）</span>
+              </div>
+              <div class="token-url-row">
+                <input
+                  v-model="newContextWindow"
+                  class="input token-url-input"
+                  type="number"
+                  min="1"
+                  step="1000"
+                  placeholder="留空自动匹配"
+                  @change="newContextWindowDirty = true"
+                />
+                <span class="token-url-hint">上下文窗口（随模型 ID 自动匹配）</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="addConfig" :disabled="!newProvider || !newModelId || saving === '__new__'">
@@ -388,6 +412,7 @@ import { createProjectSecret, deleteProjectSecret, listProjectSecrets, updatePro
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
 import { inferTier } from '@/utils/modelTier'
+import { inferContextWindow } from '@/utils/contextWindow'
 import type { ProjectSecret } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
@@ -405,7 +430,7 @@ const tabs = [
 const systemDefault = computed(() => agentStore.modelConfigs.find(c => c.is_system) ?? null)
 const userConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
 
-const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null }>>({})
+const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string }>>({})
 
 function initEditForms() {
   for (const cfg of userConfigs.value) {
@@ -416,6 +441,7 @@ function initEditForms() {
         base_url: cfg.base_url ?? '',
         url_mode: cfg.url_mode ?? 'base_url',
         complexity_tier: cfg.complexity_tier ?? null,
+        context_window: cfg.context_window ? String(cfg.context_window) : '',
       }
     }
   }
@@ -451,6 +477,11 @@ function tierLabel(tier: 'low' | 'mid' | 'high'): string {
   }
 }
 
+/** Compact window display: 128000 → "128k", 1048576 → "1049k". */
+function fmtWindow(n: number | null | undefined): string {
+  return n ? `${Math.round(n / 1000)}k` : ''
+}
+
 const saving = ref<string | null>(null)
 const testing = ref<string | null>(null)
 const messages = reactive<Record<string, { ok: boolean; text: string }>>({})
@@ -463,12 +494,15 @@ async function saveConfig(configId: string) {
     const body: {
       model_id?: string; api_key?: string; base_url?: string; url_mode?: string
       complexity_tier?: 'low' | 'mid' | 'high' | null
+      context_window?: number | null
     } = {}
     if (form.model_id) body.model_id = form.model_id
     if (form.api_key) body.api_key = form.api_key
     if (form.base_url !== undefined) body.base_url = form.base_url
     if (form.url_mode) body.url_mode = form.url_mode
     body.complexity_tier = form.complexity_tier
+    const windowNum = Number(form.context_window)
+    body.context_window = form.context_window && Number.isFinite(windowNum) ? windowNum : null
     await agentStore.updateModelConfig(configId, body)
     form.api_key = ''
     messages[configId] = { ok: true, text: '已保存' }
@@ -519,9 +553,18 @@ const newTier = ref<'low' | 'mid' | 'high' | null>(null)
 // User-picked tier wins over inference while the model id keeps changing.
 const newTierDirty = ref(false)
 
+const newContextWindow = ref('')
+// User-typed window wins over inference while the model id keeps changing.
+const newContextWindowDirty = ref(false)
+
 watch([newProvider, newModelId], ([provider, modelId]) => {
   if (newTierDirty.value) return
   newTier.value = inferTier(provider, modelId)
+})
+
+watch([newProvider, newModelId], ([provider, modelId]) => {
+  if (newContextWindowDirty.value || !provider || !modelId) return
+  newContextWindow.value = String(inferContextWindow(provider, modelId))
 })
 
 async function addConfig() {
@@ -535,6 +578,7 @@ async function addConfig() {
       base_url: newBaseUrl.value || undefined,
       url_mode: newUrlMode.value,
       complexity_tier: newTier.value,
+      context_window: newContextWindow.value ? Number(newContextWindow.value) : null,
     })
     editForms[created.config_id] = {
       model_id: created.model_id,
@@ -542,6 +586,7 @@ async function addConfig() {
       base_url: created.base_url ?? '',
       url_mode: created.url_mode ?? 'base_url',
       complexity_tier: created.complexity_tier ?? null,
+      context_window: created.context_window ? String(created.context_window) : '',
     }
     newProvider.value = ''
     newModelId.value = ''
@@ -550,6 +595,8 @@ async function addConfig() {
     newUrlMode.value = 'base_url'
     newTier.value = null
     newTierDirty.value = false
+    newContextWindow.value = ''
+    newContextWindowDirty.value = false
     showAddForm.value = false
     messages['__new__'] = { ok: true, text: '已添加' }
   } catch (e) {

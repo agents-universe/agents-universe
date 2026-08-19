@@ -64,11 +64,13 @@ class GoogleGeminiProvider(LLMProvider):
     lock is released (the connection is already authenticated).
     """
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url", context_window: int | None = None) -> None:
         self._api_key = api_key
         self._model_name = model
         self._base_url = base_url
         self._url_mode = url_mode
+        # Per-config override from Settings → AI Models; None = name-matched default.
+        self._context_window_override = context_window
 
     def _ensure_configured(self) -> None:
         """Re-apply this instance's API key (and optional endpoint) before making a call."""
@@ -91,7 +93,7 @@ class GoogleGeminiProvider(LLMProvider):
 
     @property
     def context_window(self) -> int:
-        return _context_window(self._model_name)
+        return self._context_window_override or _context_window(self._model_name)
 
     @property
     def supports_tool_calls(self) -> bool:

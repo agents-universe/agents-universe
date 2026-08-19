@@ -42,6 +42,8 @@ function makeConfig(over: Partial<ModelConfig> = {}): ModelConfig {
     base_url: null,
     url_mode: 'base_url',
     complexity_tier: null,
+    context_window: null,
+    default_context_window: 128_000,
     is_system: false,
     ...over,
   }

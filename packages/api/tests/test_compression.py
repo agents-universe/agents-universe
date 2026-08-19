@@ -540,3 +540,115 @@ async def test_compress_all_tool_tail_keeps_last_row(client, db, make_project, m
     assert rows[0].content.startswith("[Earlier conversation summary")
     assert rows[2].content == ""
     assert rows[2].tool_calls is not None
+
+
+async def _seed_short_fat_conversation(db, project, rows: list[DbMessage]):
+    """Seed a <=RECENT_TURNS_KEEP conversation from prebuilt rows (fat content
+    allowed) and return the conversation id."""
+    conv = Conversation(project_id=project.project_id, user_id="test-user", token_budget=128000)
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    cid = str(conv.conversation_id)
+    for i, m in enumerate(rows):
+        m.conversation_id = cid
+        m.sequence_num = i + 1
+        db.add(m)
+    await db.commit()
+    return cid
+
+
+@pytest.mark.asyncio
+async def test_compress_truncates_fat_short_conversation(client, db, make_project):
+    """Few rows but multi-MB embedded tool outputs must not 409 "too short" —
+    the outputs are truncated in the DB so future turns send a slim body."""
+    project = await make_project()
+    big_output = "x" * (5 * 1024 * 1024)
+    cid = await _seed_short_fat_conversation(db, project, [
+        DbMessage(role="user", content="read that file"),
+        DbMessage(role="assistant", content="", tool_calls=json.dumps([{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+            "output": big_output,
+        }])),
+        DbMessage(role="user", content="what is in it?"),
+    ])
+
+    resp = await client.post(f"/api/conversations/{cid}/compress")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["deleted_count"] == 0
+    assert data["kept_count"] == 3
+    assert data["truncated"] == 1
+    assert "已精简" in data["summary"]
+    # Response messages reflect the truncated form
+    tool_calls = data["messages"][1]["tool_calls"]
+    assert len(tool_calls[0]["output"]) == 2001
+    assert tool_calls[0]["output"].endswith("…")
+
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(DbMessage).where(DbMessage.conversation_id == cid)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 3
+    saved = json.loads(rows[1].tool_calls)
+    assert saved[0]["output"].endswith("…")
+    assert len(saved[0]["output"]) == 2001
+
+
+@pytest.mark.asyncio
+async def test_compress_fat_short_without_tool_outputs_409(client, db, make_project):
+    """Fat conversation with nothing truncatable: refuse with a specific
+    message and leave the DB untouched (no commit on failure)."""
+    project = await make_project()
+    big_text = "y" * (5 * 1024 * 1024)
+    cid = await _seed_short_fat_conversation(db, project, [
+        DbMessage(role="user", content=big_text),
+        DbMessage(role="assistant", content="ok"),
+        DbMessage(role="user", content="and then?"),
+    ])
+
+    resp = await client.post(f"/api/conversations/{cid}/compress")
+    assert resp.status_code == 409
+    assert "没有可精简" in resp.json()["detail"]
+
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(DbMessage).where(DbMessage.conversation_id == cid)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 3
+    assert len(rows[0].content) == 5 * 1024 * 1024  # untouched
+
+
+@pytest.mark.asyncio
+async def test_compress_fat_short_tool_row_content_truncated(client, db, make_project):
+    """A standalone role='tool' row with oversized content is truncated in
+    place (the embedded-output path covers tool_calls; this covers content)."""
+    project = await make_project()
+    cid = await _seed_short_fat_conversation(db, project, [
+        DbMessage(role="user", content="run it"),
+        DbMessage(role="assistant", content="done"),
+        DbMessage(role="tool", content="z" * (5 * 1024 * 1024)),
+    ])
+
+    resp = await client.post(f"/api/conversations/{cid}/compress")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["deleted_count"] == 0
+    assert data["kept_count"] == 3
+    assert data["truncated"] == 1
+
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(DbMessage).where(DbMessage.conversation_id == cid)
+    )
+    rows = result.scalars().all()
+    tool_row = next(r for r in rows if r.role == "tool")
+    assert len(tool_row.content) == 2001
+    assert tool_row.content.endswith("…")

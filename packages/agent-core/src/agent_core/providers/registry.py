@@ -31,6 +31,8 @@ def get_provider(provider_key: str, credentials: dict[str, Any]) -> LLMProvider:
       openai:        api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
       azure_openai:  api_key, endpoint, deployment, api_version (opt), model (opt)
       google_gemini: api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
+    All providers additionally accept context_window (opt: per-config override
+    for the name-matched default; None = auto-match by model name).
     """
     loader = _PROVIDER_LOADERS.get(provider_key)
     if loader is None:
@@ -45,3 +47,21 @@ def get_provider(provider_key: str, credentials: dict[str, Any]) -> LLMProvider:
             f"Ensure the required SDK is installed."
         ) from e
     return cls(**credentials)
+
+
+def default_context_window(provider_key: str, model: str) -> int:
+    """Name-matched context window (tokens) a provider would use without an override.
+
+    This is the value shown as the prefill/default in Settings → AI Models and
+    what the runtime falls back to when a config leaves context_window unset.
+    Lazy imports mirror _PROVIDER_LOADERS so merely calling this never pulls
+    in an LLM SDK.
+    """
+    if provider_key == "anthropic":
+        from .anthropic_claude import _context_window
+    elif provider_key == "google_gemini":
+        from .google_gemini import _context_window
+    else:
+        # openai + azure_openai share the OpenAI name table.
+        from .openai import _context_window
+    return _context_window(model)

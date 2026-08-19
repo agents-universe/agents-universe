@@ -19,12 +19,34 @@ from api.dependencies.auth import UserInfo, get_current_user
 from api.models.user import UserModelConfig
 from api.services.model_tier import infer_complexity_tier
 from api.services.token_vault import decrypt_or_none, encrypt, key_hint as make_hint
+from agent_core.providers.registry import default_context_window
 
 router = APIRouter()
 
 VALID_PROVIDERS = {"anthropic", "openai", "azure_openai", "google_gemini"}
 
 SYSTEM_DEFAULT_CONFIG_ID = "system-default"
+
+# Upper bound matches conversations.py token_budget validation; beyond this a
+# window is almost certainly a typo (or a provider limitation we don't know).
+MAX_CONTEXT_WINDOW = 2_000_000
+
+
+def _serialize_config(row: UserModelConfig) -> dict:
+    return {
+        "config_id": row.config_id,
+        "provider": row.provider,
+        "model_id": row.model_id,
+        "key_hint": row.key_hint,
+        "base_url": row.base_url,
+        "url_mode": row.url_mode,
+        "complexity_tier": row.complexity_tier,
+        # Stored override; None = runtime falls back to default_context_window.
+        "context_window": row.context_window,
+        # Name-matched window shown as the Settings prefill/default.
+        "default_context_window": default_context_window(row.provider, row.model_id),
+        "is_system": False,
+    }
 
 
 def _normalize_base_url(value: str | None) -> str | None:
@@ -63,6 +85,8 @@ class ModelConfigCreate(BaseModel):
     url_mode: str | None = Field(None, max_length=20)
     # Auto-route tier; omitted/null → inferred from provider+model_id on create.
     complexity_tier: str | None = Field(None, max_length=20)
+    # Context-window override in tokens; null → name-matched default at runtime.
+    context_window: int | None = Field(None, ge=1, le=MAX_CONTEXT_WINDOW)
 
     @field_validator("base_url")
     @classmethod
@@ -88,6 +112,8 @@ class ModelConfigUpdate(BaseModel):
     url_mode: str | None = Field(None, max_length=20)
     # Explicit null clears the tier (model no longer participates in auto).
     complexity_tier: str | None = Field(None, max_length=20)
+    # Explicit null clears the override (back to name-matched default).
+    context_window: int | None = Field(None, ge=1, le=MAX_CONTEXT_WINDOW)
 
     @field_validator("base_url")
     @classmethod
@@ -117,6 +143,8 @@ def _system_default_entry() -> dict | None:
         "base_url": settings.system_default_base_url or None,
         "url_mode": "base_url",
         "complexity_tier": None,
+        "context_window": None,
+        "default_context_window": default_context_window("openai", settings.system_default_model_id),
         "is_system": True,
     }
 
@@ -133,19 +161,7 @@ async def list_model_configs(
     )
     rows = result.scalars().all()
 
-    configs = [
-        {
-            "config_id": r.config_id,
-            "provider": r.provider,
-            "model_id": r.model_id,
-            "key_hint": r.key_hint,
-            "base_url": r.base_url,
-            "url_mode": r.url_mode,
-            "complexity_tier": r.complexity_tier,
-            "is_system": False,
-        }
-        for r in rows
-    ]
+    configs = [_serialize_config(r) for r in rows]
 
     sys_default = _system_default_entry()
     if sys_default:
@@ -198,22 +214,14 @@ async def create_model_config(
             if body.complexity_tier is not None
             else infer_complexity_tier(body.provider, body.model_id.strip())
         ),
+        context_window=body.context_window,
         sort_order=next_order,
     )
     db.add(row)
     await db.commit()
     await db.refresh(row)
 
-    return {
-        "config_id": row.config_id,
-        "provider": row.provider,
-        "model_id": row.model_id,
-        "key_hint": row.key_hint,
-        "base_url": row.base_url,
-        "url_mode": row.url_mode,
-        "complexity_tier": row.complexity_tier,
-        "is_system": False,
-    }
+    return _serialize_config(row)
 
 
 @router.put("/{config_id}")
@@ -248,22 +256,15 @@ async def update_model_config(
         row.url_mode = body.url_mode
     if "complexity_tier" in body.model_fields_set:
         row.complexity_tier = body.complexity_tier
+    if "context_window" in body.model_fields_set:
+        row.context_window = body.context_window
     if row.provider == "azure_openai" and not row.base_url:
         raise HTTPException(status_code=400, detail="Azure OpenAI requires a base URL")
 
     row.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
-    return {
-        "config_id": row.config_id,
-        "provider": row.provider,
-        "model_id": row.model_id,
-        "key_hint": row.key_hint,
-        "base_url": row.base_url,
-        "url_mode": row.url_mode,
-        "complexity_tier": row.complexity_tier,
-        "is_system": False,
-    }
+    return _serialize_config(row)
 
 
 @router.delete("/{config_id}")

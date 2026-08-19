@@ -52,6 +52,10 @@ export interface ModelConfig {
   url_mode: 'base_url' | 'full_url'
   /** Auto-route tier; null = not part of auto routing until the user assigns one. */
   complexity_tier: 'low' | 'mid' | 'high' | null
+  /** Stored context-window override (tokens); null = use the name-matched default. */
+  context_window: number | null
+  /** Name-matched window the runtime uses when context_window is null. */
+  default_context_window: number | null
   is_system: boolean
 }
 

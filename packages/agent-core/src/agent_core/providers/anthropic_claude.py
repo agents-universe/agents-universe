@@ -39,9 +39,11 @@ class AnthropicClaudeProvider(LLMProvider):
     and base_url pointing to the gateway — uses raw httpx (no botocore).
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url") -> None:
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None) -> None:
         self._model = model
         self._url_mode = url_mode
+        # Per-config override from Settings → AI Models; None = name-matched default.
+        self._context_window_override = context_window
         # Exact host comparison, not substring: a gateway whose domain merely
         # CONTAINS "api.anthropic.com" (e.g. api.anthropic.com.corp.internal)
         # must not be misdetected as the official API and forced down the
@@ -84,7 +86,7 @@ class AnthropicClaudeProvider(LLMProvider):
 
     @property
     def context_window(self) -> int:
-        return _context_window(self._model)
+        return self._context_window_override or _context_window(self._model)
 
     @property
     def supports_tool_calls(self) -> bool:

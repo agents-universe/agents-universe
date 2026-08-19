@@ -16,9 +16,11 @@ from sqlalchemy import delete as sa_delete, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_core.compressor import (
+    MAX_REQUEST_BYTES,
     RECENT_TURNS_KEEP,
     SUMMARY_PROMPT,
     build_summary_pair,
+    estimate_wire_bytes,
     format_early_history,
     split_early_recent,
 )
@@ -88,6 +90,10 @@ async def compress_once(
 # Cap each embedded tool output so a big result (e.g. a wide SELECT) cannot
 # balloon the summarization input (mirrors the 2000-char cell cap).
 _TOOL_OUTPUT_CHARS = 2000
+# Above this wire size a <=RECENT_TURNS_KEEP conversation counts as "short
+# but fat" — the row-count gate alone would refuse to compress a few
+# multi-MB rows that the provider gateway rejects as a 413.
+SHORT_CONVERSATION_BYTES = MAX_REQUEST_BYTES // 2
 
 
 def _tool_output_text(out: object) -> str:
@@ -119,6 +125,52 @@ def _to_agent_messages(row: DbMessage) -> list[Message]:
             if isinstance(tc, dict) and tc.get("output") is not None:
                 msgs.append(Message(role="tool", content=_tool_output_text(tc["output"])))
     return msgs
+
+
+def _rows_wire_bytes(rows: list[DbMessage]) -> int:
+    """Wire size of a conversation's content (text + embedded tool outputs)."""
+    return sum(
+        estimate_wire_bytes(row.content or "")
+        + estimate_wire_bytes(row.tool_calls or "")
+        for row in rows
+    )
+
+
+def _truncate_fat_rows(rows: list[DbMessage]) -> int:
+    """Cap oversized embedded tool outputs in the DB rows; returns count rewritten.
+
+    Non-destructive of message structure: roles, ids and sequence order are
+    untouched, only oversized tool outputs (and role="tool" row contents) are
+    capped at _TOOL_OUTPUT_CHARS. Mirrors the in-memory truncation in
+    agent_core.compressor so a manually-triggered fix persists for future
+    turns. User/assistant text is deliberately left alone — truncating it
+    would visibly destroy user-authored messages.
+    """
+    truncated = 0
+    for row in rows:
+        if row.role == "tool" and (row.content or ""):
+            if len(row.content) > _TOOL_OUTPUT_CHARS:
+                row.content = row.content[:_TOOL_OUTPUT_CHARS] + "…"
+                truncated += 1
+            continue
+        if not row.tool_calls:
+            continue
+        try:
+            tcs = json.loads(row.tool_calls)
+        except (ValueError, TypeError):
+            continue
+        changed = False
+        for tc in tcs if isinstance(tcs, list) else []:
+            if not isinstance(tc, dict) or tc.get("output") is None:
+                continue
+            text = tc["output"] if isinstance(tc["output"], str) else json.dumps(tc["output"], ensure_ascii=False)
+            if len(text) > _TOOL_OUTPUT_CHARS:
+                tc["output"] = text[:_TOOL_OUTPUT_CHARS] + "…"
+                changed = True
+        if changed:
+            row.tool_calls = json.dumps(tcs, ensure_ascii=False)
+            truncated += 1
+    return truncated
 
 
 async def _resolve_provider(db: AsyncSession, user_id: str):
@@ -155,6 +207,9 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
             "ssl_verify": settings.llm_ssl_verify,
             "model": mc.model_id,
         }
+        if mc.context_window:
+            # Per-config window override; absent = name-matched default.
+            cred["context_window"] = mc.context_window
         if mc.provider == "azure_openai":
             cred["endpoint"] = (mc.base_url or "").strip()
         elif mc.base_url:
@@ -238,7 +293,24 @@ async def compress_conversation(
     rows = result.scalars().all()
 
     if len(rows) <= RECENT_TURNS_KEEP:
-        raise CompressionError(409, "会话太短，无需压缩。")
+        # The row-count gate alone would refuse to compress a few multi-MB
+        # rows (embedded tool outputs) that the provider gateway rejects as
+        # 413 — allow truncation when the content is genuinely fat.
+        if _rows_wire_bytes(rows) <= SHORT_CONVERSATION_BYTES:
+            raise CompressionError(409, "会话太短，无需压缩。")
+        truncated = _truncate_fat_rows(rows)
+        if not truncated:
+            raise CompressionError(409, "会话内容过大，但没有可精简的工具输出。建议新建会话或减少单条消息大小。")
+        # Truncation only rewrites existing rows (sequence_num untouched), so
+        # no conversation row lock is needed; commit under the caller's
+        # session and return additive fields the UI ignores.
+        await db.commit()
+        return {
+            "summary": f"已精简 {truncated} 条过大的工具输出（每条保留前 {_TOOL_OUTPUT_CHARS} 字符），后续发送将使用精简后的内容。",
+            "deleted_count": 0,
+            "kept_count": len(rows),
+            "truncated": truncated,
+        }
 
     agent_messages: list[Message] = []
     msg_row: list[int] = []

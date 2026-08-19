@@ -281,3 +281,61 @@ async def test_task_loop_summary_accumulates_text_across_iterations():
     assert calls["n"] == 2
     echo.execute.assert_awaited_once()
     assert result == "step one text final summary"
+
+
+# ---------------------------------------------------------------------------
+# Wire byte guard (_request_byte_outcome / _over_limit_message)
+# ---------------------------------------------------------------------------
+
+
+def test_request_byte_outcome_truncates_or_reports_over_limit(monkeypatch):
+    """Truncatable tool outputs shrink below the limit; system-prompt bulk
+    (knowledge) does not — the guard reports over_limit for the chat error."""
+    import agent_core.agent as agent_module
+
+    monkeypatch.setattr(agent_module, "MAX_REQUEST_BYTES", 20000)
+    agent = _make_agent()
+
+    fat_tool = [Message(role="tool", content="data " * 4000)]
+    assert agent._request_byte_outcome(fat_tool, []) == "truncated"
+    assert fat_tool[0].content.endswith("\n[... truncated ...]")
+
+    fat_system = [Message(role="system", content="汉" * 4000)]
+    assert agent._request_byte_outcome(fat_system, []) == "over_limit"
+    msg = agent._over_limit_message(fat_system, [])
+    assert "请求内容过大" in msg
+    assert "上限" in msg
+
+
+@pytest.mark.asyncio
+async def test_task_loop_raises_on_over_limit_payload(monkeypatch):
+    """An over-limit payload must stop the task with a RuntimeError (never
+    reaching the provider) so _run_task's except path emits task_failed and
+    closes the stream exactly once."""
+    import agent_core.agent as agent_module
+
+    monkeypatch.setattr(agent_module, "MAX_REQUEST_BYTES", 1024)
+
+    from agent_core.session import ConversationSession
+    from agent_core.tools.base import ToolContext
+
+    agent = _make_agent()
+    session = ConversationSession("c1", "p1", "u1")
+    ctx = ToolContext(
+        project_id="p1", project_fs_path="/tmp/p1", conversation_id="c1",
+        user_id="u1", db_session=None,
+    )
+
+    class _UnreachableProvider:
+        model_name = "test-model"
+
+        async def stream(self, messages, tool_defs=None, **kw):
+            raise AssertionError("provider.stream must not be called over the limit")
+
+    messages = [Message(role="system", content="汉" * 1000), Message(role="user", content="do it")]
+
+    with pytest.raises(RuntimeError, match="请求内容过大"):
+        await agent._run_task_loop(
+            messages, [], _UnreachableProvider(), session,
+            task_id="t1", turn=1, task_tool_ctx=ctx,
+        )

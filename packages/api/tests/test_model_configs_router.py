@@ -57,6 +57,64 @@ async def test_create_invalid_tier_rejected(client):
     assert resp.status_code == 422
 
 
+async def test_create_context_window_override_and_default(client):
+    resp = await _create(client, model_id="claude-sonnet-5", context_window=500_000)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["context_window"] == 500_000
+    # Name-matched default accompanies every config for the Settings prefill.
+    assert data["default_context_window"] == 1_000_000
+
+
+async def test_create_context_window_null_gets_name_matched_default(client):
+    resp = await _create(client, model_id="claude-haiku-4-5")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["context_window"] is None
+    assert data["default_context_window"] == 200_000
+
+
+async def test_create_invalid_context_window_rejected(client):
+    resp = await _create(client, model_id="claude-sonnet-5", context_window=0)
+    assert resp.status_code == 422
+    resp = await _create(client, model_id="claude-sonnet-5", context_window=3_000_000)
+    assert resp.status_code == 422
+
+
+async def test_update_context_window_and_clear_it(client):
+    created = (await _create(client, model_id="claude-sonnet-5", context_window=500_000)).json()
+    cid = created["config_id"]
+
+    resp = await client.put(f"/api/model-configs/{cid}", json={"context_window": 700_000})
+    assert resp.status_code == 200
+    assert resp.json()["context_window"] == 700_000
+
+    # Explicit null clears the override → back to the name-matched default.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"context_window": None})
+    assert resp.status_code == 200
+    assert resp.json()["context_window"] is None
+
+
+async def test_update_without_context_window_field_keeps_existing(client):
+    created = (await _create(client, model_id="claude-sonnet-5", context_window=900_000)).json()
+    resp = await client.put(
+        f"/api/model-configs/{created['config_id']}", json={"model_id": "claude-sonnet-5"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["context_window"] == 900_000
+
+
+async def test_list_includes_context_window_and_default(client):
+    # Session-scoped DB: earlier tests created other claude-sonnet-5 rows, so
+    # match on the context_window we just wrote, not on the model id.
+    await _create(client, model_id="claude-sonnet-5", context_window=500_000)
+    resp = await client.get("/api/model-configs")
+    assert resp.status_code == 200
+    cfg = next(c for c in resp.json() if c["context_window"] == 500_000)
+    assert cfg["model_id"] == "claude-sonnet-5"
+    assert cfg["default_context_window"] == 1_000_000
+
+
 async def test_list_returns_tier(client):
     await _create(client, model_id="claude-sonnet-5", complexity_tier="low")
     resp = await client.get("/api/model-configs")

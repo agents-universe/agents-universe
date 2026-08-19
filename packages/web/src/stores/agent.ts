@@ -147,13 +147,13 @@ export const useAgentStore = defineStore('agent', () => {
     await fetchModelConfigs()
   }
 
-  async function addModelConfig(body: { provider: string; model_id: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null }) {
+  async function addModelConfig(body: { provider: string; model_id: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null; context_window?: number | null }) {
     const created = await modelConfigsApi.create(body)
     modelConfigs.value = [...modelConfigs.value.filter(c => !c.is_system), created, ...modelConfigs.value.filter(c => c.is_system)]
     return created
   }
 
-  async function updateModelConfig(configId: string, body: { model_id?: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null }) {
+  async function updateModelConfig(configId: string, body: { model_id?: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null; context_window?: number | null }) {
     const updated = await modelConfigsApi.update(configId, body)
     modelConfigs.value = modelConfigs.value.map(c => c.config_id === configId ? updated : c)
     return updated

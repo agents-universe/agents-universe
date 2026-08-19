@@ -34,6 +34,15 @@ def _dumps(obj: Any) -> str:
 
 import frontmatter
 
+from .compressor import (
+    MAX_OUTPUT_RESERVE,
+    MAX_REQUEST_BYTES,
+    compress_history,
+    compression_budget,
+    estimate_history_tokens,
+    estimate_request_bytes,
+    force_compress_history,
+)
 from .knowledge.loader import KnowledgeContextResult
 from .model_routing import resolve_tier_config
 from .providers.base import LLMProvider, Message, StopReason, ToolDefinition
@@ -442,8 +451,6 @@ class Agent:
         pre-classifier assigned to this turn in auto-route mode; surfaced on
         the model_selected event for the UI. None for explicit selection.
         """
-        from .compressor import compress_history, estimate_history_tokens
-
         # Advance turn counter and sync to tool context
         self._turn += 1
         self._tool_ctx.current_turn = self._turn
@@ -482,22 +489,23 @@ class Agent:
             import asyncio as _asyncio
             comp_provider = self._get_provider(config_id)
             tool_defs = [t.to_definition() for t in self._tools.values()]
-            reserved_context = (
+            reserved_input = (
                 estimate_history_tokens([Message(role="system", content=system), Message(role="user", content=user_message)])
                 + sum(estimate_history_tokens([Message(role="system", content=f"{t.name}\n{t.description}\n{t.parameters}")]) for t in tool_defs)
-                + self._config.max_tokens
             )
-            available_budget = comp_provider.context_window - reserved_context
+            available_budget = compression_budget(
+                comp_provider.context_window, reserved_input, self._config.max_tokens
+            )
             if available_budget <= 0:
-                # The reserved content (system + user + tools + max_tokens)
-                # already overflows the window — compression has no room to
-                # help (its summary + recent tail would also overflow) and
-                # `max(budget, 1)` would force-compress on every turn with a
-                # threshold of 0, failing pointlessly. Skip it; the provider's
-                # context_exceeded handling takes over .
+                # The input alone (system + user + tools) already overflows
+                # the window — compression has no room to help (its summary +
+                # recent tail would also overflow) and `max(budget, 1)` would
+                # force-compress on every turn with a threshold of 0, failing
+                # pointlessly. Skip it; the provider's context_exceeded
+                # handling takes over.
                 _log.warning(
                     "agent.run: skip compression — reserved context (%d) exceeds window (%d)",
-                    reserved_context, comp_provider.context_window,
+                    reserved_input + min(self._config.max_tokens, MAX_OUTPUT_RESERVE), comp_provider.context_window,
                 )
             else:
                 async with _asyncio.timeout(30):
@@ -777,6 +785,33 @@ class Agent:
             return None
         return session.new_message()
 
+    def _request_byte_outcome(
+        self,
+        messages: list[Message],
+        tool_defs: list[ToolDefinition],
+    ) -> str:
+        """Enforce the wire byte ceiling: truncates oversized tool messages in
+        place (the in-memory pass; the manual compression path persists it)
+        and returns "ok" / "truncated" / "over_limit"."""
+        outcome = force_compress_history(messages, MAX_REQUEST_BYTES, tool_defs)
+        if outcome == "truncated":
+            _log.warning("agent: request byte guard truncated oversized tool outputs")
+        return outcome
+
+    def _over_limit_message(self, messages: list[Message], tool_defs: list[ToolDefinition]) -> str:
+        """User-facing text when the payload still overflows after truncation
+        (system-prompt knowledge, recent text or attachments dominate)."""
+        size_mb = estimate_request_bytes(messages, tool_defs) / (1024 * 1024)
+        limit_mb = MAX_REQUEST_BYTES // (1024 * 1024)
+        msg = (
+            f"请求内容过大(约 {size_mb:.1f} MB,上限 {limit_mb} MB),"
+            "自动精简后仍超出限制,已停止发送。"
+        )
+        if self._project_context and self._project_context.loaded_entries:
+            msg += f" 当前加载了 {len(self._project_context.loaded_entries)} 个知识文件,可尝试减少。"
+        msg += " 或删除过大的工具输出、新建会话后再试。"
+        return msg
+
     async def _run_loop(
         self,
         messages: list[Message],
@@ -868,6 +903,15 @@ class Agent:
                     history_summary,
                     pending_tool_ids,
                 )
+                if self._request_byte_outcome(messages, tool_defs) == "over_limit":
+                    # Over the wire limit even after in-place truncation —
+                    # stop the turn with an actionable error instead of
+                    # letting the provider gateway reject it with an opaque
+                    # 413, and close the stream like the api_error path.
+                    await session.emit("error", message=self._over_limit_message(messages, tool_defs))
+                    await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
+                    emitted_end = True
+                    break
                 try:
                     async for chunk in provider.stream(
                         messages, tool_defs, max_tokens=self._config.max_tokens
@@ -1641,6 +1685,12 @@ class Agent:
                 task_history,
                 pending_tool_ids,
             )
+            if self._request_byte_outcome(messages, tool_defs) == "over_limit":
+                # Over the wire limit even after in-place truncation — the
+                # task loop surfaces failures via RuntimeError (caught by
+                # _run_task → task_failed → _emit_task_stream_end), so raise
+                # here and let that path close the stream exactly once.
+                raise RuntimeError(self._over_limit_message(messages, tool_defs))
             try:
                 async for chunk in provider.stream(
                     messages, tool_defs, max_tokens=self._config.max_tokens

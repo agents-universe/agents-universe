@@ -5,18 +5,44 @@ are summarized using model_low to stay within budget.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from functools import lru_cache
 
-from .providers.base import LLMProvider, Message
+from .providers.base import LLMProvider, Message, ToolDefinition
 
 COMPRESS_THRESHOLD_RATIO = 0.6
 RECENT_TURNS_KEEP = 8
 TOKENS_PER_WORD = 1.3
 TOKENS_PER_CJK_CHAR = 0.6
+# Output tokens reserved for generation when computing the history budget.
+# max_tokens defaults to 128000 in every agent config; reserving it all
+# against a 128k context window made the budget always <= 0 and automatic
+# compression dead for gpt-4o-class models. 16384 is gpt-4o's output ceiling.
+MAX_OUTPUT_RESERVE = 16384
+# Hard byte ceiling for a single provider request (wire size). Corporate
+# gateways reject oversized bodies with 413; the token heuristic misses
+# base64 images and CJK escaping, so a byte guard is the backstop. Operators
+# behind a lower gateway limit (e.g. nginx default 1MB) can lower it.
+_ESCAPE_FACTOR = 1.15
+_MESSAGE_OVERHEAD_BYTES = 64
+_TOOL_OVERHEAD_BYTES = 64
 
 _log = logging.getLogger("agent_core.compressor")
+
+
+def _env_max_request_bytes() -> int:
+    raw = os.environ.get("AGENT_MAX_REQUEST_BYTES", "")
+    try:
+        return int(raw) if raw else 8 * 1024 * 1024
+    except ValueError:
+        _log.warning("AGENT_MAX_REQUEST_BYTES is not an integer, using default")
+        return 8 * 1024 * 1024
+
+
+MAX_REQUEST_BYTES = _env_max_request_bytes()
 
 SUMMARY_PROMPT = """Summarize the conversation so far concisely. Preserve:
 - Key facts and decisions made
@@ -66,6 +92,120 @@ def _content_as_str(content: str | list | None) -> str:
 def estimate_history_tokens(messages: list[Message]) -> int:
     """Estimate total tokens in a message list."""
     return sum(_estimate_tokens_safe(_content_as_str(m.content)) for m in messages)
+
+
+def compression_budget(context_window: int, reserved_input_tokens: int, max_tokens: int) -> int:
+    """History budget after reserving input and capped output space.
+
+    max_tokens defaults to 128000 in every agent config — reserving it all
+    against a 128k window made the budget always <= 0, silently disabling
+    automatic compression for gpt-4o-class models. The output reserve is
+    capped at MAX_OUTPUT_RESERVE (gpt-4o's output ceiling).
+    """
+    return context_window - reserved_input_tokens - min(max_tokens, MAX_OUTPUT_RESERVE)
+
+
+def estimate_wire_bytes(text: str) -> int:
+    """Estimate the serialized wire size of a text payload.
+
+    HTTP JSON serialization escapes CJK chars to \\uXXXX (6 bytes each), so
+    CJK-heavy payloads are far larger than their raw length — the token
+    heuristic underestimates them badly. ASCII text inflates ~15% from JSON
+    quotes and escapes.
+    """
+    cjk = len(_CJK_RE.findall(text))
+    other = len(text) - cjk
+    return int((cjk * 6 + other) * _ESCAPE_FACTOR)
+
+
+def estimate_request_bytes(
+    messages: list[Message],
+    tool_defs: list[ToolDefinition] | None = None,
+) -> int:
+    """Estimate the serialized request body size (bytes on the wire).
+
+    Deliberately conservative: counts CJK escapes, base64 image data and
+    tool-call JSON — the parts the token heuristic misses. No lru_cache:
+    payloads can be MBs (same reasoning as _estimate_tokens_safe). The cost
+    is O(payload) per call; the provider serializes the same payload right
+    after, so this is not the bottleneck.
+    """
+    total = 0
+    for m in messages:
+        total += _MESSAGE_OVERHEAD_BYTES
+        content = m.content
+        if isinstance(content, str):
+            total += estimate_wire_bytes(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    total += estimate_wire_bytes(str(part))
+                elif part.get("type") == "image":
+                    # Wire form is data:{media_type};base64,{data} — the
+                    # prefix is ASCII and base64 inflates 4/3 over raw bytes.
+                    total += 24 + len(part.get("data") or "")
+                else:
+                    total += estimate_wire_bytes(part.get("text") or "")
+        if m.tool_calls:
+            total += estimate_wire_bytes(json.dumps(m.tool_calls, ensure_ascii=True, default=str))
+        if m.tool_call_id:
+            total += len(m.tool_call_id) + 16
+        if m.name:
+            total += len(m.name) + 16
+    for t in tool_defs or []:
+        total += _TOOL_OVERHEAD_BYTES
+        total += estimate_wire_bytes(t.name)
+        total += estimate_wire_bytes(t.description)
+        total += estimate_wire_bytes(json.dumps(t.parameters, ensure_ascii=True, default=str))
+    return total
+
+
+def truncate_oversized_tool_messages(messages: list[Message]) -> int:
+    """Truncate oversized tool messages in place; returns the count truncated.
+
+    Caps each tool message at a 2000-token budget via binary search on the
+    estimated token count (monotonic in prefix length, so the cutoff is
+    CJK/ASCII-aware — a fixed char ratio would overrun on CJK-heavy content).
+    Roles and ids are untouched, so assistant<->tool pairing stays intact.
+    """
+    truncated = 0
+    for m in messages:
+        if m.role != "tool":
+            continue
+        content = _content_as_str(m.content)
+        if _estimate_tokens_safe(content) <= 2000:
+            continue
+        lo, hi = 0, len(content)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if _estimate_tokens_safe(content[:mid]) <= 2000:
+                lo = mid
+            else:
+                hi = mid - 1
+        m.content = content[:lo] + "\n[... truncated ...]"
+        truncated += 1
+    return truncated
+
+
+def force_compress_history(
+    messages: list[Message],
+    byte_limit: int,
+    tool_defs: list[ToolDefinition] | None = None,
+) -> str:
+    """Enforce a byte ceiling on the request payload before a provider call.
+
+    Deliberately no LLM summarization here: the post-truncation over-limit
+    cases are system-prompt (knowledge), recent text or attachments — a
+    summary of the early segment cannot shrink those, and skipping the LLM
+    keeps this hot-path guard deterministic and free of timeout/failure
+    handling. Returns "ok" (unchanged), "truncated" (shrunk) or "over_limit".
+    """
+    if estimate_request_bytes(messages, tool_defs) <= byte_limit:
+        return "ok"
+    truncate_oversized_tool_messages(messages)
+    if estimate_request_bytes(messages, tool_defs) <= byte_limit:
+        return "truncated"
+    return "over_limit"
 
 
 def split_early_recent(messages: list[Message]) -> tuple[list[Message], list[Message]]:
@@ -143,30 +283,8 @@ async def compress_history(
 
     # If too few messages to split, truncate large tool results in-place
     if len(messages) <= RECENT_TURNS_KEEP:
-        truncated = []
-        for m in messages:
-            content = _content_as_str(m.content)
-            if m.role == "tool" and _estimate_tokens_safe(content) > 2000:
-                # Keep the longest prefix within the 2000-token budget.
-                # _estimate_tokens is monotonic in prefix length, so binary
-                # search gives an exact CJK/ASCII-aware cutoff (a fixed
-                # char/word ratio would overrun on CJK-heavy content).
-                lo, hi = 0, len(content)
-                while lo < hi:
-                    mid = (lo + hi + 1) // 2
-                    if _estimate_tokens_safe(content[:mid]) <= 2000:
-                        lo = mid
-                    else:
-                        hi = mid - 1
-                truncated.append(Message(
-                    role=m.role,
-                    content=content[:lo] + "\n[... truncated ...]",
-                    tool_call_id=m.tool_call_id,
-                    name=m.name,
-                ))
-            else:
-                truncated.append(m)
-        return truncated
+        truncate_oversized_tool_messages(messages)
+        return messages
 
     early, recent = split_early_recent(messages)
 

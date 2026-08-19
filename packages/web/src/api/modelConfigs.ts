@@ -9,6 +9,10 @@ interface ModelConfigResponse {
   base_url: string | null
   url_mode: 'base_url' | 'full_url'
   complexity_tier: 'low' | 'mid' | 'high' | null
+  /** Stored override; null = name-matched default at runtime. */
+  context_window: number | null
+  /** Name-matched window shown as the prefill/default in Settings. */
+  default_context_window: number | null
   is_system: boolean
 }
 
@@ -19,6 +23,7 @@ export interface ModelConfigCreatePayload {
   base_url?: string
   url_mode?: string
   complexity_tier?: 'low' | 'mid' | 'high' | null
+  context_window?: number | null
 }
 
 export interface ModelConfigUpdatePayload {
@@ -27,6 +32,7 @@ export interface ModelConfigUpdatePayload {
   base_url?: string
   url_mode?: string
   complexity_tier?: 'low' | 'mid' | 'high' | null
+  context_window?: number | null
 }
 
 export const modelConfigsApi = {

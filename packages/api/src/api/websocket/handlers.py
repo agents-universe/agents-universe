@@ -739,7 +739,7 @@ async def _handle_message(
             tier_map: dict[str, str] = {}
             azure_configs_missing_endpoint: set[str] = set()
 
-            def _build_cred(provider: str, plain: str, base_url: str | None = None, model_id: str | None = None, url_mode: str = "base_url") -> dict:
+            def _build_cred(provider: str, plain: str, base_url: str | None = None, model_id: str | None = None, url_mode: str = "base_url", context_window: int | None = None) -> dict:
                 cred: dict = {"api_key": plain, "ssl_verify": _ssl_verify}
                 if provider == "azure_openai":
                     cred["endpoint"] = (base_url or "").strip()
@@ -748,6 +748,9 @@ async def _handle_message(
                     cred["url_mode"] = url_mode
                 if model_id:
                     cred["model"] = model_id
+                if context_window:
+                    # Per-config window override; absent = name-matched default.
+                    cred["context_window"] = context_window
                 return cred
 
             # Primary source: user_model_configs table
@@ -763,7 +766,7 @@ async def _handle_message(
                         if mc.provider == "azure_openai" and not (mc.base_url or "").strip():
                             azure_configs_missing_endpoint.add(mc.config_id)
                             continue
-                        credentials[mc.config_id] = _build_cred(mc.provider, plain, base_url=mc.base_url, model_id=mc.model_id, url_mode=mc.url_mode)
+                        credentials[mc.config_id] = _build_cred(mc.provider, plain, base_url=mc.base_url, model_id=mc.model_id, url_mode=mc.url_mode, context_window=mc.context_window)
                         tier_models[mc.config_id] = {"provider": mc.provider, "model": mc.model_id}
                         if mc.complexity_tier in ("low", "mid", "high") and mc.complexity_tier not in tier_map:
                             tier_map[mc.complexity_tier] = mc.config_id

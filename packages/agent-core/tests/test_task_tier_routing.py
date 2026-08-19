@@ -2,7 +2,7 @@
 
 A tier_map routes each plan task to the config serving its
 estimated_complexity (nearest-tier fallback); without a tier_map the session
-provider_key is used for every task (existing behavior).
+config_id is used for every task (existing behavior).
 """
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ async def test_unknown_complexity_uses_session_provider(fake_provider_factory, s
 
 
 async def test_no_tier_map_keeps_session_provider(fake_provider_factory, session):
-    """Explicit mode: every task uses the session provider_key regardless."""
+    """Explicit mode: every task uses the session config_id regardless."""
     agent = _make_agent(tier_map=None)
     for complexity in ("low", "mid", "high", None):
         await _run_task(agent, session, _task(complexity))

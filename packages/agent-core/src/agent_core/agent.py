@@ -783,7 +783,7 @@ class Agent:
         tool_defs: list[ToolDefinition],
         provider: LLMProvider,
         session: ConversationSession,
-        provider_key: str,
+        config_id: str,
     ) -> None:
         """Tool-call loop with stop_reason state machine."""
         # Defense in depth: resumed history (interrupted runs, compressed
@@ -1029,7 +1029,7 @@ class Agent:
                     if tool_name == "plan_task":
                         try:
                             task_summary = await self._run_task_mode(
-                                args, provider, session, messages, tool_defs, provider_key, tool_id
+                                args, provider, session, messages, tool_defs, config_id, tool_id
                             )
                             result = {"status": "completed", "summary": task_summary}
                         except asyncio.CancelledError:
@@ -1220,7 +1220,7 @@ class Agent:
         session: ConversationSession,
         messages: list[Message],
         tool_defs: list[ToolDefinition],
-        provider_key: str,
+        config_id: str,
         plan_tool_id: str,
     ) -> str:
         """Execute a planned task list with DAG-aware parallel scheduling.
@@ -1327,7 +1327,7 @@ class Agent:
                 try:
                     result = await self._execute_single_task(
                         task_map[task_id], provider, session, messages,
-                        tool_defs, provider_key, plan_tool_id,
+                        tool_defs, config_id, plan_tool_id,
                     )
                 except Exception as e:
                     # A crash must not leave the task stuck at "running" with
@@ -1434,7 +1434,7 @@ class Agent:
         session: ConversationSession,
         messages: list[Message],
         tool_defs: list[ToolDefinition],
-        provider_key: str,
+        config_id: str,
         plan_tool_id: str,
     ) -> dict:
         """Execute one planned task. Returns {task_id, status, summary}."""
@@ -1445,8 +1445,8 @@ class Agent:
         turn = self._turn
         task_tool_ctx = self._tool_ctx.copy_for_task(task_id, turn)
         # Auto-route mode: pick the config serving the task's complexity tier
-        # (nearest-tier fallback). Explicit mode keeps the session provider.
-        task_config = provider_key
+        # (nearest-tier fallback). Explicit mode keeps the session config.
+        task_config = config_id
         if self._tier_map:
             resolved = resolve_tier_config(self._tier_map, task.get("estimated_complexity"))
             if resolved and resolved in self._tier_models:

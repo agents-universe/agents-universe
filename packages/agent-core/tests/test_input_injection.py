@@ -503,7 +503,7 @@ async def test_inject_during_task_mode_defers_remaining_tasks():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         ))
         await first_started.wait()

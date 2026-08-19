@@ -139,7 +139,7 @@ async def test_independent_tasks_run_in_parallel():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -174,7 +174,7 @@ async def test_dependent_task_waits_for_dependency():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -208,7 +208,7 @@ async def test_failed_task_cascades_skip_to_dependents():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -264,7 +264,7 @@ async def test_diamond_dependency_parallelism():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -304,7 +304,7 @@ async def test_abort_skips_remaining_tasks():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -341,7 +341,7 @@ async def test_empty_plan_returns_immediately():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -374,7 +374,7 @@ async def test_single_chain_is_sequential():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -402,7 +402,7 @@ async def test_task_plan_created_includes_depends_on():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -441,7 +441,7 @@ async def test_partial_failure_independent_task_continues():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 
@@ -483,7 +483,7 @@ async def test_inflight_task_aborted_emits_task_skipped():
             session=session,
             messages=[],
             tool_defs=[],
-            provider_key="cfg1",
+            config_id="cfg1",
             plan_tool_id="call_plan",
         )
 

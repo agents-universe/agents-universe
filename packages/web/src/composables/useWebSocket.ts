@@ -363,6 +363,8 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           nextStep: msg.next_step as string | undefined,
           progressCompleted: msg.progress_completed as number | undefined,
           progressTotal: msg.progress_total as number | undefined,
+          // Model that actually executes this subtask (auto routing).
+          modelName: msg.actual_model as string | undefined,
         }, convId)
         break
       case 'task_progress':

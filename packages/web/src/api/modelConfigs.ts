@@ -8,6 +8,7 @@ interface ModelConfigResponse {
   key_hint: string | null
   base_url: string | null
   url_mode: 'base_url' | 'full_url'
+  complexity_tier: 'low' | 'mid' | 'high' | null
   is_system: boolean
 }
 
@@ -17,6 +18,7 @@ export interface ModelConfigCreatePayload {
   api_key?: string
   base_url?: string
   url_mode?: string
+  complexity_tier?: 'low' | 'mid' | 'high' | null
 }
 
 export interface ModelConfigUpdatePayload {
@@ -24,6 +26,7 @@ export interface ModelConfigUpdatePayload {
   api_key?: string
   base_url?: string
   url_mode?: string
+  complexity_tier?: 'low' | 'mid' | 'high' | null
 }
 
 export const modelConfigsApi = {

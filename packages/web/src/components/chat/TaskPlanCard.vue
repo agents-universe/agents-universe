@@ -18,7 +18,8 @@
         <div class="task-plan-item-header">
           <span class="task-status-icon" :class="'status-' + task.status" />
           <span class="task-plan-item-title">{{ task.title }}</span>
-          <span v-if="task.modelTier" class="task-plan-tier">{{ task.modelTier }}</span>
+          <!-- 实际执行模型优先（task_started），缺失时回退预估复杂度 -->
+          <span v-if="task.modelName || task.modelTier" class="task-plan-tier">{{ task.modelName ?? task.modelTier }}</span>
         </div>
         <!-- 依赖提示：pending 任务显示等待哪些任务 -->
         <div v-if="task.status === 'pending' && waitingFor(task).length" class="task-plan-waiting">

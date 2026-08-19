@@ -8,7 +8,7 @@
         class="provider-pill"
         :class="{ active: selectedConfigId === opt.id }"
         @click="selectConfig(opt.id)"
-      >{{ opt.label }}</button>
+      ><Sparkles v-if="opt.auto" :size="12" class="provider-pill-auto" />{{ opt.label }}</button>
     </div>
 
     <!-- Attachments (pending uploads) -->
@@ -83,13 +83,13 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive } from 'vue'
-import { Send, Square, Paperclip, FileText, X, Plus } from 'lucide-vue-next'
+import { Send, Square, Paperclip, FileText, X, Plus, Sparkles } from 'lucide-vue-next'
 import { EditorView, keymap } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useAgentStore } from '@/stores/agent'
+import { useAgentStore, AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
 import { mediaApi } from '@/api/media'
 import { ApiError } from '@/api/client'
 import type { AttachmentRecord } from '@/types'
@@ -141,12 +141,15 @@ let view: EditorView | null = null
 
 const selectedConfigId = ref<string | null>(null)
 
-const modelOptions = computed(() =>
-  agentStore.modelConfigs.map(c => ({
+const modelOptions = computed<Array<{ id: string; label: string; auto?: boolean }>>(() => [
+  // "auto" always sits first; the sentinel flows through localStorage and the
+  // WS payload untouched and is resolved to a real config server-side.
+  { id: AUTO_MODEL_CONFIG_ID, label: '自动', auto: true },
+  ...agentStore.modelConfigs.map((c): { id: string; label: string; auto?: boolean } => ({
     id: c.config_id,
     label: c.is_system ? `${c.model_id} Default` : c.model_id,
-  }))
-)
+  })),
+])
 
 // --- Attachments -----------------------------------------------------------
 
@@ -242,7 +245,11 @@ watch(
     if (storeConfigId && opts.some((opt) => opt.id === storeConfigId)) {
       selectedConfigId.value = storeConfigId
     } else if (!selectedConfigId.value || !opts.some((opt) => opt.id === selectedConfigId.value)) {
-      selectConfig(opts[0].id)
+      // Never auto-select the "auto" sentinel: new users keep the first real
+      // model (status quo) until they opt into auto.
+      const fallback = opts.find((opt) => opt.id !== AUTO_MODEL_CONFIG_ID)
+      if (fallback) selectConfig(fallback.id)
+      else if (opts[0]) selectConfig(opts[0].id)
     }
   },
   { immediate: true },

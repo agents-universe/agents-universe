@@ -17,6 +17,7 @@ from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
 from api.models.user import UserModelConfig
+from api.services.model_tier import infer_complexity_tier
 from api.services.token_vault import decrypt_or_none, encrypt, key_hint as make_hint
 
 router = APIRouter()
@@ -45,6 +46,12 @@ def _validate_url_mode(value: str | None) -> str | None:
     return value
 
 
+def _validate_complexity_tier(value: str | None) -> str | None:
+    if value is not None and value not in ("low", "mid", "high"):
+        raise ValueError("complexity_tier must be 'low', 'mid', 'high' or null")
+    return value
+
+
 class ModelConfigCreate(BaseModel):
     provider: str = Field(max_length=50)
     model_id: str = Field(max_length=200)
@@ -54,6 +61,8 @@ class ModelConfigCreate(BaseModel):
     api_key: str | None = Field(None, max_length=2800)
     base_url: str | None = Field(None, max_length=500)
     url_mode: str | None = Field(None, max_length=20)
+    # Auto-route tier; omitted/null → inferred from provider+model_id on create.
+    complexity_tier: str | None = Field(None, max_length=20)
 
     @field_validator("base_url")
     @classmethod
@@ -64,6 +73,11 @@ class ModelConfigCreate(BaseModel):
     @classmethod
     def validate_url_mode(cls, value: str | None) -> str | None:
         return _validate_url_mode(value)
+
+    @field_validator("complexity_tier")
+    @classmethod
+    def validate_complexity_tier(cls, value: str | None) -> str | None:
+        return _validate_complexity_tier(value)
 
 
 class ModelConfigUpdate(BaseModel):
@@ -72,6 +86,8 @@ class ModelConfigUpdate(BaseModel):
     api_key: str | None = Field(None, max_length=2800)
     base_url: str | None = Field(None, max_length=500)
     url_mode: str | None = Field(None, max_length=20)
+    # Explicit null clears the tier (model no longer participates in auto).
+    complexity_tier: str | None = Field(None, max_length=20)
 
     @field_validator("base_url")
     @classmethod
@@ -82,6 +98,11 @@ class ModelConfigUpdate(BaseModel):
     @classmethod
     def validate_url_mode(cls, value: str | None) -> str | None:
         return _validate_url_mode(value)
+
+    @field_validator("complexity_tier")
+    @classmethod
+    def validate_complexity_tier(cls, value: str | None) -> str | None:
+        return _validate_complexity_tier(value)
 
 
 def _system_default_entry() -> dict | None:
@@ -95,6 +116,7 @@ def _system_default_entry() -> dict | None:
         "key_hint": None,
         "base_url": settings.system_default_base_url or None,
         "url_mode": "base_url",
+        "complexity_tier": None,
         "is_system": True,
     }
 
@@ -119,6 +141,7 @@ async def list_model_configs(
             "key_hint": r.key_hint,
             "base_url": r.base_url,
             "url_mode": r.url_mode,
+            "complexity_tier": r.complexity_tier,
             "is_system": False,
         }
         for r in rows
@@ -168,6 +191,13 @@ async def create_model_config(
         key_hint=hint,
         base_url=body.base_url or None,
         url_mode=body.url_mode or "base_url",
+        # Explicit tier wins; otherwise a best-effort inference from the
+        # model name (user can adjust later in Settings).
+        complexity_tier=(
+            body.complexity_tier
+            if body.complexity_tier is not None
+            else infer_complexity_tier(body.provider, body.model_id.strip())
+        ),
         sort_order=next_order,
     )
     db.add(row)
@@ -181,6 +211,7 @@ async def create_model_config(
         "key_hint": row.key_hint,
         "base_url": row.base_url,
         "url_mode": row.url_mode,
+        "complexity_tier": row.complexity_tier,
         "is_system": False,
     }
 
@@ -215,6 +246,8 @@ async def update_model_config(
         row.base_url = body.base_url
     if "url_mode" in body.model_fields_set and body.url_mode:
         row.url_mode = body.url_mode
+    if "complexity_tier" in body.model_fields_set:
+        row.complexity_tier = body.complexity_tier
     if row.provider == "azure_openai" and not row.base_url:
         raise HTTPException(status_code=400, detail="Azure OpenAI requires a base URL")
 
@@ -228,6 +261,7 @@ async def update_model_config(
         "key_hint": row.key_hint,
         "base_url": row.base_url,
         "url_mode": row.url_mode,
+        "complexity_tier": row.complexity_tier,
         "is_system": False,
     }
 

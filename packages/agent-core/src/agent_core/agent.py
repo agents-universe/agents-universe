@@ -35,6 +35,7 @@ def _dumps(obj: Any) -> str:
 import frontmatter
 
 from .knowledge.loader import KnowledgeContextResult
+from .model_routing import resolve_tier_config
 from .providers.base import LLMProvider, Message, StopReason, ToolDefinition
 from .providers.registry import get_provider
 from .session import ConversationSession, UserInputEntry
@@ -136,10 +137,12 @@ class Agent:
         personal_memory_context: str = "",
         active_plan_context: str = "",
         workflow_registry: Any = None,
+        tier_map: dict[str, str] | None = None,  # {complexity tier: config_id}, auto-route mode
     ) -> None:
         self._config = config
         self._credentials = credentials
         self._tier_models = tier_models
+        self._tier_map = tier_map
         self._skill_registry = skill_registry
         self._workflow_registry = workflow_registry
         self._tool_ctx = tool_context
@@ -427,12 +430,17 @@ class Agent:
         session: ConversationSession,
         provider_override: str | None = None,
         attachments: list[dict] | None = None,
+        auto_tier: str | None = None,
     ) -> None:
         """Entry point for a single user turn. Emits events to session.
 
         attachments: prepared attachment records ({name, media_type, size,
         rel_path, inline_text?, image_data?, image_media_type?}) — the API
         handler validates them and derives file content from disk.
+
+        auto_tier: the complexity tier ("low"/"mid"/"high") the caller's
+        pre-classifier assigned to this turn in auto-route mode; surfaced on
+        the model_selected event for the UI. None for explicit selection.
         """
         from .compressor import compress_history, estimate_history_tokens
 
@@ -449,7 +457,7 @@ class Agent:
             config_id = next(iter(self._tier_models))
         model_cfg = self._tier_models.get(config_id, {})
         provider_key = model_cfg.get("provider", "openai")
-        await session.emit("model_selected", provider=provider_key, model=model_cfg.get("model", ""), tier=None)
+        await session.emit("model_selected", provider=provider_key, model=model_cfg.get("model", ""), tier=auto_tier)
 
         # 2. Emit context usage info
         if self._project_context and self._project_context.loaded_entries:
@@ -1436,7 +1444,14 @@ class Agent:
         self._turn += 1
         turn = self._turn
         task_tool_ctx = self._tool_ctx.copy_for_task(task_id, turn)
-        task_provider = self._get_provider(provider_key)
+        # Auto-route mode: pick the config serving the task's complexity tier
+        # (nearest-tier fallback). Explicit mode keeps the session provider.
+        task_config = provider_key
+        if self._tier_map:
+            resolved = resolve_tier_config(self._tier_map, task.get("estimated_complexity"))
+            if resolved and resolved in self._tier_models:
+                task_config = resolved
+        task_provider = self._get_provider(task_config)
 
         # Update live plan status
         for tp in self._task_plan:
@@ -1450,7 +1465,8 @@ class Agent:
             "task_started",
             task_id=task_id,
             title=task["title"],
-            model_tier=provider_key,
+            model_tier=task_config,
+            actual_model=task_provider.model_name,
             **progress,
         )
 

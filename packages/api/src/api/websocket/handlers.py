@@ -21,6 +21,12 @@ _log = logging.getLogger("agents_universe.ws")
 
 router = APIRouter()
 
+# Reserved config_id for the composer's "auto" option: routes each turn by
+# task complexity across the user's tiered model configs. Resolved below to a
+# real config_id before provider_override, so the literal never reaches
+# agent.run().
+_AUTO_CONFIG_ID = "auto"
+
 
 async def _check_project_access(conversation_id: str, user_id: str) -> bool:
     """Whether user_id may still interact with the conversation's project.
@@ -648,6 +654,7 @@ async def _handle_message(
     from agent_core.agent import Agent, AgentConfig
     from agent_core.compressor import compress_history, estimate_history_tokens
     from agent_core.knowledge.loader import load_project_context
+    from agent_core.model_routing import cheapest_tier, resolve_tier_config
     from agent_core.providers.base import Message
     from agent_core.session import ConversationSession
     from agent_core.skills.registry import SkillRegistry
@@ -726,6 +733,10 @@ async def _handle_message(
 
             credentials: dict[str, dict] = {}
             tier_models: dict[str, dict] = {}
+            # {tier: config_id} first-wins by sort_order — only configs that
+            # decrypted successfully enter the map, so auto routing never
+            # targets an unusable key.
+            tier_map: dict[str, str] = {}
             azure_configs_missing_endpoint: set[str] = set()
 
             def _build_cred(provider: str, plain: str, base_url: str | None = None, model_id: str | None = None, url_mode: str = "base_url") -> dict:
@@ -754,6 +765,8 @@ async def _handle_message(
                             continue
                         credentials[mc.config_id] = _build_cred(mc.provider, plain, base_url=mc.base_url, model_id=mc.model_id, url_mode=mc.url_mode)
                         tier_models[mc.config_id] = {"provider": mc.provider, "model": mc.model_id}
+                        if mc.complexity_tier in ("low", "mid", "high") and mc.complexity_tier not in tier_map:
+                            tier_map[mc.complexity_tier] = mc.config_id
                     except Exception:
                         _log.warning("Failed to decrypt model config %s for user %s", mc.config_id, user_id, exc_info=True)
 
@@ -823,7 +836,32 @@ async def _handle_message(
             # Defaults may fall back, but an explicit selection must never run
             # under a different model than the one shown in the UI.
             config_id_override = msg.get("config_id") or msg.get("provider")
-            if config_id_override:
+            is_auto = config_id_override == _AUTO_CONFIG_ID
+            auto_classification: str | None = None
+            target_config: str | None = None
+            if is_auto:
+                # Pre-classify with the cheapest tiered model, then route to
+                # the config serving that complexity. Any failure degrades to
+                # the default selection — auto is never a hard error.
+                if tier_map:
+                    cheap_cfg = cheapest_tier(tier_map)
+                    if cheap_cfg:
+                        from api.services.complexity import classify_complexity
+                        try:
+                            auto_classification = await classify_complexity(
+                                db, conversation_id, msg.get("content", ""),
+                                credentials, tier_models, tier_map[cheap_cfg],
+                            )
+                        except Exception:
+                            _log.warning(
+                                "Complexity pre-classification failed for conversation=%s, falling back to default model",
+                                conversation_id, exc_info=True,
+                            )
+                    if auto_classification:
+                        target_config = resolve_tier_config(tier_map, auto_classification)
+                if not target_config:
+                    target_config = next((key for key in tier_models if key in credentials), None)
+            elif config_id_override:
                 if config_id_override in azure_configs_missing_endpoint:
                     await _send_turn_error(ws, conversation_id, {
                         "type": "error",
@@ -1067,6 +1105,9 @@ async def _handle_message(
                 personal_memory_context=personal_memory_ctx,
                 active_plan_context=active_plan_ctx,
                 workflow_registry=workflow_registry,
+                # Plan subtasks route by their estimated_complexity only in
+                # auto mode; explicit selections keep the session provider.
+                tier_map=tier_map if is_auto else None,
             )
 
             # Tools run concurrently with event persistence, so they need their
@@ -1132,6 +1173,7 @@ async def _handle_message(
                         session=session,
                         provider_override=provider_override,
                         attachments=attachment_records,
+                        auto_tier=auto_classification,
                     )
                 finally:
                     await session.close()
@@ -1322,6 +1364,7 @@ async def _handle_message(
                                 next_step=event.data.get("next_step"),
                                 progress_completed=event.data.get("progress_completed"),
                                 progress_total=event.data.get("progress_total"),
+                                actual_model=event.data.get("actual_model"),
                             )
                             await _persist_task_event(
                                 event_db, conversation_id, event.type,
@@ -2322,6 +2365,7 @@ async def _update_task_status(
     next_step: str | None = None,
     progress_completed: int | None = None,
     progress_total: int | None = None,
+    actual_model: str | None = None,
 ) -> None:
     """Update status (and optional summary/error/progress) for a single AgentTask.
 
@@ -2351,6 +2395,8 @@ async def _update_task_status(
         values["progress_completed"] = progress_completed
     if progress_total is not None:
         values["progress_total"] = progress_total
+    if actual_model is not None:
+        values["actual_model"] = actual_model[:100]
 
     await db.execute(
         update(AgentTask)

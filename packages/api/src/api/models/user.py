@@ -77,6 +77,9 @@ class UserModelConfig(Base):
     key_hint: Mapped[str | None] = mapped_column(String(10))
     base_url: Mapped[str | None] = mapped_column(String(500))
     url_mode: Mapped[str] = mapped_column(String(20), default="base_url", server_default="base_url")
+    # Auto-route tier: "low" | "mid" | "high" | None (None = user hasn't
+    # assigned; the model then only serves explicit selection, not auto).
+    complexity_tier: Mapped[str | None] = mapped_column(String(20))
     sort_order: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

@@ -54,6 +54,7 @@
                 <span class="token-service-sub">{{ providerLabel(cfg.provider) }}</span>
               </div>
               <span v-if="cfg.key_hint" class="token-hint-badge">{{ cfg.key_hint }}</span>
+              <span v-if="cfg.complexity_tier" class="token-hint-badge tier-badge" :class="'tier-' + cfg.complexity_tier">{{ tierLabel(cfg.complexity_tier) }}</span>
             </div>
 
             <div v-if="editForms[cfg.config_id]" class="token-edit-block">
@@ -80,6 +81,15 @@
                   <option value="base_url">Base URL</option>
                   <option value="full_url">完整地址</option>
                 </select>
+              </div>
+              <div class="token-url-row">
+                <select v-model="editForms[cfg.config_id].complexity_tier" class="input token-tier-select">
+                  <option :value="null">未指定</option>
+                  <option value="low">轻量 (low)</option>
+                  <option value="mid">标准 (mid)</option>
+                  <option value="high">旗舰 (high)</option>
+                </select>
+                <span class="token-url-hint">自动路由档位</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveConfig(cfg.config_id)" :disabled="saving === cfg.config_id">
@@ -121,6 +131,15 @@
                   <option value="base_url">Base URL</option>
                   <option value="full_url">完整地址</option>
                 </select>
+              </div>
+              <div class="token-url-row">
+                <select v-model="newTier" class="input token-tier-select" @change="newTierDirty = true">
+                  <option :value="null">未指定</option>
+                  <option value="low">轻量 (low)</option>
+                  <option value="mid">标准 (mid)</option>
+                  <option value="high">旗舰 (high)</option>
+                </select>
+                <span class="token-url-hint">自动路由档位（随模型 ID 自动推断）</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="addConfig" :disabled="!newProvider || !newModelId || saving === '__new__'">
@@ -368,6 +387,7 @@ import { modelConfigsApi } from '@/api/modelConfigs'
 import { createProjectSecret, deleteProjectSecret, listProjectSecrets, updateProjectSecret } from '@/api/projectSecrets'
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
+import { inferTier } from '@/utils/modelTier'
 import type { ProjectSecret } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
@@ -385,7 +405,7 @@ const tabs = [
 const systemDefault = computed(() => agentStore.modelConfigs.find(c => c.is_system) ?? null)
 const userConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
 
-const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string }>>({})
+const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null }>>({})
 
 function initEditForms() {
   for (const cfg of userConfigs.value) {
@@ -395,6 +415,7 @@ function initEditForms() {
         api_key: '',
         base_url: cfg.base_url ?? '',
         url_mode: cfg.url_mode ?? 'base_url',
+        complexity_tier: cfg.complexity_tier ?? null,
       }
     }
   }
@@ -422,6 +443,14 @@ function providerLabel(provider: string) {
   }
 }
 
+function tierLabel(tier: 'low' | 'mid' | 'high'): string {
+  switch (tier) {
+    case 'low': return '轻量'
+    case 'mid': return '标准'
+    case 'high': return '旗舰'
+  }
+}
+
 const saving = ref<string | null>(null)
 const testing = ref<string | null>(null)
 const messages = reactive<Record<string, { ok: boolean; text: string }>>({})
@@ -431,11 +460,15 @@ async function saveConfig(configId: string) {
   delete messages[configId]
   try {
     const form = editForms[configId]
-    const body: Record<string, string> = {}
+    const body: {
+      model_id?: string; api_key?: string; base_url?: string; url_mode?: string
+      complexity_tier?: 'low' | 'mid' | 'high' | null
+    } = {}
     if (form.model_id) body.model_id = form.model_id
     if (form.api_key) body.api_key = form.api_key
     if (form.base_url !== undefined) body.base_url = form.base_url
     if (form.url_mode) body.url_mode = form.url_mode
+    body.complexity_tier = form.complexity_tier
     await agentStore.updateModelConfig(configId, body)
     form.api_key = ''
     messages[configId] = { ok: true, text: '已保存' }
@@ -482,6 +515,14 @@ const newModelId = ref('')
 const newApiKey = ref('')
 const newBaseUrl = ref('')
 const newUrlMode = ref('base_url')
+const newTier = ref<'low' | 'mid' | 'high' | null>(null)
+// User-picked tier wins over inference while the model id keeps changing.
+const newTierDirty = ref(false)
+
+watch([newProvider, newModelId], ([provider, modelId]) => {
+  if (newTierDirty.value) return
+  newTier.value = inferTier(provider, modelId)
+})
 
 async function addConfig() {
   saving.value = '__new__'
@@ -493,18 +534,22 @@ async function addConfig() {
       api_key: newApiKey.value || undefined,
       base_url: newBaseUrl.value || undefined,
       url_mode: newUrlMode.value,
+      complexity_tier: newTier.value,
     })
     editForms[created.config_id] = {
       model_id: created.model_id,
       api_key: '',
       base_url: created.base_url ?? '',
       url_mode: created.url_mode ?? 'base_url',
+      complexity_tier: created.complexity_tier ?? null,
     }
     newProvider.value = ''
     newModelId.value = ''
     newApiKey.value = ''
     newBaseUrl.value = ''
     newUrlMode.value = 'base_url'
+    newTier.value = null
+    newTierDirty.value = false
     showAddForm.value = false
     messages['__new__'] = { ok: true, text: '已添加' }
   } catch (e) {
@@ -1090,6 +1135,27 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   width: 120px;
   flex-shrink: 0;
   font-size: 12px;
+}
+.token-tier-select {
+  width: 140px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.tier-badge {
+  border: none;
+  background: rgba(127, 127, 127, 0.12);
+}
+.tier-badge.tier-low {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.tier-badge.tier-mid {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+.tier-badge.tier-high {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
 }
 .token-url-row {
   display: flex;

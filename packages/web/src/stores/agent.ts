@@ -9,6 +9,9 @@ import type { AgentInfo, ModelConfig } from '@/types'
 const STORAGE_KEY = 'agents-universe:currentAgentSlug'
 const STORAGE_KEY_CONFIG_ID = 'agents-universe:selectedConfigId'
 
+/** Reserved config_id for the composer's "auto" model option. */
+export const AUTO_MODEL_CONFIG_ID = 'auto'
+
 export const useAgentStore = defineStore('agent', () => {
   const agents = ref<AgentInfo[]>([])
   const currentAgent = ref<AgentInfo | null>(null)
@@ -123,7 +126,11 @@ export const useAgentStore = defineStore('agent', () => {
       modelConfigs.value = await agentsApi.getModelConfigs()
       let savedConfigId: string | null = null
       try { savedConfigId = localStorage.getItem(STORAGE_KEY_CONFIG_ID) } catch { /* storage unavailable — no saved selection */ }
-      if (savedConfigId && modelConfigs.value.some(c => c.config_id === savedConfigId)) {
+      if (savedConfigId === AUTO_MODEL_CONFIG_ID) {
+        // The "auto" sentinel is not a real config — keep it as the selection
+        // instead of treating it as a stale entry.
+        selectedConfigId.value = savedConfigId
+      } else if (savedConfigId && modelConfigs.value.some(c => c.config_id === savedConfigId)) {
         selectedConfigId.value = savedConfigId
       } else if (savedConfigId) {
         // The saved model config no longer exists; clear the stale cache entry.
@@ -140,13 +147,13 @@ export const useAgentStore = defineStore('agent', () => {
     await fetchModelConfigs()
   }
 
-  async function addModelConfig(body: { provider: string; model_id: string; api_key?: string; base_url?: string; url_mode?: string }) {
+  async function addModelConfig(body: { provider: string; model_id: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null }) {
     const created = await modelConfigsApi.create(body)
     modelConfigs.value = [...modelConfigs.value.filter(c => !c.is_system), created, ...modelConfigs.value.filter(c => c.is_system)]
     return created
   }
 
-  async function updateModelConfig(configId: string, body: { model_id?: string; api_key?: string; base_url?: string; url_mode?: string }) {
+  async function updateModelConfig(configId: string, body: { model_id?: string; api_key?: string; base_url?: string; url_mode?: string; complexity_tier?: 'low' | 'mid' | 'high' | null }) {
     const updated = await modelConfigsApi.update(configId, body)
     modelConfigs.value = modelConfigs.value.map(c => c.config_id === configId ? updated : c)
     return updated

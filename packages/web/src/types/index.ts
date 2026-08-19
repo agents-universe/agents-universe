@@ -50,6 +50,8 @@ export interface ModelConfig {
   key_hint: string | null
   base_url: string | null
   url_mode: 'base_url' | 'full_url'
+  /** Auto-route tier; null = not part of auto routing until the user assigns one. */
+  complexity_tier: 'low' | 'mid' | 'high' | null
   is_system: boolean
 }
 
@@ -150,6 +152,8 @@ export interface AgentTask {
   title: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   modelTier?: string
+  /** Model that actually executed this subtask (task_started event). */
+  modelName?: string
   summary?: string
   error?: string
   currentStep?: string

@@ -1207,6 +1207,10 @@
   border-color: var(--accent);
   color: var(--text-primary);
 }
+.provider-pill-auto {
+  margin-right: 4px;
+  vertical-align: -1px;
+}
 .provider-pill.active {
   background: var(--accent-gradient);
   border-color: var(--accent);

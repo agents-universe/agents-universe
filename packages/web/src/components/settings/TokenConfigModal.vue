@@ -28,6 +28,7 @@
 
         <!-- LLM Models -->
         <div v-if="activeTab === 'llm'" class="token-section">
+          <p class="token-section-hint">你配置的模型仅自己可见，其他用户无法查看或使用</p>
           <!-- System default (read-only) -->
           <div v-if="systemDefault" class="token-service-row system-default-row">
             <div class="token-service-header">

@@ -24,6 +24,7 @@ If the task depends on overall phase order or release-regression context, ensure
 7. **Git-calibrated scope**: absorb Git analysis before designing cases; do not list cases only from Jira text
 8. **Detail placement**: record each identified API, job, service, key parameter, script input, assertion, and evidence requirement in the structured design and generated test assets; do not require the complete execution contract to be copied into Jira prose. When showing results to users or writing them to Jira, lead with the business scenario, outcome, impact, and next action (see Presentation Standard).
 9. **Order follows execution priority**: main-flow, happy path, and core regression first; boundary, exception, negative, and corner cases later
+10. **Black-box design**: cases target observable business behavior through the UI or the system's own API — never through the product repo's internal unit tests. Do not design "run pytest/vitest/jest on the module" style cases, and never cite unit-test results as evidence.
 
 ## Execution Steps
 

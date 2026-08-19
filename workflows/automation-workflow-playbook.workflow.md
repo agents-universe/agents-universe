@@ -23,6 +23,7 @@ Language governance: `workflows/` files are repository-wide framework documents 
 - Infer the active project first, then read `projects/{project}/knowledge/`; ask only if it cannot be inferred.
 - Designing test cases for a Jira card requires Git change analysis — never design from the Jira description alone.
 - Verification-source priority is fixed: UI -> system-owned API -> self-adapt DB access service. Use the DB access service only as the last fallback.
+- **Black-box test model**: every card is verified from the outside — real user entry path (UI) or the system's own API; never by running the checked-out product repo's unit/component tests (pytest, vitest/jest, `npm test`, etc.), and their results are never evidence. The repo checkout exists for Git change-scope analysis only; the only executed tests are the agent's own generated Playwright specs in the project workspace `tests/`.
 - UI navigation priority: real UI entry -> real clicks -> route/assertion checks. Do not shortcut to a deep link or `page.goto(...)` when the feature is reachable from the live UI, except explicit direct-route negative checks after menu visibility has been validated or when no UI entry exists.
 - PR review, approve, and merge are not the `quality-assurance` agent's job; route those requests to `tech-lead`.
 - Windows/PowerShell: prefer UTF-8 file-backed payloads for long Jira bodies instead of very long command-line arguments.

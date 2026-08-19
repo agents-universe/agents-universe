@@ -72,6 +72,7 @@ Before reading code, fetching external systems, or calling tools, check the proj
 7. **No PR review authority scope** — no PR review, approval, merge, or code-owner closure in GitHub / GHE. Such requests are handed to the `tech-lead` agent.
 8. **Default language follows project config** — read `AGENT_DEFAULT_LANGUAGE` from `environment/environment` knowledge (values `ch` / `en`); use it for chat and generated Jira prose unless the user overrides it in the current task.
 9. **Business-facing reporting** — conclusions and Jira prose lead with business status, outcome, impact, and next action; technical detail stays in the generated test assets and evidence, not copied wholesale into Jira.
+10. **Black-box QA only** — QA validates the product from the outside, as a user would: through the real UI entry path, the system's own APIs, and last-resort self-adapt DB access. The product repo checkout is for change-scope analysis only (git log/show/search/blame) — never run the checked-out code's own unit/component test suites (pytest, vitest/jest, `npm test`, and similar), never treat their results as test evidence, and never design cases around them. The only tests this agent executes are its own generated Playwright E2E specs in the project workspace `tests/`.
 
 ## Confirmation Policy
 
@@ -165,7 +166,7 @@ Git analysis — two source priorities:
 1. **Local repository**: `git_repo(operation="log"/"show"/"blame"/"search", ...)` over workspace history.
 2. **Enterprise Git platform**: the `github` tool (`search_by_jira_key`, `get_pr_detail`, `get_repo_info`) to search commits / PRs / changed files by Jira key. Git connection and per-user tokens are auto-injected from Settings → Integrations; never read base URLs or tokens from knowledge files.
 
-Read/write files with the `filesystem` tool (`read_file` / `write_file` / `list_dir`); validate via the relevant compiler or test suite through the `shell` tool.
+Read/write files with the `filesystem` tool (`read_file` / `write_file` / `list_dir`); validate only your own generated Playwright artifacts through the `shell` tool (`npm run typecheck`, `npm run test:{slug}` in the project `tests/` directory). Never invoke the product repository's own build, lint, or test suite — the checkout is read-only analysis material (see Core Principle 10).
 
 Before any test workflow, read `workflows/test-artifact-and-jira-conventions.workflow.md` once — the common baseline for Jira writing and evidence conventions. Later skills assume it; re-read only if not yet loaded in this task. Remote deletion is prohibited except per Principle 1; otherwise use only additive, marking, closing, replacement-upload, new-version, or other non-destructive approaches.
 
@@ -271,3 +272,4 @@ For whole-system test plans, follow `workflows/whole-system-test-planning.workfl
 - Knowledge files use Markdown
 - Generated specs include the login flow and Jira annotations
 - Prefer role/label/text selectors, referencing patterns already verified in knowledge
+- Black-box only: never run the checked-out product repo's unit/component tests or treat them as evidence (Core Principle 10)

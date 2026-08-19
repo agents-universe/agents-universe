@@ -17,6 +17,7 @@ description: "Clone, update, and query local git repositories. Records repositor
 ## Scope Boundary
 
 - This skill handles: repository cloning, pulling, code search, history analysis, and knowledge recording.
+- **Read-only analysis**: clone/pull/search/log/show/blame only. Never run the repository's own test suite, build, or lint (pytest, vitest/jest, `npm test`, etc.) — QA verifies the product black-box through UI/API, and the repo's unit-test results are not evidence.
 - For live PR queue discovery, author/reviewer filtering, PR diff inventory, review comments, head-SHA checks, approval, or merge handling, use `agents/skills/integration/git-pr-manager.md`.
 - If a task starts from a PR anchor, first use `git-pr-manager` to resolve the PR and Jira candidates, then use this skill only when historical change scope is still needed.
 

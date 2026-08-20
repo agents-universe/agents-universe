@@ -78,8 +78,8 @@ All charts share one system look:
 
 ## Rule 5 — Mermaid for Concepts Only
 
-ER diagrams, pipeline DAGs, flowcharts → `chart_renderer(code="<mermaid source>")`. It validates and returns a PNG only when the source parses. Never use Mermaid for numeric data.
+ER diagrams, pipeline DAGs, flowcharts → `chart_renderer(code="<mermaid source>")`. It validates and returns a PNG only when the source parses. Never use Mermaid for numeric data. The PNG is shown in chat automatically - do not repeat the Mermaid source or embed image markdown in the reply.
 
 ## Output Requirements
 
-Every chart ships with: title, labeled axes with units, legend (if multi-series), source/window footnote, the `/api/media/` link, and a one-line "how to read this" takeaway.
+Every chart ships with: title, labeled axes with units, legend (if multi-series), source/window footnote, and a one-line "how to read this" takeaway. Chart images are displayed to the user automatically - never embed `![](/api/media/...)` markdown or repeat Mermaid source in the reply.

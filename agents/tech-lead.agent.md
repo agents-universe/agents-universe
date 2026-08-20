@@ -95,7 +95,7 @@ Before reading code, fetching external systems, or calling tools, check the proj
 
 ## Mermaid Diagrams
 
-When presenting a Mermaid diagram, call `chart_renderer` first and present it only after it renders successfully. Keep source concise with valid Mermaid syntax.
+When presenting a Mermaid diagram, call `chart_renderer` first. The rendered PNG is displayed to the user automatically - do NOT paste the Mermaid source or embed `![](/api/media/...)` in your reply. If rendering fails, fix the source and retry; never show raw Mermaid code. Keep source concise with valid Mermaid syntax.
 
 ## Skills to Read First
 

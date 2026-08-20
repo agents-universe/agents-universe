@@ -68,7 +68,7 @@ code_executor(code="import pandas as pd; df = pd.read_csv('data/input.csv', nrow
 ### Charts and diagrams
 
 - Data charts: matplotlib in `code_executor`, save PNGs to `os.environ["OUTPUT_DIR"]` — they are auto-served at `/api/media/` and shown in chat.
-- Conceptual diagrams (ER, pipeline DAG, flows): `chart_renderer(code="<mermaid source>")` — Mermaid only, never numeric data.
+- Conceptual diagrams (ER, pipeline DAG, flows): `chart_renderer(code="<mermaid source>")` — Mermaid only, never numeric data. The rendered PNG is shown in chat automatically; do not repeat the source or embed image markdown.
 
 ### HTTP-exposed data and knowledge
 

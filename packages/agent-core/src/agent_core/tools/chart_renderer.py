@@ -54,7 +54,9 @@ class ChartRendererTool(Tool):
     name = "chart_renderer"
     prompt_hint = (
         "Run every Mermaid diagram through this before showing it to the user — it "
-        "validates the source and only returns an image when rendering succeeds."
+        "validates the source and only returns an image when rendering succeeds. "
+        "The rendered PNG is displayed to the user automatically; do not repeat "
+        "the Mermaid source or embed image markdown in your reply."
     )
     description = (
         "Render and validate Mermaid diagram source before presenting it to the user. "

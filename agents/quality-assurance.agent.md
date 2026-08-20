@@ -92,7 +92,7 @@ Skip if the same endpoint was already refreshed this task. On continued failure,
 
 ## Your Toolbox
 
-For Mermaid diagrams in test evidence or reports, call `chart_renderer` first; include only valid Mermaid source it has rendered successfully.
+For Mermaid diagrams in test evidence or reports, call `chart_renderer` first; the rendered PNG is displayed to the user automatically - do not repeat the Mermaid source or embed image markdown in the reply.
 
 Direct structured tool calls for external data (not shell commands):
 

@@ -220,15 +220,17 @@
                 :type="svc.sensitive === false ? 'text' : 'password'"
                 :placeholder="savedKeys[svc.key] || projectSecretByKey[svc.key] ? t('tokenConfig.keyConfiguredKeepEmpty') : svc.placeholder"
               />
-              <div v-if="svc.extraFields" v-for="field in svc.extraFields" :key="field.key" class="token-url-row">
+              <template v-if="svc.extraFields">
+                <div v-for="field in svc.extraFields" :key="field.key" class="token-url-row">
                 <input
                   v-model="formValues[field.key]"
                   class="input token-url-input"
                   :type="field.sensitive === false ? 'text' : 'password'"
                   :placeholder="savedKeys[field.key] || projectSecretByKey[field.key] ? t('tokenConfig.keyConfigured') : field.placeholder"
                 />
-                <span class="token-url-hint">{{ field.label }}</span>
-              </div>
+                  <span class="token-url-hint">{{ field.label }}</span>
+                </div>
+              </template>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveIntegration(svc)" :disabled="saving === svc.key">
                   {{ saving === svc.key ? t('common.saving') : t('common.save') }}

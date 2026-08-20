@@ -97,6 +97,18 @@ def store_upload(conversation_id: str, filename: str, data: bytes) -> None:
     _uploads[(conversation_id, filename)] = _UploadEntry(data, time.time() + _UPLOAD_TTL_SECONDS, time.time())
 
 
+def _inline_safety_headers(suffix: str) -> dict[str, str]:
+    """Headers that keep a served file from executing on the app origin.
+
+    HTML served inline runs on the same origin with the user's session
+    cookies - any agent-generated (or upload-stored) markup becomes a stored
+    XSS vector. Force a download instead; images keep their inline display.
+    """
+    if suffix in (".html", ".htm"):
+        return {"Content-Disposition": "attachment"}
+    return {}
+
+
 def get_upload(conversation_id: str, filename: str) -> bytes | None:
     _sweep_expired()
     entry = _uploads.get((conversation_id, filename))
@@ -230,6 +242,7 @@ async def serve_media(
         return Response(
             content=data,
             media_type=_MIME_BY_SUFFIX.get(suffix, "application/octet-stream"),
+            headers=_inline_safety_headers(suffix),
         )
 
     # Fallback: agent-generated images (screenshots, tool outputs) on disk.
@@ -261,4 +274,4 @@ async def serve_media(
         ".htm": "text/html",
     }
     media_type = media_types.get(suffix, "application/octet-stream")
-    return FileResponse(str(media_path), media_type=media_type)
+    return FileResponse(str(media_path), media_type=media_type, headers=_inline_safety_headers(suffix))

@@ -262,25 +262,39 @@ async def _get_or_create_playwright_anchor(
     project deletion guard join ScriptRun -> AutomationScript -> Project. One
     anchor row per project satisfies both without a schema migration;
     list_scripts filters it out of the user-visible list."""
-    row = (await db.execute(
+    rows = (await db.execute(
         select(AutomationScript)
         .where(
             AutomationScript.project_id == project_id,
             AutomationScript.script_type == "playwright",
         )
-        .limit(1)
-    )).scalars().first()
-    if row is None:
-        row = AutomationScript(
-            project_id=project_id,
-            name=_PLAYWRIGHT_ANCHOR_NAME,
-            description="Internal anchor for Playwright test runs",
-            script_type="playwright",
-            content="",
-            created_by=created_by,
-        )
-        db.add(row)
-        await db.commit()
+        .order_by(AutomationScript.created_at, AutomationScript.script_id)
+    )).scalars().all()
+    if rows:
+        # Two concurrent first-runs raced the create and both committed an
+        # anchor. Keep the earliest deterministically and drop the extras -
+        # but only extras that never anchored a run (ScriptRun.script_id is a
+        # NOT NULL FK; an anchor with runs stays load-bearing forever).
+        row = rows[0]
+        runnable = {r.script_id for r in (await db.execute(
+            select(ScriptRun.script_id).where(ScriptRun.script_id.in_([a.script_id for a in rows]))
+        )).scalars().all()}
+        stale = [a for a in rows[1:] if a.script_id not in runnable]
+        if stale:
+            for extra in stale:
+                await db.delete(extra)
+            await db.commit()
+        return row
+    row = AutomationScript(
+        project_id=project_id,
+        name=_PLAYWRIGHT_ANCHOR_NAME,
+        description="Internal anchor for Playwright test runs",
+        script_type="playwright",
+        content="",
+        created_by=created_by,
+    )
+    db.add(row)
+    await db.commit()
     return row
 
 
@@ -305,7 +319,8 @@ async def list_playwright_specs(
             continue  # not a QA-generated name; skip rather than guess
         title = slug
         try:
-            head = f.open("rb").read(4096).decode(errors="replace")
+            with f.open("rb") as fp:
+                head = fp.read(4096).decode(errors="replace")
             m = _PW_SPEC_TITLE_RE.search(head)
             if m:
                 title = m.group(1)

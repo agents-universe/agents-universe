@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -432,6 +433,56 @@ class Agent:
 
         return deps, dependents
 
+    _TASK_SOURCE_PRIORITY_SKILL = "integration/task-source-priority"
+
+    def _task_source_priority(self, user_message: str) -> str | None:
+        """Return a short routing directive when the message references a known
+        entity anchor (Jira key / pull request).
+
+        Table-driven: entries come from the `routing` frontmatter of the
+        task-source-priority skill, so new integrations (e.g. GitLab issues)
+        extend behavior by editing that file — no code change. The directive
+        is gated on the agent actually declaring the mapped tool; agents
+        without it (office-assistant, data-analyst) get nothing.
+        """
+        prio_skill = self._skill_registry.get(self._TASK_SOURCE_PRIORITY_SKILL)
+        if not prio_skill or not prio_skill.routing:
+            return None
+        entries = sorted(
+            prio_skill.routing,
+            key=lambda e: int(e.get("priority", 0)),
+            reverse=True,
+        )
+        for entry in entries:
+            anchors = entry.get("anchors") or []
+            if not any(re.search(a, user_message, re.IGNORECASE) for a in anchors):
+                continue
+            tool = entry.get("tool")
+            if tool not in self._tools:
+                continue
+            first_ops = " → ".join(entry.get("first_ops") or [])
+            parts = [
+                f"This task references {entry.get('label') or tool}. "
+                f"Call the `{tool}` tool FIRST: {first_ops}."
+            ]
+            follow_ups = []
+            for fu in entry.get("follow_ups") or []:
+                fu_tool = fu.get("tool")
+                if fu_tool and fu_tool not in self._tools:
+                    continue
+                text = f"use `{fu_tool}`: {fu.get('op')}"
+                if fu.get("note"):
+                    text += f" — {fu['note']}"
+                follow_ups.append(text)
+            if follow_ups:
+                parts.append("Then " + "; ".join(follow_ups) + ".")
+            parts.append(
+                "Do not precede the first authoritative call with `git_repo` "
+                "list_repos/status/pull exploration."
+            )
+            return "\n".join(parts)
+        return None
+
     async def run(
         self,
         user_message: str,
@@ -481,6 +532,13 @@ class Agent:
         if pinned_skills:
             for skill in pinned_skills[:3]:
                 system += f"\n\n## Active Skill: {skill.slug}\n{skill.body}"
+
+        # 4b. Task-source-priority directive: when the message references a
+        # Jira key / PR anchor, tell the model which tool is the authoritative
+        # first call (table-driven from the task-source-priority skill).
+        priority = self._task_source_priority(user_message)
+        if priority:
+            system += f"\n\n## Task Source Priority\n{priority}"
 
         # 5. Compress history only against the provider context window. The
         # conversation budget is a usage display value, not a runtime limit.

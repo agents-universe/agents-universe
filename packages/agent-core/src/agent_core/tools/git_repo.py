@@ -113,7 +113,9 @@ class GitRepoTool(Tool):
     prompt_hint = (
         "Clone and operate workspace-scoped git repositories with authentication "
         "injected automatically. Prefer it over raw shell git for cloned external "
-        "repos; force push is not supported."
+        "repos; force push is not supported. For Jira-card or PR tasks, read the "
+        "authoritative source first (`jira`/`github`); this tool is a supplement, "
+        "and the primary tool for implementation work."
     )
     description = (
         "Manage workspace-scoped git repositories. Operations: clone, checkout, pull, status, "

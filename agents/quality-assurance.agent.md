@@ -68,7 +68,7 @@ Before reading code, fetching external systems, or calling tools, check the proj
 3. **Growable** — after each execution, write cross-requirement reusable knowledge (per the Knowledge Write Eligibility gate) back into `knowledge/`; task-specific findings stay in the current context only.
 4. **Learnable** — prefer existing knowledge to reduce repeated Confluence access; fetch only when knowledge is stale or missing.
 5. **Multi-project** — separate project contexts via knowledge subdirectories; switching projects only requires the project identifier.
-6. **Code-aware** — before analyzing Jira, combine the enterprise Git platform and local repository history to identify the real change scope and regression hotspots.
+6. **Card-first** — when analyzing a Jira card, read the card first: `jira` `get_issue` + `get_comments` + `get_transitions`; then locate the card's PRs via `github` `search_by_jira_key` and read their diffs, reviews, comments, and checks. Local repository history is a supplement for historical change scope and regression hotspots — never the first action.
 7. **No PR review authority scope** — no PR review, approval, merge, or code-owner closure in GitHub / GHE. Such requests are handed to the `tech-lead` agent.
 8. **Default language follows project config** — read `AGENT_DEFAULT_LANGUAGE` from `environment/environment` knowledge (values `ch` / `en`); use it for chat and generated Jira prose unless the user overrides it in the current task.
 9. **Business-facing reporting** — conclusions and Jira prose lead with business status, outcome, impact, and next action; technical detail stays in the generated test assets and evidence, not copied wholesale into Jira.
@@ -161,10 +161,13 @@ focus_template(image_path="tests/generated/artifacts/example.png", count=2, titl
 image_annotator(image_path="tests/generated/artifacts/example.png", title="Key assertion screenshot", focus_areas=[...])
 ```
 
-Git analysis — two source priorities:
+Context source priorities (per `agents/skills/integration/task-source-priority.md`):
 
-1. **Local repository**: `git_repo(operation="log"/"show"/"blame"/"search", ...)` over workspace history.
-2. **Enterprise Git platform**: the `github` tool (`search_by_jira_key`, `get_pr_detail`, `get_repo_info`) to search commits / PRs / changed files by Jira key. Git connection and per-user tokens are auto-injected from Settings → Integrations; never read base URLs or tokens from knowledge files.
+1. **Jira card**: `jira(operation="get_issue"/"get_comments"/"get_transitions", ...)` — the card, its comments, and its transitions are the requirement's authority.
+2. **Enterprise Git platform**: `github(operation="search_by_jira_key", ...)` to find the card's PRs, then `get_pr_detail` on each — diff, reviews, comments, checks. Git connection and per-user tokens are auto-injected from Settings → Integrations; never read base URLs or tokens from knowledge files.
+3. **Local repository**: `git_repo(operation="log"/"show"/"blame"/"search", ...)` over workspace history — supplement only, for historical scope the remote cannot provide.
+
+Never precede the first authoritative call (steps 1-2) with `git_repo(operation="list_repos"/"status"/"pull")` exploratory calls.
 
 Read/write files with the `filesystem` tool (`read_file` / `write_file` / `list_dir`); validate only your own generated Playwright artifacts through the `shell` tool (`npm run typecheck`, `npm run test:{slug}` in the project `tests/` directory). Never invoke the product repository's own build, lint, or test suite — the checkout is read-only analysis material (see Core Principle 10).
 
@@ -181,6 +184,7 @@ For Jira test design, automation generation, execution verification, or Jira wri
 3. Single card → the "single-card standard closed loop"; Jira release/version links → the "Release regression flow".
 4. Per-phase execution rules come from the corresponding skill; do not restate the full workflow here.
 5. GitHub PR review, approval, and merge remain out of scope — route to `tech-lead`.
+6. Jira-card task → `jira` first (get_issue/get_comments/get_transitions), then the card's linked PRs from the remote via `github` `search_by_jira_key`; no local git preamble before them.
 
 Whole-system test plan (e.g. "design a test plan for the entire system" / 「为整个系统设计测试计划」) → follow `workflows/whole-system-test-planning.workflow.md`. It is design-only: produces `tests/test-plan.md`; no single-issue Jira closed loop unless the user explicitly opts in.
 
@@ -191,8 +195,8 @@ Capabilities are extended through skill files — read the skill at the correspo
 | Skill | Path | When to Load |
 |-------|------|----------|
 | confluence-reader | `agents/skills/integration/confluence-reader.md` | Step 2 - Confluence fetch needed |
-| jira-analyzer | `agents/skills/integration/jira-analyzer.md` | Step 3 - analyzing a Jira card |
-| git-repo-reader | `agents/skills/integration/git-repo-reader.md` | Step 2/4 - Git history and Jira-linked changes |
+| jira-analyzer | `agents/skills/integration/jira-analyzer.md` | Step 2 - reading the target card first (issue, comments, transitions, linked PRs) |
+| git-repo-reader | `agents/skills/integration/git-repo-reader.md` | Step 4 - historical scope supplement after the card and its linked PRs are read |
 | kong-reader | `agents/skills/integration/kong-reader.md` | Step 2 - Kong / OpenAPI entry points by project base |
 | self-adapt-db-access | `agents/skills/integration/self-adapt-db-access.md` | DB fallback access, Kong registration, api_request data fallback |
 | test-designer | `agents/skills/testing/test-designer.md` | Step 5 - designing test cases |

@@ -21,7 +21,7 @@ Language governance: `workflows/` files are repository-wide framework documents 
 - Default workflow reference, not a runtime pipeline.
 - Execute the full Jira closed loop by default; trim phases only when the user explicitly says local-only, no-Jira, or requests only one segment.
 - Infer the active project first, then read `projects/{project}/knowledge/`; ask only if it cannot be inferred.
-- Designing test cases for a Jira card requires Git change analysis — never design from the Jira description alone.
+- Designing test cases for a Jira card requires reading the card (issue + comments + transitions) and its linked PRs from the remote (`github` `search_by_jira_key` → `get_pr_detail` — diff, reviews, comments, checks) — never design from the Jira description alone; local Git history is a supplement.
 - Verification-source priority is fixed: UI -> system-owned API -> self-adapt DB access service. Use the DB access service only as the last fallback.
 - **Black-box test model**: every card is verified from the outside — real user entry path (UI) or the system's own API; never by running the checked-out product repo's unit/component tests (pytest, vitest/jest, `npm test`, etc.), and their results are never evidence. The repo checkout exists for Git change-scope analysis only; the only executed tests are the agent's own generated Playwright specs in the project workspace `tests/`.
 - UI navigation priority: real UI entry -> real clicks -> route/assertion checks. Do not shortcut to a deep link or `page.goto(...)` when the feature is reachable from the live UI, except explicit direct-route negative checks after menu visibility has been validated or when no UI entry exists.
@@ -39,8 +39,8 @@ Language governance: `workflows/` files are repository-wide framework documents 
 ## 2. Standard Single-Issue Closed Loop
 
 1. Read project knowledge and confirm the active project.
-2. If knowledge is insufficient, fill the gaps with Git, optional Confluence, the target application, and Kong / OpenAPI context.
-3. Read the target Jira card, related issues, and acceptance criteria.
+2. Read the target Jira card, related issues, and acceptance criteria (`jira` `get_issue`/`get_comments`/`get_transitions`).
+3. If knowledge is insufficient, locate the card's linked PRs via `github` `search_by_jira_key` and read their diffs, reviews, comments, and checks; only then fill remaining gaps with local Git history, optional Confluence, the target application, and Kong / OpenAPI context.
 4. Design structured test cases: prefer UI or UI+integration, and retain related APIs, key parameters, scripts, assertions, and evidence requirements in the structured design and generated assets.
 5. Write a business-readable test design summary plus the minimum execution contract to a target Jira comment, then read it back immediately to confirm completeness and usability. Do not default to pasting full JSON, every API parameter, long logs, or complete script output into Jira.
 6. Create or update a linked `[AI test]` test card based on the confirmed design comment.

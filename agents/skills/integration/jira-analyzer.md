@@ -10,6 +10,19 @@ description: "Parse Jira card content and extract acceptance criteria and testab
 - The user provides the `--issue` parameter.
 - The orchestration flow enters the `load-issue` stage.
 
+## Priority
+
+First action for any task referencing a Jira key — the card is the requirement's authority:
+
+1. `jira(operation="get_issue", issue_key="<JIRA-KEY>")`
+2. `jira(operation="get_comments", issue_key="<JIRA-KEY>")`
+3. `jira(operation="get_transitions", issue_key="<JIRA-KEY>")`
+4. `github(operation="search_by_jira_key", jira_key="<JIRA-KEY>")` to find the card's PRs
+5. `github(operation="get_pr_detail", ...)` on each linked PR — diff, reviews, comments, checks
+
+The local `git_repo` checkout is a supplement only, for historical scope the remote cannot provide.
+Never precede steps 1-5 with `git_repo(operation="list_repos"/"status"/"pull")` exploratory calls.
+
 ## Execution Steps
 
 Use the `jira` tool for all Jira API calls. Authentication is handled automatically from user tokens.
@@ -70,6 +83,6 @@ Terms or page paths not in knowledge yet → mark as `knowledge-gap` so `knowled
 
 ## Output Constraints
 
-- Jira text alone insufficient for final test cases → state clearly that Git analysis must continue.
+- Jira text alone insufficient for final test cases → state clearly that Git analysis must continue. Git analysis means the card's linked PRs on the remote first (`search_by_jira_key` → `get_pr_detail`), local history second.
 - Jira does not explicitly mention APIs → still list APIs pending Git/code confirmation instead of omitting that field.
 - When handing results to `test-designer`, prioritize table-friendly fields: module, API, risk point, source.

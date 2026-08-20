@@ -18,6 +18,7 @@ class SkillDefinition:
     mixins: list[str] = field(default_factory=list)
     inputs: list[dict] = field(default_factory=list)
     steps: list[dict] = field(default_factory=list)  # for composite
+    routing: list[dict] = field(default_factory=list)  # task-source-priority entries
     body: str = ""  # full markdown body (instructions)
     execution_code: str | None = None  # extracted from ## Execution code block
     file_path: str = ""
@@ -87,6 +88,7 @@ def load_skill(file_path: str | Path, mixin_dir: str | Path | None = None) -> Sk
         mixins=_as_list(meta.get("mixins")),
         inputs=_as_list(meta.get("inputs")),
         steps=_as_list(meta.get("steps")),
+        routing=_as_list(meta.get("routing")),
         body=body,
         execution_code=execution_code,
         file_path=str(path),

@@ -11,6 +11,7 @@ tools:
   - filesystem
   - user_confirm
   - github
+  - jira
 ---
 
 # Tech Lead Jira Implementation to PR
@@ -19,7 +20,7 @@ Use this workflow when the Tech Lead implements a Jira issue and delivers a pull
 
 ## 1. Requirements and repository scope
 
-1. Load `agents/skills/integration/jira-analyzer.md` and identify the Jira summary, acceptance criteria, affected modules, and repositories.
+1. Load `agents/skills/integration/jira-analyzer.md` and read the card FIRST: `jira(operation="get_issue")` + `get_comments` + `get_transitions` — the card is the requirement's authority. Identify the Jira summary, acceptance criteria, affected modules, and repositories from the card.
 2. If a repository cannot be determined, ask the user; do not guess.
 3. For an existing checkout, run the clean gate before any checkout, pull, or file operation. Stop on staged, unstaged, untracked, or unexpected changes; never overwrite user work.
 

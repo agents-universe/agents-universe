@@ -21,8 +21,10 @@ _log = logging.getLogger(__name__)
 class JiraTool(Tool):
     name = "jira"
     prompt_hint = (
-        "The only path to Jira: read/create/update issues, comments, transitions, and "
-        "test cycles. Ask the user for issue keys or project names instead of guessing."
+        "First stop for any task referencing a Jira key — issue, comments, "
+        "transitions, and linked PRs. The only path to Jira: read/create/update "
+        "issues, comments, transitions, and test cycles. Ask the user for issue "
+        "keys or project names instead of guessing."
     )
     description = (
         "Interact with Jira: fetch issues/comments/transitions, create/update issues, "

@@ -9,10 +9,14 @@ description: "Clone, update, and query local git repositories. Records repositor
 
 - The user provides a git repository URL or path (e.g. `org/repo-name`).
 - The task asks to analyze test scope together with historical code changes.
-- The current task provides a Jira key and requires searching related commits, diffs, or historical PR references.
+- The task provides a Jira key AND explicitly asks for historical change scope, regression analysis, or historically affected modules.
 - Confluence and Jira information are not enough to determine the real change scope.
 - The task needs to confirm which modules a feature has historically affected.
 - The task needs historical file-level evidence before designing test cases or writing Jira conclusions.
+
+A bare Jira key or PR anchor must NOT trigger this skill: tasks anchored on a Jira card start with
+`jira-analyzer` (read the card first), tasks anchored on a PR start with `git-pr-manager` (read the
+remote PR first); this skill runs after those, only when historical change scope is still needed.
 
 ## Scope Boundary
 
@@ -90,12 +94,17 @@ Shallow clones cannot run full-history `git log` or `git blame` on old commits. 
 
 ## Data Source Priority
 
-1. **Local repository via `git_repo` (primary)** — code search, Jira-keyed commit search, file history, commit details, line-level attribution (operations in Primary Tool above).
-2. **Enterprise Git platform via `github` (supplement)** — when the local repository lacks historical branches or cross-repository history. Search commits first, then related PR references, then changed files.
+1. **Authoritative task source first** — the Jira card via `jira` (`jira-analyzer`) for card tasks, or the live remote PR via `github` (`git-pr-manager`) for PR tasks.
+2. **Enterprise Git platform via `github`** — search commits / PR references / changed files by Jira key (`search_by_jira_key`); then `get_pr_detail` on linked PRs for diff, reviews, comments, and checks.
+3. **Local repository via `git_repo` (supplement)** — code search, Jira-keyed commit search, file history, commit details, line-level attribution, when the local repository has historical branches or cross-repository history the remote search cannot provide.
 
 ## Execution Steps
 
 ### Step 1: Ensure Local Repository Available
+
+Run this step ONLY when the task needs historical change scope AND the authoritative source
+(Jira card via `jira`, remote PR via `github`) has already been read. Never `list_repos`/clone/pull
+before reading the Jira card or the remote PR.
 
 Check `git_repo(operation="list_repos")`; clone if the target repo is missing, pull if it exists (operations in Primary Tool above). The tool resolves the Git host and credentials automatically from Settings -> Integrations.
 
@@ -114,7 +123,7 @@ Collect at least the following information:
 
 - Related commit list: `git_repo(operation="log", options="--grep=JIRA-KEY")`
 - File paths changed and keyword code search: `git_repo` `show` / `search` operations (Primary Tool above)
-- Related PR references: `github(operation="search_by_jira_key", jira_key="KEY")`
+- Related PR references: `github(operation="search_by_jira_key", jira_key="KEY")` — call this BEFORE local `--grep`; local `log --grep` covers commits the remote search may not index
 - Modules, services, or pages touched by the changes
 - Business terms or risk hints mentioned in commit messages
 

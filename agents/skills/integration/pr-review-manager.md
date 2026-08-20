@@ -34,8 +34,8 @@ Produce an actionable review conclusion for a PR. The required parts — CI/chec
 Before starting the review, read the following capabilities and context first:
 
 1. `agents/skills/integration/git-pr-manager.md`
-2. `agents/skills/integration/git-repo-reader.md`, when historical Jira-linked change scope is needed beyond the live PR diff
-3. `agents/skills/integration/jira-analyzer.md`
+2. `agents/skills/integration/jira-analyzer.md` — requirements, acceptance criteria, implementation satisfaction from the Jira key found in the PR
+3. `agents/skills/integration/git-repo-reader.md`, only when historical Jira-linked change scope is needed beyond the live PR diff
 4. If the task belongs to a specific project, then read the relevant knowledge under `knowledge/`
 
 ## Input Parsing
@@ -50,7 +50,7 @@ PR review can accept any of the following anchors:
 
 If the user does not provide a specific PR anchor and instead says `review 仓库里的 PR` or `看哪些 PR 需要我 review`, enter `review-queue` mode:
 
-1. If the user asks for all open PRs in the current repository, or says `review 仓库里的 PR`, first check the local workspace with `git_repo(operation="list_repos")` and `git_repo(operation="status", repository="<repo>")` to establish the repository anchor and local checkout state, then fetch all open PRs from the current remote repository.
+1. If the user asks for all open PRs in the current repository, or says `review 仓库里的 PR`, resolve the current repository via `github(operation="get_repo_info")`/`list_prs` first, then fetch all open PRs from the current remote repository. Use the local workspace (`git_repo(operation="list_repos")` + `status`) only to learn the repository anchor when the remote cannot resolve it, or for implementation tasks.
 2. If the user asks for PRs that need their review, or for the current user's open / opening PRs, first resolve the current login with `github(operation="get_user")`, then prefer `github(operation="list_prs", reviewer="<login>", state="open", all_repos=true)` using the resolved login.
 3. Only use the author queue when the user explicitly says PRs created/authored by the current user; then prefer `github(operation="list_prs", author="<login>", state="open", all_repos=true)`.
 4. If `list_prs` with the reviewer filter errors or is unsupported by the server, fall back to GitHub search with `is:open is:pr review-requested:<login> archived:false` (substituting the resolved login). If `list_prs` with the author filter errors, fall back to GitHub search with `is:open is:pr author:<login> archived:false`.

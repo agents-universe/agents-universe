@@ -19,9 +19,10 @@ _log = logging.getLogger(__name__)
 class GitHubTool(Tool):
     name = "github"
     prompt_hint = (
-        "Use for GitHub work (public GitHub or GitHub Enterprise): search commits/PRs "
-        "by Jira key, review, approve, merge, or create PRs, fork/star repositories, "
-        "and check CI statuses."
+        "First stop for any PR task — the remote PR diff, reviews, comments, and "
+        "checks are authoritative. Use for GitHub work (public GitHub or GitHub "
+        "Enterprise): search commits/PRs by Jira key, review, approve, merge, or "
+        "create PRs, fork/star repositories, and check CI statuses."
     )
     description = (
         "GitHub (public or Enterprise): search commits/PRs by Jira key, "

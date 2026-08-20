@@ -70,15 +70,14 @@ Tool behavior:
 
 ## Data Source Priority
 
-1. **`git_repo` tool for local repository state (check first)**
-  - Run `git_repo(operation="list_repos")` before the first remote call to learn which repositories are already cloned locally; use the clone names as the repository anchor for every later `github` call.
-  - Use `git_repo(operation="status", repository="<repo>")` to get the local checkout's current branch and cleanliness. Any uncommitted, staged, or untracked change in a target repo is relevant scope context that must not be overwritten.
-  - Use the local checkout for code evidence: `git_repo(operation="show"/"search"/"log")` before fetching remote-only content.
-
-2. **`github` tool for all PR operations (remote, only what the local clone cannot provide)**
-  - PR inventory, diff, commits, reviews, comments, checks, approval, and merge live on the remote platform — use the `github` operations in Tool Calls above.
+1. **`github` tool for PR content (authoritative, first)**
+  - The remote PR is the authority for PR work: PR inventory, diff, commits, reviews, comments, checks, approval, and merge all live on the remote platform — use the `github` operations in Tool Calls above as the FIRST action for any PR-anchored task.
   - Call `approve_pr` only after the user explicitly requests approval; call `merge_pr` only after the user explicitly requests merge.
   - Never use `shell(command="git remote get-url origin")` — the clone URL contains an embedded token and will leak credentials in shell output.
+
+2. **`git_repo` tool for local repository state (supplement, only when needed)**
+  - Use the local checkout only: (a) to discover a repository anchor from the workspace when the repo is not derivable from the PR URL / owner+repo; (b) for implementation tasks needing the dirty-tree gate; (c) for historical evidence the remote cannot provide (`show`/`search`/`log`).
+  - Any uncommitted, staged, or untracked change in a target repo is relevant scope context that must not be overwritten.
 
 3. **Enterprise Git platform as a supplement**
   - When the local repository does not match the target repository, use the enterprise Git API with explicit repository anchors.
@@ -108,7 +107,7 @@ When the task is to query PRs, review repository PRs, or find PRs for a person, 
 
 Use the `github` tool (operation forms in Tool Calls above):
 
-1. **Before any remote call**, run `git_repo(operation="list_repos")` once and check the local clone's state with `git_repo(operation="status", repository="<repo>")`. Then `git_repo(operation="checkout", repository="<repo>", branch="main")` and `git_repo(operation="pull", repository="<repo>")` so local evidence reflects the latest main. The open PR list itself only exists on the remote; the repository anchor, current branch, and checkout cleanliness come from the local workspace first.
+1. When the task is anchored on a PR or a PR queue, call `github` directly (`get_pr_detail`/`list_prs`) — do not precede remote calls with `git_repo` `list_repos`/`status`/`checkout`/`pull`. The local-clone preamble applies only to implementation tasks (dirty-tree gate, pull-latest before coding) or to discovering a repository anchor the remote cannot resolve.
 2. `github(operation="get_repo_info", repository="<owner/repo>")` to resolve the current repository when the repo is not explicitly given.
 3. `github(operation="list_prs", repository="<owner/repo>", state="open")` to read the repository queue.
 4. `github(operation="get_user")` when the task is reviewer-oriented and the current login must be resolved.

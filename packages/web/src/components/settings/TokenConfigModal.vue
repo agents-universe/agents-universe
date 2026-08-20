@@ -85,7 +85,7 @@
                 </select>
               </div>
               <div class="token-url-row">
-                <select v-model="editForms[cfg.config_id].complexity_tier" class="input token-tier-select">
+                <select v-model="editForms[cfg.config_id].complexity_tier" class="input token-tier-select" @change="editForms[cfg.config_id].tierDirty = true">
                   <option :value="null">{{ t('tokenConfig.unspecified') }}</option>
                   <option value="low">{{ t('tokenConfig.tier.low') }}</option>
                   <option value="mid">{{ t('tokenConfig.tier.mid') }}</option>
@@ -101,6 +101,7 @@
                   min="1"
                   step="1000"
                   :placeholder="t('tokenConfig.contextPlaceholder')"
+                  @change="editForms[cfg.config_id].windowDirty = true"
                 />
                 <span class="token-url-hint">{{ t('tokenConfig.contextHintDefault', { window: fmtWindow(cfg.default_context_window) }) }}</span>
               </div>
@@ -429,7 +430,7 @@ const tabs = [
 const systemDefault = computed(() => agentStore.modelConfigs.find(c => c.is_system) ?? null)
 const userConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
 
-const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string }>>({})
+const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string; tierDirty: boolean; windowDirty: boolean }>>({})
 
 function initEditForms() {
   for (const cfg of userConfigs.value) {
@@ -439,14 +440,34 @@ function initEditForms() {
         api_key: '',
         base_url: cfg.base_url ?? '',
         url_mode: cfg.url_mode ?? 'base_url',
-        complexity_tier: cfg.complexity_tier ?? null,
-        context_window: cfg.context_window ? String(cfg.context_window) : '',
+        // Stored value wins; otherwise show the name-matched pair so the
+        // fields always display the matched value or the user's choice —
+        // never an empty field for a model that has one.
+        complexity_tier: cfg.complexity_tier ?? inferTier(cfg.provider, cfg.model_id),
+        context_window: cfg.context_window ? String(cfg.context_window) : String(inferContextWindow(cfg.provider, cfg.model_id)),
+        tierDirty: false,
+        windowDirty: false,
       }
     }
   }
 }
 
 watch(userConfigs, initEditForms, { immediate: true })
+
+// Same rule as the add form: re-infer tier/window when the model id changes
+// unless the user explicitly overrode that field, so a save persists the
+// matched pair for the current model id instead of the previous one's.
+watch(
+  () => userConfigs.value.map((c) => `${c.config_id}:${c.provider}:${editForms[c.config_id]?.model_id ?? ''}`),
+  () => {
+    for (const cfg of userConfigs.value) {
+      const form = editForms[cfg.config_id]
+      if (!form) continue
+      if (!form.tierDirty) form.complexity_tier = inferTier(cfg.provider, form.model_id)
+      if (!form.windowDirty) form.context_window = String(inferContextWindow(cfg.provider, form.model_id))
+    }
+  }
+)
 
 function providerIcon(provider: string) {
   switch (provider) {
@@ -584,8 +605,10 @@ async function addConfig() {
       api_key: '',
       base_url: created.base_url ?? '',
       url_mode: created.url_mode ?? 'base_url',
-      complexity_tier: created.complexity_tier ?? null,
-      context_window: created.context_window ? String(created.context_window) : '',
+      complexity_tier: created.complexity_tier ?? inferTier(created.provider, created.model_id),
+      context_window: created.context_window ? String(created.context_window) : String(inferContextWindow(created.provider, created.model_id)),
+      tierDirty: false,
+      windowDirty: false,
     }
     newProvider.value = ''
     newModelId.value = ''

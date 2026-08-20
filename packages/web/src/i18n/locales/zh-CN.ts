@@ -393,6 +393,7 @@ export default {
     noScripts: '暂无脚本',
     noPlaywrightSpecs: '暂无测试脚本。让 QA 智能体生成 Playwright 测试后，会出现在这里。',
     selectScript: '请选择脚本',
+    runFailed: '启动运行失败',
     connectionLost: '连接中断，脚本最终状态未知（运行可能仍在后台执行）',
     baseUrlPlaceholder: '被测系统地址（可选，如 http://demo.example.com）',
     baseUrlHint: '作为 APP_BASE_URL 注入测试运行；留空时使用测试脚本内的默认值',

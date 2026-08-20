@@ -4645,6 +4645,16 @@ textarea:focus-visible {
 .script-status.completed { background: rgba(74, 222, 128, 0.1); color: var(--color-success); }
 .script-status.failed { background: rgba(248, 113, 113, 0.1); color: var(--color-error); }
 
+.script-run-error {
+  color: #f87171;
+  font-size: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 6px;
+}
+
 .script-list-empty {
   font-size: 13px;
   color: var(--text-muted);

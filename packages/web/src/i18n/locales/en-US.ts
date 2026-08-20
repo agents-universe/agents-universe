@@ -393,6 +393,7 @@ export default {
     noScripts: 'No scripts yet',
     noPlaywrightSpecs: 'No test specs yet. They appear here once the QA agent generates Playwright tests.',
     selectScript: 'Select a script',
+    runFailed: 'Failed to start the run',
     connectionLost: 'Connection lost; the final status is unknown (it may still be running server-side)',
     baseUrlPlaceholder: 'System under test (optional, e.g. http://demo.example.com)',
     baseUrlHint: 'Injected as APP_BASE_URL into the test run; the spec default applies when empty',

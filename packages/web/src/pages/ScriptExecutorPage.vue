@@ -64,8 +64,9 @@
       </div>
 
       <div class="script-log-panel">
+        <div v-if="runError" class="script-run-error">{{ runError }}</div>
         <div v-if="!activeRunId" class="script-log-empty">{{ t('scriptExecutor.selectScript') }}</div>
-        <div v-else class="script-log-output">
+        <div v-else class="script-log-output" ref="logPanel">
           <div
             v-for="(line, i) in logs"
             :key="i"
@@ -118,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
@@ -135,6 +136,13 @@ const scripts = ref<ScriptItem[]>([])
 const specs = ref<SpecItem[]>([])
 const activeRunId = ref<string | null>(null)
 const logs = ref<LogLine[]>([])
+// A failed run POST previously vanished silently (catch {} left the row at
+// idle) - surface it in the log panel instead.
+const runError = ref<string | null>(null)
+// Live output lands below the fold once the panel scrolls (max-height caps
+// it) - keep the newest line visible, but only when the user is already at
+// the bottom so reading history is never fought.
+const logPanel = ref<HTMLElement | null>(null)
 let ws: WebSocket | null = null
 const mounted = ref(true)
 const projectStore = useProjectStore()
@@ -166,7 +174,13 @@ async function loadScripts() {
       `/api/projects/${pid}/scripts`
     )
     if (seq !== scriptLoadSeq) return  // stale response - a newer load owns the list
-    scripts.value = data.map((s) => ({ ...s, status: 'idle' }))
+    const prevScripts = new Map(scripts.value.map((sc) => [sc.script_id, sc]))
+    scripts.value = data.map((s) => {
+      const old = prevScripts.get(s.script_id)
+      return old?.run_id
+        ? { ...s, run_id: old.run_id, status: old.status }
+        : { ...s, status: 'idle' }
+    })
   } catch {
     // non-critical
   }
@@ -181,7 +195,16 @@ async function loadSpecs() {
       `/api/projects/${pid}/playwright/specs`
     )
     if (seq !== specLoadSeq) return
-    specs.value = data.map((s) => ({ ...s, status: 'idle' }))
+    // Merge, don't replace: a reload (tab switch) must keep the run_id/status
+    // of a run that is still executing - a fresh 'idle' row would lose the
+    // live connection and the done-frame update.
+    const prev = new Map(specs.value.map((sp) => [sp.slug, sp]))
+    specs.value = data.map((s) => {
+      const old = prev.get(s.slug)
+      return old?.run_id
+        ? { ...s, run_id: old.run_id, status: old.status }
+        : { ...s, status: 'idle' }
+    })
   } catch {
     // non-critical
   }
@@ -197,6 +220,7 @@ async function runScript(scriptId: string) {
   // flight, the projectId watcher has already reset activeRunId - connecting
   // anyway would stream another project's run into this page.
   const pidAtStart = projectStore.currentProject?.project_id
+  runError.value = null
   try {
     const result = await apiFetch<{ run_id: string; status: string }>(
       `/api/scripts/${scriptId}/run`,
@@ -209,14 +233,17 @@ async function runScript(scriptId: string) {
       script.status = result.status
     }
     connectToRun(result.run_id)
-  } catch {
-    // non-critical
+  } catch (e) {
+    const item = scripts.value.find((s) => s.script_id === scriptId)
+    if (item) item.status = 'failed'
+    runError.value = e instanceof Error ? e.message : t('scriptExecutor.runFailed')
   }
 }
 
 async function runSpec(slug: string) {
   const pidAtStart = projectStore.currentProject?.project_id
   if (!pidAtStart) return
+  runError.value = null
   const env = baseUrl.value.trim() ? { APP_BASE_URL: baseUrl.value.trim() } : {}
   try {
     const result = await apiFetch<{ run_id: string; status: string }>(
@@ -230,8 +257,10 @@ async function runSpec(slug: string) {
       spec.status = result.status
     }
     connectToRun(result.run_id)
-  } catch {
-    // non-critical
+  } catch (e) {
+    const spec = specs.value.find((sp) => sp.slug === slug)
+    if (spec) spec.status = 'failed'
+    runError.value = e instanceof Error ? e.message : t('scriptExecutor.runFailed')
   }
 }
 
@@ -285,6 +314,7 @@ watch(() => projectStore.currentProject?.project_id, (pid) => {
   ws = null
   activeRunId.value = null
   logs.value = []
+  runError.value = null
   loadScripts()
   loadSpecs()
   baseUrl.value = pid ? localStorage.getItem(`pw-base-url:${pid}`) ?? '' : ''
@@ -295,10 +325,22 @@ watch(baseUrl, (value) => {
   if (pid) localStorage.setItem(`pw-base-url:${pid}`, value)
 })
 
+function pushLog(line: LogLine) {
+  const el = logPanel.value
+  const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  logs.value.push(line)
+  if (nearBottom) {
+    void nextTick(() => {
+      if (logPanel.value) logPanel.value.scrollTop = logPanel.value.scrollHeight
+    })
+  }
+}
+
 function connectToRun(runId: string) {
   if (ws) { ws.close(); ws = null }
   activeRunId.value = runId
   logs.value = []
+  runError.value = null
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   ws = new WebSocket(`${proto}://${location.host}${apiBase}/ws/script-runs/${runId}`)
@@ -312,7 +354,7 @@ function connectToRun(runId: string) {
     } catch {
       // Server may emit plain-text frames (ping/raw error) - never let a
       // parse failure kill the message handler for all subsequent frames.
-      logs.value.push({ text: String(e.data), level: 'info' })
+      pushLog({ text: String(e.data), level: 'info' })
       return
     }
     if (msg.type === 'done') {
@@ -323,7 +365,7 @@ function connectToRun(runId: string) {
       if (item) item.status = msg.status ?? 'completed'
       return
     }
-    logs.value.push({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
+    pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
   }
   ws.onclose = () => {
     const item = findRunItem(runId)
@@ -334,7 +376,7 @@ function connectToRun(runId: string) {
     // The run may still be executing server-side; never stamp 'completed'.
     if (item.status === 'running' || item.status === 'pending') {
       item.status = 'failed'
-      logs.value.push({ text: t('scriptExecutor.connectionLost'), level: 'error' })
+      pushLog({ text: t('scriptExecutor.connectionLost'), level: 'error' })
     }
   }
 }

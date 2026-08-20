@@ -40,8 +40,15 @@ export function invalidateLatestConversation() {
 }
 // "+ 新建对话" consumed: the empty state is the USER'S intent, so the
 // agentSlug watch (agent re-resolution after an async AgentSwitcher fetch)
-// must not auto-restore the old latest conversation over it.
+// must not auto-restore the old latest conversation over it. When the agent
+// IS resolved, the intent auto-starts the conversation instead of waiting
+// for the empty-state button.
 let pendingNew = false
+// The project that requested the new chat. An agent re-resolution from a
+// DIFFERENT project switch (the projectId watch drops the flag too, but it
+// fires after this watch) must not auto-start a conversation in the new
+// project — only a same-project resolution may.
+let pendingNewPid: string | null = null
 </script>
 
 <script setup lang="ts">
@@ -139,7 +146,9 @@ onMounted(() => {
     // "+ 新建对话" from a non-chat page: show the fresh empty state instead
     // of auto-restoring the old latest conversation .
     pendingNew = true
+    pendingNewPid = projectId.value
     router.replace({ query: {} })
+    maybeAutoStartChat()
     return
   }
   loadLatestConversation()
@@ -168,7 +177,9 @@ watch(
   (val) => {
     if (val === '1') {
       pendingNew = true
+      pendingNewPid = projectId.value
       router.replace({ query: {} })
+      maybeAutoStartChat()
     }
   },
 )
@@ -182,11 +193,25 @@ watch(agentSlug, (slug) => {
     // must NOT clear it .
     invalidateOnboardingIfProjectChanged()
     closeAllConnections()
+    // Read before the reset: an in-flight auto-start create may have landed
+    // already (rapid "+" clicks), and convStore.reset() below nulls it.
+    const hadConversation = !!convStore.conversationId
     convStore.reset()
     // The user asked for a fresh conversation (?new=1); the re-resolved
-    // agent must not auto-restore the old latest conversation over it.
+    // agent must not auto-restore the old latest conversation over it —
+    // instead it starts the new conversation immediately.
     if (pendingNew) {
+      const pid = pendingNewPid
       pendingNew = false
+      pendingNewPid = null
+      // An active conversation means the auto-start's create already landed;
+      // behave like a normal agent switch instead of orphaning it with a
+      // second create.
+      if (hadConversation) {
+        loadLatestConversation()
+        return
+      }
+      if (pid === projectId.value) startChat()
       return
     }
     loadLatestConversation()
@@ -208,6 +233,7 @@ watch(projectId, () => {
   // loading the latest conversation (consuming the stale flag). Drop it so
   // the fresh project loads normally.
   pendingNew = false
+  pendingNewPid = null
   closeAllConnections()
   convStore.reset()
   loadLatestConversation()
@@ -218,12 +244,27 @@ function handleNewConversation() {
   convStore.reset()
   invalidateLatestConversation()
   pendingNew = true
+  pendingNewPid = projectId.value
+  maybeAutoStartChat()
+}
+
+// "+ 新建对话" with the agent already resolved starts immediately — no
+// empty-state round trip. The agentSlug watch covers the still-resolving
+// case (agent re-resolution fires after this returns).
+function maybeAutoStartChat() {
+  if (pendingNew && pendingNewPid === projectId.value && agentSlug.value) {
+    startChat()
+  }
 }
 
 async function startChat() {
+  // Auto-start paths (watchers, route query) can race with the button and
+  // with each other (rapid "+" clicks); only the first one creates.
+  if (convStore.conversationId || loading.value) return
   // The user commits to a new conversation — a later agent re-resolution
   // must be free to load normally again.
   pendingNew = false
+  pendingNewPid = null
   // Same monotonic guard as loadLatestConversation: the create() round-trip
   // can land after a project/agent switch reset everything. Without the seq
   // check, project A's new conversation overwrites the (now active) B

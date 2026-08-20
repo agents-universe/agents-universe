@@ -426,7 +426,7 @@ export default {
     },
     chatMentions: {
       title: 'Mention an agent',
-      body: 'Type @ in the composer to mention another agent — that single turn will be handled by the mentioned agent.',
+      body: "Type {'@'} in the composer to mention another agent — that single turn will be handled by the mentioned agent.",
     },
     chatAttach: {
       title: 'Attachments',

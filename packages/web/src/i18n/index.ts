@@ -8,9 +8,11 @@ const STORAGE_KEY = 'au:locale'
 const LOCALES: AppLocale[] = ['zh-CN', 'en-US']
 
 function detectLocale(): AppLocale {
+  // Locale comes only from an explicit user switch; default to zh-CN when no
+  // preference has been saved (browser language is not followed).
   const saved = localStorage.getItem(STORAGE_KEY)
   if (saved && LOCALES.includes(saved as AppLocale)) return saved as AppLocale
-  return navigator.language?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
+  return 'zh-CN'
 }
 
 export const i18n = createI18n({

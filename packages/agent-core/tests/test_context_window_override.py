@@ -59,3 +59,22 @@ def test_default_context_window_name_matching():
     # Gemini table: ultra → 32k, everything else → 1M.
     assert default_context_window("google_gemini", "gemini-ultra") == 32_768
     assert default_context_window("google_gemini", "gemini-2.5-pro") == 1_048_576
+
+
+def test_every_provider_accepts_the_api_handler_cred_shape():
+    """_build_cred in the API handler passes ssl_verify (and for non-Azure
+    configs base_url/url_mode) for EVERY provider - a constructor that
+    rejects the kwarg TypeErrors the whole turn at provider construction
+    (Gemini did, making the provider unusable)."""
+    common = {"api_key": "x", "model": "m", "ssl_verify": False, "context_window": 1000}
+    for provider_key, extra in [
+        ("anthropic", {"base_url": "https://gateway.example.com"}),
+        ("openai", {}),
+        ("google_gemini", {}),
+    ]:
+        creds = {**common, **extra}
+        p = get_provider(provider_key, creds)
+        assert p.context_window == 1000
+    # azure takes endpoint instead of base_url.
+    p = get_provider("azure_openai", {**common, "endpoint": "https://example.openai.azure.com"})
+    assert p.context_window == 1000

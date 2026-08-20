@@ -1,12 +1,20 @@
-"""Google Gemini provider."""
+"""Google Gemini provider via the google-genai SDK.
+
+The previous google.generativeai package is EOL (no fixes since 2024); this
+module targets its successor google-genai. The new SDK's Client is
+instance-scoped, so the old genai.configure() process-global key (and the
+request lock that serialized configure + request) is gone entirely.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from typing import AsyncIterator
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 
 from .base import (
     CompletionResult,
@@ -17,9 +25,13 @@ from .base import (
     ToolDefinition,
 )
 
-# Serializes genai.configure() + request initiation across providers with
-# different keys — see GoogleGeminiProvider class doc for the race it closes.
-_GEMINI_REQUEST_LOCK = asyncio.Lock()
+# Cleared around Client construction: google-genai builds its httpx client
+# there and would otherwise read the ambient proxy env (same behavior the
+# old genai.configure path enforced).
+_PROXY_KEYS = [
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+]
 
 
 def _continuation_target_index(
@@ -43,6 +55,7 @@ def _continuation_target_index(
             target = idx
     return target
 
+
 def _context_window(model: str) -> int:
     m = model.lower()
     if "ultra" in m:
@@ -51,39 +64,36 @@ def _context_window(model: str) -> int:
     return 1_048_576
 
 
+def _part_text(part) -> str | None:
+    """Part.text raises ValueError when the part carries no text field
+    (unlike the old SDK, which returned None)."""
+    try:
+        return part.text
+    except ValueError:
+        return None
+
+
 class GoogleGeminiProvider(LLMProvider):
-    """Google Gemini via google-generativeai SDK.
+    """Google Gemini via the google-genai SDK."""
 
-    Note: genai.configure() sets process-global API key. To support multiple
-    keys in one process, we re-configure before each call via _ensure_configured().
-    Because the key is read from the global at REQUEST time, concurrent
-    providers with different keys race: task A configures key A, awaits, task B
-    reconfigures key B, and A's request goes out authenticated as B. The module
-    lock below serializes configure + request initiation so each request leaves
-    with the key its provider set. Streamed responses keep flowing after the
-    lock is released (the connection is already authenticated).
-    """
-
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url", context_window: int | None = None) -> None:
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url", context_window: int | None = None, ssl_verify: bool = False) -> None:
         self._api_key = api_key
         self._model_name = model
         self._base_url = base_url
-        self._url_mode = url_mode
-        # Per-config override from Settings → AI Models; None = name-matched default.
+        self._ssl_verify = ssl_verify
+        # Per-config override from Settings -> AI Models; None = name-matched default.
         self._context_window_override = context_window
 
-    def _ensure_configured(self) -> None:
-        """Re-apply this instance's API key (and optional endpoint) before making a call."""
-        import os
-        kwargs: dict = {"api_key": self._api_key, "transport": "rest"}
-        if self._base_url:
-            from google.api_core import client_options as co
-            kwargs["client_options"] = co.ClientOptions(api_endpoint=self._base_url)
-        # Clear proxy env vars so the REST transport doesn't route through corporate proxy
-        proxy_keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']
-        saved = {k: os.environ.pop(k) for k in proxy_keys if k in os.environ}
+    def _client(self) -> genai.Client:
+        """Instance-scoped client; a fresh one per call keeps key/endpoint
+        state off the process globals (google-genai has none anyway)."""
+        http_options = genai_types.HttpOptions(
+            **({"base_url": self._base_url.rstrip("/")} if self._base_url else {}),
+            client_args={"verify": self._ssl_verify},
+        )
+        saved = {k: os.environ.pop(k) for k in _PROXY_KEYS if k in os.environ}
         try:
-            genai.configure(**kwargs)
+            return genai.Client(api_key=self._api_key, http_options=http_options)
         finally:
             os.environ.update(saved)
 
@@ -118,7 +128,7 @@ class GoogleGeminiProvider(LLMProvider):
                     }
                 }
                 # parallel tool calls produce consecutive tool
-                # messages. Each must not become its own user turn — Gemini
+                # messages. Each must not become its own user turn - Gemini
                 # rejects alternating violations from adjacent user contents
                 # carrying function_response parts. Merge into the previous
                 # user content when it holds only function_response parts.
@@ -169,24 +179,49 @@ class GoogleGeminiProvider(LLMProvider):
 
     def _to_gemini_tools(self, tools: list[ToolDefinition]):
         declarations = [
-            genai.protos.FunctionDeclaration(
-                name=t.name,
-                description=t.description,
-                parameters=t.parameters,
-            )
+            {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            }
             for t in tools
         ]
-        return [genai.protos.Tool(function_declarations=declarations)]
+        return [genai_types.Tool(function_declarations=declarations)]
 
-    def _make_model(self, system: str | None, tools: list[ToolDefinition] | None):
-        """Create a GenerativeModel configured with system instruction and tools."""
-        self._ensure_configured()
-        kwargs = {"model_name": self._model_name}
-        if system:
-            kwargs["system_instruction"] = system
-        if tools:
-            kwargs["tools"] = self._to_gemini_tools(tools)
-        return genai.GenerativeModel(**kwargs)
+    def _request_config(
+        self, system: str | None, tools: list[ToolDefinition] | None,
+        max_tokens: int, temperature: float,
+    ) -> genai_types.GenerateContentConfig:
+        return genai_types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+            system_instruction=system or None,
+            tools=self._to_gemini_tools(tools) if tools else None,
+        )
+
+    @staticmethod
+    def _empty_result(model: str) -> CompletionResult:
+        return CompletionResult(
+            message=Message(role="assistant", content="", tool_calls=None),
+            usage={"prompt_tokens": 0, "completion_tokens": 0},
+            model=model,
+            finish_reason="error",
+            stop_reason=StopReason.UNKNOWN,
+        )
+
+    @staticmethod
+    def _normalize_stop(fr_name: str, has_tool_calls: bool) -> StopReason:
+        # finish_reason may be MAX_TOKENS (output limit hit) or SAFETY/
+        # RECITATION (content blocked) - masking it as a normal END_TURN
+        # would end the turn silently: no truncation warning, no refusal
+        # signal, the UI never learns the reply was cut off.
+        if has_tool_calls:
+            return StopReason.TOOL_USE
+        if fr_name == "MAX_TOKENS":
+            return StopReason.MAX_TOKENS
+        if fr_name in ("SAFETY", "RECITATION"):
+            return StopReason.REFUSAL
+        return StopReason.END_TURN
 
     async def complete(
         self,
@@ -195,36 +230,27 @@ class GoogleGeminiProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> CompletionResult:
-        # Lock covers configure + the full request: the global key is read at
-        # request time, so the await must happen inside the lock (see class doc).
-        async with _GEMINI_REQUEST_LOCK:
-            system, contents = self._to_gemini_contents(messages)
-            model = self._make_model(system, tools)
-            config = genai.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            )
-            response = await model.generate_content_async(contents, generation_config=config)
+        system, contents = self._to_gemini_contents(messages)
+        client = self._client()
+        response = await client.aio.models.generate_content(
+            model=self._model_name,
+            contents=contents,
+            config=self._request_config(system, tools, max_tokens, temperature),
+        )
         if not response.candidates:
-            return CompletionResult(
-                message=Message(role="assistant", content="", tool_calls=None),
-                usage={"prompt_tokens": 0, "completion_tokens": 0},
-                model=self._model_name,
-                finish_reason="error",
-                stop_reason=StopReason.UNKNOWN,
-            )
+            return self._empty_result(self._model_name)
         candidate = response.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            return self._empty_result(self._model_name)
         text_parts = []
         tool_calls = []
         for part in candidate.content.parts:
-            if hasattr(part, "text") and part.text:
-                text_parts.append(part.text)
-            elif hasattr(part, "function_call") and part.function_call:
-                fc = part.function_call
+            fc = part.function_call
+            if fc:
                 # Gemini occasionally emits a function_call part with
                 # an empty name (mirrors the stream path's continuation
                 # chunks). A nameless call would surface as "Unknown tool:"
-                # in the loop — drop it instead.
+                # in the loop - drop it instead.
                 if not (fc.name or "").strip():
                     continue
                 tool_calls.append({
@@ -232,22 +258,13 @@ class GoogleGeminiProvider(LLMProvider):
                     "type": "function",
                     "function": {"name": fc.name, "arguments": json.dumps(dict(fc.args))},
                 })
+                continue
+            text = _part_text(part)
+            if text:
+                text_parts.append(text)
         msg = Message(role="assistant", content="".join(text_parts), tool_calls=tool_calls or None)
         usage = response.usage_metadata
-        raw_stop = str(candidate.finish_reason)
-        # finish_reason may be MAX_TOKENS (output limit hit) or SAFETY/
-        # RECITATION (content blocked) — masking it as a normal END_TURN
-        # would end the turn silently: no truncation warning, no refusal
-        # signal, the UI never learns the reply was cut off.
         fr_name = str(getattr(candidate.finish_reason, "name", ""))
-        if tool_calls:
-            normalized = StopReason.TOOL_USE
-        elif fr_name == "MAX_TOKENS":
-            normalized = StopReason.MAX_TOKENS
-        elif fr_name in ("SAFETY", "RECITATION"):
-            normalized = StopReason.REFUSAL
-        else:
-            normalized = StopReason.END_TURN
         return CompletionResult(
             message=msg,
             usage={
@@ -255,8 +272,8 @@ class GoogleGeminiProvider(LLMProvider):
                 "completion_tokens": usage.candidates_token_count if usage else 0,
             },
             model=self._model_name,
-            finish_reason=raw_stop,
-            stop_reason=normalized,
+            finish_reason=fr_name,
+            stop_reason=self._normalize_stop(fr_name, bool(tool_calls)),
         )
 
     async def stream(
@@ -267,29 +284,24 @@ class GoogleGeminiProvider(LLMProvider):
         temperature: float = 0.0,
     ) -> AsyncIterator[StreamChunk]:
         system, contents = self._to_gemini_contents(messages)
-        # Lock covers configure + request initiation; the streamed chunks then
-        # flow over the already-authenticated connection outside the lock.
-        async with _GEMINI_REQUEST_LOCK:
-            model = self._make_model(system, tools)
-            config = genai.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            )
-            chunk_stream = await model.generate_content_async(
-                contents, generation_config=config, stream=True
-            )
+        client = self._client()
+        chunk_stream = await client.aio.models.generate_content_stream(
+            model=self._model_name,
+            contents=contents,
+            config=self._request_config(system, tools, max_tokens, temperature),
+        )
         tool_call_index = 0
         has_tool_calls = False
         last_usage = None
         # Gemini streams a terminal chunk whose finish_reason reports why the
         # generation ended (MAX_TOKENS on the output limit, SAFETY/RECITATION
-        # on a content block) — without it every cut-off reply would read as
+        # on a content block) - without it every cut-off reply would read as
         # a normal end of turn.
         last_finish_reason = None
         # Argument-key fingerprint per call index: nameless continuation
         # chunks are matched to the call they continue via key overlap
         # (see _continuation_target_index) instead of assuming the most
-        # recent call — parallel calls interleave their continuation chunks.
+        # recent call - parallel calls interleave their continuation chunks.
         seen_arg_keys: dict[int, set[str]] = {}
         async for chunk in chunk_stream:
             if not chunk.candidates:
@@ -298,11 +310,11 @@ class GoogleGeminiProvider(LLMProvider):
             finish_reason = getattr(candidate, "finish_reason", None)
             if finish_reason is not None:
                 last_finish_reason = finish_reason
+            if not candidate.content or not candidate.content.parts:
+                continue
             for part in candidate.content.parts:
-                if hasattr(part, "text") and part.text:
-                    yield StreamChunk(delta=part.text)
-                elif hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
+                fc = part.function_call
+                if fc:
                     name = (fc.name or "").strip()
                     args_json = json.dumps(dict(fc.args)) if fc.args else ""
                     if name:
@@ -317,7 +329,7 @@ class GoogleGeminiProvider(LLMProvider):
                             },
                         )
                         # has_tool_calls must be set only when a delta was
-                        # actually emitted — a nameless function_call part at
+                        # actually emitted - a nameless function_call part at
                         # index 0 (skipped below) is dropped as unparseable
                         # and must not report finish_reason="tool_calls" with
                         # nothing to consume.
@@ -325,7 +337,7 @@ class GoogleGeminiProvider(LLMProvider):
                         tool_call_index += 1
                     elif tool_call_index > 0:
                         # Continuation chunk: Gemini splits large arguments
-                        # across chunks with an empty name — emit under the
+                        # across chunks with an empty name - emit under the
                         # matched call's index so the loop merges the fragments.
                         chunk_args = dict(fc.args) if fc.args else {}
                         target = _continuation_target_index(
@@ -340,7 +352,11 @@ class GoogleGeminiProvider(LLMProvider):
                                 "function": {"name": "", "arguments": args_json},
                             },
                         )
-            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    continue
+                text = _part_text(part)
+                if text:
+                    yield StreamChunk(delta=text)
+            if chunk.usage_metadata:
                 last_usage = chunk.usage_metadata
         usage_dict = None
         if last_usage:
@@ -362,9 +378,9 @@ class GoogleGeminiProvider(LLMProvider):
                 yield StreamChunk(finish_reason="stop", stop_reason=StopReason.END_TURN, usage=usage_dict)
 
     async def embed(self, text: str) -> list[float]:
-        self._ensure_configured()
-        result = await genai.embed_content_async(
-            model="models/text-embedding-004",
-            content=text,
+        client = self._client()
+        result = await client.aio.models.embed_content(
+            model="text-embedding-004",
+            contents=text,
         )
-        return result["embedding"]
+        return list(result.embeddings[0].values)

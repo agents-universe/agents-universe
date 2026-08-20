@@ -39,6 +39,16 @@ knowledge `environment/environment` as `GIT_REPOSITORY` for convenience.
 
 All local repository operations use the `git_repo` tool. This tool handles token injection securely and supports extended timeouts for clone/pull.
 
+## Graph First
+
+Clone/checkout/pull results carry a compact code map under `graph`, and the
+`repo_graph` tool (query/neighbors/impact/path/report) answers structural
+questions about a clone — where a symbol is, what calls it, what depends on
+it — in a few tokens. Consult `repo_graph` BEFORE `git_repo search/log/show`
+or any file read; read files only for the semantics the graph cannot carry
+(it is deterministic, may miss dynamic references, and is a navigation aid,
+not a spec).
+
 ```json
 git_repo(operation="clone", repository="org/repo-name")
 git_repo(operation="clone", repository="org/repo-name", branch="develop")

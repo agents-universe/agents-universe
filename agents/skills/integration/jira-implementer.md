@@ -36,6 +36,12 @@ Repos live at `{project_workspace}/repos/<repo-name>/`, reused across tasks; the
 
 Read `agents/skills/integration/git-repo-reader.md` to locate likely-changed files, understand existing patterns (naming, error handling, test structure), and find related tests. Focus on the direct control path.
 
+To locate likely-changed files and understand structure, consult the
+`repo_graph` tool (query/neighbors/impact/path) on the checkout FIRST — the
+clone/branch operations auto-built it, and its answer costs a few tokens
+versus whole-file reads. Read files only for the semantics the graph cannot
+carry.
+
 ### Step 4: Implementation Plan (No Confirmation)
 
 After the clean gate, proceed directly with implementation — no `user_confirm` before writing code. Keep track of: **Repositories involved** (repo + role), **Files to modify** (paths relative to each repo root), **Implementation approach** (2–4 sentences), **AC coverage** (which acceptance criteria each change addresses); include them in the final report.

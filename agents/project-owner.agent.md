@@ -14,6 +14,7 @@ tools:
   - confluence
   - github
   - git_repo
+  - repo_graph
   - web_fetch
   - api_request
 skills:

@@ -23,6 +23,7 @@ tools:
   - api_request
   - test_generator
   - git_repo
+  - repo_graph
   - secret_vault
 skills:
   - integration/confluence-reader

@@ -16,6 +16,7 @@ tools:
   - knowledge_rw
   - user_confirm
   - git_repo
+  - repo_graph
   - focus_template
   - jira
   - github

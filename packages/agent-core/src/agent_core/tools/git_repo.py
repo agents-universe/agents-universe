@@ -12,15 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from ._auth import get_token_optional
+from ._repo_paths import _REPO_PATH_RE, extract_repo_name, list_clones, repos_dir, resolve_repo_path
 from .base import Tool, ToolContext
+from ..knowledge.graph.builder import maybe_build_auto
 
 _log = logging.getLogger(__name__)
 _TIMEOUT_CLONE = 300
 _TIMEOUT_PULL = 120
 _TIMEOUT_DEFAULT = 30
 _MAX_OUTPUT = 20_000
-_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_REPO_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 # git refnames cannot start with '-' (or '.') — a leading '-' would be
 # parsed by git as an OPTION, turning e.g. `checkout -f` / `merge --abort`
 # into destructive commands on the wrong target.
@@ -75,11 +75,6 @@ def _dependency_missing(message: str) -> dict[str, Any]:
     return {"error": "dependency_missing", "dependency": "git", "message": message}
 
 
-def _extract_repo_name(repository: str) -> str:
-    name = repository.rstrip("/").split("/")[-1]
-    return name[:-4] if name.endswith(".git") else name
-
-
 def _sanitize_output(text: str, token: str | None) -> str:
     return text.replace(token, "***") if token and text else text
 
@@ -115,7 +110,9 @@ class GitRepoTool(Tool):
         "injected automatically. Prefer it over raw shell git for cloned external "
         "repos; force push is not supported. For Jira-card or PR tasks, read the "
         "authoritative source first (`jira`/`github`); this tool is a supplement, "
-        "and the primary tool for implementation work."
+        "and the primary tool for implementation work. Clone/checkout/pull results "
+        "carry a compact code map (`graph`); consult the repo_graph tool before "
+        "reading repository files."
     )
     description = (
         "Manage workspace-scoped git repositories. Operations: clone, checkout, pull, status, "
@@ -197,72 +194,39 @@ class GitRepoTool(Tool):
         return await handler(params, context)
 
     def _repos_dir(self, context: ToolContext) -> Path:
-        return Path(context.project_fs_path).resolve() / "repos"
+        return repos_dir(context.project_fs_path)
 
     def _cloned_repo_names(self, context: ToolContext) -> list[str]:
-        directory = self._repos_dir(context)
-        if not directory.is_dir():
-            return []
-        return sorted(
-            entry.name
-            for entry in directory.iterdir()
-            if entry.is_dir() and (entry / ".git").exists()
-        )
+        return list_clones(context.project_fs_path)
 
     def _resolve_repo_path(
         self, params: dict[str, Any], context: ToolContext
     ) -> tuple[Path | None, dict[str, Any] | None]:
-        repository = params.get("repository")
-        repository_path = params.get("repository_path")
-        if bool(repository) == bool(repository_path):
-            if repository_path:
-                return None, {
-                    "error": "Exactly one of 'repository' or 'repository_path' is required"
-                }
-            # The model usually forgot to name the repo. If there is exactly one
-            # clone, use it (no ambiguity); otherwise list the options so it can
-            # retry in one step instead of guessing.
-            available = self._cloned_repo_names(context)
-            if len(available) == 1:
-                return (self._repos_dir(context) / available[0]).resolve(), None
-            error: dict[str, Any] = {
-                "error": "Exactly one of 'repository' or 'repository_path' is required"
-            }
-            error["available_repos"] = available
-            if available:
-                error["hint"] = (
-                    "Retry with 'repository' set to one of: "
-                    + ", ".join(available) + "."
-                )
-            else:
-                error["hint"] = (
-                    "Clone a repository first, or call list_repos to enumerate clones."
-                )
-            return None, error
-
-        base = Path(context.project_fs_path).resolve()
-        if repository_path:
-            candidate = str(repository_path).replace("\\", "/")
-            raw = Path(candidate)
-            if raw.is_absolute() or candidate.startswith("/") or re.match(r"^[A-Za-z]:", candidate):
-                return None, {"error": "'repository_path' must be a project-relative path"}
-            resolved = (base / raw).resolve()
-            if not resolved.is_relative_to(base):
-                return None, {"error": "Path traversal blocked"}
-            return resolved, None
-
-        name = _extract_repo_name(str(repository))
-        # "." / ".." match the name regex but resolve to the workspace root
-        # (repos/.. == the project itself) — if the workspace is a git repo,
-        # every operation would silently target it instead of a cloned repo.
-        if name in (".", "..") or not _REPO_NAME_RE.fullmatch(name):
-            return None, {"error": f"Invalid repository name: {name!r}"}
-        return (base / "repos" / name).resolve(), None
+        return resolve_repo_path(
+            params, context.project_fs_path,
+            available=self._cloned_repo_names(context),
+        )
 
     @staticmethod
     def _display(path: Path, context: ToolContext) -> str:
         relative = path.resolve().relative_to(Path(context.project_fs_path).resolve()).as_posix()
         return relative or "."
+
+    async def _attach_graph(
+        self, repo: Path, context: ToolContext, result: dict[str, Any]
+    ) -> None:
+        """Best-effort graph build after a mutation; never affects the git result.
+
+        Skips repos over the auto-build limit (with a hint), and swallows any
+        exception — a failed graph must not fail a successful git operation.
+        """
+        try:
+            summary = await maybe_build_auto(repo, context.project_fs_path, repo.name)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("repo graph auto-build skipped for %s: %s", repo.name, exc)
+            return
+        if summary is not None:
+            result["graph"] = summary
 
     async def _require_repo(
         self, params: dict[str, Any], context: ToolContext
@@ -404,7 +368,7 @@ class GitRepoTool(Tool):
         repository = params.get("repository", "")
         if not repository or not _REPO_PATH_RE.fullmatch(repository):
             return {"error": "A valid repository (org/name or name) is required for clone"}
-        name = _extract_repo_name(repository)
+        name = extract_repo_name(repository)
         if name in (".", ".."):
             return {"error": f"Invalid repository name: {name!r}"}
         destination = (self._repos_dir(context) / name).resolve()
@@ -436,12 +400,14 @@ class GitRepoTool(Tool):
             if destination.exists():
                 shutil.rmtree(destination, ignore_errors=True)
             return result
-        return {
+        result = {
             "status": "cloned",
             "repository": repository,
             "path": self._display(destination, context),
             "shallow": True,
         }
+        await self._attach_graph(destination, context, result)
+        return result
 
     async def _op_pull(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         repo, error = await self._require_repo(params, context)
@@ -463,13 +429,16 @@ class GitRepoTool(Tool):
         after = await self._run_git(["rev-parse", "HEAD"], repo)
         if "error" in after:
             return after
-        return {
+        result = {
             "status": "updated",
             "path": self._display(repo, context),
             "before_sha": before["stdout"].strip(),
             "after_sha": after["stdout"].strip(),
             "output": result["stdout"],
         }
+        if before["stdout"].strip() != after["stdout"].strip():
+            await self._attach_graph(repo, context, result)
+        return result
 
     async def _op_checkout(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         repo, error = await self._require_repo(params, context)
@@ -487,12 +456,14 @@ class GitRepoTool(Tool):
         if "error" in result:
             return result
         head = await self._run_git(["rev-parse", "HEAD"], repo)
-        return {
+        result = {
             "status": "checked_out",
             "branch": branch,
             "head": head.get("stdout", "").strip() if "error" not in head else "",
             "path": self._display(repo, context),
         }
+        await self._attach_graph(repo, context, result)
+        return result
 
     async def _op_status(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         repo, error = await self._require_repo(params, context)
@@ -753,6 +724,7 @@ class GitRepoTool(Tool):
             result["relative_to_remote_feature"] = await self._ahead_behind(
                 repo, feature, f"origin/{feature}"
             )
+        await self._attach_graph(repo, context, result)
         return result
 
     async def _op_sync_branch(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -788,7 +760,7 @@ class GitRepoTool(Tool):
                 return await self._conflict_result(repo, merge, feature)
             merged.append(ref)
         after = await self._run_git(["rev-parse", "HEAD"], repo)
-        return {
+        result = {
             "status": "synced",
             "branch": feature,
             "merged": merged,
@@ -801,6 +773,8 @@ class GitRepoTool(Tool):
             ),
             "path": self._display(repo, context),
         }
+        await self._attach_graph(repo, context, result)
+        return result
 
     def _validate_commit_paths(
         self, paths: Any

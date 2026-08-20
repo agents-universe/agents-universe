@@ -14,6 +14,14 @@ type: "guidance"
 - `git_repo(operation="show")` failed or is unavailable.
 - You attempted `shell(command="cat ...")` and it failed with "command not found".
 
+## Graph First
+
+Clones have a code knowledge graph (auto-built on clone/checkout/pull).
+Before reading files, ask `repo_graph` first: `query` finds symbols/files,
+`neighbors`/`impact`/`path` answer structure questions in a few tokens, and
+`report` returns the compact repo map. Read files only for the specific
+content the graph points to.
+
 ## Method: Use `filesystem` Tool Directly
 
 Cloned repositories live under `repos/` in the project workspace. The `filesystem` tool can read them directly — no `git` binary or `shell` required.

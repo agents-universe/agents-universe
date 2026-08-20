@@ -1172,6 +1172,17 @@ async def _handle_message(
                     _log.warning("MCP tool attachment failed: %s", exc, exc_info=True)
                     await session.emit("warning", message=f"MCP servers unavailable: {exc}")
 
+            # Agents that can clone git repos also get the repo_graph tool —
+            # the knowledge graph answers structural questions about clones
+            # (auto-built on clone/checkout/pull) far cheaper than reading
+            # files. Agents declaring repo_graph explicitly keep their own.
+            if "git_repo" in agent_config.tools and "repo_graph" not in agent_config.tools:
+                try:
+                    from agent_core.tools.repo_graph import RepoGraphTool
+                    agent.add_tools({"repo_graph": RepoGraphTool()})
+                except Exception as exc:
+                    _log.warning("repo_graph tool injection failed: %s", exc)
+
             # An @-mention turn hands this message to a different agent than
             # the conversation default. Say so in the LLM-facing message only -
             # the persisted row keeps the text exactly as the user typed it.

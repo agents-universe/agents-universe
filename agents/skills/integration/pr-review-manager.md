@@ -28,6 +28,7 @@ Produce an actionable review conclusion for a PR. The required parts — CI/chec
 3. If no issue is found, explicitly write `No findings` and also state the remaining risks or testing gaps.
 4. All external calls must have a timeout.
 5. Do not leak tokens, passwords, or sensitive request headers.
+6. Use `repo_graph` (query/neighbors/impact/path) on local checkouts to trace call chains and change impact before reading whole files.
 
 ## Prerequisite Reading
 

@@ -36,6 +36,8 @@ dependencies = [
     "pyarrow>=17.0.0",
     # Utils
     "tenacity>=8.5.0",
+    # Repo code graphs (tree-sitter grammars bundled; loaded lazily on build)
+    "tree-sitter-language-pack>=1.14,<2",
 ]
 
 [project.optional-dependencies]

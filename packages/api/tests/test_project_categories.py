@@ -115,7 +115,7 @@ async def test_categories_endpoint(client):
     assert resp.status_code == 200
     cats = resp.json()
     assert [c["slug"] for c in cats] == ["software", "data-analysis", "docs", "other"]
-    assert [c["label"] for c in cats] == ["软件项目", "数据分析", "文档知识库", "其他"]
+    assert [c["label"] for c in cats] == ["软件项目", "数据分析", "文档知识库", "自定义项目"]
     assert [c["template_count"] for c in cats] == [
         EXPECTED_COUNTS["software"],
         EXPECTED_COUNTS["data-analysis"],

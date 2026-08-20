@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Integer, String, UnicodeText, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
 from ._compat import UTCDateTime, new_uuid as _new_uuid, now_utc as _now_utc
+
+if TYPE_CHECKING:
+    from .conversation import Conversation
 
 
 class TaskEvent(Base):

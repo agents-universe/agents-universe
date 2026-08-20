@@ -1,6 +1,7 @@
 """Kong API gateway tool — make authenticated HTTP requests through Kong."""
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any

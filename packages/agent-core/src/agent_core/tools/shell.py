@@ -282,7 +282,7 @@ def _required_node_bins(pkg_dir: Path, command: str) -> list[str]:
 async def _rm_dir(path: str) -> str | None:
     """Remove a directory tree in a background thread and report failures."""
     import shutil
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, shutil.rmtree, path)
     except OSError as e:

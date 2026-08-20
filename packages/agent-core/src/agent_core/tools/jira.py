@@ -18,6 +18,16 @@ from ._wiki import markdown_to_wiki
 _log = logging.getLogger(__name__)
 
 
+def _jql_literal(value: Any) -> str:
+    """Quote a value as a JQL string literal.
+
+    Unquoted interpolation let a version id / project key containing spaces or
+    quotes alter the JQL structure; the double-quote escape is JQL's own.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
 class JiraTool(Tool):
     name = "jira"
     prompt_hint = (
@@ -152,8 +162,14 @@ class JiraTool(Tool):
         project_key = params.get("project_key")
         if not version_id and not params.get("release_url"):
             return {"error": "version_id or release_url is required"}
-        jql = f"fixVersion = {version_id}" if version_id else ""
-        if not jql and params.get("release_url"):
+        # Scope by project when provided - a bare fixVersion match crosses
+        # every project the token can see. Literals are quoted (see
+        # _jql_literal) so values cannot alter the JQL structure.
+        clauses = [f"fixVersion = {_jql_literal(version_id)}"]
+        if project_key:
+            clauses.append(f"project = {_jql_literal(project_key)}")
+        jql = " AND ".join(clauses)
+        if not version_id:
             return {"error": "release_url parsing not yet supported — use version_id"}
         max_results = params.get("max_results", 50)
         issues = await client.search(jql, max_results=max_results)

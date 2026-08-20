@@ -172,7 +172,6 @@ class ImageAnnotatorTool(Tool):
 
         draw = ImageDraw.Draw(canvas)
 
-        font = _load_font(14)
         font_small = _load_font(11)
         font_title = _load_font(16)
 

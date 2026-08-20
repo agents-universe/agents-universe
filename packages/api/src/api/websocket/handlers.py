@@ -8,7 +8,7 @@ import logging
 import time
 import uuid as _uuid_mod
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -26,6 +26,27 @@ router = APIRouter()
 # real config_id before provider_override, so the literal never reaches
 # agent.run().
 _AUTO_CONFIG_ID = "auto"
+
+# Strong references for fire-and-forget background tasks - the event loop
+# keeps only weak references, so an unreferenced task can be garbage
+# collected mid-await. The set self-cleans on completion.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _log_unexpected(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            _log.error("Background task failed: %s", exc, exc_info=exc)
+
+    task.add_done_callback(_log_unexpected)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 async def _check_project_access(conversation_id: str, user_id: str) -> bool:
@@ -355,7 +376,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
             # snapshot a PARTIAL conversation into episodic memories, and the
             # existing-episode early-return in episodic_service would then
             # permanently block the complete summary.
-            asyncio.create_task(_maybe_generate_episode(conversation_id, user_id))
+            _spawn_background(_maybe_generate_episode(conversation_id, user_id))
         await manager.disconnect(conversation_id, ws)
     except Exception as e:
         _log.error("WebSocket handler error for %s: %s", conversation_id, e, exc_info=True)
@@ -443,7 +464,7 @@ async def _enqueue_injected_message(
     # persisted as an ordinary user message so the user's words are never
     # lost. Watches THIS session — a new turn's session gets its own input
     # queue and could never consume this entry.
-    asyncio.create_task(_guard_injected_message(conversation_id, entry, session))
+    _spawn_background(_guard_injected_message(conversation_id, entry, session))
     await manager.send(conversation_id, {
         "type": "input_queued",
         "message_id": entry.message_id,
@@ -1408,7 +1429,6 @@ async def _handle_message(
                         raise
                     except Exception:
                         await event_db.rollback()
-                        import logging
                         logging.getLogger("agents_universe.ws").warning(
                             "Failed to persist event %s to DB: conversation=%s message_id=%s call_id=%s tool=%s buffered_calls=%d",
                             event.type,

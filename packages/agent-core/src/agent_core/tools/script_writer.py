@@ -128,8 +128,8 @@ class ScriptWriterTool(Tool):
         except Exception as exc:
             # Rollback so a failed op never leaves the shared session in a
             # broken state for the rest of the turn. CancelledError is not
-            # caught here — it must propagate (the run op releases its slot
-            # internally before the poll, so cancellation stays leak-free).
+            # caught here — it must propagate (the run task's done_callback
+            # releases the slot, so cancellation stays leak-free).
             try:
                 await context.db_session.rollback()
             except Exception:

@@ -894,18 +894,30 @@ def test_inject_npm_cache_env_recognizes_env_prefix(tmp_path):
         assert command.endswith("NODE_ENV=production npm run build")
 
 
-def test_ensure_node_deps_matches_env_prefixed_npm(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_ensure_node_deps_matches_env_prefixed_npm(tmp_path, monkeypatch):
     """_ensure_node_deps must treat VAR=value npm as an npm command (previously
     skipped the deps check, letting installs run against an unwritable cache)."""
     tool = shell_module.ShellTool()
     # Force a package.json to exist so the early-return branches don't fire
     (tmp_path / "package.json").write_text("{}")
-    ctx = SimpleNamespace(project_fs_path=str(tmp_path))
-    result = tool._ensure_node_deps("NODE_ENV=test npm install", str(tmp_path), ctx)
-    # Either it proceeds (returns a follow-up command) or decides nothing is
-    # needed — but it must NOT early-return None because the prefix hid npm.
-    # npm install always needs deps machinery when a package.json exists.
-    assert result is not None
+    ctx = make_context(project_fs_path=str(tmp_path))
+
+    installs: list[str] = []
+
+    def fake_install(*args, **kwargs):
+        installs.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_install),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_install),
+    ):
+        result = await tool._ensure_node_deps("NODE_ENV=test npm install", str(tmp_path), ctx)
+    # A clean install returns None; what matters is that the deps machinery
+    # ran at all - the VAR= prefix must not hide npm from the check.
+    assert result is None
+    assert installs, "npm install was never run - the env prefix hid npm from the deps check"
 
 
 def test_description_commands_all_in_allowlist():

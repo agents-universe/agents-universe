@@ -9,6 +9,7 @@ from typing import Any
 
 from .base import Tool, ToolContext
 from ._http import _is_ssrf_enabled, validate_outbound_url
+from ._media import media_type_for, sanitize_suffix
 from ._ssrf import SSRFError, validate_url
 
 _log = logging.getLogger(__name__)

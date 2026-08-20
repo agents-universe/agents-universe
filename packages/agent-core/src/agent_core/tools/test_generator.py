@@ -212,7 +212,9 @@ def _generate_spec(issue_key: str, test_cases: list[dict], include_login: bool, 
 
 
 def _escape_ts(s: str) -> str:
-    return s.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
+    # \r is a JS line terminator too (CRLF-sourced text) - a bare CR inside
+    # a string literal breaks the generated .spec.ts at parse time.
+    return s.replace("\r", " ").replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
 
 
 def _escape_ts_regex(s: str) -> str:
@@ -225,7 +227,7 @@ def _escape_ts_regex(s: str) -> str:
     silently changes the matched pattern — or, with an unclosed '[', breaks
     the generated .spec.ts at parse time.
     """
-    return re.sub(r"[\^$\\\.\*\+\?\(\)\[\]\{\}\|/']", r"\\\g<0>", s.replace("\n", " "))
+    return re.sub(r"[\^$\\\.\*\+\?\(\)\[\]\{\}\|/']", r"\\\g<0>", s.replace("\r", " ").replace("\n", " "))
 
 
 def _step_to_action(step: str) -> str:

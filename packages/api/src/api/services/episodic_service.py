@@ -119,7 +119,10 @@ async def generate_episodic_summary(conversation_id: str, user_id: str) -> None:
             conversation_id=conversation_id,
             user_id=user_id,
             project_id=project_id,
-            summary=summary_data.get("summary", "")[:4000],
+            # Coerce: the LLM may return null or a non-string for "summary"
+            # (schema drift between providers), and slicing a non-str would
+            # TypeError out of this fire-and-forget path.
+            summary=str(summary_data.get("summary") or "")[:4000],
             key_findings=_bounded_json_list(summary_data.get("key_findings", [])),
             open_questions=_bounded_json_list(summary_data.get("open_questions", [])),
             generated_by="auto",

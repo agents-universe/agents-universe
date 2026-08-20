@@ -287,7 +287,7 @@ _SCAFFOLD_PACKAGE_JSON = """\
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@playwright/test": "^1.45.0",
+    "@playwright/test": "^1.46.0",
     "typescript": "^5.4.0"
   }
 }
@@ -384,7 +384,7 @@ def _ensure_issue_script(tests_root: Path, slug: str) -> str | None:
             elif name not in scripts:
                 scripts[name] = command
                 changed = True
-        for name, version in (("@playwright/test", "^1.45.0"), ("typescript", "^5.4.0")):
+        for name, version in (("@playwright/test", "^1.46.0"), ("typescript", "^5.4.0")):
             if name not in dev_dependencies:
                 dev_dependencies[name] = version
                 changed = True

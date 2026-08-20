@@ -205,6 +205,14 @@ export const TOUR_STEPS: TourStep[] = [
 
   // Full pages
   {
+    id: 'top-nav',
+    titleKey: 'tour.topNav.title',
+    bodyKey: 'tour.topNav.body',
+    route: CHAT_ROUTE,
+    target: '.center-topnav',
+    condition: hasProject,
+  },
+  {
     id: 'knowledge-browser',
     titleKey: 'tour.knowledgeBrowser.title',
     bodyKey: 'tour.knowledgeBrowser.body',

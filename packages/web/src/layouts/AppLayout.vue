@@ -38,9 +38,23 @@
 
     <!-- Center panel -->
     <main class="center-panel">
-      <Transition name="route-fade" mode="out-in">
-        <RouterView />
-      </Transition>
+      <!-- Page-level navigation. The only way between chat / knowledge /
+           scripts - hidden on non-project routes (/app, /settings). -->
+      <nav v-if="pageSegment" class="center-topnav">
+        <button
+          v-for="nav in navTabs"
+          :key="nav.id"
+          class="center-tab"
+          :class="{ active: pageSegment === nav.id }"
+          :data-tour-target="`center-nav-${nav.id}`"
+          @click="goToPage(nav.id)"
+        ><component :is="nav.icon" :size="13" /> {{ nav.label }}</button>
+      </nav>
+      <div class="center-content">
+        <Transition name="route-fade" mode="out-in">
+          <RouterView />
+        </Transition>
+      </div>
     </main>
 
     <!-- Right Panel -->
@@ -79,7 +93,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, Terminal } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useAgentStore } from '@/stores/agent'
 import { useConversationStore } from '@/stores/conversation'
@@ -194,6 +208,30 @@ const projectStore = useProjectStore()
 const agentStore = useAgentStore()
 const convStore = useConversationStore()
 const router = useRouter()
+
+/* ── Center top navigation ─────────────────────────────────────── */
+// /projects/{pid}/(chat|knowledge|scripts) page segment; non-project routes
+// (/app, /settings) have no page nav.
+const pageSegment = computed(() => {
+  const m = route.path.match(/^\/projects\/[^/]+\/(chat|knowledge|scripts)(?:\/|$)/)
+  return m ? (m[1] as 'chat' | 'knowledge' | 'scripts') : null
+})
+
+const navTabs = computed(() => [
+  { id: 'chat' as const, label: t('layout.tabConversations'), icon: MessageSquare },
+  { id: 'knowledge' as const, label: t('layout.tabKnowledge'), icon: BookOpen },
+  { id: 'scripts' as const, label: t('layout.tabScripts'), icon: Terminal },
+])
+
+function goToPage(segment: 'chat' | 'knowledge' | 'scripts') {
+  const pid = route.params.projectId
+  if (!pid) return
+  // No query forwarding: ?new=1/?onboarding=1 belong to specific entry flows
+  // and must not leak into a tab switch (a stale ?new=1 would silently reset
+  // the conversation). The mobile sidebar auto-close is handled by the
+  // existing route.fullPath watcher below.
+  router.push(`/projects/${pid}/${segment}`)
+}
 
 /* ── Route param ↔ project store sync ─────────────────────────── */
 // ProjectTree pushes both together, but direct URL navigation / back-forward

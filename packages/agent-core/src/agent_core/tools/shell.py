@@ -235,6 +235,181 @@ def _check_allowlist_per_segment(command: str) -> str | None:
     return None
 
 
+def _strip_env_prefix(command: str) -> str:
+    """Leading VAR=value assignments (FOO=bar npm ...) before the command word."""
+    seg = command.split()
+    idx = 0
+    while idx < len(seg) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[idx]):
+        idx += 1
+    return " ".join(seg[idx:]) if idx else command
+
+
+def _required_node_bins(pkg_dir: Path, command: str) -> list[str]:
+    """Return missing declared dependencies and their npm bin shims."""
+    try:
+        import json
+        package = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(package, dict):
+        return ["valid package.json"]
+    declared = {}
+    for key in ("dependencies", "devDependencies"):
+        values = package.get(key, {})
+        if isinstance(values, dict):
+            declared.update(values)
+    requirements: list[tuple[str, Path, str]] = []
+    needs_playwright = "@playwright/test" in declared or "playwright" in command
+    needs_typescript = "typescript" in declared or re.search(r"\btsc\b|typecheck", command)
+    needs_eslint = "eslint" in declared or re.search(r"\beslint\b|lint", command)
+    if needs_playwright:
+        requirements.append(("@playwright/test", pkg_dir / "node_modules/@playwright/test", "playwright"))
+    if needs_typescript:
+        requirements.append(("typescript", pkg_dir / "node_modules/typescript", "tsc"))
+    if needs_eslint:
+        requirements.append(("eslint", pkg_dir / "node_modules/eslint", "eslint"))
+    missing = []
+    for name, module_path, bin_name in requirements:
+        if not module_path.exists():
+            missing.append(name)
+        bin_dir = pkg_dir / "node_modules/.bin"
+        # Windows npm creates .cmd shims; accept either form.
+        if not (bin_dir / bin_name).exists() and not (bin_dir / (bin_name + ".cmd")).exists():
+            missing.append(f".bin/{bin_name}")
+    return missing
+
+
+async def _rm_dir(path: str) -> str | None:
+    """Remove a directory tree in a background thread and report failures."""
+    import shutil
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, shutil.rmtree, path)
+    except OSError as e:
+        _log.warning("Failed to remove %s: %s", path, e)
+        return f"Failed to clean up node_modules before npm install: {e}"
+    return None
+
+
+async def ensure_node_deps(
+    command: str, cwd: str, project_root: str, env: dict[str, str],
+    *, install_timeout: int = _NPM_INSTALL_TIMEOUT,
+) -> str | None:
+    """Install and validate local Node dependencies before running a command.
+
+    Shared by the shell tool and the API's script executor (Playwright runs).
+    npm's bin links are intentionally left enabled in Linux containers. The
+    generated Playwright tests invoke the local ``playwright`` and ``tsc``
+    shims, so checking only for the node_modules directory is insufficient.
+    """
+    if not re.match(r"^(npx\b|npm\s+(?:run\b|test\b|install\b|i\b))", _strip_env_prefix(command)):
+        return None
+
+    cwd_path = Path(cwd)
+    # the upward search must stop at the project root. A
+    # project workspace nested inside a monorepo (package.json in an
+    # ancestor outside the workspace) previously let npm install - and
+    # the node_modules rmtree below - run OUTSIDE the project sandbox.
+    root = Path(project_root).resolve()
+    search = cwd_path
+    pkg_dir: Path | None = None
+    for _ in range(5):
+        if (search / "package.json").is_file():
+            pkg_dir = search
+            break
+        if search == root or not search.is_relative_to(root):
+            break
+        parent = search.parent
+        if parent == search:
+            break
+        search = parent
+    if pkg_dir is None and "playwright" in command:
+        tests_candidate = cwd_path / "tests"
+        if (tests_candidate / "package.json").is_file():
+            pkg_dir = tests_candidate
+    if pkg_dir is None:
+        return None
+
+    required = _required_node_bins(pkg_dir, command)
+    nm = pkg_dir / "node_modules"
+    if nm.exists() and os.access(str(nm), os.W_OK) and not required:
+        return None
+    if nm.exists() and not os.access(str(nm), os.W_OK):
+        _log.info("Removing unwritable node_modules in %s", pkg_dir)
+        cleanup_error = await _rm_dir(str(nm))
+        if cleanup_error:
+            return cleanup_error
+
+    npm_cache = "/tmp/npm-cache"
+    if sys.platform != "win32":
+        try:
+            os.makedirs(npm_cache, exist_ok=True)
+        except OSError as exc:
+            return f"Failed to prepare npm cache: {exc}"
+        prefix = f"npm_config_cache={npm_cache} "
+    else:
+        prefix = ""
+    lockfile = pkg_dir / "package-lock.json"
+    # npm ci rejects package.json changes that have not been reflected in
+    # package-lock.json. The test generator may add scripts/dependencies to
+    # an existing scaffold, so use npm install until the lock catches up.
+    use_ci = lockfile.is_file() and lockfile.stat().st_mtime >= (pkg_dir / "package.json").stat().st_mtime
+    install_cmd = f"{prefix}npm {'ci' if use_ci else 'install'} --prefer-offline"
+    _log.info("Installing Node.js deps in %s", pkg_dir)
+
+    async def _run_install(cmd: str) -> tuple[int | None, str]:
+        try:
+            if _SHELL_ARGS:
+                proc = await asyncio.create_subprocess_exec(
+                    *_SHELL_ARGS, cmd, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
+                    **spawn_in_new_session(),
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    cmd, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
+                )
+        except OSError as exc:
+            _log.warning("Failed to start npm dependency install in %s: %s", pkg_dir, exc)
+            return None, f"Failed to start npm dependency install: {exc}"
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=install_timeout)
+        except asyncio.TimeoutError:
+            terminate_process_tree(proc)
+            await proc.wait()
+            _log.warning("npm dependency install timed out in %s", pkg_dir)
+            return -1, f"npm dependency install timed out after {install_timeout}s"
+        except asyncio.CancelledError:
+            terminate_process_tree(proc)
+            await proc.wait()
+            raise
+        return proc.returncode, stderr.decode(errors="replace")[:_MAX_OUTPUT]
+
+    returncode, stderr_text = await _run_install(install_cmd)
+    if returncode in (None, -1):
+        return stderr_text
+    if returncode != 0:
+        # ENOTEMPTY means a previous install left a corrupt node_modules.
+        # Wipe it and retry once before giving up.
+        if "ENOTEMPTY" in stderr_text and nm.exists():
+            _log.warning("npm ENOTEMPTY in %s - removing node_modules and retrying", pkg_dir)
+            cleanup_error = await _rm_dir(str(nm))
+            if cleanup_error:
+                return cleanup_error
+            returncode, stderr_text = await _run_install(f"{prefix}npm install")
+            if returncode in (None, -1):
+                return stderr_text
+        if returncode != 0:
+            _log.warning("npm dependency install failed (exit=%d) in %s: %s", returncode, pkg_dir, stderr_text[:500])
+            return f"npm dependency install failed (exit code {returncode}): {stderr_text[:1000]}"
+
+    missing = _required_node_bins(pkg_dir, command)
+    if missing:
+        return "npm dependency install completed but required local binaries are missing: " + ", ".join(missing)
+    return None
+
+
 class ShellTool(Tool):
     name = "shell"
     prompt_hint = (
@@ -316,7 +491,7 @@ class ShellTool(Tool):
 
         # Security checks
         if _BLOCKED_PATTERNS.search(command):
-            return {"error": f"Command blocked for safety: contains disallowed operation"}
+            return {"error": "Command blocked for safety: contains disallowed operation"}
 
         # Every command segment in a compound pipeline must be in the allowlist.
         bad_token = _check_allowlist_per_segment(command)
@@ -430,14 +605,11 @@ class ShellTool(Tool):
             "exit_code": proc.returncode,
         }
 
-    @staticmethod
-    def _strip_env_prefix(command: str) -> str:
-        """Leading VAR=value assignments (FOO=bar npm ...) before the command word."""
-        seg = command.split()
-        idx = 0
-        while idx < len(seg) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[idx]):
-            idx += 1
-        return " ".join(seg[idx:]) if idx else command
+    # Module-level implementations shared with the API's script executor;
+    # kept as attributes so existing callers (and tests) keep working.
+    _strip_env_prefix = staticmethod(_strip_env_prefix)
+    _required_node_bins = staticmethod(_required_node_bins)
+    _rm_dir = staticmethod(_rm_dir)
 
     def _inject_npm_cache_env(self, command: str, cwd: str) -> str:
         """Prefix npm/npx commands with a writable cache directory.
@@ -455,178 +627,6 @@ class ShellTool(Tool):
         return command
 
     async def _ensure_node_deps(self, command: str, cwd: str, context: ToolContext) -> str | None:
-        """Install and validate local Node dependencies before running a command.
-
-        npm's bin links are intentionally left enabled in Linux containers.  The
-        generated Playwright tests invoke the local ``playwright`` and ``tsc``
-        shims, so checking only for the node_modules directory is insufficient.
-        """
-        if not re.match(r"^(npx\b|npm\s+(?:run\b|test\b|install\b|i\b))", self._strip_env_prefix(command)):
-            return None
-
-        cwd_path = Path(cwd)
-        # the upward search must stop at the project root. A
-        # project workspace nested inside a monorepo (package.json in an
-        # ancestor outside the workspace) previously let npm install — and
-        # the node_modules rmtree below — run OUTSIDE the project sandbox.
-        project_root = Path(context.project_fs_path).resolve()
-        search = cwd_path
-        pkg_dir: Path | None = None
-        for _ in range(5):
-            if (search / "package.json").is_file():
-                pkg_dir = search
-                break
-            if search == project_root or not search.is_relative_to(project_root):
-                break
-            parent = search.parent
-            if parent == search:
-                break
-            search = parent
-        if pkg_dir is None and "playwright" in command:
-            tests_candidate = cwd_path / "tests"
-            if (tests_candidate / "package.json").is_file():
-                pkg_dir = tests_candidate
-        if pkg_dir is None:
-            return None
-
-        required = self._required_node_bins(pkg_dir, command)
-        nm = pkg_dir / "node_modules"
-        if nm.exists() and os.access(str(nm), os.W_OK) and not required:
-            return None
-        if nm.exists() and not os.access(str(nm), os.W_OK):
-            _log.info("Removing unwritable node_modules in %s", pkg_dir)
-            cleanup_error = await self._rm_dir(str(nm))
-            if cleanup_error:
-                return cleanup_error
-
-        npm_cache = "/tmp/npm-cache"
-        if sys.platform != "win32":
-            try:
-                os.makedirs(npm_cache, exist_ok=True)
-            except OSError as exc:
-                return f"Failed to prepare npm cache: {exc}"
-            prefix = f"npm_config_cache={npm_cache} "
-        else:
-            prefix = ""
-        lockfile = pkg_dir / "package-lock.json"
-        # npm ci rejects package.json changes that have not been reflected in
-        # package-lock.json. The test generator may add scripts/dependencies to
-        # an existing scaffold, so use npm install until the lock catches up.
-        use_ci = lockfile.is_file() and lockfile.stat().st_mtime >= (pkg_dir / "package.json").stat().st_mtime
-        install_cmd = f"{prefix}npm {'ci' if use_ci else 'install'} --prefer-offline"
-        _log.info("Installing Node.js deps in %s", pkg_dir)
-        env = _build_env(context)
-        try:
-            if _SHELL_ARGS:
-                proc = await asyncio.create_subprocess_exec(
-                    *_SHELL_ARGS, install_cmd, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
-                    **spawn_in_new_session(),
-                )
-            else:
-                proc = await asyncio.create_subprocess_shell(
-                    install_cmd, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
-                )
-        except OSError as exc:
-            _log.warning("Failed to start npm dependency install in %s: %s", pkg_dir, exc)
-            return f"Failed to start npm dependency install: {exc}"
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_NPM_INSTALL_TIMEOUT)
-        except asyncio.TimeoutError:
-            terminate_process_tree(proc)
-            await proc.wait()
-            _log.warning("npm dependency install timed out in %s", pkg_dir)
-            return f"npm dependency install timed out after {_NPM_INSTALL_TIMEOUT}s"
-        except asyncio.CancelledError:
-            terminate_process_tree(proc)
-            await proc.wait()
-            raise
-        stderr_text = stderr.decode(errors="replace")[:_MAX_OUTPUT]
-        if proc.returncode != 0:
-            # ENOTEMPTY means a previous install left a corrupt node_modules.
-            # Wipe it and retry once before giving up.
-            if "ENOTEMPTY" in stderr_text and nm.exists():
-                _log.warning("npm ENOTEMPTY in %s — removing node_modules and retrying", pkg_dir)
-                cleanup_error = await self._rm_dir(str(nm))
-                if cleanup_error:
-                    return cleanup_error
-                retry_cmd = f"{prefix}npm install"
-                try:
-                    if _SHELL_ARGS:
-                        retry_proc = await asyncio.create_subprocess_exec(
-                            *_SHELL_ARGS, retry_cmd, stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
-                            **spawn_in_new_session(),
-                        )
-                    else:
-                        retry_proc = await asyncio.create_subprocess_shell(
-                            retry_cmd, stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
-                        )
-                    try:
-                        _, retry_stderr = await asyncio.wait_for(retry_proc.communicate(), timeout=_NPM_INSTALL_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        terminate_process_tree(retry_proc)
-                        await retry_proc.wait()
-                        raise
-                    retry_stderr_text = retry_stderr.decode(errors="replace")[:_MAX_OUTPUT]
-                    if retry_proc.returncode != 0:
-                        _log.warning("npm retry failed (exit=%d) in %s: %s", retry_proc.returncode, pkg_dir, retry_stderr_text[:500])
-                        return f"npm dependency install failed (exit code {retry_proc.returncode}): {retry_stderr_text[:1000]}"
-                except (OSError, asyncio.TimeoutError) as exc:
-                    return f"npm dependency install retry failed: {exc}"
-            else:
-                _log.warning("npm dependency install failed (exit=%d) in %s: %s", proc.returncode, pkg_dir, stderr_text[:500])
-                return f"npm dependency install failed (exit code {proc.returncode}): {stderr_text[:1000]}"
-
-        missing = self._required_node_bins(pkg_dir, command)
-        if missing:
-            return "npm dependency install completed but required local binaries are missing: " + ", ".join(missing)
-        return None
-
-    @staticmethod
-    def _required_node_bins(pkg_dir: Path, command: str) -> list[str]:
-        """Return missing declared dependencies and their npm bin shims."""
-        try:
-            import json
-            package = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
-        if not isinstance(package, dict):
-            return ["valid package.json"]
-        declared = {}
-        for key in ("dependencies", "devDependencies"):
-            values = package.get(key, {})
-            if isinstance(values, dict):
-                declared.update(values)
-        requirements: list[tuple[str, Path, str]] = []
-        needs_playwright = "@playwright/test" in declared or "playwright" in command
-        needs_typescript = "typescript" in declared or re.search(r"\btsc\b|typecheck", command)
-        needs_eslint = "eslint" in declared or re.search(r"\beslint\b|lint", command)
-        if needs_playwright:
-            requirements.append(("@playwright/test", pkg_dir / "node_modules/@playwright/test", "playwright"))
-        if needs_typescript:
-            requirements.append(("typescript", pkg_dir / "node_modules/typescript", "tsc"))
-        if needs_eslint:
-            requirements.append(("eslint", pkg_dir / "node_modules/eslint", "eslint"))
-        missing = []
-        for name, module_path, bin_name in requirements:
-            if not module_path.exists():
-                missing.append(name)
-            bin_dir = pkg_dir / "node_modules/.bin"
-            # Windows npm creates .cmd shims; accept either form.
-            if not (bin_dir / bin_name).exists() and not (bin_dir / (bin_name + ".cmd")).exists():
-                missing.append(f".bin/{bin_name}")
-        return missing
-
-    async def _rm_dir(self, path: str) -> str | None:
-        """Remove a directory tree in a background thread and report failures."""
-        import shutil
-        loop = asyncio.get_event_loop()
-        try:
-            await loop.run_in_executor(None, shutil.rmtree, path)
-        except OSError as e:
-            _log.warning("Failed to remove %s: %s", path, e)
-            return f"Failed to clean up node_modules before npm install: {e}"
-        return None
+        """Delegate to the module-level ensure_node_deps (shared with the API's
+        script executor) - the env is built exactly like the command's own."""
+        return await ensure_node_deps(command, cwd, context.project_fs_path, _build_env(context))

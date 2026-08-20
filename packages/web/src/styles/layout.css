@@ -222,6 +222,46 @@
   background: var(--bg-primary);
 }
 
+/* Page-level navigation inside the center panel (chat / knowledge / scripts) */
+.center-topnav {
+  display: flex;
+  gap: 2px;
+  padding: 8px 22px 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.center-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  letter-spacing: 0.01em;
+}
+
+.center-tab:hover { color: var(--text-secondary); }
+.center-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  text-shadow: 0 0 12px rgba(107, 159, 255, 0.4);
+}
+
+/* Wraps the routed page so the topnav above it takes its own row. */
+.center-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .chat-page {
   flex: 1;
   min-height: 0;
@@ -3554,6 +3594,8 @@ textarea:focus-visible {
     padding: 12px !important;
   }
 
+  .center-topnav { padding: 6px 12px 0; }
+
   .script-executor-body {
     flex-direction: column !important;
   }
@@ -4596,6 +4638,86 @@ textarea:focus-visible {
   color: var(--text-muted);
   text-align: center;
   padding: 20px 0;
+}
+
+/* Section switch (custom scripts / playwright specs) + new-script button */
+.executor-sections {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.executor-section {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.executor-section:hover { color: var(--text-primary); }
+.executor-section.active {
+  background: rgba(107, 159, 255, 0.12);
+  color: var(--accent);
+  border-color: rgba(107, 159, 255, 0.25);
+}
+.executor-section-new {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-muted);
+}
+.executor-section-new:hover { color: var(--text-primary); }
+
+/* Target-system URL for Playwright runs (APP_BASE_URL) */
+.executor-base-url { font-size: 12.5px; }
+
+/* Create-script dialog */
+.executor-create-dialog { width: min(640px, 95vw); }
+
+.executor-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.executor-create-form .input { width: 100%; }
+
+.executor-create-content {
+  min-height: 180px;
+  resize: vertical;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.executor-create-content:focus { border-color: var(--accent); }
+
+.executor-create-error {
+  color: var(--color-error);
+  font-size: 12.5px;
+}
+
+.executor-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .script-log-panel {

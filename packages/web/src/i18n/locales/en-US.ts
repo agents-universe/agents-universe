@@ -237,6 +237,8 @@ export default {
     sentTo: 'Sent to',
     answeredByTitle: 'Answered by {label}',
     sentToTitle: 'Sent to {label}',
+    modelUsed: 'Model used for this reply',
+    modelTierTitle: 'Auto-routing tier',
     roleUser: 'User',
     roleAssistant: 'Assistant',
     roleTool: 'Tool',

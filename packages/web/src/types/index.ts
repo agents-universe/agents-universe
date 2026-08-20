@@ -184,6 +184,9 @@ export interface DbMessage {
   /** Agent that produced (assistant) / was addressed by (user) this message;
    *  set on @-mention turns that ran a different agent. */
   agent_slug?: string | null
+  /** Model that actually produced this reply (auto routing resolves one per
+   *  turn; null on legacy rows written before the column existed). */
+  model_name?: string | null
   tool_calls: Array<{
     call_id: string
     tool: string

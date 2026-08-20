@@ -50,6 +50,10 @@ class Message(Base):
     # agents by slug from definition files, and project-scoped agents shadow
     # global ones by slug (no cross-dialect FK needed).
     agent_slug: Mapped[str | None] = mapped_column(String(100))
+    # Model that actually produced this reply (auto routing resolves a model
+    # per turn; explicit selection stores the chosen model_id). NULL for
+    # legacy rows written before this column existed.
+    model_name: Mapped[str | None] = mapped_column(String(100))
     tool_calls: Mapped[str | None] = mapped_column(UnicodeText)      # JSON
     knowledge_refs: Mapped[str | None] = mapped_column(UnicodeText)  # JSON
     token_count: Mapped[int | None] = mapped_column(Integer)

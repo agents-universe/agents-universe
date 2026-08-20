@@ -1199,6 +1199,11 @@ async def _handle_message(
             async def forward_events():
                 nonlocal _persist_guard, _inj_guard, _terminal_task_ids, _deferred_task_ids
                 _text_buf: str = ""
+                # Model that actually executed this turn (model_selected event
+                # carries the resolved model for auto routing, the chosen
+                # config's model otherwise). Stored on the assistant row at
+                # stream_end so reloads keep the attribution.
+                _model_name: str | None = None
                 _tool_calls_buf: list[dict] = []
                 _images_buf: list[dict] = []
                 _files_buf: list[dict] = []
@@ -1214,7 +1219,9 @@ async def _handle_message(
 
                     # Persist events to DB alongside forwarding
                     try:
-                        if event.type == "stream_delta":
+                        if event.type == "model_selected":
+                            _model_name = event.data.get("model") or None
+                        elif event.type == "stream_delta":
                             _text_buf += event.data.get("delta", "")
                             session.current_streaming_text = _text_buf
                         elif event.type == "tool_call_start":
@@ -1290,6 +1297,7 @@ async def _handle_message(
                                         files=_files_buf if _files_buf else None,
                                         interrupted=event.data.get("stop_reason") == "interrupted",
                                         agent_slug=agent_config.slug,
+                                        model_name=_model_name,
                                     )
                                 )
                                 try:
@@ -2116,7 +2124,7 @@ async def _persist_assistant_message(
     db, conversation_id: str, content: str, tool_calls: list[dict],
     message_id: str | None = None, images: list[dict] | None = None,
     files: list[dict] | None = None, *, interrupted: bool = False,
-    agent_slug: str | None = None,
+    agent_slug: str | None = None, model_name: str | None = None,
 ) -> None:
     """Save an assistant message to DB after stream_end."""
     import json as _json
@@ -2151,6 +2159,9 @@ async def _persist_assistant_message(
         role="assistant",
         content=content,
         agent_slug=agent_slug,
+        # model_name is a String(100) column — cap like agent_tasks
+        # actual_model so an overlong model id cannot DataError the persist.
+        model_name=(model_name or "")[:100] or None,
         tool_calls=tool_calls_json,
         knowledge_refs=knowledge_refs_json,
         sequence_num=next_seq,

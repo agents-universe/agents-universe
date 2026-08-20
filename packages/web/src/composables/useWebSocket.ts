@@ -432,7 +432,10 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         break
       }
       case 'model_selected':
-        conv.setModelInfo((msg.provider ?? msg.tier) as string, msg.model as string, convId)
+        // tier is the auto-routing tier ("low"/"mid"/"high"), only set on auto
+        // turns; explicit selections show the model id alone. The provider is
+        // not stored — the model id already identifies it.
+        conv.setModelInfo((msg.tier ?? '') as string, (msg.model ?? '') as string, convId)
         break
       case 'image_output': {
         // Guard against a malformed/partial payload — addStreamingImages

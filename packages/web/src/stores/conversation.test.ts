@@ -184,6 +184,31 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.messages[0].content).toBe('history A')
   })
 
+  it('loadHistory maps model_name onto messages', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'auto reply',
+      model_name: 'claude-sonnet-5',
+    })], 'conv-a')
+    expect(store.messages[0].modelName).toBe('claude-sonnet-5')
+  })
+
+  it('stream_end message carries the model from model_selected', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    // model_selected: auto routing resolved tier "mid" → model
+    store.setModelInfo('mid', 'claude-sonnet-5', 'conv-a')
+    store.appendDelta('auto reply', undefined, 'conv-a')
+
+    store.pushStreamingMessage('assistant-1', undefined, false, 'conv-a')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].modelTier).toBe('mid')
+    expect(store.messages[0].modelName).toBe('claude-sonnet-5')
+  })
+
   it('setTasks targets the specified conversation', () => {
     const store = useConversationStore()
     store.startConversation('conv-a')

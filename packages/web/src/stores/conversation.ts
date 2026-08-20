@@ -369,6 +369,7 @@ export const useConversationStore = defineStore('conversation', () => {
         role: m.role as 'user' | 'assistant',
         content: m.content,
         agentSlug: m.agent_slug || undefined,
+        modelName: m.model_name || undefined,
         toolCalls: (m.tool_calls ?? []).map((tc) => {
           const storedStatus = tc.status as ToolCallRecord['status']
           const status = (storedStatus === 'running' || storedStatus === 'preparing')

@@ -237,6 +237,8 @@ export default {
     sentTo: '发送给',
     answeredByTitle: '由 {label} 回复',
     sentToTitle: '发送给 {label}',
+    modelUsed: '本次回复使用的模型',
+    modelTierTitle: '自动路由档位',
     roleUser: '用户',
     roleAssistant: '智能体',
     roleTool: '工具',

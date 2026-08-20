@@ -9,7 +9,18 @@
         class="collab-agent-badge"
         :title="collabBadgeTitle"
       >{{ collabAgentLabel }}</span>
-      <span v-if="message.modelTier" class="model-tier-badge">{{ message.modelTier }}</span>
+      <!-- The model that actually produced this reply (auto routing resolves
+      one per turn; explicit selection stores the chosen model id). -->
+      <span
+        v-if="message.modelName"
+        class="model-name-badge"
+        :title="t('messageBubble.modelUsed')"
+      >{{ message.modelName }}</span>
+      <span
+        v-if="message.modelTier"
+        class="model-tier-badge"
+        :title="t('messageBubble.modelTierTitle')"
+      >{{ message.modelTier }}</span>
       <span v-if="message.interrupted" class="interrupted-badge" :title="t('messageBubble.interruptedTitle')">{{ t('messageBubble.interrupted') }}</span>
       <!-- new Date(ts).toISOString() threw RangeError on invalid/
       missing timestamps (locally recovered messages can lack one) and broke

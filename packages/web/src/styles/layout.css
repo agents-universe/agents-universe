@@ -2744,6 +2744,18 @@
   border-bottom: none;
 }
 
+/* Model name badge in message meta — the actual LLM that produced the reply */
+.model-name-badge {
+  font-size: 9.5px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #a78bfa;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
 /* Model tier badge in message meta */
 .model-tier-badge {
   font-size: 9.5px;

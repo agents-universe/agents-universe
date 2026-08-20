@@ -11,6 +11,7 @@ tools:
   - chart_renderer
   - plan_task
   - code_executor
+  - script_writer
   - sql_query
   - knowledge_rw
   - user_confirm
@@ -26,6 +27,7 @@ skills:
   - integration/git-repo-reader
   - integration/jira-analyzer
   - integration/jira-implementer
+  - generation/custom-script-writer
   - knowledge/knowledge-manager
   - interaction/user-confirm
 workflows:
@@ -112,6 +114,10 @@ Jira-card task (implement a card):
 
 1. `agents/skills/integration/jira-analyzer.md` — read the card first (issue, comments, transitions)
 2. `agents/skills/integration/jira-implementer.md` — implement the card end-to-end (read card → code → commit → PR)
+
+自定义脚本任务（"写个脚本"/"自定义脚本"/"脚本"）：
+
+1. `agents/skills/generation/custom-script-writer.md` — 脚本设计、创建、运行与迭代（script_writer 工具）
 
 All tasks:
 

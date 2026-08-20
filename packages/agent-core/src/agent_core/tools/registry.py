@@ -42,6 +42,7 @@ _OPTIONAL_TOOL_MODULES = {
     "api_request":        ("agent_core.tools.api_request",        "ApiRequestTool"),
     "secret_vault":       ("agent_core.tools.secret_vault",       "SecretVaultTool"),
     "test_generator":     ("agent_core.tools.test_generator",     "TestGeneratorTool"),
+    "script_writer":      ("agent_core.tools.script_writer",      "ScriptWriterTool"),
     "git_repo":           ("agent_core.tools.git_repo",           "GitRepoTool"),
 }
 

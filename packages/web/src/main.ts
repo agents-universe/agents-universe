@@ -5,5 +5,6 @@ import router from './router'
 import { i18n } from './i18n'
 import './index.css'
 import './styles/layout.css'
+import './styles/tour.css'
 
 createApp(App).use(createPinia()).use(router).use(i18n).mount('#root')

@@ -42,6 +42,8 @@ export default {
       logout: '退出登录',
       switchLanguage: '切换语言',
       activeUsers: '{count} 人在线',
+      takeTour: '功能引导',
+      whatsNew: '版本更新',
     },
     projects: {
       title: '项目',
@@ -390,5 +392,100 @@ export default {
   conversationStore: {
     interruptedOnRefresh: '页面刷新时执行中断，以下为中断前记录',
     toolCallAborted: '工具调用未正常结束',
+  },
+  tour: {
+    skip: '跳过',
+    prev: '上一步',
+    next: '下一步',
+    doneBtn: '完成',
+    stepOf: '{current} / {total}',
+    waiting: '等待你的操作…',
+    welcome: {
+      title: '欢迎使用 Agents Universe',
+      body: '接下来我会一步步带你熟悉全部核心功能。随时可以点「跳过」或按 Esc 退出引导。',
+    },
+    projectCta: {
+      title: '创建你的第一个项目',
+      body: '每个项目拥有独立的知识库、智能体、脚本和会话。先从创建一个项目开始。',
+    },
+    createProjectForm: {
+      title: '填写项目信息',
+      body: '为项目取个名字并选择类别——类别决定项目预置的知识模板。表单里的所有内容之后都可以修改。',
+    },
+    projectCreated: {
+      title: '项目创建成功',
+      body: '「智能体定制专家」会自动开始向你了解项目情况。对话开始后我会自动继续引导。',
+    },
+    chatComposer: {
+      title: '聊天输入框',
+      body: '在这里输入内容与智能体对话。回车发送消息，Ctrl/Cmd + 回车插入换行。',
+    },
+    chatProviders: {
+      title: '模型选择',
+      body: '为当前会话选择模型。「自动」模式会按消息复杂度自动路由到最合适的已配置模型。',
+    },
+    chatMentions: {
+      title: '@ 提及智能体',
+      body: '在输入框输入 @ 可提及另一个智能体——那一轮对话将由被提及的智能体处理。',
+    },
+    chatAttach: {
+      title: '附件上传',
+      body: '为消息附加文件（也支持粘贴和拖拽）。截图和生成的图片会直接显示在对话里。',
+    },
+    chatSend: {
+      title: '发送与停止',
+      body: '点击发送消息；智能体流式输出时点击「停止」可中断。回复下方会展示任务计划与工具调用卡片。',
+    },
+    chatMessages: {
+      title: '消息与工具调用',
+      body: '回复实时流式展示。工具调用、任务计划和知识加载都以可折叠卡片呈现，随时清楚智能体在做什么。',
+    },
+    agentSwitcher: {
+      title: '智能体列表',
+      body: '在这里切换当前项目的默认智能体。悬停智能体可查看它的技能、工作流、工具和 MCP 集成。',
+    },
+    rightConversations: {
+      title: '会话面板',
+      body: '右侧面板展示你的会话列表和任务树。点 + 可开启新会话。',
+    },
+    rightKnowledge: {
+      title: '知识面板',
+      body: '每个项目都有独立的知识库。这里展示知识完整度、本轮加载与动态加载的条目。',
+    },
+    rightMemory: {
+      title: '记忆面板',
+      body: '会话笔记、个人记忆与情节记忆都在这里——还有你的密钥保险库和项目密钥。',
+    },
+    contextMeter: {
+      title: '上下文用量',
+      body: '实时查看当前会话已消耗的 Token 与模型预算的对比。',
+    },
+    knowledgeBrowser: {
+      title: '知识库浏览器',
+      body: '在这里浏览和编辑完整知识库。用 [[slug]] 交叉引用连接文档，编辑后可保存。',
+    },
+    scripts: {
+      title: '脚本执行器',
+      body: '编写脚本并在项目工作区中运行，实时查看流式日志。',
+    },
+    settingsModels: {
+      title: '设置 — AI 模型',
+      body: '配置自己的 LLM 模型（Anthropic、OpenAI、Azure OpenAI、Gemini），包括 API 密钥和上下文窗口。系统默认模型始终可用。',
+    },
+    settingsIntegrations: {
+      title: '设置 — 集成',
+      body: '接入 git、Jira、Confluence，并注册 MCP 服务器。智能体可按需将它们作为工具使用。',
+    },
+    done: {
+      title: '全部搞定',
+      body: '核心功能就介绍到这里。随时可以从侧栏重播本引导；之后每次发布新功能，你都会看到「版本更新」弹窗。',
+    },
+  },
+  whatsNew: {
+    title: '版本更新',
+    version: '版本 {version}',
+    releasedOn: '发布于 {date}',
+    close: '知道了',
+    empty: '已是最新版本',
   },
 }

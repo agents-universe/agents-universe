@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Integer, String, Unicode, UniqueConstraint
+from sqlalchemy import Boolean, Integer, String, Unicode, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..database import Base
@@ -43,6 +43,18 @@ class UserApiKey(Base):
     encrypted_value: Mapped[str] = mapped_column(String(4000), nullable=False)
     key_hint: Mapped[str | None] = mapped_column(String(10))
     base_url: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class UserPreference(Base):
+    """Per-user onboarding tour / what's-new read state — one row per user."""
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_seen_version: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

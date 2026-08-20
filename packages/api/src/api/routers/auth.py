@@ -12,10 +12,13 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import get_settings
+from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
 from api.services.oidc_discovery import discover
+from api.services.preferences import get_or_create_preferences, serialize_preferences
 from api.services.redis_client import (
     delete_session,
     get_active_users_count,
@@ -306,8 +309,16 @@ async def logout(request: Request, redis: Redis = Depends(get_redis)):
 
 
 @router.get("/api/me")
-async def me(current_user: UserInfo = Depends(get_current_user)):
-    return {"user_id": current_user.user_id, "display_name": current_user.display_name}
+async def me(
+    current_user: UserInfo = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    prefs = await get_or_create_preferences(db, current_user.user_id)
+    return {
+        "user_id": current_user.user_id,
+        "display_name": current_user.display_name,
+        "preferences": serialize_preferences(prefs),
+    }
 
 
 @router.get("/api/active-users")

@@ -1,0 +1,178 @@
+/* Guided tour spotlight — sits above modals (1000) and below the mermaid
+   lightbox (9999) on the app's z-index ladder. */
+
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none; /* children opt back in */
+}
+
+.tour-layer--dim {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.tour-backdrop {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: auto;
+}
+
+.tour-hole {
+  position: fixed;
+  border: 2px solid var(--accent);
+  box-shadow: var(--accent-glow-strong), 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.tour-tooltip {
+  position: fixed;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  padding: 16px 18px;
+  pointer-events: auto;
+  color: var(--text-primary);
+}
+
+.tour-tooltip--center {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.tour-center-card {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  padding: 24px;
+  pointer-events: auto;
+  color: var(--text-primary);
+}
+
+.tour-tooltip-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+
+.tour-tooltip-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  white-space: pre-line;
+}
+
+.tour-tooltip-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tour-skip-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.tour-skip-btn:hover {
+  color: var(--text-primary);
+}
+
+.tour-progress {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-next-btn {
+  padding: 7px 16px;
+  font-size: 13px;
+}
+
+.tour-next-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* What's new dialog — reuses .modal-overlay/.modal-dialog, adds release entries */
+.whats-new-dialog {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+}
+
+.whats-new-entry {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.whats-new-entry:first-of-type {
+  border-top: none;
+}
+
+.whats-new-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.whats-new-entry-version {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.whats-new-entry-date {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.whats-new-entry-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.whats-new-entry-features {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.whats-new-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}

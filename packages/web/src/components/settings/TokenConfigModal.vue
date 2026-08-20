@@ -22,6 +22,7 @@
             :key="tab.id"
             class="token-tab"
             :class="{ active: activeTab === tab.id }"
+            :data-tour-target="`token-tab-${tab.id}`"
             @click="activeTab = tab.id"
           >{{ tab.label }}</button>
         </div>

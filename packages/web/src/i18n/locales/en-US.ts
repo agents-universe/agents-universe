@@ -42,6 +42,8 @@ export default {
       logout: 'Log out',
       switchLanguage: 'Switch language',
       activeUsers: '{count} online',
+      takeTour: 'Guided tour',
+      whatsNew: "What's new",
     },
     projects: {
       title: 'Projects',
@@ -390,5 +392,100 @@ export default {
   conversationStore: {
     interruptedOnRefresh: 'Interrupted by page refresh; showing the last recorded state',
     toolCallAborted: 'Tool call did not finish normally',
+  },
+  tour: {
+    skip: 'Skip',
+    prev: 'Back',
+    next: 'Next',
+    doneBtn: 'Done',
+    stepOf: '{current} / {total}',
+    waiting: 'Waiting for you…',
+    welcome: {
+      title: 'Welcome to Agents Universe',
+      body: 'Let me walk you through the main features step by step. You can skip at any time with the Skip button or the Esc key.',
+    },
+    projectCta: {
+      title: 'Create your first project',
+      body: 'Every project has its own knowledge base, agents, scripts and conversations. Start by creating one.',
+    },
+    createProjectForm: {
+      title: 'Project information',
+      body: 'Give your project a name and pick a category — the category decides which knowledge template the project starts with. Everything in this form is editable later.',
+    },
+    projectCreated: {
+      title: 'Project created',
+      body: 'The project customization expert will start interviewing you about the project automatically. I will continue the tour as soon as the conversation begins.',
+    },
+    chatComposer: {
+      title: 'Chat composer',
+      body: 'Type here to talk to the agent. Enter sends a message, Ctrl/Cmd + Enter inserts a newline.',
+    },
+    chatProviders: {
+      title: 'Model selection',
+      body: 'Pick a model for this conversation. "Auto" routes each message to the most suitable configured model automatically.',
+    },
+    chatMentions: {
+      title: 'Mention an agent',
+      body: 'Type @ in the composer to mention another agent — that single turn will be handled by the mentioned agent.',
+    },
+    chatAttach: {
+      title: 'Attachments',
+      body: 'Attach files to the message (or paste / drag & drop). Screenshots and generated images appear right in the chat.',
+    },
+    chatSend: {
+      title: 'Send and stop',
+      body: 'Send your message, or hit Stop while the agent is streaming. The task plan and tool calls run right below the reply.',
+    },
+    chatMessages: {
+      title: 'Messages & tool calls',
+      body: 'Replies stream in live. Tool calls, task plans and knowledge loads are shown as collapsible cards so you always know what the agent is doing.',
+    },
+    agentSwitcher: {
+      title: 'Agents',
+      body: 'Switch the default agent for this project here. Hover an agent to see its skills, workflows, tools and MCP integrations.',
+    },
+    rightConversations: {
+      title: 'Conversations',
+      body: 'The right panel lists your conversations and their task trees. Use + to start a new conversation.',
+    },
+    rightKnowledge: {
+      title: 'Knowledge',
+      body: 'Every project has a dedicated knowledge base. This panel shows completeness, what was loaded this turn and dynamically loaded items.',
+    },
+    rightMemory: {
+      title: 'Memory',
+      body: 'Session notes, personal memory and episodic memory live here — along with your key vault and project secrets.',
+    },
+    contextMeter: {
+      title: 'Context usage',
+      body: 'Track how many tokens the current conversation has consumed relative to the model budget.',
+    },
+    knowledgeBrowser: {
+      title: 'Knowledge browser',
+      body: 'Browse and edit the full knowledge base here. Use [[slug]] cross-links to connect documents, and save your changes.',
+    },
+    scripts: {
+      title: 'Script executor',
+      body: 'Write and run scripts against your project workspace, with live streaming logs.',
+    },
+    settingsModels: {
+      title: 'Settings — AI models',
+      body: 'Configure your own LLM models (Anthropic, OpenAI, Azure OpenAI, Gemini) with API keys and context windows. The system default is always available.',
+    },
+    settingsIntegrations: {
+      title: 'Settings — integrations',
+      body: 'Connect git, Jira and Confluence, and register MCP servers. Agents then use them as tools on demand.',
+    },
+    done: {
+      title: "You're all set",
+      body: 'That covers the basics. You can replay this tour anytime from the sidebar, and you will see a "What\'s new" dialog whenever new features ship.',
+    },
+  },
+  whatsNew: {
+    title: "What's new",
+    version: 'Version {version}',
+    releasedOn: 'Released {date}',
+    close: 'Got it',
+    empty: "You're all caught up",
   },
 }

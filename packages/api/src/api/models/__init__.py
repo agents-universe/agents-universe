@@ -11,11 +11,11 @@ from .project_member import ProjectMember
 from .project_secret import ProjectSecret
 from .task_event import TaskEvent
 from .script import AutomationScript, ScriptRun
-from .user import UserApiKey, UserModelConfig, UserTierModel, UserToken
+from .user import UserApiKey, UserModelConfig, UserPreference, UserTierModel, UserToken
 
 __all__ = [
     "Base",
-    "UserToken", "UserApiKey", "UserTierModel", "UserModelConfig",
+    "UserToken", "UserApiKey", "UserTierModel", "UserModelConfig", "UserPreference",
     "Project", "ProjectDeletionJob",
     "ProjectSecret", "ProjectMember",
     "TaskEvent",

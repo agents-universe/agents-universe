@@ -52,6 +52,7 @@
             :key="tab.id"
             class="panel-tab"
             :class="{ active: activeTab === tab.id }"
+            :data-tour-target="`panel-tab-${tab.id}`"
             @click="activeTab = tab.id"
           ><component :is="tab.icon" :size="13" /> {{ tab.label }}</button>
         </div>

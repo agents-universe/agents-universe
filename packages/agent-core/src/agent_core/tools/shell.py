@@ -24,6 +24,9 @@ _TIMEOUT = 30
 _MAX_TIMEOUT = 300
 _NPM_INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
+# Legacy shared npm cache. Only used when it is actually writable -
+# a root-owned /tmp/npm-cache (npm bug) must not block installs.
+_NPM_CACHE_FALLBACK = "/tmp/npm-cache"
 
 # On Windows, use Git Bash so Unix commands (find, grep, etc.) work correctly.
 # Searched in order; first match wins. Falls back to cmd.exe if none found.
@@ -244,6 +247,121 @@ def _strip_env_prefix(command: str) -> str:
     return " ".join(seg[idx:]) if idx else command
 
 
+def _find_package_dir(cwd: str, project_root: str, command: str = "") -> Path | None:
+    """Locate the package.json-owning directory for npm/npx commands.
+
+    Bounded upward search that stops at the project root, so a workspace
+    nested inside a monorepo (package.json in an ancestor outside the
+    workspace) cannot install - or have its node_modules rmtree'd - outside
+    the project sandbox. A <cwd>/tests/package.json fallback applies only
+    when the command mentions playwright (QA-generated specs live there).
+    """
+    cwd_path = Path(cwd)
+    root = Path(project_root).resolve()
+    search = cwd_path
+    for _ in range(5):
+        if (search / "package.json").is_file():
+            return search
+        if search == root or not search.is_relative_to(root):
+            break
+        parent = search.parent
+        if parent == search:
+            break
+        search = parent
+    if "playwright" in command:
+        tests_candidate = cwd_path / "tests"
+        if (tests_candidate / "package.json").is_file():
+            return tests_candidate
+    return None
+
+
+def _command_npm_cache(command: str) -> str | None:
+    """Return the npm cache dir named by the command itself, if any.
+
+    Recognizes a leading NPM_CONFIG_CACHE= / npm_config_cache= env prefix
+    (either case - the shell tool's own injection uses lowercase, users
+    commonly use uppercase) and an explicit --cache=<dir> flag. These are the
+    only ways a user command can override the cache for BOTH the dependency
+    install phase and the command itself.
+    """
+    for token in command.split():
+        m = re.match(r"^(?:npm_config_cache|NPM_CONFIG_CACHE)=(.+)$", token)
+        if m:
+            return m.group(1).strip().strip("'\"")
+        m = re.match(r"^--cache=(.+)$", token)
+        if m:
+            return m.group(1).strip().strip("'\"")
+    return None
+
+
+def _npmrc_cache_dir(pkg_dir: Path) -> str | None:
+    """Read cache=<dir> from the project's .npmrc (value may be quoted)."""
+    npmrc = pkg_dir / ".npmrc"
+    if not npmrc.is_file():
+        return None
+    try:
+        for line in npmrc.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            m = re.match(r"^cache\s*=\s*(.+)$", line, re.IGNORECASE)
+            if m:
+                return m.group(1).strip().strip("'\"")
+    except OSError:
+        return None
+    return None
+
+
+def _ensure_writable_cache(cache_dir: str) -> bool:
+    """Create the cache directory (if needed) and confirm it is writable.
+
+    os.makedirs(exist_ok=True) alone is NOT a writability check: on an
+    existing root-owned directory it silently succeeds and the EACCES only
+    surfaces later when npm tries to create _cacache inside it. The explicit
+    os.access(W_OK) probe turns that late failure into a clean fallback to
+    the next cache candidate.
+    """
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.access(cache_dir, os.W_OK)
+    except OSError:
+        return False
+
+
+def _resolve_npm_cache_dir(pkg_dir: Path, command: str) -> str | None:
+    """Pick a writable npm cache directory for the install phase, in priority:
+
+    1. the cache dir named by the command itself (NPM_CONFIG_CACHE= env
+       prefix or --cache= flag),
+    2. cache=<dir> from the project's .npmrc,
+    3. a project-internal default ({pkg_dir}/.npm-cache) that is always
+       writable because it lives inside the sandbox,
+    4. the legacy shared /tmp/npm-cache - only when it is actually writable.
+
+    Relative cache paths are resolved against pkg_dir, matching how npm
+    interprets them when the install runs with cwd=pkg_dir. Returns None when
+    no candidate is usable (disk full / broken sandbox).
+    """
+    candidates = [
+        _command_npm_cache(command),
+        _npmrc_cache_dir(pkg_dir),
+        str(pkg_dir / ".npm-cache"),
+        _NPM_CACHE_FALLBACK,
+    ]
+    for cache_dir in candidates:
+        if not cache_dir:
+            continue
+        # npm expands ~/ in .npmrc values; a literal '~' directory
+        # inside the package dir is NOT the cache npm itself uses.
+        cache_dir = os.path.expanduser(cache_dir)
+        resolved = Path(cache_dir)
+        if not resolved.is_absolute():
+            resolved = pkg_dir / resolved
+        if _ensure_writable_cache(str(resolved)):
+            return str(resolved)
+    return None
+
+
 def _required_node_bins(pkg_dir: Path, command: str) -> list[str]:
     """Return missing declared dependencies and their npm bin shims."""
     try:
@@ -305,28 +423,11 @@ async def ensure_node_deps(
     if not re.match(r"^(npx\b|npm\s+(?:run\b|test\b|install\b|i\b))", _strip_env_prefix(command)):
         return None
 
-    cwd_path = Path(cwd)
-    # the upward search must stop at the project root. A
-    # project workspace nested inside a monorepo (package.json in an
-    # ancestor outside the workspace) previously let npm install - and
-    # the node_modules rmtree below - run OUTSIDE the project sandbox.
-    root = Path(project_root).resolve()
-    search = cwd_path
-    pkg_dir: Path | None = None
-    for _ in range(5):
-        if (search / "package.json").is_file():
-            pkg_dir = search
-            break
-        if search == root or not search.is_relative_to(root):
-            break
-        parent = search.parent
-        if parent == search:
-            break
-        search = parent
-    if pkg_dir is None and "playwright" in command:
-        tests_candidate = cwd_path / "tests"
-        if (tests_candidate / "package.json").is_file():
-            pkg_dir = tests_candidate
+    # the upward search (in _find_package_dir) must stop at the project
+    # root. A project workspace nested inside a monorepo (package.json in an
+    # ancestor outside the workspace) previously let npm install - and the
+    # node_modules rmtree below - run OUTSIDE the project sandbox.
+    pkg_dir = _find_package_dir(cwd, project_root, command)
     if pkg_dir is None:
         return None
 
@@ -340,12 +441,10 @@ async def ensure_node_deps(
         if cleanup_error:
             return cleanup_error
 
-    npm_cache = "/tmp/npm-cache"
     if sys.platform != "win32":
-        try:
-            os.makedirs(npm_cache, exist_ok=True)
-        except OSError as exc:
-            return f"Failed to prepare npm cache: {exc}"
+        npm_cache = _resolve_npm_cache_dir(pkg_dir, command)
+        if npm_cache is None:
+            return "Failed to prepare npm cache: no writable cache directory found"
         prefix = f"npm_config_cache={npm_cache} "
     else:
         prefix = ""
@@ -548,7 +647,7 @@ class ShellTool(Tool):
 
         # Inject npm cache env to avoid /.npm permission errors in containers.
         try:
-            command = self._inject_npm_cache_env(command, cwd)
+            command = self._inject_npm_cache_env(command, cwd, context.project_fs_path)
         except OSError as exc:
             return {"error": f"Failed to prepare npm cache: {exc}"}
 
@@ -611,18 +710,26 @@ class ShellTool(Tool):
     _required_node_bins = staticmethod(_required_node_bins)
     _rm_dir = staticmethod(_rm_dir)
 
-    def _inject_npm_cache_env(self, command: str, cwd: str) -> str:
+    def _inject_npm_cache_env(self, command: str, cwd: str, project_root: str) -> str:
         """Prefix npm/npx commands with a writable cache directory.
 
-        Linux containers support symlinks, so npm creates local package binaries in
-        ``node_modules/.bin`` without disabling bin links.
+        Uses the same resolution as the dependency-install phase (command
+        NPM_CONFIG_CACHE / --cache, project .npmrc, project-internal
+        .npm-cache, writable /tmp/npm-cache) so the real command and the
+        pre-install step agree on the cache. A command that already carries
+        its own cache setting - npm_config_cache= in either case, or
+        --cache - is left untouched (the user's explicit choice wins).
+        Linux containers support symlinks, so npm creates local package
+        binaries in ``node_modules/.bin`` without disabling bin links.
         """
         if not re.match(r"^(npm|npx)\b", self._strip_env_prefix(command)):
             return command
-        if "npm_config_cache=" not in command and "--cache" not in command:
-            if sys.platform != "win32":
-                cache_dir = "/tmp/npm-cache"
-                os.makedirs(cache_dir, exist_ok=True)
+        if re.search(r"npm_config_cache\s*=", command, re.IGNORECASE) or "--cache" in command:
+            return command
+        if sys.platform != "win32":
+            pkg_dir = _find_package_dir(cwd, project_root, command) or Path(cwd)
+            cache_dir = _resolve_npm_cache_dir(pkg_dir, command)
+            if cache_dir is not None:
                 command = f"npm_config_cache={cache_dir} {command}"
         return command
 

@@ -59,6 +59,13 @@ _log = logging.getLogger("agent_core.agent")
 # unbounded memory growth from a runaway stream.
 _MAX_TOOL_ARGS_CHARS = 2_000_000
 
+# Tool-call loop budgets (iterations = provider round-trips). The chat loop
+# refreshes its per-loop budget when the user injects a message mid-run;
+# total_budget (5x) is the never-refreshed safety valve. Long closed-loop
+# workflows (e.g. the QA Jira pipeline) need more than the old 20/15.
+_MAX_CHAT_ITERATIONS = 60
+_MAX_TASK_ITERATIONS = 30
+
 
 def _attachment_ref(a: dict) -> str:
     """Text representation of an attachment (name + relative path) for the LLM."""
@@ -884,7 +891,7 @@ class Agent:
         # sanitize once here so every provider call in this turn is well-formed.
         messages = self._drop_orphan_tool_messages(messages)
         message_id = session.new_message()
-        max_iterations = 20
+        max_iterations = _MAX_CHAT_ITERATIONS
         max_pause_continuations = 3
         pause_count = 0
         emitted_end = False
@@ -1240,7 +1247,7 @@ class Agent:
                     ))
             if exhausted:
                 if not emitted_end:
-                    await session.emit("warning", message="Reached maximum loop iterations")
+                    await session.emit("warning", message="Reached maximum loop iterations - reply to continue")
                     await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="max_iterations")
                     emitted_end = True
         finally:
@@ -1702,7 +1709,7 @@ class Agent:
         Uses *task_tool_ctx* (a per-task shallow copy) so concurrent tasks
         don't clobber each other's ``current_task_id`` / ``current_turn``.
         """
-        max_iterations = 15
+        max_iterations = _MAX_TASK_ITERATIONS
         max_pause_continuations = 3
         pause_count = 0
         message_id = session.new_message()
@@ -1921,5 +1928,6 @@ class Agent:
                 ))
 
         # Loop exhausted (max_iterations)
+        await session.emit("warning", message=f"Task {task_id} reached maximum tool iterations - reply to continue")
         await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, task_id=task_id)
         return "".join(full_text_total)

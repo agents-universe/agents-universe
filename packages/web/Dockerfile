@@ -1,8 +1,12 @@
 FROM node:20-slim AS builder
 WORKDIR /build
 COPY package*.json ./
-# package-lock.json has internal Nexus URLs unreachable outside corp network;
-# resolve from the registry instead (same approach as the root Dockerfile).
+# Keep the committed lockfile for reproducible builds: the same source must
+# always produce the same hashed chunks (mermaid.core-*.js etc.). Deleting it
+# lets npm resolve ^ranges to newer versions on every build, so a redeploy
+# can orphan the exact chunk a cached index.html still references.
+# The lockfile's resolved URLs are rewritten to the configured registry so
+# builds still work on hosts that can only reach the mirror.
 # Defaults to the China mirror (npmmirror) for fast CN builds; override with
 # --build-arg NPM_REGISTRY for other environments.
 ARG NPM_REGISTRY=https://registry.npmmirror.com
@@ -10,7 +14,8 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 # only re-download what changed.
 ENV npm_config_cache=/root/.npm
 RUN --mount=type=cache,target=/root/.npm \
-    rm -f package-lock.json && npm install --registry=$NPM_REGISTRY
+    sed -i "s|https://registry.npmjs.org|$NPM_REGISTRY|g" package-lock.json \
+    && npm ci --registry=$NPM_REGISTRY
 COPY . .
 ARG VITE_API_BASE_PATH=/agent
 ARG VITE_BASE_PATH=/agent-web/

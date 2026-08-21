@@ -525,6 +525,21 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         conv.clearStreamingState(convId)
         conv.clearPendingPrompts(convId)
         break
+      case 'warning': {
+        // Non-fatal server-side notices (loop budget exhausted, response
+        // truncation, compression timeout...). Surface as a visible
+        // error-styled bubble WITHOUT touching streaming state — most
+        // warnings arrive while the run is still going; the loop-exhausted
+        // one is followed by its own stream_end right after.
+        conv.addMessage({
+          id: `warn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'assistant',
+          content: (msg.message as string) ?? 'Warning',
+          isError: true,
+          timestamp: Date.now(),
+        }, convId)
+        break
+      }
       case 'error': {
         const messageId = (msg.stream_message_id as string) ?? `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         entry.terminalMessageId = messageId

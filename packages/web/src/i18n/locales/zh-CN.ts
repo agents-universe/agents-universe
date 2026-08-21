@@ -289,6 +289,7 @@ export default {
     rendering: '渲染中…',
     renderFailed: '图表渲染失败',
     emptyCode: '空的 Mermaid 代码块',
+    sourceLabel: '图表源码 (markdown)',
   },
   chatPage: {
     newConversationHint: '开始一段新对话',

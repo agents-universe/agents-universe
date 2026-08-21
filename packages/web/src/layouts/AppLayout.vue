@@ -49,6 +49,16 @@
           :data-tour-target="`center-nav-${nav.id}`"
           @click="goToPage(nav.id)"
         ><component :is="nav.icon" :size="13" /> {{ nav.label }}</button>
+        <!-- 压缩当前对话：与顶部页签同一行（右对齐），不单独占一行 -->
+        <button
+          v-if="pageSegment === 'chat' && convStore.messages.length > 0"
+          class="compress-btn nav-compress"
+          :disabled="isCompressDisabled"
+          @click="handleCompress"
+        >
+          <Shrink :size="13" />
+          <span>{{ compressing ? t('chatPanel.compressing') : t('chatPanel.compressContext') }}</span>
+        </button>
       </nav>
       <div class="center-content">
         <Transition name="route-fade" mode="out-in">
@@ -93,10 +103,11 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, Terminal } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, Terminal, Shrink } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useAgentStore } from '@/stores/agent'
 import { useConversationStore } from '@/stores/conversation'
+import { conversationsApi } from '@/api/conversations'
 import { projectsApi } from '@/api/projects'
 import ProjectTree from '@/components/sidebar/ProjectTree.vue'
 import AgentSwitcher from '@/components/sidebar/AgentSwitcher.vue'
@@ -222,6 +233,28 @@ const navTabs = computed(() => [
   { id: 'knowledge' as const, label: t('layout.tabKnowledge'), icon: BookOpen },
   { id: 'scripts' as const, label: t('layout.tabScripts'), icon: Terminal },
 ])
+
+// Compress lives on the top nav row (right-aligned) rather than on its own
+// line under the chat panel; it targets the active conversation.
+const compressing = ref(false)
+const isCompressDisabled = computed(
+  () => convStore.isStreaming || convStore.isThinking || compressing.value,
+)
+
+async function handleCompress() {
+  const id = convStore.conversationId
+  if (!id || compressing.value) return
+  if (!window.confirm(t('chatPanel.compressConfirm'))) return
+  compressing.value = true
+  try {
+    const res = await conversationsApi.compress(id)
+    convStore.loadHistory(res.messages, id)
+  } catch (e) {
+    window.alert(e instanceof Error ? e.message : t('chatPanel.compressFailed'))
+  } finally {
+    compressing.value = false
+  }
+}
 
 function goToPage(segment: 'chat' | 'knowledge' | 'scripts') {
   const pid = route.params.projectId

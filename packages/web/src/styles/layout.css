@@ -1296,13 +1296,6 @@
   color: #f87171;
 }
 
-.compress-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
 .compress-btn {
   display: inline-flex;
   align-items: center;
@@ -1315,6 +1308,13 @@
   border-radius: 6px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
+}
+/* Compress button inside the top page nav (chat page): pushed to the right
+   edge of the row instead of taking its own line under the panel. */
+.nav-compress {
+  margin-left: auto;
+  align-self: center;
+  margin-right: 4px;
 }
 .compress-btn:hover:not(:disabled) {
   color: var(--text-primary);

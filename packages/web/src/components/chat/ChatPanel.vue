@@ -4,22 +4,10 @@
     <div v-if="wsStatus === 'connecting'" class="ws-status reconnecting">{{ t('chatPanel.connecting') }}</div>
     <div v-else-if="wsStatus === 'failed'" class="ws-status failed">{{ t('chatPanel.connectFailed') }}</div>
 
-    <!-- Compress toolbar -->
-    <div v-if="convStore.messages.length > 0" class="compress-toolbar">
-      <button
-        class="compress-btn"
-        :disabled="isCompressDisabled"
-        @click="handleCompress"
-      >
-        <Shrink :size="14" />
-        <span>{{ compressing ? t('chatPanel.compressing') : t('chatPanel.compressContext') }}</span>
-      </button>
-    </div>
-
     <!-- Messages -->
     <div class="messages-list" ref="scrollEl">
       <MessageBubble
-        v-for="msg in convStore.messages"
+        v-for="msg in settledMessages"
         :key="msg.id"
         :message="msg"
       />
@@ -64,6 +52,18 @@
         @resolve="handleResolve"
         @cancel="handleCancel"
       />
+
+      <!-- Messages sent while the agent was still running (injections). They
+           are not confirmed yet — the server consumes them at the next step
+           boundary — so they render BELOW the ongoing run: new input must
+           appear at the true bottom of the chat, not above the plan/tool
+           cards of the run it joins. confirmInjected settles them into the
+           list above the streaming area. -->
+      <MessageBubble
+        v-for="msg in pendingInjectedMessages"
+        :key="msg.id"
+        :message="msg"
+      />
     </div>
 
     <!-- Composer -->
@@ -84,8 +84,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Shrink } from 'lucide-vue-next'
-import { conversationsApi } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
@@ -113,6 +111,20 @@ const projectStore = useProjectStore()
 const scrollEl = ref<HTMLElement | null>(null)
 
 const projectId = computed(() => projectStore.currentProject?.project_id ?? '')
+
+// Injections sent while the agent is running are unconfirmed until the server
+// consumes them — they must render BELOW the streaming block (see template)
+// so new input always lands at the true bottom of the chat. Once
+// confirmInjected settles them they rejoin the regular list above the run.
+const pendingInjectedMessages = computed(() => {
+  const pending = new Set(convStore.pendingInjected.map((p) => p.optimisticId))
+  return convStore.messages.filter((m) => pending.has(m.id))
+})
+
+const settledMessages = computed(() => {
+  const pending = new Set(convStore.pendingInjected.map((p) => p.optimisticId))
+  return convStore.messages.filter((m) => !pending.has(m.id))
+})
 
 const untaskedToolCalls = computed(() =>
   convStore.activeToolCalls.filter((tc) => !tc.taskId),
@@ -201,12 +213,35 @@ const renderedStreaming = computed(() =>
   ),
 )
 
-watch(
-  () => [convStore.messages.length, convStore.streamingContent],
-  () => nextTick(() => {
-    if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
-  }),
-)
+// Auto-scroll must track every piece of state that changes the list's height,
+// not just new messages: during a task run the plan card grows with task
+// status/summary updates and per-task streaming text, tool cards grow when
+// calls start/end with input/output, and images/files land mid-run. Missing
+// any of these leaves the viewport where it was while the new content renders
+// below the fold. The signature collapses each source to comparable strings
+// so the watch fires on actual changes, not on every mutation.
+const scrollSignature = computed(() => [
+  convStore.messages.length,
+  convStore.streamingContent.length,
+  convStore.tasks.map((t) =>
+    `${t.id}:${t.status}:${t.summary?.length ?? 0}:${t.error?.length ?? 0}`,
+  ).join('|'),
+  // Per-task streaming text lives in streamingByTask (keyed by task id), not
+  // in streamingContent — taskStreamingText reads it reactively, so summing
+  // its length tracks growth inside the running plan card.
+  convStore.tasks
+    .filter((t) => t.status === 'running')
+    .map((t) => convStore.taskStreamingText(t.id).length)
+    .join('|'),
+  convStore.activeToolCalls.map((c) =>
+    `${c.callId}:${c.status}:${c.output ? 1 : 0}`,
+  ).join('|'),
+  convStore.pendingPrompts.length,
+].join('§'))
+
+watch(scrollSignature, () => nextTick(() => {
+  if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
+}))
 
 function handleSubmit(payload: { content: string; config_id?: string; attachments?: AttachmentRecord[]; agentSlug?: string }) {
   if (!props.conversationId) return
@@ -306,25 +341,6 @@ function handleAbort() {
     return
   }
   convStore.abortStreaming()
-}
-
-const compressing = ref(false)
-const isCompressDisabled = computed(
-  () => convStore.isStreaming || convStore.isThinking || compressing.value,
-)
-
-async function handleCompress() {
-  if (!props.conversationId || compressing.value) return
-  if (!window.confirm(t('chatPanel.compressConfirm'))) return
-  compressing.value = true
-  try {
-    const res = await conversationsApi.compress(props.conversationId)
-    convStore.loadHistory(res.messages, props.conversationId)
-  } catch (e) {
-    window.alert(e instanceof Error ? e.message : t('chatPanel.compressFailed'))
-  } finally {
-    compressing.value = false
-  }
 }
 
 function handleResolve(

@@ -84,23 +84,27 @@ class FocusTemplateTool(Tool):
         w, h = img.size
         img.close()
 
+        # Placeholder boxes are deliberately SMALL (about 12% of width / 6% of
+        # height) and centered on a column: the caller must replace them with
+        # tight rectangles around the actual element. Large 20%x10% defaults
+        # produced oversized marks that obscured the very content being proven.
         focus_areas = []
         for i in range(count):
             if units == "percent":
                 area = {
-                    "xPct": round(10 + i * 25, 1),
-                    "yPct": round(30 + i * 15, 1),
-                    "widthPct": 20.0,
-                    "heightPct": 10.0,
+                    "xPct": round(12 + i * 22, 1),
+                    "yPct": round(30 + i * 12, 1),
+                    "widthPct": 12.0,
+                    "heightPct": 6.0,
                     "label": f"Focus {i + 1}",
                     "detail": "Replace with why this area matters.",
                 }
             else:
                 area = {
-                    "x": int(w * (0.1 + i * 0.25)),
-                    "y": int(h * (0.3 + i * 0.15)),
-                    "width": int(w * 0.2),
-                    "height": int(h * 0.1),
+                    "x": int(w * (0.12 + i * 0.22)),
+                    "y": int(h * (0.3 + i * 0.12)),
+                    "width": int(w * 0.12),
+                    "height": int(h * 0.06),
                     "label": f"Focus {i + 1}",
                     "detail": "Replace with why this area matters.",
                 }

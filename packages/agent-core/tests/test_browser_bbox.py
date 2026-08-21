@@ -4,11 +4,15 @@ Regression for the #1 QA screenshot-annotation defect: marks landing at the
 wrong place. ``bounding_box`` returns BOTH viewport-relative and full-page
 (document) coordinates so the caller cannot mix coordinate systems; these
 tests pin the exact JS math with a real headless Chromium against a local
-HTML page (127.0.0.1 is loopback, not an SSRF target).
+HTML page (localhost hostname, not an SSRF target).
+
+CI does not install Playwright browsers (agent-core job installs only
+``pip install -e ".[test]"``), so the whole module is skipped when the
+Chromium executable is missing — same convention as the repo's other
+skipif markers.
 """
 from __future__ import annotations
 
-import asyncio
 import functools
 import http.server
 import threading
@@ -18,6 +22,25 @@ import pytest
 
 from agent_core.tools.base import ToolContext
 from agent_core.tools.browser_playwright import BrowserPlaywrightTool
+
+
+def _chromium_available() -> bool:
+    """True when the Playwright Chromium binary is actually installed."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+    try:
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).exists()
+    except Exception:
+        return False
+
+
+requires_chromium = pytest.mark.skipif(
+    not _chromium_available(),
+    reason="Playwright Chromium not installed (run: playwright install chromium)",
+)
 
 _PAGE = """<!DOCTYPE html>
 <html><head><style>
@@ -34,8 +57,8 @@ body { margin: 0; font-family: sans-serif; }
 
 @pytest.fixture(autouse=True)
 def _ssrf_off(monkeypatch):
-    """This suite talks to a 127.0.0.1 loopback server; SSRF_ENABLED in the
-    ambient environment would block loopback URLs at goto."""
+    """This suite talks to a loopback server; SSRF_ENABLED in the ambient
+    environment would block loopback URLs at goto."""
     monkeypatch.delenv("SSRF_ENABLED", raising=False)
 
 
@@ -65,6 +88,7 @@ def make_context(project_fs_path: str) -> ToolContext:
     )
 
 
+@requires_chromium
 async def test_bounding_box_requires_selector(page_server, tmp_path):
     ctx = make_context(str(tmp_path))
     tool = BrowserPlaywrightTool()
@@ -75,6 +99,7 @@ async def test_bounding_box_requires_selector(page_server, tmp_path):
     assert "selector" in result["error"]
 
 
+@requires_chromium
 async def test_bounding_box_reports_viewport_and_fullpage(page_server, tmp_path):
     ctx = make_context(str(tmp_path))
     tool = BrowserPlaywrightTool()
@@ -98,6 +123,7 @@ async def test_bounding_box_reports_viewport_and_fullpage(page_server, tmp_path)
     assert box["viewport"]["x"] == 100
 
 
+@requires_chromium
 async def test_bounding_box_unknown_selector_fails_cleanly(page_server, tmp_path):
     ctx = make_context(str(tmp_path))
     tool = BrowserPlaywrightTool()

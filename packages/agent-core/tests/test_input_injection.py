@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent_core.agent import Agent, AgentConfig
+from agent_core.agent import Agent, AgentConfig, _MAX_CHAT_ITERATIONS
 from agent_core.providers.base import Message, StopReason, StreamChunk
 from agent_core.session import ConversationSession, SessionEvent, UserInputEntry
 
@@ -364,9 +364,9 @@ async def test_inject_refreshes_iteration_budget():
     async def _stream(messages, tools=None, max_tokens=4096, temperature=0.0):
         nonlocal calls
         calls += 1
-        # On the LAST budgeted iteration (20th call), queue an injection so
+        # On the LAST budgeted iteration, queue an injection so
         # the loop must not terminate with max_iterations.
-        if calls == 20:
+        if calls == _MAX_CHAT_ITERATIONS:
             entry = _make_entry("inj-last", "Extend")
             session.enqueue_user_input(entry)
             session.resolve_input_persisted("inj-last", True)
@@ -386,9 +386,11 @@ async def test_inject_refreshes_iteration_budget():
     )
     await session.stop_drainer()
 
-    # The injection on call 20 refreshed the budget (20 more iterations), so
-    # 40 calls happen in total instead of 20.
-    assert calls == 40, f"expected budget refresh to extend to 40 calls, got {calls}"
+    # The injection on the last budgeted call refreshed the budget, so
+    # twice the limit happens in total instead of stopping at the limit.
+    assert calls == _MAX_CHAT_ITERATIONS * 2, (
+        f"expected budget refresh to extend to {_MAX_CHAT_ITERATIONS * 2} calls, got {calls}"
+    )
     # The loop still ends with max_iterations exhaustion afterwards.
     types = _event_types(session)
     assert types.count("warning") == 1

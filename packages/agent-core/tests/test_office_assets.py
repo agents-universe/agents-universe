@@ -22,6 +22,7 @@ OFFICE_SKILLS = [
     "office/pptx",
     "office/xlsx",
     "office/docx",
+    "office/pdf",
     "office/web-slides",
 ]
 OFFICE_TRIGGER_CASES = [
@@ -29,6 +30,7 @@ OFFICE_TRIGGER_CASES = [
     ("做一个网页版ppt", "office/web-slides"),
     ("把这个表导出成excel文件", "office/xlsx"),
     ("帮我写一份word文档", "office/docx"),
+    ("把这周的分析报告导出成pdf", "office/pdf"),
 ]
 
 _CJK_RE = re.compile(r"[一-鿿]")

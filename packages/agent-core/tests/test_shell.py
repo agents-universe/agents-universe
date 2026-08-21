@@ -1,4 +1,5 @@
 """Tests for the shell tool env_refs secret injection and output redaction."""
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -889,7 +890,9 @@ def test_inject_npm_cache_env_recognizes_env_prefix(tmp_path):
     stripped = tool._strip_env_prefix("NODE_ENV=production npm run build")
     assert re.match(r"^(npm|npx)\b", stripped)
     if sys.platform != "win32":
-        command = tool._inject_npm_cache_env("NODE_ENV=production npm run build", str(tmp_path))
+        command = tool._inject_npm_cache_env(
+            "NODE_ENV=production npm run build", str(tmp_path), str(tmp_path)
+        )
         assert command.startswith("npm_config_cache=")
         assert command.endswith("NODE_ENV=production npm run build")
 
@@ -918,6 +921,133 @@ async def test_ensure_node_deps_matches_env_prefixed_npm(tmp_path, monkeypatch):
     # ran at all - the VAR= prefix must not hide npm from the check.
     assert result is None
     assert installs, "npm install was never run - the env prefix hid npm from the deps check"
+
+
+# ---------------------------------------------------------------------------
+# npm cache resolution (EACCES regression on the shared /tmp/npm-cache)
+# ---------------------------------------------------------------------------
+
+_skip_win32 = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only cache resolution")
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_prefers_project_internal_over_unwritable_shared(tmp_path, monkeypatch):
+    """A root-owned shared /tmp/npm-cache must not block installs: the
+    project-internal .npm-cache is tried before it and wins whenever the
+    shared cache is unusable."""
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    resolved = shell_module._resolve_npm_cache_dir(tmp_path, "npm run test:sys-101")
+    assert resolved == str(tmp_path / ".npm-cache")
+    assert (tmp_path / ".npm-cache").is_dir()
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_command_env_prefix_wins(tmp_path):
+    """NPM_CONFIG_CACHE= (either case) in the command itself is honored for
+    the install phase too - the original bug ran the install against the
+    hardcoded /tmp cache even when the command named another cache."""
+    custom = tmp_path / "custom-cache"
+    resolved = shell_module._resolve_npm_cache_dir(
+        tmp_path, f"NPM_CONFIG_CACHE={custom} npm run typecheck"
+    )
+    assert resolved == str(custom)
+    assert custom.is_dir()
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_npmrc_wins_over_project_default(tmp_path):
+    npmrc_cache = tmp_path / "from-npmrc"
+    (tmp_path / ".npmrc").write_text(f"cache={npmrc_cache}\nfund=false\naudit=false\n", encoding="utf-8")
+    resolved = shell_module._resolve_npm_cache_dir(tmp_path, "npm run typecheck")
+    assert resolved == str(npmrc_cache)
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_relative_npmrc_value_resolved_against_pkg_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    (tmp_path / ".npmrc").write_text("cache=.npm-cache\n", encoding="utf-8")
+    resolved = shell_module._resolve_npm_cache_dir(tmp_path, "npm run typecheck")
+    assert resolved == str(tmp_path / ".npm-cache")
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_home_value_expanded(tmp_path, monkeypatch):
+    """npm expands ~/ in .npmrc values; the tool must agree with npm instead
+    of creating a literal '~' directory inside the project."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".npmrc").write_text("cache=~/.npm-home-cache\n", encoding="utf-8")
+    resolved = shell_module._resolve_npm_cache_dir(tmp_path, "npm run typecheck")
+    assert resolved == str(tmp_path / ".npm-home-cache")
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_unwritable_candidates_fall_through(tmp_path, monkeypatch):
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    resolved = shell_module._resolve_npm_cache_dir(
+        tmp_path, "NPM_CONFIG_CACHE=/proc/no-such-cache-possible npm run test"
+    )
+    assert resolved == str(tmp_path / ".npm-cache")
+
+
+@_skip_win32
+def test_resolve_npm_cache_dir_returns_none_when_nothing_writable(tmp_path, monkeypatch):
+    monkeypatch.setattr(shell_module, "_ensure_writable_cache", lambda d: False)
+    assert shell_module._resolve_npm_cache_dir(tmp_path, "npm run test") is None
+
+
+@_skip_win32
+def test_inject_npm_cache_env_uses_same_resolution_as_install(tmp_path, monkeypatch):
+    """The real command and the dependency-install phase must agree on the
+    cache: the injected prefix points at the resolved cache dir, not at the
+    legacy hardcoded /tmp/npm-cache."""
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    command = tool._inject_npm_cache_env("npm run test:sys-101", str(tmp_path), str(tmp_path))
+    assert command.startswith(f"npm_config_cache={tmp_path / '.npm-cache'} npm ")
+
+
+@_skip_win32
+def test_inject_npm_cache_env_leaves_explicit_cache_untouched(tmp_path):
+    tool = shell_module.ShellTool()
+    cmd = "NPM_CONFIG_CACHE=.npm-cache npm run typecheck"
+    assert tool._inject_npm_cache_env(cmd, str(tmp_path), str(tmp_path)) == cmd
+
+
+def test_inject_npm_cache_env_ignores_non_npm_commands(tmp_path):
+    tool = shell_module.ShellTool()
+    assert tool._inject_npm_cache_env("git status", str(tmp_path), str(tmp_path)) == "git status"
+
+
+@_skip_win32
+@pytest.mark.asyncio
+async def test_ensure_node_deps_install_uses_resolved_cache(tmp_path, monkeypatch):
+    """End-to-end regression for the QA blocker: the dependency-install phase
+    hardcoded /tmp/npm-cache, so every npm/playwright command died with EACCES
+    before the user command even started. The install must now run with the
+    resolved (writable) cache dir."""
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    ctx = make_context(project_fs_path=str(tmp_path))
+
+    installs: list[str] = []
+
+    def fake_install(*args, **kwargs):
+        installs.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_install),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_install),
+    ):
+        result = await tool._ensure_node_deps("npm run test:sys-101", str(tmp_path), ctx)
+
+    assert result is None
+    assert installs, "install phase did not run"
+    assert installs[0].startswith(f"npm_config_cache={tmp_path / '.npm-cache'} npm ")
+    assert "/definitely/not/writable" not in installs[0]
+
 
 
 def test_description_commands_all_in_allowlist():

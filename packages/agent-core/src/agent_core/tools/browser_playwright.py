@@ -59,7 +59,7 @@ class BrowserPlaywrightTool(Tool):
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["goto", "click", "fill", "screenshot", "wait_for_selector", "evaluate", "get_text", "download"],
+                "enum": ["goto", "click", "fill", "screenshot", "wait_for_selector", "evaluate", "get_text", "bounding_box", "download"],
                 "description": "Browser operation to perform",
             },
             "url": {"type": "string", "description": "URL for goto operation"},
@@ -207,6 +207,55 @@ class BrowserPlaywrightTool(Tool):
                 value = params.get("value", "")
                 await page.fill(selector, value, timeout=_clamp_timeout(params.get("timeout", 30000)))
                 return {"success": True, "selector": selector}
+
+            elif operation == "bounding_box":
+                # Measure an element's position in SCREENSHOT coordinates so
+                # image_annotator boxes land exactly on it. This exists because
+                # getBoundingClientRect() is viewport-relative while screenshots
+                # default to full_page=true (document coordinates) - annotating
+                # from raw rects without the scrollY conversion always misses.
+                selector = params.get("selector", "")
+                if not selector:
+                    return {"error": "bounding_box requires a 'selector'"}
+                try:
+                    await page.wait_for_selector(selector, timeout=_clamp_timeout(params.get("timeout", 30000)))
+                except Exception as e:
+                    return {"error": f"Selector not found: {selector} ({e})"}
+                box = await page.evaluate(
+                    """
+                    (sel) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        const dpr = window.devicePixelRatio || 1;
+                        return {
+                            viewport: {
+                                x: Math.round(r.x), y: Math.round(r.y),
+                                width: Math.round(r.width), height: Math.round(r.height),
+                            },
+                            fullPage: {
+                                x: Math.round(r.x),
+                                y: Math.round(r.y + window.scrollY),
+                                width: Math.round(r.width),
+                                height: Math.round(r.height),
+                            },
+                            scrollX: window.scrollX, scrollY: window.scrollY,
+                            documentHeight: document.documentElement.scrollHeight,
+                            viewportHeight: window.innerHeight,
+                            devicePixelRatio: dpr,
+                        };
+                    }
+                    """,
+                    selector,
+                )
+                if box is None:
+                    return {"error": f"Element not found: {selector}"}
+                note = (
+                    "Use 'viewport' for full_page=false screenshots, 'fullPage' for "
+                    "full_page=true screenshots. Playwright screenshots are CSS-pixel "
+                    "accurate regardless of devicePixelRatio."
+                )
+                return {"selector": selector, "bounding_box": box, "note": note}
 
             elif operation == "screenshot":
                 media_path = Path(context.conversation_media_dir)

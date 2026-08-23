@@ -520,11 +520,14 @@ class ApiRequestTool(Tool):
             return {"error": f"URL safety check failed: {safety_error}", "url": full_url}
 
         # 7. Write-operation or prod confirmation
-        needs_confirmation = (
-            require_confirmation
-            or method in ("POST", "PUT", "PATCH", "DELETE")
-            or (environment or "").lower().startswith(("prd", "prod", "production"))
-        )
+        write_gate = require_confirmation or method in ("POST", "PUT", "PATCH", "DELETE")
+        prod_gate = (environment or "").lower().startswith(("prd", "prod", "production"))
+        # Per-agent opt-out: automation agents (QA data-setup, etc.) set
+        # api_request_no_confirm so their run loop is not blocked on a prompt.
+        # The production gate always stays — prod writes still confirm.
+        if write_gate and getattr(context, "api_request_no_confirm", False):
+            write_gate = False
+        needs_confirmation = write_gate or prod_gate
         if needs_confirmation:
             session = getattr(context, "session", None)
             if session is None:

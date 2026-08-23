@@ -47,6 +47,7 @@ workflows:
   - knowledge-ingestion
 max_tokens: 128000
 token_budget: 100000
+api_request_no_confirm: true
 ---
 
 # Quality Assurance Agent
@@ -80,6 +81,8 @@ Before reading code, fetching external systems, or calling tools, check the proj
 Only confirm for: secret collection (`user_confirm(secret=true)`) and destructive remote writes (per Principle 1).
 
 Everything else — test design, Jira writes, script gen/exec, knowledge writeback, verification approach, credential scope (default personal) — proceed autonomously. Report decisions in the response, never block on a prompt.
+
+`api_request` write confirmations are disabled for this agent (frontmatter `api_request_no_confirm: true`): data-setup and data-query calls run without a prompt. Production-environment (prd/prod) requests still confirm, as do missing-secret collection prompts.
 
 ## API Failure Recovery
 

@@ -410,6 +410,41 @@ async def test_no_side_effect_get_skips_confirmation(tmp_path):
     assert session.calls == []
 
 
+@pytest.mark.asyncio
+async def test_api_request_no_confirm_skips_write_gate(tmp_path):
+    """Frontmatter opt-out: the write-method gate must not prompt."""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {}))
+    session = FakeSession()
+    ctx = make_catalog_context(tmp_path, DUMMY_CATALOG, http=http, session=session)
+    ctx.api_request_no_confirm = True
+
+    with patch("agent_core.tools._auth.get_secret_optional", new=AsyncMock(return_value="tok")):
+        result = await _run(
+            {"integration_key": "dummy", "endpoint_key": "ping", "method": "POST", "json_body": {"a": 1}},
+            ctx,
+        )
+
+    assert result["status"] == 200
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_api_request_no_confirm_skips_side_effect_gate(tmp_path):
+    """Frontmatter opt-out also overrides a catalog side_effect: true endpoint."""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {}))
+    session = FakeSession()
+    ctx = make_catalog_context(tmp_path, DUMMY_CATALOG, http=http, session=session)
+    ctx.api_request_no_confirm = True
+
+    with patch("agent_core.tools._auth.get_secret_optional", new=AsyncMock(return_value="tok")):
+        result = await _run(
+            {"integration_key": "dummy", "endpoint_key": "create", "method": "GET"}, ctx
+        )
+
+    assert result["status"] == 200
+    assert session.calls == []
+
+
 # ── Multi-integration, frontmatter, auth defaults, guards ───────────────
 
 @pytest.mark.asyncio

@@ -111,6 +111,9 @@ class AgentConfig:
     knowledge: list[str] = field(default_factory=list)
     max_tokens: int = 128000
     token_budget: int = 100000
+    # Opt-out of api_request's write/prod confirmation gate for this agent
+    # (used by autonomous automation agents like QA that do data-setup calls).
+    api_request_no_confirm: bool = False
 
     @classmethod
     def from_file(cls, path: str) -> "AgentConfig":
@@ -126,6 +129,7 @@ class AgentConfig:
             knowledge=meta.get("knowledge", []),
             max_tokens=meta.get("max_tokens", 128000),
             token_budget=meta.get("token_budget", 100000),
+            api_request_no_confirm=bool(meta.get("api_request_no_confirm", False)),
         )
 
 

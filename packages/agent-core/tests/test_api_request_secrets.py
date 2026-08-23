@@ -311,6 +311,31 @@ async def test_missing_secret_after_prompt_returns_error():
 
 
 @pytest.mark.asyncio
+async def test_api_request_no_confirm_keeps_prod_gate():
+    """api_request_no_confirm 只绕过写操作确认，prd 环境的确认保留。"""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+    session = FakeSession(result="allow")
+    ctx = make_context(http=http, session=session)
+    ctx.api_request_no_confirm = True
+
+    result = await ApiRequestTool().execute(
+        {
+            "integration_key": "svc",
+            "method": "POST",
+            "path": "/submit",
+            "base_url": "https://api.example.com",
+            "environment": "prd",
+            "auth_type": "none",
+            "json_body": {"q": 1},
+        },
+        ctx,
+    )
+
+    assert result["status"] == 200
+    assert len(session.calls) == 1  # prd 环境仍走确认门
+
+
+@pytest.mark.asyncio
 async def test_headers_only_redacts_secret_values():
     """headers_only responses must scrub resolved secret VALUES like the
     text/json bodies — an echo-anything gateway would otherwise leak the

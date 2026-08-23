@@ -94,6 +94,7 @@ class ToolContext:
         self.ssl_verify: bool = False
         self.browser_ssl_verify: bool = True
         self.integration_settings: dict[str, str] = {}
+        self.api_request_no_confirm: bool = False
         self._tool_registry: dict[str, Tool] = {}
         self.http_client_no_proxy = None
         self._browser_lock = asyncio.Lock()

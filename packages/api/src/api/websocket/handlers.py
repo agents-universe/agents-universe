@@ -991,6 +991,8 @@ async def _handle_message(
             )
             tool_context.ssl_verify = _ssl_verify
             tool_context.browser_ssl_verify = _settings.browser_ssl_verify
+            # Per-agent api_request confirmation opt-out (frontmatter flag).
+            tool_context.api_request_no_confirm = agent_config.api_request_no_confirm
             # User attachments live in the in-memory upload store (never on
             # disk) for the duration of this turn — expose it to filesystem
             # tools so read_file can serve full content when the inline

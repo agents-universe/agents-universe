@@ -70,6 +70,7 @@ export default {
     noMatches: '没有匹配的智能体',
     categoryAgile: '敏捷开发',
     categoryPlatform: '平台助手',
+    categorySecurity: '安全',
     categoryUnknown: '未分类/未知',
     groupProject: '本项目专属',
   },

@@ -70,6 +70,7 @@ export default {
     noMatches: 'No matching agents',
     categoryAgile: 'Agile development',
     categoryPlatform: 'Platform assistant',
+    categorySecurity: 'Security',
     categoryUnknown: 'Uncategorized / unknown',
     groupProject: 'This project',
   },

@@ -148,6 +148,17 @@ RUN --mount=type=cache,target=/tmp/pw-cache \
     && mkdir -p /ms-playwright \
     && cp -a /tmp/pw-cache/. /ms-playwright/
 
+# Pentest toolchain for the pentest-expert agent (own layer, own cache key:
+# tool changes must not re-download the ~170MB browser, and vice versa).
+# Installed into the main site-packages so agents invoke them as
+# `python3 -m <module>` - the shell tool allowlist whitelists python3, not tool
+# console scripts. Dependency conflicts with the framework deps are caught by
+# `pip check` in the final stage's verification layer.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --index-url $PIP_INDEX_URL \
+    --trusted-host $PIP_TRUSTED_HOST \
+    sqlmap semgrep bandit pip-audit detect-secrets sslyze dirsearch wafw00f
+
 # ── Stage 4: Final combined image (API + Web) ─────────────────────────────
 FROM python-base AS final
 RUN groupadd -r appuser && useradd -r -m -d /home/appuser -g appuser appuser
@@ -199,7 +210,16 @@ RUN set -eux; \
     mvn --version; \
     test -x /ms-playwright/chromium-*/chrome-linux/chrome \
         || test -x /ms-playwright/chromium-*/chrome-linux64/chrome; \
-    python -m pytest --version
+    python -m pytest --version; \
+    pip check; \
+    python -m sqlmap.sqlmap --version; \
+    python -c "from semgrep.console_scripts.entrypoint import main; main()" --version; \
+    python -m bandit --version; \
+    python -m pip_audit --version; \
+    python -m detect_secrets --version; \
+    python -m sslyze --help; \
+    python -m dirsearch --version; \
+    python -m wafw00f.main -V
 
 # Configure nginx for non-root execution.
 # All runtime-writable paths live under /tmp/nginx. /tmp is world-writable

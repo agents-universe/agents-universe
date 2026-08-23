@@ -18,6 +18,9 @@ function openaiWindow(modelId: string): number {
   const m = modelId.toLowerCase()
   if (m.startsWith('gpt-5')) return 1_000_000
   if (['o1', 'o2', 'o3', 'o4'].some((p) => m.startsWith(p))) return 200_000
+  // GLM-5.3 is the flagship (1M context); earlier GLM lines get the fallback.
+  const glmVer = /^glm[-_]?(\d+(?:\.\d+)*)/.exec(m)
+  if (glmVer && parseFloat(glmVer[1]) >= 5.3) return 1_000_000
   if (m.includes('gemini')) return 1_000_000
   return OPENAI_FALLBACK
 }

@@ -434,6 +434,13 @@ const userConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_sys
 
 const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string; tierDirty: boolean; windowDirty: boolean }>>({})
 
+// The model id each form's tier/window were last inferred for. Guards the
+// re-inference watcher below against firing on unrelated store refreshes
+// (a getter returning a fresh array makes the watcher run whenever any
+// dependency changes, not just model id changes — without this guard it
+// would clobber loaded values with inferred defaults on every reopen).
+const inferredFor = reactive<Record<string, string>>({})
+
 function initEditForms() {
   for (const cfg of userConfigs.value) {
     if (!editForms[cfg.config_id]) {
@@ -450,6 +457,7 @@ function initEditForms() {
         tierDirty: false,
         windowDirty: false,
       }
+      inferredFor[cfg.config_id] = cfg.model_id
     }
   }
 }
@@ -459,12 +467,16 @@ watch(userConfigs, initEditForms, { immediate: true })
 // Same rule as the add form: re-infer tier/window when the model id changes
 // unless the user explicitly overrode that field, so a save persists the
 // matched pair for the current model id instead of the previous one's.
+// The getter returns a fresh array so this fires on any store refresh —
+// the inferredFor guard makes it a no-op unless a model id actually changed.
 watch(
   () => userConfigs.value.map((c) => `${c.config_id}:${c.provider}:${editForms[c.config_id]?.model_id ?? ''}`),
   () => {
     for (const cfg of userConfigs.value) {
       const form = editForms[cfg.config_id]
       if (!form) continue
+      if (inferredFor[cfg.config_id] === form.model_id) continue
+      inferredFor[cfg.config_id] = form.model_id
       if (!form.tierDirty) form.complexity_tier = inferTier(cfg.provider, form.model_id)
       if (!form.windowDirty) form.context_window = String(inferContextWindow(cfg.provider, form.model_id))
     }
@@ -556,6 +568,7 @@ async function deleteConfig(configId: string) {
   try {
     await agentStore.removeModelConfig(configId)
     delete editForms[configId]
+    delete inferredFor[configId]
   } catch (e) {
     messages[configId] = { ok: false, text: e instanceof Error ? e.message : t('common.deleteFailed') }
   } finally {

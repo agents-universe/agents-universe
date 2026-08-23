@@ -66,6 +66,8 @@ describe('inferTier — Chinese domestic brands (conservative mid default)', () 
   it('brand defaults and explicit keywords', () => {
     expect(inferTier('openai', 'kimi-k2-thinking')).toBe('high')
     expect(inferTier('openai', 'kimi-k3')).toBe('mid')
+    expect(inferTier('openai', 'glm-5.3')).toBe('high')
+    expect(inferTier('openai', 'glm-5.3-air')).toBe('low')
     expect(inferTier('openai', 'glm-5.2')).toBe('mid')
     expect(inferTier('openai', 'glm-4-air')).toBe('low')
     expect(inferTier('openai', 'doubao-seed-2.1-pro')).toBe('high')

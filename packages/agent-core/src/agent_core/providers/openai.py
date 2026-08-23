@@ -25,6 +25,10 @@ def _context_window(model: str) -> int:
         return 1_000_000
     if any(m.startswith(p) for p in ("o1", "o2", "o3", "o4")):
         return 200_000
+    # GLM-5.3 is the flagship (1M context); earlier GLM lines get the fallback.
+    glm_ver = re.match(r"^glm[-_]?(\d+(?:\.\d+)*)", m)
+    if glm_ver and float(glm_ver.group(1)) >= 5.3:
+        return 1_000_000
     if "gemini-2.5" in m or "gemini-3" in m:
         return 1_000_000
     if "gemini" in m:

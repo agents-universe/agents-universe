@@ -45,7 +45,11 @@ _log = logging.getLogger("agents_universe.auth")
 # flow degrades to the pre-cache behavior (redirect to login), never to
 # session theft.
 _ANCHOR_COOKIE = "oauth_anchor"
-_ANCHOR_TTL = 120  # must match the oauth_session cache TTL in redis_client.py
+# Anchor and oauth_session cache TTLs must cover the full state lifetime
+# (save_oauth_state ttl=600 in /auth/login): a speculative callback request
+# can consume the state minutes before the real navigation arrives — e.g.
+# while the user is still typing credentials after an SSO session timeout.
+_ANCHOR_TTL = 600
 
 
 def _anchor_value(state: str) -> str:
@@ -121,7 +125,25 @@ async def login(redis: Redis = Depends(get_redis)):
         params["acr_values"] = settings.oauth_acr_values
 
     auth_url = f"{endpoints.authorization_endpoint}?{urlencode(params)}"
-    return RedirectResponse(url=auth_url)
+    response = RedirectResponse(url=auth_url)
+    # Anchor cookie is issued *before* the IdP round-trip, not only in the
+    # callback. A speculative callback request (browser prefetch / proxy
+    # retry) consumes the state, and the real navigation can only recover
+    # the cached session if it can present this cookie. This same-origin
+    # response reliably commits Set-Cookie, whereas a cross-site
+    # speculative prefetch of the callback may have its cookies dropped —
+    # which previously bounced the user back to the login page on the
+    # first attempt (desktop Chrome; mobile usually doesn't prefetch).
+    response.set_cookie(
+        key=_ANCHOR_COOKIE,
+        value=_anchor_value(state),
+        max_age=_ANCHOR_TTL,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path="/",
+    )
+    return response
 
 
 @router.get("/auth/callback")
@@ -133,8 +155,8 @@ async def auth_callback(
 ):
     """Exchange the authorization code for tokens, create a Redis session.
 
-    Mobile browsers frequently prefetch the callback URL (Chrome preload,
-    Safari speculative loading), which consumes the OAuth state before the
+    Browsers frequently fire the callback URL twice (speculative
+    prefetch, proxy retries), which consumes the OAuth state before the
     real navigation arrives.  To handle this we cache the resulting
     session_id keyed by state: a duplicate callback recovers the session
     and re-sets the cookie instead of bouncing the user to the login page.
@@ -245,7 +267,8 @@ async def auth_callback(
         path="/",
     )
     # Anchor cookie : proves to the duplicate-callback path that
-    # this browser is the one that completed the login. Not a credential
+    # this browser went through this state's login flow (it is also set
+    # in /auth/login, before the IdP round-trip). Not a credential
     # itself — it's only compared against the HMAC of the state.
     response.set_cookie(
         key=_ANCHOR_COOKIE,

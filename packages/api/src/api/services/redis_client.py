@@ -98,15 +98,18 @@ async def validate_and_consume_state(redis: Redis, state: str) -> bool:
 
 # ── OAuth session cache (duplicate-callback resilience) ────────────────────
 
-async def save_oauth_session(redis: Redis, state: str, session_id: str, ttl: int = 120) -> None:
+async def save_oauth_session(redis: Redis, state: str, session_id: str, ttl: int = 600) -> None:
     """Cache the session_id that resulted from an OAuth callback.
 
-    Mobile browsers (Chrome on Android, Safari on iOS) often prefetch the
-    callback URL, consuming the OAuth state.  When the *real* navigation
-    arrives the state is gone, but the session was already created by the
-    prefetch request.  This cache lets the duplicate callback recover the
-    session_id and re-set the cookie instead of bouncing the user back to
-    the login page.
+    Browsers (speculative prefetch, proxy retries) sometimes fire the
+    callback URL twice: the first request consumes the OAuth state, and
+    when the *real* navigation arrives the state is gone, but the session
+    was already created by the first request.  This cache lets the
+    duplicate callback recover the session_id and re-set the cookie
+    instead of bouncing the user back to the login page.  TTL covers the
+    full OAuth state lifetime (a prefetch can land minutes before the
+    real navigation, e.g. while the user re-enters credentials after an
+    SSO session timeout); the caller's anchor cookie is the replay gate.
     """
     await redis.setex(f"oauth_session:{state}", ttl, session_id)
 

@@ -37,6 +37,11 @@ const MID_KEYWORDS = [
 // can reassign in Settings.
 const BRAND_DEFAULT_MID = ['deepseek', 'qwen', 'kimi', 'glm', 'doubao', 'hunyuan', 'minimax']
 
+// GLM-5.3 is the flagship (1M context); earlier GLM lines carry no tier
+// signal. Runs after the keyword scans so budget names (glm-5.3-air) still
+// resolve low.
+const GLM_VERSION = /^glm[-_]?(\d+(?:\.\d+)*)/
+
 function tokens(modelId: string): Set<string> {
   return new Set(modelId.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
 }
@@ -53,7 +58,8 @@ export function inferTier(provider: string, modelId: string): ComplexityTier | n
   // Deployment names carry no tier semantics.
   if (provider === 'azure_openai') return null
 
-  const ts = tokens(modelId)
+  const m = modelId.toLowerCase()
+  const ts = tokens(m)
   if (ts.size === 0) return null
 
   if (ts.has('flash') && FLASH_IS_BUDGET_BRANDS.some((b) => hasBrand(ts, b))) {
@@ -69,6 +75,8 @@ export function inferTier(provider: string, modelId: string): ComplexityTier | n
   for (const keyword of MID_KEYWORDS) {
     if (ts.has(keyword)) return 'mid'
   }
+  const glmVer = GLM_VERSION.exec(m)
+  if (glmVer && parseFloat(glmVer[1]) >= 5.3) return 'high'
   if (BRAND_DEFAULT_MID.some((b) => hasBrand(ts, b))) return 'mid'
   return null
 }

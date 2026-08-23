@@ -76,6 +76,9 @@ def test_qwen_flash_is_budget():
 def test_domestic_brand_defaults():
     assert infer_complexity_tier("openai", "kimi-k2-thinking") == "high"
     assert infer_complexity_tier("openai", "kimi-k3") == "mid"
+    # GLM-5.3 is the flagship; budget keywords still win over the version check.
+    assert infer_complexity_tier("openai", "glm-5.3") == "high"
+    assert infer_complexity_tier("openai", "glm-5.3-air") == "low"
     assert infer_complexity_tier("openai", "glm-5.2") == "mid"
     assert infer_complexity_tier("openai", "glm-4-air") == "low"
     assert infer_complexity_tier("openai", "doubao-seed-2.1-pro") == "high"

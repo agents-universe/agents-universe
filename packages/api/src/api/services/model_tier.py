@@ -40,6 +40,11 @@ _MID_KEYWORDS = {
 # can reassign in Settings.
 _BRAND_DEFAULT_MID = {"deepseek", "qwen", "kimi", "glm", "doubao", "hunyuan", "minimax"}
 
+# GLM-5.3 is the flagship (1M context); earlier GLM lines carry no tier
+# signal. Runs after the keyword scans so budget names (glm-5.3-air) still
+# resolve low.
+_GLM_VERSION = re.compile(r"^glm[-_]?(\d+(?:\.\d+)*)")
+
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
 
@@ -77,6 +82,9 @@ def infer_complexity_tier(provider: str, model_id: str) -> str | None:
     for keyword in _MID_KEYWORDS:
         if keyword in tokens:
             return "mid"
+    match = _GLM_VERSION.match(model_id.lower())
+    if match and float(match.group(1)) >= 5.3:
+        return "high"
     if any(_has_brand(tokens, b) for b in _BRAND_DEFAULT_MID):
         return "mid"
     return None

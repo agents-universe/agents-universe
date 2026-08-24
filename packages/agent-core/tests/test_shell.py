@@ -763,7 +763,8 @@ async def test_new_commands_pass_allowlist(sibling_projects):
     for cmd in ("which python", "sed --version", "awk --version", "cut --version",
                 "tr --version", "printf 'hi'", "touch newfile", "stat local.txt",
                 "date", "basename local.txt", "dirname sub", "whoami", "uname",
-                "printenv PATH", "test -f local.txt"):
+                "printenv PATH", "test -f local.txt",
+                "HOME=.tmp/pentest/home /opt/semgrep-venv/bin/semgrep --version"):
         result = await tool.execute({"command": cmd}, ctx)
         # "error" key only appears on rejection; exit_code may be non-zero
         # (e.g. sed --version not installed) but that's not an allowlist block.

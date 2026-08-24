@@ -169,12 +169,15 @@ async def _resolve_env_refs(
 # Allowlist of safe commands.  Kept in sync with the sandbox validator
 # (sandbox.py _DATA_COMMANDS / _FIRST_POS_DATA / _DATA_VALUE_OPTS) which
 # already knows how to path-check these commands' arguments.
+# /opt/semgrep-venv/bin/semgrep: semgrep hard-requires mcp 1.29.0 at import
+# time (incompatible with agent-core's mcp>=2.0.0), so it is installed in its
+# own venv; this is the allowlisted absolute path to its console script.
 _ALLOWED_CMDS = re.compile(
     r"^(git|ls|cat|grep|find|jq|echo|printf|pwd|head|tail|wc|sort|uniq|diff|"
     r"mkdir|cp|mv|touch|stat|file|date|basename|dirname|"
     r"which|whoami|uname|printenv|test|"
     r"sed|awk|gawk|cut|tr|"
-    r"npx|npm|node|python3?|java|javac|mvn)"
+    r"npx|npm|node|python3?|java|javac|mvn|/opt/semgrep-venv/bin/semgrep)"
     r"(?:\s|$)"
 )
 _WRAPPER_COMMAND = re.compile(r"^\./(?:mvnw|gradlew)(?:\s|$)")

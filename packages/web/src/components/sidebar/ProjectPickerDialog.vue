@@ -129,10 +129,8 @@ import { useRouter } from 'vue-router'
 import { Folder, FolderHeart, Star, Search, Plus, X, Trash2, Settings } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
-import { useAgentStore } from '@/stores/agent'
 import { projectsApi } from '@/api/projects'
 import type { Project, ProjectCategory } from '@/types'
-import { CUSTOMIZATION_EXPERT_SLUG } from '@/utils/onboarding'
 import DeleteProjectDialog from './DeleteProjectDialog.vue'
 import ProjectSettingsDialog from './ProjectSettingsDialog.vue'
 import CategoryPicker from './CategoryPicker.vue'
@@ -142,7 +140,6 @@ const emit = defineEmits<{ close: [] }>()
 const { t } = useI18n()
 const projectStore = useProjectStore()
 const favoritesStore = useFavoritesStore()
-const agentStore = useAgentStore()
 const router = useRouter()
 
 const search = ref('')
@@ -212,18 +209,7 @@ async function createProject() {
     projectStore.addProject(project)
     favoritesStore.toggleProjectFavorite(project.project_id)
     projectStore.setCurrentProject(project)
-    // 「自定义」分类:自动路由到项目定制专家
-    if (project.category === 'other') {
-      try {
-        await agentStore.fetchAgents(project.project_id)
-        const expert = agentStore.agents.find(a => a.slug === CUSTOMIZATION_EXPERT_SLUG && !a.project_id)
-        if (expert) agentStore.setCurrentAgent(expert)
-      } catch {
-        // 非致命:保留默认 agent
-      }
-    }
-    const query = project.onboarding_recommended || project.category === 'other' ? '?onboarding=1' : ''
-    router.push(`/projects/${project.project_id}/chat${query}`)
+    router.push(`/projects/${project.project_id}/chat`)
     emit('close')
   } catch (e) {
     createError.value = e instanceof Error ? e.message : t('common.createFailed')

@@ -102,7 +102,7 @@ export const TOUR_STEPS: TourStep[] = [
     titleKey: 'tour.projectCreated.title',
     bodyKey: 'tour.projectCreated.body',
     center: true,
-    waitFor: '.message-user',
+    waitFor: '.agent-capabilities-card',
     // Only shown right after the create-project form (which the has-project
     // flow never reaches); skipped if the dialog was dismissed without
     // creating anything.

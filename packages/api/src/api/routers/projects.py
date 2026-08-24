@@ -283,9 +283,7 @@ async def create_project(
     except Exception:
         _log.warning("Knowledge auto-index failed for project %s", project_id, exc_info=True)
 
-    serialized = _serialize_project(project, current_user.user_id)
-    serialized["onboarding_recommended"] = True
-    return serialized
+    return _serialize_project(project, current_user.user_id)
 
 
 @router.get("")

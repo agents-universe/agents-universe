@@ -86,6 +86,7 @@ import { Plus } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
+import { agentStaticTools, agentMcpServers, initials, avatarColor } from '@/utils/agent'
 import type { AgentInfo } from '@/types'
 import AgentPickerDialog from './AgentPickerDialog.vue'
 
@@ -121,34 +122,8 @@ onBeforeUnmount(() => cancelHide())
 const tooltipStyle = computed(() => ({ top: '50%', right: '16px', transform: 'translateY(-50%)' }))
 
 /** Static (non-MCP) tool names from the agent's frontmatter tools list. */
-const staticTools = computed(() =>
-  (tooltipAgent.value?.tools ?? []).filter(t => !t.startsWith('mcp')),
-)
+const staticTools = computed(() => agentStaticTools(tooltipAgent.value))
 
 /** MCP server slugs parsed from mcp / mcp:<slug> markers. */
-const mcpServers = computed(() => {
-  const tools = tooltipAgent.value?.tools ?? []
-  const servers: string[] = []
-  for (const t of tools) {
-    if (t === 'mcp') {
-      servers.push('(all)')
-    } else if (t.startsWith('mcp:')) {
-      servers.push(t.slice(4))
-    }
-  }
-  return servers
-})
-
-function initials(label: string): string {
-  const words = label.trim().split(/\s+/)
-  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase()
-  return label.slice(0, 2).toUpperCase()
-}
-
-const COLORS = ['#5b7cf6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4']
-function avatarColor(slug: string): string {
-  let h = 0
-  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) & 0xffffffff
-  return COLORS[Math.abs(h) % COLORS.length]
-}
+const mcpServers = computed(() => agentMcpServers(tooltipAgent.value))
 </script>

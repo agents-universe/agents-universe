@@ -439,7 +439,7 @@ export default {
     },
     projectCreated: {
       title: '项目创建成功',
-      body: '「智能体定制专家」会自动开始向你了解项目情况。对话开始后我会自动继续引导。',
+      body: '项目已创建，对话区会显示当前智能体可以做什么。我们继续吧。',
     },
     chatComposer: {
       title: '聊天输入框',

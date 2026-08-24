@@ -13,7 +13,6 @@ export interface Project {
   display_name: string
   parent_id: string | null
   fs_path: string | null
-  onboarding_recommended?: boolean
   can_delete: boolean
   category: string
   category_label?: string

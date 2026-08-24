@@ -105,7 +105,6 @@ export const useConversationStore = defineStore('conversation', () => {
   const runtimes = new Map<string, ConversationRuntime>()
   // Throttle clock for appendDelta's draft persistence (see appendDelta).
   let _lastDraftSaveTs = 0
-  const pendingOnboardingMessage = ref<string | null>(null)
 
   /** Track which conversations are streaming (for sidebar indicator).
    *  Uses a reactive object (not Set) so that property access in templates
@@ -1044,7 +1043,6 @@ export const useConversationStore = defineStore('conversation', () => {
     activeId.value = null
     runtimes.clear()
     for (const key of Object.keys(streamingIds)) delete streamingIds[key]
-    pendingOnboardingMessage.value = null
   }
 
   function removeRuntime(id: string) {
@@ -1072,7 +1070,6 @@ export const useConversationStore = defineStore('conversation', () => {
     pendingPrompts,
     turnAgentSlug,
     pendingInjected,
-    pendingOnboardingMessage,
     streamingIds,
     startThinking,
     stopThinking,

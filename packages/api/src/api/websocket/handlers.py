@@ -384,8 +384,12 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
             await ws.send_json({"type": "error", "message": "An internal error occurred. Please try again."})
         except Exception:
             _log.debug("Failed to send error to client for %s (likely disconnected)", conversation_id)
-        if active_task and not active_task.done():
-            active_task.cancel()
+        # Do NOT cancel active_task: the agent may still be running and keeps
+        # persisting via forward_events — mirroring the WebSocketDisconnect
+        # path above. A receive-loop error (e.g. a transient DB failure in
+        # _check_project_access) must not kill a healthy turn; the user can
+        # still abort through a reconnect (abort frame → signal_abort), and
+        # manager.send() tolerates the missing socket.
         await manager.disconnect(conversation_id, ws)
 
 
@@ -1099,6 +1103,16 @@ async def _handle_message(
                 return
             attachment_records = persist_result.attachment_records
 
+            # Durable run record for background-turn feedback (a reopened
+            # session sees status + partial text). Best-effort: tracking must
+            # never fail the turn.
+            run_id: str = ""
+            try:
+                from api.services.conversation_runs import create_run
+                run_id = await create_run(conversation_id, str(persist_result.message_id))
+            except Exception:
+                _log.warning("create_run failed for %s", conversation_id, exc_info=True)
+
             # Build session
             session = ConversationSession(
                 conversation_id=conversation_id,
@@ -1233,6 +1247,7 @@ async def _handle_message(
             async def forward_events():
                 nonlocal _persist_guard, _inj_guard, _terminal_task_ids, _deferred_task_ids
                 _text_buf: str = ""
+                _last_snap_ts = time.monotonic()
                 # Model that actually executed this turn (model_selected event
                 # carries the resolved model for auto routing, the chosen
                 # config's model otherwise). Stored on the assistant row at
@@ -1258,6 +1273,16 @@ async def _handle_message(
                         elif event.type == "stream_delta":
                             _text_buf += event.data.get("delta", "")
                             session.current_streaming_text = _text_buf
+                            # Throttled snapshot for interruption recovery
+                            # (the Message row stays authoritative for the
+                            # final text of completed turns).
+                            if run_id and time.monotonic() - _last_snap_ts >= 5.0:
+                                _last_snap_ts = time.monotonic()
+                                try:
+                                    from api.services.conversation_runs import update_run_snapshot
+                                    await update_run_snapshot(run_id, _text_buf)
+                                except Exception:
+                                    _log.debug("update_run_snapshot failed for %s", conversation_id, exc_info=True)
                         elif event.type == "tool_call_start":
                             _tool_calls_buf.append({
                                 "call_id": event.data.get("call_id"),
@@ -1341,6 +1366,21 @@ async def _handle_message(
                                     # persist finish before unwinding.
                                     await _persist_guard
                                     raise
+                            # Terminal run-state transition. The snapshot is
+                            # kept for interrupted runs (recovery); completed
+                            # runs leave the Message row authoritative.
+                            _stop_reason = event.data.get("stop_reason")
+                            _run_status = "interrupted" if _stop_reason in ("aborted", "interrupted") else "completed"
+                            if run_id:
+                                try:
+                                    from api.services.conversation_runs import finish_run
+                                    await finish_run(
+                                        run_id, _run_status,
+                                        tokens_used=int(event.data.get("total_tokens") or 0),
+                                        snapshot=_text_buf if _run_status == "interrupted" else None,
+                                    )
+                                except Exception:
+                                    _log.warning("finish_run(stream_end) failed for %s", conversation_id, exc_info=True)
                             _text_buf = ""
                             _tool_calls_buf = []
                             _images_buf = []
@@ -1490,6 +1530,12 @@ async def _handle_message(
                 err_msg_id = str(_uuid_mod.uuid4())
                 await manager.send(conversation_id, {"type": "error", "message": error_message, "stream_message_id": err_msg_id})
                 await manager.send(conversation_id, {"type": "stream_end", "message_id": err_msg_id, "total_tokens": 0})
+                if run_id:
+                    try:
+                        from api.services.conversation_runs import finish_run
+                        await finish_run(run_id, "failed", error_message=error_message, tokens_used=0)
+                    except Exception:
+                        _log.warning("finish_run(agent error) failed for %s", conversation_id, exc_info=True)
 
             # Agent is done and session.close() was called — forward_task will
             # see the None sentinel and exit naturally. Give it a short timeout.
@@ -1604,6 +1650,12 @@ async def _handle_message(
 
             # After forward drains, tell the client the abort completed.
             if _aborted:
+                if run_id:
+                    try:
+                        from api.services.conversation_runs import finish_run
+                        await finish_run(run_id, "interrupted", tokens_used=session.tokens_used)
+                    except Exception:
+                        _log.warning("finish_run(abort) failed for %s", conversation_id, exc_info=True)
                 await manager.send(conversation_id, {"type": "abort_ack"})
                 await manager.send(conversation_id, {"type": "stream_end", "message_id": None, "total_tokens": session.tokens_used})
 
@@ -1643,10 +1695,31 @@ async def _handle_message(
             await manager.send(conversation_id, {"type": "stream_end", "message_id": err_msg_id, "total_tokens": 0})
         except Exception:
             _log.debug("Failed to send outer error to client for %s", conversation_id)
+        # Mark the run failed before re-raising — the finally-tail safety
+        # net would otherwise flip it to interrupted, losing the attribution.
+        _run_id = locals().get("run_id")
+        if _run_id:
+            try:
+                from api.services.conversation_runs import finish_run
+                await finish_run(_run_id, "failed", error_message="Agent execution failed. Check server logs for details.")
+            except Exception:
+                _log.debug("finish_run(outer error) failed for %s", conversation_id, exc_info=True)
         # Re-raise so task cancellation stays visible (the task wrapper logs
         # non-cancellation exceptions) — the finally block below still runs.
         raise
     finally:
+        # Safety net: a turn that exited without a terminal write (e.g. a
+        # cancellation that never reached stream_end) leaves the run row
+        # 'running' — flip it so reopen shows an interrupted notice, not a
+        # zombie. finish_run's status guard makes this a no-op after a
+        # normal terminal write.
+        _run_id = locals().get("run_id")
+        if _run_id:
+            try:
+                from api.services.conversation_runs import finish_run
+                await finish_run(_run_id, "interrupted")
+            except Exception:
+                _log.debug("finish_run(finally) failed for %s", conversation_id, exc_info=True)
         # Release per-turn resources even on error paths: provider HTTP
         # clients, in-memory uploads, and correlation context.
         # Deregister the session on every exit path (normal end already

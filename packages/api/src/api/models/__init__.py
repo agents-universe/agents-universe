@@ -2,6 +2,7 @@
 from ..database import Base
 from .agent import Agent
 from .conversation import AgentTask, Conversation, Message
+from .conversation_run import ConversationRun
 from .knowledge import KnowledgeLoadEvent, KnowledgeMetadata, KnowledgeVersion
 from .memory import EpisodicMemory, PersonalMemory
 from .mcp_server import MCPServer
@@ -20,7 +21,7 @@ __all__ = [
     "ProjectSecret", "ProjectMember",
     "TaskEvent",
     "Agent",
-    "Conversation", "Message", "AgentTask",
+    "Conversation", "Message", "AgentTask", "ConversationRun",
     "KnowledgeMetadata", "KnowledgeVersion", "KnowledgeLoadEvent",
     "PersonalMemory", "EpisodicMemory",
     "MCPServer",

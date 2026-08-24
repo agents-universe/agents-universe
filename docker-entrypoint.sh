@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Scrub proxy vars that are SET but empty. The compose `env_file: .env`
+# neutralizes Docker Desktop's host-proxy injection with empty values; Python,
+# curl and git skip empty proxies, but semgrep's OCaml core parses HTTPS_PROXY
+# strictly and fatals on an empty URI - unsetting the empty vars is the same
+# "no proxy" semantics for everyone.
+for _v in ALL_PROXY HTTP_PROXY HTTPS_PROXY all_proxy http_proxy https_proxy; do
+    if [ -z "${!_v:-}" ]; then
+        unset "$_v"
+    fi
+done
+unset _v
+
 # Apply DB migrations before serving traffic (matches the previous api CMD).
 echo "[entrypoint] Running database migrations..."
 alembic upgrade head

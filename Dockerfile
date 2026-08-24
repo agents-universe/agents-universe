@@ -151,13 +151,27 @@ RUN --mount=type=cache,target=/tmp/pw-cache \
 # Pentest toolchain for the pentest-expert agent (own layer, own cache key:
 # tool changes must not re-download the ~170MB browser, and vice versa).
 # Installed into the main site-packages so agents invoke them as
-# `python3 -m <module>` - the shell tool allowlist whitelists python3, not tool
-# console scripts. Dependency conflicts with the framework deps are caught by
-# `pip check` in the final stage's verification layer.
+# `python3 -m <module>` - the shell tool allowlist whitelists python3, not
+# tool console scripts. Dependency conflicts with the framework deps are
+# caught by `pip check` in the final stage's verification layer.
+# semgrep is the exception: >=1.137 hard-requires mcp==1.29.0 at import time
+# (unconditional `from mcp.server.fastmcp` in the CLI chain), but mcp >=2.0
+# removed that module - no pip-installable semgrep can coexist with
+# agent-core's mcp>=2.0.0 in one site-packages. It lives in its own venv
+# (mcp 1.29.0 inside); the shell allowlist admits its console script at
+# /opt/semgrep-venv/bin/semgrep (shell.py _ALLOWED_CMDS).
+# Must be a version the configured PIP_INDEX_URL mirror already carries
+# (mirrors lag PyPI by a release or two).
+ARG SEMGREP_VERSION=1.173.0
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url $PIP_INDEX_URL \
-    --trusted-host $PIP_TRUSTED_HOST \
-    sqlmap semgrep bandit pip-audit detect-secrets sslyze dirsearch wafw00f
+        --trusted-host $PIP_TRUSTED_HOST \
+        sqlmap bandit pip-audit detect-secrets sslyze dirsearch wafw00f \
+    && python -m venv /opt/semgrep-venv \
+    && /opt/semgrep-venv/bin/pip install --index-url $PIP_INDEX_URL \
+        --trusted-host $PIP_TRUSTED_HOST \
+        "semgrep==$SEMGREP_VERSION" \
+    && /opt/semgrep-venv/bin/semgrep --version
 
 # ── Stage 4: Final combined image (API + Web) ─────────────────────────────
 FROM python-base AS final
@@ -168,6 +182,7 @@ WORKDIR /app
 COPY --from=python-deps /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /ms-playwright /ms-playwright
+COPY --from=python-deps /opt/semgrep-venv /opt/semgrep-venv
 
 # Copy Mermaid runtime from the web-build stage (no local npm install required)
 COPY --from=web-build /app/node_modules/mermaid/dist/mermaid.min.js /app/vendor/mermaid/mermaid.min.js
@@ -213,7 +228,7 @@ RUN set -eux; \
     python -m pytest --version; \
     pip check; \
     python -m sqlmap.sqlmap --version; \
-    python -c "from semgrep.console_scripts.entrypoint import main; main()" --version; \
+    test -x /opt/semgrep-venv/bin/semgrep && /opt/semgrep-venv/bin/semgrep --version; \
     python -m bandit --version; \
     python -m pip_audit --version; \
     python -m detect_secrets --version; \

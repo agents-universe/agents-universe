@@ -46,7 +46,7 @@ Probe each tool once; record availability in the engagement notes (`.tmp/pentest
 
 ```bash
 HOME=.tmp/pentest/home python3 -m sqlmap.sqlmap --version
-HOME=.tmp/pentest/home python3 -c "from semgrep.console_scripts.entrypoint import main; main()" --version
+HOME=.tmp/pentest/home /opt/semgrep-venv/bin/semgrep --version
 HOME=.tmp/pentest/home python3 -m bandit --version
 HOME=.tmp/pentest/home python3 -m pip_audit --version
 HOME=.tmp/pentest/home python3 -m detect_secrets --version

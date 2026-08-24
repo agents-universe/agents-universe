@@ -172,24 +172,24 @@ async def _resolve_env_refs(
 # /opt/semgrep-venv/bin/semgrep: semgrep hard-requires mcp 1.29.0 at import
 # time (incompatible with agent-core's mcp>=2.0.0), so it is installed in its
 # own venv; this is the allowlisted absolute path to its console script.
+# `export` is admitted because sandbox.py validates its NAME=value arguments
+# exactly like leading VAR=value prefixes (PATH/LD_PRELOAD stay refused).
+#
+# Deliberately NO raw-string blocklist here: a regex over the whole command
+# line would flag "pip install" inside a grep PATTERN (legitimate source
+# audit) or a quoted string. rm/sudo/curl/wget/apt-get/yum/xargs are simply
+# not in the allowlist; find -exec/-execdir/-ok/-delete and `pip install`
+# are rejected contextually by validate_command, which also admits
+# `python3 -m pip install --dry-run` for dependency resolution.
 _ALLOWED_CMDS = re.compile(
     r"^(git|ls|cat|grep|find|jq|echo|printf|pwd|head|tail|wc|sort|uniq|diff|"
     r"mkdir|cp|mv|touch|stat|file|date|basename|dirname|"
-    r"which|whoami|uname|printenv|test|"
+    r"which|whoami|uname|printenv|test|export|"
     r"sed|awk|gawk|cut|tr|"
     r"npx|npm|node|python3?|java|javac|mvn|/opt/semgrep-venv/bin/semgrep)"
     r"(?:\s|$)"
 )
 _WRAPPER_COMMAND = re.compile(r"^\./(?:mvnw|gradlew)(?:\s|$)")
-
-# Blocklist patterns (additional safety net)
-_BLOCKED_PATTERNS = re.compile(
-    r"(rm\s+-rf|rm\s+-r|sudo|chmod\s+[0-7]*7|curl\s+|wget\s+|pip\s+install|apt-get|yum|"
-    # -exec\b alone missed -execdir (no word boundary after "exec")
-    # — find -execdir bash -c '...' bypassed the blocklist and the sandbox
-    # path checks only cover the find args, not what bash executes.
-    r"-exec\b|-execdir\b|-ok\b|-okdir\b|xargs\b|-delete\b)"
-)
 
 
 def _check_allowlist_per_segment(command: str) -> str | None:
@@ -518,8 +518,8 @@ class ShellTool(Tool):
         "Allowed commands: git, ls, cat, grep, find, jq, sed, awk, cut, tr, "
         "echo, printf, pwd, head, tail, wc, sort, uniq, diff, mkdir, cp, mv, "
         "touch, stat, file, date, basename, dirname, which, whoami, uname, "
-        "printenv, test, npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew. "
-        "Set environment variables with VAR=value prefixes. "
+        "printenv, test, export, npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew. "
+        "Set environment variables with VAR=value prefixes or `export VAR=value`. "
         "Never use `cd` - use the `cwd` parameter instead. `git clone` is blocked - "
         "use the `git_repo` tool to clone repositories. "
         "ALL paths must be relative to the project root - absolute paths, ~, and ../ "
@@ -532,7 +532,7 @@ class ShellTool(Tool):
         "`git clone` is blocked in shell - clone repositories with the `git_repo` tool. "
         "Allowed: git, ls, cat, grep, find, jq, echo, printf, pwd, head, tail, wc, "
         "sort, uniq, diff, mkdir, cp, mv, touch, stat, file, date, basename, dirname, "
-        "which, whoami, uname, printenv, test, sed, awk, gawk, cut, tr, "
+        "which, whoami, uname, printenv, test, export, sed, awk, gawk, cut, tr, "
         "npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew. "
         "Every command in a compound pipeline (separated by ; | && ||) must be in the allowlist. "
         "All paths must stay inside the current project: absolute paths, '~', and '..' segments are rejected "
@@ -547,7 +547,9 @@ class ShellTool(Tool):
         "but reading or writing files outside the project is denied; -S/-I/-E flags are rejected. "
         "node does not support -e/--eval/-p/--print; write a script file and run it instead. "
         "Command substitution ($(...) or backticks) is not allowed — compute values in a first command, then use them. "
-        "Blocked: rm -rf, sudo, curl, wget, pip install, find -delete. "
+        "Blocked: rm -rf, sudo, curl, wget, find -delete, and pip install — except "
+        "'python3 -m pip install --dry-run', which is the dependency-resolution "
+        "channel (for pip_audit's degradation path). "
         "Secrets injected via env_refs are resolved server-side and never appear in returned output; "
         "the command fails without running if any referenced secret is missing."
     )
@@ -590,10 +592,6 @@ class ShellTool(Tool):
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         command = params["command"].strip()
-
-        # Security checks
-        if _BLOCKED_PATTERNS.search(command):
-            return {"error": "Command blocked for safety: contains disallowed operation"}
 
         # Every command segment in a compound pipeline must be in the allowlist.
         bad_token = _check_allowlist_per_segment(command)

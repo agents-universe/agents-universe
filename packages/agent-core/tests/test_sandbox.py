@@ -372,6 +372,78 @@ def test_validate_command_denies_redirect_outside_project_and_temp(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# allowlisted absolute command (semgrep venv console script) + pentest channels
+# ---------------------------------------------------------------------------
+
+
+def test_validate_command_allows_semgrep_absolute_command(tmp_path):
+    """/opt/semgrep-venv/bin/semgrep is the allowlisted venv console script
+    (semgrep hard-requires mcp 1.29.0, incompatible with agent-core's
+    mcp>=2.0.0 in one site-packages). As the COMMAND token it is exempt from
+    the absolute-path rule; as an ARGUMENT it is still an absolute path and
+    must stay rejected."""
+    assert validate_command(
+        "HOME=.tmp/pentest/home /opt/semgrep-venv/bin/semgrep "
+        "--config auto --json --output=security/evidence/semgrep.json src",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+    assert validate_command(
+        "/opt/semgrep-venv/bin/semgrep --version",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+    assert validate_command(
+        "cat /opt/semgrep-venv/bin/semgrep",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is not None
+
+
+def test_validate_command_pip_install_gate(tmp_path):
+    """`python3 -m pip install` mutates site-packages — blocked. --dry-run is
+    the accepted dependency-resolution channel (pip-audit shells out to
+    exactly this internally); pip_audit itself stays untouched."""
+    assert validate_command(
+        "python3 -m pip install requests",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is not None
+    assert validate_command(
+        "python3 -m pip install --dry-run --ignore-installed "
+        "--report .tmp/pentest/resolve.json -r .tmp/pentest/req.txt",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+    assert validate_command(
+        "python3 -m pip_audit -r requirements.txt",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+
+
+def test_validate_command_export_assignment_validation(tmp_path):
+    """`export NAME=value` is the same assignment as a leading VAR=value
+    prefix — PATH/LD_PRELOAD stays refused (the PATH-hijack of allowlisted
+    commands), absolute values stay refused, and $ values (which tokenize
+    into substitution fragments) stay refused."""
+    assert validate_command(
+        "export HOME=.tmp/pentest/home; python3 -m bandit -r src",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+    assert validate_command(
+        "export PATH=./evil; git status",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is not None
+    assert validate_command(
+        "export HOME=/root; ls",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is not None
+    assert validate_command(
+        "export HOME=$UNSET; ls",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is not None
+    assert validate_command(
+        "echo hi; export HOME=x; echo $HOME",
+        cwd=tmp_path, project_root=tmp_path,
+    ) is None
+
+
+# ---------------------------------------------------------------------------
 # sitecustomize runtime guard — real subprocesses
 # ---------------------------------------------------------------------------
 

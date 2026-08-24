@@ -73,11 +73,13 @@ async function selectConversation(conv: ConversationItem) {
   // otherwise keep showing stale usage.
   convStore.setTokens(conv.tokens_used, conv.token_budget, conv.conversation_id)
   try {
-    const [msgs, tasks] = await Promise.all([
+    const [msgs, tasks, latestRun] = await Promise.all([
       conversationsApi.getMessages(conv.conversation_id),
       conversationsApi.getTasks(conv.conversation_id),
+      conversationsApi.getLatestRun(conv.conversation_id),
     ])
     convStore.loadHistory(msgs, conv.conversation_id)
+    convStore.setLastRun(latestRun, conv.conversation_id)
     if (convStore.conversationId === conv.conversation_id) {
       convStore.setTasks(tasks, conv.conversation_id)
       taskCache.set(conv.conversation_id, mapDbTasks(tasks))

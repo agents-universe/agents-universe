@@ -241,12 +241,14 @@ export function useWebSocket(conversationId: Ref<string | null>) {
 
   async function _reloadHistory(id: string) {
     try {
-      const [messages, tasks] = await Promise.all([
+      const [messages, tasks, latestRun] = await Promise.all([
         conversationsApi.getMessages(id),
         conversationsApi.getTasks(id),
+        conversationsApi.getLatestRun(id),
       ])
       conv.loadHistory(messages, id)
       conv.setTasks(tasks, id)
+      conv.setLastRun(latestRun, id)
     } catch {
       // A later reconnect or manual refresh can recover the persisted history.
     }

@@ -307,9 +307,25 @@ export interface ConversationItem {
   active_task_count: number
   total_task_count: number
   is_running?: boolean
+  last_run_status?: ConversationRunStatus | null
   created_at: string
   updated_at?: string | null
   has_running_tasks?: boolean
+}
+
+// ── Conversation runs (durable per-turn status) ───────────────────────────────
+
+export type ConversationRunStatus = 'running' | 'completed' | 'failed' | 'interrupted'
+
+export interface ConversationRun {
+  run_id: string
+  status: ConversationRunStatus
+  user_message_id: string | null
+  started_at: string
+  ended_at: string | null
+  error_message: string | null
+  streaming_snapshot: string | null
+  tokens_used: number | null
 }
 
 // ── Project Secrets ──────────────────────────────────────────────────────────

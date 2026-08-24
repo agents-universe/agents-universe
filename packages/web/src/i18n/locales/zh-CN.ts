@@ -212,6 +212,9 @@ export default {
     abortFailed: '中止失败，请重试。',
     compressConfirm: '确定压缩当前上下文？',
     compressFailed: '压缩失败',
+    runInterrupted: '上次运行被中断，未完成。',
+    runFailed: '上次运行失败。',
+    rerun: '重跑',
   },
   streamingStatus: {
     waitingInput: '等待输入：{title}',
@@ -306,6 +309,8 @@ export default {
     untitled: '未命名对话',
     messageCount: '{count} 条消息',
     isStreaming: '运行中',
+    interrupted: '已中断',
+    failed: '失败',
     deleteTitle: '删除',
     noTaskPlan: '暂无任务规划',
     listFailed: '加载会话列表失败',

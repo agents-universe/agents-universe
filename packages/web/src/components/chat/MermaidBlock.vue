@@ -2,8 +2,12 @@
   <div class="mermaid-diagram" @click="openFullscreen">
     <div v-if="!rendered && !error" class="mermaid-loading">{{ t('mermaid.rendering') }}</div>
     <div v-if="error" class="mermaid-error">
-      <summary>{{ t('mermaid.renderFailed') }}</summary>
-      <pre>{{ errorMsg }}</pre>
+      <div class="mermaid-error-head">{{ t('mermaid.renderFailed') }}</div>
+      <pre class="mermaid-error-msg">{{ errorMsg }}</pre>
+      <div class="mermaid-source">
+        <div class="mermaid-source-label">{{ t('mermaid.sourceLabel') }}</div>
+        <pre class="mermaid-source-code"><code>{{ code }}</code></pre>
+      </div>
     </div>
     <div ref="containerEl" />
   </div>

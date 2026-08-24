@@ -12,6 +12,12 @@
         :message="msg"
       />
 
+      <!-- Fresh (zero-message) conversation: show what the current agent
+           can do instead of a blank list. The first message hides it. -->
+      <div v-if="showAgentCapabilities" class="fresh-conversation-card">
+        <AgentCapabilitiesCard :agent="agentStore.currentAgent" />
+      </div>
+
       <!-- Streaming -->
       <div v-if="convStore.isStreaming || convStore.isThinking" class="message message-assistant streaming">
         <StreamingStatus :hide-step-info="convStore.tasks.length > 0" />
@@ -96,6 +102,7 @@ import ToolCallCard from './ToolCallCard.vue'
 import TaskPlanCard from './TaskPlanCard.vue'
 import SelectionDialog from './SelectionDialog.vue'
 import Composer from './composer/Composer.vue'
+import AgentCapabilitiesCard from './AgentCapabilitiesCard.vue'
 
 const props = defineProps<{
   conversationId: string
@@ -125,6 +132,12 @@ const settledMessages = computed(() => {
   const pending = new Set(convStore.pendingInjected.map((p) => p.optimisticId))
   return convStore.messages.filter((m) => !pending.has(m.id))
 })
+
+// A fresh conversation has no messages yet — show what the current agent can
+// do instead of a blank list. The first optimistic message hides the card.
+const showAgentCapabilities = computed(() =>
+  !convStore.isStreaming && !convStore.isThinking && convStore.messages.length === 0,
+)
 
 const untaskedToolCalls = computed(() =>
   convStore.activeToolCalls.filter((tc) => !tc.taskId),
@@ -157,44 +170,6 @@ const composerRef = ref<InstanceType<typeof Composer> | null>(null)
 
 const convIdRef = computed(() => props.conversationId)
 const { send, abort: wsAbort, status: wsStatus } = useWebSocket(convIdRef)
-
-// The conversation the pending onboarding kickoff belongs to. The kickoff is
-// queued for whichever conversation was just started (store-global message);
-// the claim keeps it from being replayed into another conversation after a
-// switch.
-let kickoffConversationId: string | null = null
-
-// Claim the conversation at queue time — startChat sets the new conversation
-// id and the kickoff in the same tick, so props.conversationId is already the
-// kickoff's conversation here. Also drops the claim once the kickoff is
-// consumed (null).
-watch(() => convStore.pendingOnboardingMessage, (kickoff) => {
-  kickoffConversationId = kickoff ? props.conversationId : null
-}, { immediate: true })
-
-// Watch both the connection state AND the active conversation: switching back
-// to a conversation whose background connection already reconnected produces
-// no wsStatus transition, so the kickoff would otherwise never be re-sent.
-watch(
-  [wsStatus, () => props.conversationId],
-  () => {
-    if (wsStatus.value !== 'connected') return
-    const kickoff = convStore.pendingOnboardingMessage
-    if (!kickoff) return
-    if (kickoffConversationId !== null && kickoffConversationId !== props.conversationId) return
-    kickoffConversationId = props.conversationId
-    const claimedFor = props.conversationId
-    // Do NOT clear pendingOnboardingMessage here — handleSubmit clears it
-    // only after the frame actually left the client, so a failed send
-    // (WS down right at connect) keeps the kickoff message for a retry.
-    nextTick(() => {
-      if (kickoffConversationId === claimedFor && claimedFor === props.conversationId) {
-        handleSubmit({ content: kickoff })
-      }
-    })
-  },
-  { immediate: true },
-)
 
 // strip mermaid placeholders from the streaming preview.
 // During streaming the fence may be half-closed/empty — and even a complete
@@ -310,18 +285,9 @@ function handleSubmit(payload: { content: string; config_id?: string; attachment
       timestamp: Date.now(),
     })
   } else {
-    const isKickoff = convStore.pendingOnboardingMessage === payload.content
-    if (isKickoff) {
-      // The kickoff is consumed only once it actually left the client; a
-      // failed send keeps it pending so the watcher above retries on the
-      // next connection. It never came from the composer — leave any
-      // user-typed draft in place instead of clearing it.
-      convStore.pendingOnboardingMessage = null
-    } else {
-      // Only clear the composer after the frame actually left the client —
-      // on a failed send the draft (text + attachments) stays for retry.
-      composerRef.value?.clearDraft()
-    }
+    // Only clear the composer after the frame actually left the client —
+    // on a failed send the draft (text + attachments) stays for retry.
+    composerRef.value?.clearDraft()
   }
 }
 
@@ -368,3 +334,10 @@ function handleCancel(promptId: string) {
   if (sent) convStore.resolvePrompt(promptId)
 }
 </script>
+
+<style scoped>
+/* Vertically center the capability card in the empty flex-column message list. */
+.fresh-conversation-card {
+  margin: auto 0;
+}
+</style>

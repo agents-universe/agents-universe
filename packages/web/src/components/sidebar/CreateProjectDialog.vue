@@ -54,17 +54,14 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { FolderPlus, X } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
-import { useAgentStore } from '@/stores/agent'
 import { projectsApi } from '@/api/projects'
 import type { ProjectCategory } from '@/types'
-import { CUSTOMIZATION_EXPERT_SLUG } from '@/utils/onboarding'
 import CategoryPicker from './CategoryPicker.vue'
 
 const emit = defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 const projectStore = useProjectStore()
-const agentStore = useAgentStore()
 const router = useRouter()
 const name = ref('')
 const loading = ref(false)
@@ -92,18 +89,7 @@ async function create() {
     const project = await projectsApi.createProject(name.value.trim(), selectedCategory.value)
     projectStore.addProject(project)
     projectStore.setCurrentProject(project)
-    // 「自定义」分类:自动路由到项目定制专家
-    if (project.category === 'other') {
-      try {
-        await agentStore.fetchAgents(project.project_id)
-        const expert = agentStore.agents.find(a => a.slug === CUSTOMIZATION_EXPERT_SLUG && !a.project_id)
-        if (expert) agentStore.setCurrentAgent(expert)
-      } catch {
-        // 非致命:保留默认 agent
-      }
-    }
-    const query = project.onboarding_recommended || project.category === 'other' ? '?onboarding=1' : ''
-    router.push(`/projects/${project.project_id}/chat${query}`)
+    router.push(`/projects/${project.project_id}/chat`)
     emit('close')
   } catch (e) {
     error.value = e instanceof Error ? e.message : t('common.createFailed')

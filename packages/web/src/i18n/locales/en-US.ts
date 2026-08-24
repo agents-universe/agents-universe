@@ -439,7 +439,7 @@ export default {
     },
     projectCreated: {
       title: 'Project created',
-      body: 'The project customization expert will start interviewing you about the project automatically. I will continue the tour as soon as the conversation begins.',
+      body: 'Your project is ready — the chat now shows what the current agent can do. Let\'s continue.',
     },
     chatComposer: {
       title: 'Chat composer',

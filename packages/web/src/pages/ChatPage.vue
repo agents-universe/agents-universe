@@ -12,7 +12,8 @@
       </div>
       <template v-else>
         <p v-if="loadError" class="chat-empty-error">{{ loadError }}</p>
-        <p class="chat-empty-hint">{{ t('chatPage.newConversationHint') }}</p>
+        <AgentCapabilitiesCard v-if="agentStore.currentAgent" :agent="agentStore.currentAgent" />
+        <p v-else class="chat-empty-hint">{{ t('chatPage.newConversationHint') }}</p>
         <!-- without !agentSlug the button stayed clickable with no
         agent selected and created an agent-less conversation that the
         backend could never run. (loading already hides the button entirely.) -->
@@ -57,43 +58,26 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
-import { useProjectStore } from '@/stores/project'
 import { conversationsApi } from '@/api/conversations'
 import { ApiError } from '@/api/client'
-import { buildOnboardingKickoff } from '@/utils/onboarding'
 import { closeAllConnections } from '@/composables/useWebSocket'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import AgentCapabilitiesCard from '@/components/chat/AgentCapabilitiesCard.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const convStore = useConversationStore()
 const agentStore = useAgentStore()
-const projectStore = useProjectStore()
 
 const loading = ref(false)
 // A dead project URL (typed by hand, deleted project, stale tab) makes both
 // getLatest and create 404; without this the page shows a clickable button
 // that does nothing, silently.
 const loadError = ref<string | null>(null)
-const pendingOnboarding = ref(false)
-// The project the pending onboarding kickoff belongs to. The ?onboarding=1
-// query watcher and the projectId/agentSlug watchers fire in the SAME flush
-// for a new-project navigation (and the agent auto-resolves right after), so
-// clearing the flag unconditionally would swallow the kickoff the query
-// watcher just set. Only a switch to a
-// DIFFERENT project invalidates it.
-let onboardingPid: string | null = null
 const projectId = computed(() => route.params.projectId as string)
 const agentSlug = computed(() => agentStore.currentAgent?.slug ?? null)
 const conversationId = computed(() => convStore.conversationId)
-
-function invalidateOnboardingIfProjectChanged() {
-  if (onboardingPid !== null && onboardingPid !== projectId.value) {
-    pendingOnboarding.value = false
-    onboardingPid = null
-  }
-}
 
 async function loadLatestConversation() {
   if (convStore.conversationId) return
@@ -137,11 +121,6 @@ async function loadLatestConversation() {
 }
 
 onMounted(() => {
-  if (route.query.onboarding === '1') {
-    pendingOnboarding.value = true
-    onboardingPid = projectId.value
-    router.replace({ query: {} })
-  }
   if (route.query.new === '1') {
     // "+ 新建对话" from a non-chat page: show the fresh empty state instead
     // of auto-restoring the old latest conversation .
@@ -153,20 +132,6 @@ onMounted(() => {
   }
   loadLatestConversation()
 })
-
-// Application-internal onboarding (?onboarding=1 from ProjectPickerDialog /
-// CreateProjectDialog) can arrive while this page is already mounted — the
-// onMounted check above misses it, so watch the query too.
-watch(
-  () => route.query.onboarding,
-  (val) => {
-    if (val === '1') {
-      pendingOnboarding.value = true
-      onboardingPid = projectId.value
-      router.replace({ query: {} })
-    }
-  },
-)
 
 // "+ 新建对话" while the chat page is already mounted pushes ?new=1 onto the
 // SAME route (AppLayout.handleNewConversation), so the component does not
@@ -186,12 +151,6 @@ watch(
 
 watch(agentSlug, (slug) => {
   if (slug) {
-    // A switch to a different project invalidates an in-flight onboarding
-    // kickoff: consuming it later would start the OLD project's onboarding
-    // message in the NEW project (the category is read at consume time).
-    // Same-project agent re-resolution (auto parse after project creation)
-    // must NOT clear it .
-    invalidateOnboardingIfProjectChanged()
     closeAllConnections()
     // Read before the reset: an in-flight auto-start create may have landed
     // already (rapid "+" clicks), and convStore.reset() below nulls it.
@@ -225,9 +184,6 @@ watch(agentSlug, (slug) => {
 // above. (projectStore.reset also resets convStore, so reset() here is a
 // cheap idempotent backstop for non-reset switch paths.)
 watch(projectId, () => {
-  // See the agentSlug watch: only a different-project switch invalidates
-  // the onboarding kickoff .
-  invalidateOnboardingIfProjectChanged()
   // A pending "new chat" flag belongs to the old project — if it survives the
   // switch, the next watch(agentSlug) fires on a new project+agent and skips
   // loading the latest conversation (consuming the stale flag). Drop it so
@@ -281,11 +237,6 @@ async function startChat() {
     // runtime's budget (or the 128k default) would otherwise stick forever,
     // showing the wrong ContextMeter on non-default budgets.
     convStore.setTokens(0, data.token_budget, data.conversation_id)
-    if (pendingOnboarding.value) {
-      pendingOnboarding.value = false
-      onboardingPid = null
-      convStore.pendingOnboardingMessage = buildOnboardingKickoff(projectStore.currentProject?.category)
-    }
   } catch (e) {
     // Same stale-response guard as loadLatestConversation: the failure must
     // only surface on the empty state it belongs to.

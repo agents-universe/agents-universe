@@ -259,7 +259,7 @@ async function handleCompress() {
 function goToPage(segment: 'chat' | 'knowledge' | 'scripts') {
   const pid = route.params.projectId
   if (!pid) return
-  // No query forwarding: ?new=1/?onboarding=1 belong to specific entry flows
+  // No query forwarding: ?new=1 belongs to a specific entry flow
   // and must not leak into a tab switch (a stale ?new=1 would silently reset
   // the conversation). The mobile sidebar auto-close is handled by the
   // existing route.fullPath watcher below.

@@ -35,8 +35,14 @@ Residual risks (accepted, defense-in-depth only):
     — with a narrow fc-list/fc-cache allowlist for matplotlib's font probing;
     ``import subprocess`` stays allowed because matplotlib/pandas need it).
     ``os.fork``/``os.forkpty`` emit the same ``os.fork`` audit event and are
-    denied with the rest: a forked child would survive the parent's kill
-    (kill only reaches the direct child) and keep running unguarded.
+    denied in both modes when called directly: a forked child could
+    ``setsid()`` out of the kill tree and keep running. The one admitted
+    call site is multiprocessing's own worker fork (``popen_fork._launch``,
+    what ``Pool``/``Process`` use), and only outside strict mode — library
+    tooling such as ``detect-secrets scan`` parallelizes through it. The
+    workers inherit this audit hook and the spawn session, and ``os.exec``
+    stays blocked, so they remain file-guarded and reachable by the timeout
+    kill.
   - ``os.stat``/``os.lstat``/``os.access``/``os.readlink`` emit NO audit events
     in CPython 3.12 (verified on Linux and Windows despite the docs table), so
     pure metadata/existence probing of outside paths is not blocked. File
@@ -274,6 +280,23 @@ if _project_root:
             frame = frame.f_back
         return False
 
+    def _from_multiprocessing_fork(start_frame) -> bool:
+        # multiprocessing's fork start method calls os.fork() from
+        # popen_fork.Popen._launch — the one call site library tooling
+        # (detect-secrets scan) parallelizes through. A direct os.fork() in
+        # user code (daemon, fork bomb) has no such frame and stays denied.
+        frame = start_frame
+        for _ in range(8):
+            if frame is None:
+                return False
+            if (
+                frame.f_code.co_name == "_launch"
+                and frame.f_globals.get("__name__") == "multiprocessing.popen_fork"
+            ):
+                return True
+            frame = frame.f_back
+        return False
+
     def _dispatch(event: str, args: tuple) -> None:
         if event == "open":
             if not args:
@@ -293,7 +316,23 @@ if _project_root:
                 _check("read", path, _READ_ROOTS)
             return
 
-        if event in ("os.system", "os.exec", "os.spawn", "os.fork"):
+        if event in ("os.system", "os.exec", "os.spawn"):
+            raise PermissionError(
+                f"[agent-guard] {event} is blocked in the agent sandbox; "
+                "use the shell tool instead"
+            )
+        if event == "os.fork":
+            # multiprocessing.Pool/Process fork their workers from
+            # popen_fork.Popen._launch — admit exactly that call site, and
+            # only outside strict mode, so library tooling that parallelizes
+            # (detect-secrets scan) keeps working. The workers inherit this
+            # audit hook (file guard stays armed inside them) and the shell
+            # tool's session (killpg reaches them on timeout); os.exec stays
+            # blocked, so they cannot swap to an unguarded binary. Direct
+            # os.fork() calls (daemons, fork bombs) stay blocked in both
+            # modes.
+            if not _STRICT and _from_multiprocessing_fork(sys._getframe(2)):
+                return
             raise PermissionError(
                 f"[agent-guard] {event} is blocked in the agent sandbox; "
                 "use the shell tool instead"

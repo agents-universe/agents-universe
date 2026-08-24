@@ -11,6 +11,7 @@ from ..database import Base
 from ._compat import UTCDateTime, new_uuid as _new_uuid, now_utc as _now_utc
 
 if TYPE_CHECKING:
+    from .conversation_run import ConversationRun
     from .task_event import TaskEvent
 
 
@@ -31,6 +32,7 @@ class Conversation(Base):
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation", order_by="Message.sequence_num", cascade="all, delete-orphan")
     tasks: Mapped[list["AgentTask"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
     task_events: Mapped[list["TaskEvent"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+    runs: Mapped[list["ConversationRun"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
 
 
 class Message(Base):

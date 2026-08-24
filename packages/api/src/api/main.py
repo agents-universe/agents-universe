@@ -134,6 +134,21 @@ async def lifespan(app: FastAPI):
             # Cleanup is recoverable; it must never prevent the API from starting.
             import logging
             logging.getLogger("agents_universe.startup").exception("Project deletion sweep failed")
+        # In-flight turns from a previous process are dead (all run state is
+        # in-memory): flip their rows so a reopened conversation shows an
+        # interrupted notice instead of a silently vanished turn. Single
+        # replica — see interrupt_stale_runs docstring.
+        from .services.conversation_runs import interrupt_stale_runs
+        try:
+            _stale = await interrupt_stale_runs(sweep_db)
+            if _stale:
+                logging.getLogger("agents_universe.startup").info(
+                    "Marked %d stale conversation runs interrupted", _stale
+                )
+        except Exception:
+            # Recoverable; must never prevent the API from starting.
+            import logging
+            logging.getLogger("agents_universe.startup").exception("Conversation run sweep failed")
 
     app.state.knowledge_cache = KnowledgeCache()
 

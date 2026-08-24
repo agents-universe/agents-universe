@@ -13,12 +13,14 @@ from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_conversation, authorize_project, get_current_user
 from api.models.agent import Agent
 from api.models.conversation import AgentTask, Conversation, Message as DbMessage
+from api.models.conversation_run import ConversationRun
 from api.models.task_event import TaskEvent
 from api.models.project import Project
 from api.services.compression import (
     CompressionError,
     compress_once,
 )
+from api.services.conversation_runs import latest_run
 from api.websocket.manager import manager as ws_manager
 
 router = APIRouter(prefix="/api")
@@ -147,6 +149,22 @@ async def list_conversations(
         .correlate(Conversation)
         .scalar_subquery()
     )
+    # Latest conversation_run per conversation — one correlated scalar
+    # subquery (no N+1). ORDER BY + LIMIT 1 compiles to TOP (1) on MSSQL.
+    latest_run_subq = (
+        select(ConversationRun.run_id)
+        .where(ConversationRun.conversation_id == Conversation.conversation_id)
+        .order_by(ConversationRun.started_at.desc(), ConversationRun.run_id.desc())
+        .limit(1)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
+    last_run_status_subq = (
+        select(ConversationRun.status)
+        .where(ConversationRun.run_id == latest_run_subq)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
 
     query = (
         select(
@@ -155,6 +173,7 @@ async def list_conversations(
             message_count_subq.label("message_count"),
             active_task_subq.label("active_task_count"),
             total_task_subq.label("total_task_count"),
+            last_run_status_subq.label("last_run_status"),
         )
         .outerjoin(Agent, Agent.agent_id == Conversation.agent_id)
         .where(
@@ -184,6 +203,7 @@ async def list_conversations(
             "message_count": row.message_count,
             "active_task_count": row.active_task_count,
             "total_task_count": row.total_task_count,
+            "last_run_status": row.last_run_status,
             "is_running": ws_manager.is_turn_active(str(row.Conversation.conversation_id)),
             "created_at": row.Conversation.created_at.isoformat(),
         }
@@ -441,4 +461,32 @@ async def token_usage(
         "tokens_used": conversation.tokens_used,
         "token_budget": conversation.token_budget,
         "percent": round(conversation.tokens_used / conversation.token_budget * 100, 1) if conversation.token_budget else 0,
+    }
+
+
+@router.get("/conversations/{conversation_id}/runs/latest")
+async def get_latest_run(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    conversation: Conversation = Depends(authorize_conversation),
+):
+    """Most recent conversation run — reopen feedback (status, partial text).
+
+    Returns null when the conversation never ran an agent turn. The
+    streaming_snapshot is throttled partial output, not authoritative (the
+    Message row is); the frontend uses it to show what an interrupted run
+    produced before it died.
+    """
+    run = await latest_run(db, conversation_id)
+    if not run:
+        return None
+    return {
+        "run_id": str(run.run_id),
+        "status": run.status,
+        "user_message_id": run.user_message_id,
+        "started_at": run.started_at.isoformat(),
+        "ended_at": run.ended_at.isoformat() if run.ended_at else None,
+        "error_message": run.error_message,
+        "streaming_snapshot": run.streaming_snapshot,
+        "tokens_used": run.tokens_used,
     }

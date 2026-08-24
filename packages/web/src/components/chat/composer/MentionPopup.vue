@@ -65,9 +65,11 @@ function selectCurrent() {
   if (filtered.value[cursor.value]) emit('select', filtered.value[cursor.value])
 }
 
+// Close on a complete click (press + release) outside — a stray press alone
+// (e.g. starting a text selection) must not dismiss the popup.
 function handleClickOutside(e: MouseEvent) {
   if (popupEl.value && !popupEl.value.contains(e.target as Node)) emit('close')
 }
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
+onMounted(() => document.addEventListener('click', handleClickOutside))
+onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 </script>

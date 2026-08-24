@@ -567,6 +567,55 @@ def test_guard_strict_blocks_spawn_family(sandbox_dirs):
         assert r.returncode != 0 and "agent-guard" in r.stderr
 
 
+def test_guard_blocks_direct_fork_outside_strict(sandbox_dirs):
+    """A direct os.fork() is denied in non-strict mode too: the forked child
+    could setsid() out of the shell tool's kill tree and keep running. Only
+    multiprocessing's own worker fork is admitted (see
+    test_guard_non_strict_allows_multiprocessing_pool). os.fork does not
+    exist on Windows — nothing to test there."""
+    proj_a, _, fake_temp = sandbox_dirs
+    r = run_python(
+        "import os; assert hasattr(os, 'fork')",
+        cwd=proj_a, env=guarded_env(proj_a, fake_temp),
+    )
+    if r.returncode == 0:
+        r = run_python(
+            "import os; os.fork()",
+            cwd=proj_a, env=guarded_env(proj_a, fake_temp),
+        )
+        assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="multiprocessing fork start method is POSIX-only")
+def test_guard_non_strict_allows_multiprocessing_pool(sandbox_dirs):
+    """multiprocessing.Pool forks its workers from popen_fork._launch — the
+    one fork call site the non-strict guard admits (detect-secrets' scan
+    command parallelizes through exactly this path). The workers inherit the
+    audit hook, so the file guard stays armed inside them: a worker reading
+    a sibling project is denied, not silently unguarded."""
+    proj_a, proj_b, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    ok = (
+        "import multiprocessing as mp\n"
+        "def probe(path):\n"
+        "    return len(open(path).read())\n"
+        "with mp.Pool(2) as p:\n"
+        "    assert p.map(probe, ['local.txt', 'local.txt']) == [10, 10]\n"
+        "    print('pool-ok')\n"
+    )
+    r = run_python(ok, cwd=proj_a, env=env)
+    assert r.returncode == 0 and "pool-ok" in r.stdout
+    escape = (
+        "import multiprocessing as mp\n"
+        "def probe(path):\n"
+        "    return len(open(path).read())\n"
+        "with mp.Pool(2) as p:\n"
+        f"    p.map(probe, [{str(proj_b / 'secret.txt')!r}])\n"
+    )
+    r = run_python(escape, cwd=proj_a, env=env)
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
 def test_guard_strict_blocks_fork(sandbox_dirs):
     """os.fork duplicates the process — a forked child would survive the
     parent's kill (kill reaches only the direct child) and keep running

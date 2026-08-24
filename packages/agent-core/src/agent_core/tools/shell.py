@@ -545,6 +545,8 @@ class ShellTool(Tool):
         "and git clone is blocked. A default git identity is injected so commits work out of the box. "
         "python runs under a runtime file-access guard: scripts and 'python -m pytest' work normally, "
         "but reading or writing files outside the project is denied; -S/-I/-E flags are rejected. "
+        "Parallel library tooling (multiprocessing.Pool, e.g. 'python3 -m detect_secrets scan') works: "
+        "the guard admits multiprocessing's own worker fork, while direct os.fork() calls stay blocked. "
         "node does not support -e/--eval/-p/--print; write a script file and run it instead. "
         "Command substitution ($(...) or backticks) is not allowed — compute values in a first command, then use them. "
         "Blocked: rm -rf, sudo, curl, wget, find -delete, and pip install — except "

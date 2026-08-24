@@ -10,6 +10,7 @@
         <div class="conv-tree-meta">
           <span>{{ t('conversations.messageCount', { count: conversation.message_count }) }}</span>
           <span v-if="isStreaming" class="conv-tree-live">{{ t('conversations.isStreaming') }}</span>
+          <span v-else-if="isInterrupted" class="conv-tree-warn">{{ interruptedLabel }}</span>
           <span>{{ relativeTime(conversation.updated_at ?? conversation.created_at) }}</span>
         </div>
       </div>
@@ -25,6 +26,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { relativeTime } from '@/utils/time'
@@ -33,13 +35,26 @@ import TaskTreeItem from './TaskTreeItem.vue'
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   conversation: ConversationItem
   isActive: boolean
   isExpanded: boolean
   isStreaming?: boolean
   tasks: AgentTask[]
 }>()
+
+// A run that ended in a terminal failure (process restart / agent crash) —
+// the live dot only covers in-process streaming, so this badge is the only
+// signal for runs that died while the panel was away.
+const isInterrupted = computed(() =>
+  props.conversation.last_run_status === 'interrupted' || props.conversation.last_run_status === 'failed',
+)
+
+const interruptedLabel = computed(() =>
+  props.conversation.last_run_status === 'failed'
+    ? t('conversations.failed')
+    : t('conversations.interrupted'),
+)
 
 const emit = defineEmits<{
   select: []
@@ -71,6 +86,12 @@ const emit = defineEmits<{
 
 .conv-tree-live {
   color: #4fc3f7;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.conv-tree-warn {
+  color: #d97706;
   font-size: 11px;
   font-weight: 500;
 }

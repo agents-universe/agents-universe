@@ -11,6 +11,7 @@ import type {
   ContextUsage,
   DbMessage,
   DbTask,
+  ConversationRun,
 } from '@/types'
 
 /**
@@ -73,6 +74,9 @@ interface ConversationRuntime {
    *  so a later empty stream_end snapshot is a duplicate and must be skipped.
    *  Real tool failures never set this — their final message must be pushed. */
   abortSnapshotted: boolean
+  /** Durable status of the most recent agent turn (from /runs/latest).
+   *  Null until the server responds; cleared when a new turn starts. */
+  lastRun: ConversationRun | null
 }
 
 function createRuntime(): ConversationRuntime {
@@ -97,6 +101,7 @@ function createRuntime(): ConversationRuntime {
     pendingPrompts: [],
     pendingInjected: [],
     abortSnapshotted: false,
+    lastRun: null,
   }
 }
 
@@ -166,6 +171,7 @@ export const useConversationStore = defineStore('conversation', () => {
    *  conversation default otherwise. Consumed by StreamingStatus to surface
    *  "which agent is being called" during the turn. */
   const turnAgentSlug = computed(() => activeRuntime.value?.turnAgentSlug ?? null)
+  const lastRun = computed(() => activeRuntime.value?.lastRun ?? null)
 
   // ── Mutation methods (accept optional targetId) ───────────────────
 
@@ -173,6 +179,8 @@ export const useConversationStore = defineStore('conversation', () => {
     const id = targetId ?? activeId.value!
     const rt = ensureRuntime(id)
     rt.isThinking = true
+    // A fresh turn supersedes any previous run's terminal notice.
+    rt.lastRun = null
     // New content arrived — a previous turn's abort snapshot is stale.
     rt.abortSnapshotted = false
     // The turn is provably alive — any draft-recovery note is stale.
@@ -186,6 +194,19 @@ export const useConversationStore = defineStore('conversation', () => {
       rt.isThinking = false
       _updateStreamingFlag(targetId ?? activeId.value!, false)
     }
+  }
+
+  /** Store the latest durable run status (fetched on conversation open /
+   *  reconnect). Target runtime may not exist yet for a background
+   *  conversation — ensureRuntime creates it. */
+  function setLastRun(run: ConversationRun | null, targetId?: string) {
+    const rt = ensureRuntime(targetId ?? activeId.value!)
+    rt.lastRun = run
+  }
+
+  function clearLastRun(targetId?: string) {
+    const rt = getRuntime(targetId)
+    if (rt) rt.lastRun = null
   }
 
   /** Record which agent answers the turn being started (ChatPanel routes
@@ -1069,10 +1090,13 @@ export const useConversationStore = defineStore('conversation', () => {
     currentModelName,
     pendingPrompts,
     turnAgentSlug,
+    lastRun,
     pendingInjected,
     streamingIds,
     startThinking,
     stopThinking,
+    setLastRun,
+    clearLastRun,
     setTurnAgent,
     stopStreaming,
     clearStreamingState,

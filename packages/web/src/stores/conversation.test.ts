@@ -695,8 +695,77 @@ describe('conversation store - per-conversation runtime', () => {
   })
 })
 
-describe('mapDbTasks', () => {
-  it('maps error_message to the error field', () => {
+describe('conversation store - durable last-run status', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  const failedRun = {
+    run_id: 'r1',
+    status: 'failed' as const,
+    user_message_id: 'um-1',
+    started_at: '2026-08-24T00:00:00Z',
+    ended_at: '2026-08-24T00:00:01Z',
+    error_message: 'boom',
+    streaming_snapshot: 'partial text',
+    tokens_used: null,
+  }
+
+  it('setLastRun stores the run for the active conversation', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setLastRun(failedRun)
+    expect(store.lastRun?.status).toBe('failed')
+  })
+
+  it('setLastRun with targetId stores into a not-yet-active runtime', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-b')
+    // A background conversation's run is fetched before its runtime exists —
+    // setLastRun must create it, not throw.
+    store.setLastRun(failedRun, 'conv-a')
+    store.startConversation('conv-a')
+    expect(store.lastRun?.run_id).toBe('r1')
+  })
+
+  it('startThinking clears the stale notice when a new turn begins', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setLastRun(failedRun)
+    store.startThinking('conv-a')
+    expect(store.lastRun).toBeNull()
+  })
+
+  it('clearLastRun nulls the run without touching other state', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setLastRun(failedRun)
+    store.addMessage({ id: '1', role: 'user', content: 'hi', timestamp: 1 })
+    store.clearLastRun('conv-a')
+    expect(store.lastRun).toBeNull()
+    expect(store.messages).toHaveLength(1)
+  })
+
+  it('removeRuntime drops the stored run with the conversation', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setLastRun(failedRun)
+    store.removeRuntime('conv-a')
+    store.startConversation('conv-a')
+    expect(store.lastRun).toBeNull()
+  })
+
+  it('reset clears lastRun across runtimes', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setLastRun(failedRun)
+    store.reset()
+    expect(store.lastRun).toBeNull()
+  })
+})
+
+describe('mapDbTasks', () => {  it('maps error_message to the error field', () => {
     const tasks: DbTask[] = [{
       task_id: 't1',
       title: 'Task A',

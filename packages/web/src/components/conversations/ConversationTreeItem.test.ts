@@ -197,4 +197,60 @@ describe('ConversationTreeItem', () => {
     expect(wrapper.find('.conv-tree-tasks').exists()).toBe(false)
     expect(wrapper.find('.task-tree-item').exists()).toBe(false)
   })
+
+  it('shows the interrupted badge when the last run was interrupted', () => {
+    const wrapper = mount(ConversationTreeItem, {
+      props: {
+        conversation: makeConv({ last_run_status: 'interrupted' }),
+        isActive: false,
+        isExpanded: false,
+        isStreaming: false,
+        tasks: [],
+      },
+    })
+    const badge = wrapper.find('.conv-tree-warn')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已中断')
+  })
+
+  it('shows the failed badge when the last run failed', () => {
+    const wrapper = mount(ConversationTreeItem, {
+      props: {
+        conversation: makeConv({ last_run_status: 'failed' }),
+        isActive: false,
+        isExpanded: false,
+        isStreaming: false,
+        tasks: [],
+      },
+    })
+    expect(wrapper.find('.conv-tree-warn').text()).toBe('失败')
+  })
+
+  it('hides the badge for completed or unknown runs', () => {
+    const wrapper = mount(ConversationTreeItem, {
+      props: {
+        conversation: makeConv({ last_run_status: 'completed' }),
+        isActive: false,
+        isExpanded: false,
+        isStreaming: false,
+        tasks: [],
+      },
+    })
+    expect(wrapper.find('.conv-tree-warn').exists()).toBe(false)
+  })
+
+  it('badge yields to the live dot while a new turn is streaming', () => {
+    // A stale terminal notice is real, but the running turn owns the row.
+    const wrapper = mount(ConversationTreeItem, {
+      props: {
+        conversation: makeConv({ last_run_status: 'interrupted' }),
+        isActive: false,
+        isExpanded: false,
+        isStreaming: true,
+        tasks: [],
+      },
+    })
+    expect(wrapper.find('.conv-tree-warn').exists()).toBe(false)
+    expect(wrapper.find('.conv-tree-live').exists()).toBe(true)
+  })
 })

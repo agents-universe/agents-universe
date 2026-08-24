@@ -212,6 +212,9 @@ export default {
     abortFailed: 'Abort failed, please retry.',
     compressConfirm: 'Compress the current context?',
     compressFailed: 'Compression failed',
+    runInterrupted: 'The last run was interrupted before it finished.',
+    runFailed: 'The last run failed.',
+    rerun: 'Rerun',
   },
   streamingStatus: {
     waitingInput: 'Waiting for input: {title}',
@@ -306,6 +309,8 @@ export default {
     untitled: 'Untitled conversation',
     messageCount: '{count} messages',
     isStreaming: 'Running',
+    interrupted: 'Interrupted',
+    failed: 'Failed',
     deleteTitle: 'Delete',
     noTaskPlan: 'No task plans',
     listFailed: 'Failed to load conversation list',

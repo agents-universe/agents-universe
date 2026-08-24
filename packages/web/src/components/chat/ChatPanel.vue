@@ -4,6 +4,15 @@
     <div v-if="wsStatus === 'connecting'" class="ws-status reconnecting">{{ t('chatPanel.connecting') }}</div>
     <div v-else-if="wsStatus === 'failed'" class="ws-status failed">{{ t('chatPanel.connectFailed') }}</div>
 
+    <!-- Last run ended in a terminal failure while the panel was away (tab
+         closed / process restarted): surface the partial output + rerun. -->
+    <RunNotice
+      v-if="lastRunNotice"
+      :run="lastRunNotice"
+      :can-rerun="!!lastRunUserMessage"
+      @rerun="rerunLastTurn"
+    />
+
     <!-- Messages -->
     <div class="messages-list" ref="scrollEl">
       <MessageBubble
@@ -103,6 +112,7 @@ import TaskPlanCard from './TaskPlanCard.vue'
 import SelectionDialog from './SelectionDialog.vue'
 import Composer from './composer/Composer.vue'
 import AgentCapabilitiesCard from './AgentCapabilitiesCard.vue'
+import RunNotice from './RunNotice.vue'
 
 const props = defineProps<{
   conversationId: string
@@ -165,6 +175,36 @@ const callsAfterPlan = computed(() => {
 const runningTaskCount = computed(() =>
   convStore.tasks.filter(t => t.status === 'running').length,
 )
+
+// Terminal last-run notice: only when the run actually failed and nothing is
+// live (a streaming turn owns the panel; its end state arrives via events).
+const lastRunNotice = computed(() => {
+  const run = convStore.lastRun
+  if (!run) return null
+  if (convStore.isStreaming || convStore.isThinking) return null
+  return run.status === 'interrupted' || run.status === 'failed' ? run : null
+})
+
+// Rerun re-sends the ORIGINAL user message (found by run.user_message_id in
+// the loaded history) — never the snapshot. Hidden when compression removed
+// the message.
+const lastRunUserMessage = computed(() => {
+  const run = convStore.lastRun
+  if (!run?.user_message_id) return undefined
+  return convStore.messages.find((m) => m.role === 'user' && m.id === run.user_message_id)
+})
+
+function rerunLastTurn() {
+  const msg = lastRunUserMessage.value
+  if (!msg) return
+  // Content-only rerun (attachments are not re-attached). handleSubmit does
+  // the optimistic add, clears lastRun via startThinking, and sends the
+  // frame — the server starts a brand-new turn (new conversation_runs row).
+  handleSubmit({
+    content: msg.content,
+    agentSlug: msg.agentSlug ?? agentStore.currentAgent?.slug,
+  })
+}
 
 const composerRef = ref<InstanceType<typeof Composer> | null>(null)
 

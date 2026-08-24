@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import type { CompressResult, ConversationItem, DbMessage, DbTask } from '@/types'
+import type { CompressResult, ConversationItem, ConversationRun, DbMessage, DbTask } from '@/types'
 
 const enc = encodeURIComponent
 
@@ -12,6 +12,9 @@ export const conversationsApi = {
 
   getTasks: (conversationId: string) =>
     apiFetch<DbTask[]>(`/api/conversations/${enc(conversationId)}/tasks`),
+
+  getLatestRun: (conversationId: string) =>
+    apiFetch<ConversationRun | null>(`/api/conversations/${enc(conversationId)}/runs/latest`),
 
   delete: (conversationId: string) =>
     apiFetch<void>(`/api/conversations/${enc(conversationId)}`, { method: 'DELETE' }),

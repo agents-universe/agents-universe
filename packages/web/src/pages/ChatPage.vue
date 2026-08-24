@@ -93,12 +93,14 @@ async function loadLatestConversation() {
     if (seq !== latestSeq) return
     if (latest?.conversation_id) {
       convStore.startConversation(latest.conversation_id)
-      const [msgs, tasks] = await Promise.all([
+      const [msgs, tasks, latestRun] = await Promise.all([
         conversationsApi.getMessages(latest.conversation_id),
         conversationsApi.getTasks(latest.conversation_id),
+        conversationsApi.getLatestRun(latest.conversation_id),
       ])
       if (seq !== latestSeq) return
       convStore.loadHistory(msgs, latest.conversation_id)
+      convStore.setLastRun(latestRun, latest.conversation_id)
       // Restore the token meter for a resumed (idle) conversation — the WS
       // only reports token figures while a run is active, so without this
       // a reload shows 0 / 128,000 until the next run.

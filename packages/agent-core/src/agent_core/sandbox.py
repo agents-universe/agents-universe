@@ -121,6 +121,12 @@ _DRIVE_RE = re.compile(r"^[a-zA-Z]:")
 _PY_RE = re.compile(r"^python3?(?:\.\d+)?$")
 _SEP_RE = re.compile(r"[\\/]")
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Absolute-path commands admitted by the shell tool's allowlist explicitly.
+# semgrep hard-requires mcp 1.29.0 at import time (incompatible with
+# agent-core's mcp>=2.0.0 in one site-packages), so it is installed in its
+# own venv and invoked via its console script. Only the COMMAND token is
+# exempt from the absolute-path rule; its arguments pass every path check.
+_ALLOWED_ABSOLUTE_COMMANDS = frozenset({"/opt/semgrep-venv/bin/semgrep"})
 # command-substitution payloads inside DATA-command args are
 # executed for real — extracted for recursive validation. Single-level;
 # nested substitutions keep their outer content validated via the path
@@ -521,10 +527,11 @@ def _validate_segment(
             f"Command {cmd!r}: executing in-project scripts is not allowed; "
             "the shell tool's allowlist covers script execution"
         )
-    reason = _check_path(cmd, cwd=cwd, root=root, allow_dollar=allow_substitution,
-                         assigned_vars=assigned_vars, tainted_vars=tainted_vars)
-    if reason:
-        return reason
+    if cmd not in _ALLOWED_ABSOLUTE_COMMANDS:
+        reason = _check_path(cmd, cwd=cwd, root=root, allow_dollar=allow_substitution,
+                             assigned_vars=assigned_vars, tainted_vars=tainted_vars)
+        if reason:
+            return reason
     cmd_base = cmd.replace("\\", "/").rsplit("/", 1)[-1]  # ./mvnw -> mvnw
     key = _cmd_key(cmd_base)
     is_awk_sed = cmd_base in ("awk", "gawk", "sed")
@@ -543,6 +550,29 @@ def _validate_segment(
         pattern_opts = frozenset({"-f", "--from-file"})
     i += 1
 
+    if cmd_base in ("export", "local", "declare", "typeset", "readonly"):
+        # `export NAME=value` (and the declare family) is the same assignment
+        # as a leading VAR=value prefix — `export PATH=/tmp/evil` must not
+        # slip past as a path argument (the PATH-hijack of allowlisted
+        # commands: PATH=./evil makes the next `git` run an in-project script
+        # whose content was never validated). Values are validated like any
+        # assignment; a name is tracked as assigned only when its value is a
+        # plain literal — a `$`-containing value is tokenized into fragments
+        # (`x=$(echo ...)` -> `x=$` `(` ...) that would otherwise dodge the
+        # substitution guards. Bare names (`export FOO`) are inert: the value
+        # is the current env's, so the name is NOT tracked and a later $FOO
+        # in a path position is still rejected. Redirections after the names
+        # are validated by the argument loop below.
+        while i < len(tokens) and _ASSIGN_RE.match(tokens[i]):
+            reason = _check_assignment(tokens[i], allow_dollar=allow_substitution,
+                                       assigned_vars=assigned_vars)
+            if reason:
+                return reason
+            value = tokens[i].split("=", 1)[1]
+            if value and "$" not in value:
+                assigned_vars.add(tokens[i].partition("=")[0])
+            i += 1
+
     skip_next = False        # previous option consumes the next token as data
     first_pos_seen = False   # for _FIRST_POS_DATA commands
     # For awk/sed: an expression came from -e/--expression/-f/--file, so the
@@ -558,6 +588,7 @@ def _validate_segment(
     pattern_seen = False
     git_subcommand: str | None = None
     git_config_key: str | None = None  # first positional of `git config`
+    pip_seen = False  # `python3 -m pip` (or attached `-mpip`) — gate on the subcommand below
 
     while i < len(tokens):
         tok = tokens[i]
@@ -584,11 +615,18 @@ def _validate_segment(
 
         if tok.startswith("-") and tok != "-":
             opt_name = tok.split("=", 1)[0]
+            # `python3 -m pip ...` (incl. the attached `-mpip` form) — the
+            # module is consumed by data-option skip_next below, so record it
+            # here for the pip-subcommand gate at the first positional.
+            if is_python and opt_name.startswith("-m"):
+                module = tokens[i + 1] if opt_name == "-m" and i + 1 < len(tokens) else opt_name[2:]
+                if module == "pip":
+                    pip_seen = True
             # find -exec/-execdir/-ok/-okdir execute arbitrary
             # commands via the shell. The path checks below only cover find's
             # own arguments — the executed command's args are never seen. This
-            # also gates code_executor's bash mode, which does not pass
-            # shell.py's _BLOCKED_PATTERNS.
+            # is the only gate for these flags (there is no raw-string
+            # blocklist: grep patterns may legitimately mention "-exec").
             if is_find and opt_name in ("-exec", "-execdir", "-ok", "-okdir", "-delete"):
                 return (
                     f"find {opt_name} is not allowed: it would execute "
@@ -793,6 +831,27 @@ def _validate_segment(
                                  assigned_vars=assigned_vars, tainted_vars=tainted_vars)
             if reason:
                 return reason
+            # `python3 -m pip install` mutates the interpreter's
+            # site-packages; --dry-run is the accepted dependency-RESOLUTION
+            # channel (pip-audit shells out to exactly this internally) and
+            # writes nothing. argv after the module is the script's own, so
+            # the pip subcommand is the only thing worth checking here.
+            if is_python and (pip_seen or tok == "pip"):
+                # With `-m pip` the module was consumed by skip_next, so the
+                # first positional IS the subcommand; without `-m`, `pip` is
+                # the positional and the subcommand follows it.
+                rest = tokens[i + 1:] if tok == "pip" else tokens[i:]
+                first_word = next(
+                    (t for t in rest if not t.startswith("-") and not _ASSIGN_RE.match(t)),
+                    None,
+                )
+                if first_word == "install" and "--dry-run" not in rest:
+                    return (
+                        "pip install is not allowed: it mutates the Python "
+                        "environment; use 'python3 -m pip install --dry-run' "
+                        "for dependency resolution or python3 -m pip_audit "
+                        "for CVE scans"
+                    )
             j = i + 1
             while j < len(tokens):
                 rest = tokens[j]

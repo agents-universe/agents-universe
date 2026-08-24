@@ -880,6 +880,84 @@ def test_strip_env_prefix():
     assert tool._strip_env_prefix("echo A=1") == "echo A=1"
 
 
+@pytest.mark.asyncio
+async def test_export_home_override_passes(sibling_projects):
+    """The toolchain's HOME override works in its `export` form too — the
+    natural way an agent writes it (`export HOME=...; cmd`)."""
+    proj_a, _, _ = sibling_projects
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+    result = await tool.execute({"command": "export HOME=.tmp/pentest/home; echo done"}, ctx)
+    assert "error" not in result, result
+
+
+@pytest.mark.asyncio
+async def test_export_path_hijack_rejected(sibling_projects):
+    """`export PATH=./evil` must stay refused — PATH-hijacking an allowlisted
+    command (the next `git`/`ls` resolves through PATH to an in-project
+    script whose content was never validated)."""
+    proj_a, _, _ = sibling_projects
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+    result = await tool.execute({"command": "export PATH=./evil; git status"}, ctx)
+    assert "error" in result
+    assert "PATH" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_grep_pip_install_pattern_not_blocked(sibling_projects):
+    """grep for 'pip install' in a Dockerfile is a legitimate dependency-
+    pinning audit — the pattern text must not be mistaken for a pip install
+    command (no raw-string blocklist)."""
+    proj_a, _, _ = sibling_projects
+    (proj_a / "Dockerfile").write_text("RUN pip install flask\n", encoding="utf-8")
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+    result = await tool.execute({"command": 'grep -n "pip install" Dockerfile'}, ctx)
+    assert "error" not in result, result
+    assert "pip install" in result.get("stdout", "")
+
+
+@pytest.mark.asyncio
+async def test_pip_dry_run_allowed_real_install_rejected(sibling_projects):
+    """`python3 -m pip install --dry-run` is the dependency-resolution
+    channel (pip_audit's degradation path) and must not be blocked; a real
+    `pip install` stays rejected."""
+    proj_a, _, _ = sibling_projects
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+    result = await tool.execute(
+        {
+            "command": "python3 -m pip install --dry-run --ignore-installed "
+            "--report .tmp/pentest/resolve.json -r .tmp/pentest/req.txt",
+            "timeout_seconds": 60,
+        },
+        ctx,
+    )
+    # May fail at runtime (no python3 / missing req.txt) — the point is the
+    # sandbox accepts it.
+    assert "pip install is not allowed" not in result.get("error", ""), result
+    assert "not in allowlist" not in result.get("error", ""), result
+    result = await tool.execute({"command": "python3 -m pip install requests"}, ctx)
+    assert "error" in result
+    assert "pip install is not allowed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_semgrep_absolute_command_runs(sibling_projects):
+    """The allowlisted semgrep console script passes the validator end-to-end
+    (the sandbox carve-out for its absolute path); on a machine without the
+    binary the command fails at spawn, not at validation."""
+    proj_a, _, _ = sibling_projects
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+    result = await tool.execute(
+        {"command": "HOME=.tmp/pentest/home /opt/semgrep-venv/bin/semgrep --version"}, ctx
+    )
+    assert "not in allowlist" not in result.get("error", ""), result
+    assert "Absolute path" not in result.get("error", ""), result
+
+
 def test_inject_npm_cache_env_recognizes_env_prefix(tmp_path):
     """FOO=bar npm ... must be recognized as an npm command even though the
     first token is an assignment. The cache-dir injection itself is

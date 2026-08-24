@@ -290,6 +290,7 @@ export default {
     rendering: 'Rendering…',
     renderFailed: 'Failed to render diagram',
     emptyCode: 'Empty mermaid code block',
+    sourceLabel: 'Diagram source (markdown)',
   },
   chatPage: {
     newConversationHint: 'Start a new conversation',

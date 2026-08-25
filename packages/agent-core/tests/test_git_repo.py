@@ -36,6 +36,13 @@ def _make_context(project_fs_path: str) -> Any:
     return ctx
 
 
+def _make_session(result: str = "confirm") -> Any:
+    """Session whose request_user_selection returns the configured value."""
+    session = MagicMock()
+    session.request_user_selection = AsyncMock(return_value=result)
+    return session
+
+
 # Patch get_token_optional in git_repo's namespace so all tests use local no-auth repos.
 @pytest.fixture(autouse=True)
 def no_git_token(monkeypatch):
@@ -712,3 +719,238 @@ async def test_push_rejects_invalid_target_repository(tmp_path):
             ctx,
         )
         assert "error" in result and "Invalid target_repository" in result["error"], bad
+
+
+# ---------------------------------------------------------------------------
+# remove_clone
+# ---------------------------------------------------------------------------
+
+def _seed_graph_cache(workspace: Path, name: str) -> Path:
+    kg_dir = workspace / ".tmp" / "repo_graph" / name
+    kg_dir.mkdir(parents=True, exist_ok=True)
+    (kg_dir / "graph.json").write_text('{"files": []}')
+    (kg_dir / "graph_report.md").write_text("report")
+    return kg_dir
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_confirmed_removes_clone_and_graph_cache(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+    kg_dir = _seed_graph_cache(workspace, "repo")
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository": "repo"}, ctx)
+
+    assert result == {"status": "removed", "repository": "repo", "path": "repos/repo"}
+    assert not (workspace / "repos" / "repo").exists()
+    assert not kg_dir.exists()
+    assert (workspace / "repos").is_dir()
+
+    prompt = ctx.session.request_user_selection
+    prompt.assert_called_once()
+    kwargs = prompt.call_args.kwargs
+    assert kwargs["field_key"] == "remove_clone_repo"
+    assert kwargs["question"].startswith("确认删除克隆仓库 repo")
+    assert kwargs["options"] == [
+        {"label": "确认删除", "value": "confirm"},
+        {"label": "取消", "value": "cancel"},
+    ]
+    assert kwargs["allow_other"] is False
+    assert kwargs["timeout"] == 120.0
+    assert kwargs["task_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_cancelled_keeps_clone(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+    kg_dir = _seed_graph_cache(workspace, "repo")
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("cancel")
+    result = await tool.execute({"operation": "remove_clone", "repository": "repo"}, ctx)
+
+    assert result["status"] == "cancelled"
+    assert result["repository"] == "repo"
+    assert (workspace / "repos" / "repo").is_dir()
+    assert kg_dir.is_dir()
+    ctx.session.request_user_selection.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_requires_session(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = None
+    result = await tool.execute({"operation": "remove_clone", "repository": "repo"}, ctx)
+
+    assert "error" in result and "session" in result["error"]
+    assert (workspace / "repos" / "repo").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_session_runtime_error(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session()
+    ctx.session.request_user_selection = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await tool.execute({"operation": "remove_clone", "repository": "repo"}, ctx)
+
+    assert "boom" in result["error"]
+    assert (workspace / "repos" / "repo").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_unknown_repo_does_not_prompt(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository": "nope"}, ctx)
+
+    assert "error" in result
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_rejects_non_clone_dir_under_repos(tmp_path):
+    workspace = tmp_path / "ws"
+    (workspace / "repos" / "plain").mkdir(parents=True)
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository_path": "repos/plain"}, ctx)
+
+    assert "error" in result
+    assert (workspace / "repos" / "plain").is_dir()
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_rejects_repository_path_dot(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository_path": "."}, ctx)
+
+    assert "error" in result
+    assert (workspace / "repos" / "repo").is_dir()
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_rejects_repository_path_repos(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository_path": "repos"}, ctx)
+
+    assert "error" in result
+    assert (workspace / "repos" / "repo").is_dir()
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_rejects_nested_path(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute(
+        {"operation": "remove_clone", "repository_path": "repos/repo/subdir"}, ctx
+    )
+
+    assert "error" in result
+    assert (workspace / "repos" / "repo").is_dir()
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_rejects_traversal_and_absolute(tmp_path):
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    for bad in ("../outer", "/abs/path"):
+        result = await tool.execute({"operation": "remove_clone", "repository_path": bad}, ctx)
+        assert "error" in result, bad
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_single_clone_fallback(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "solo")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone"}, ctx)
+
+    assert result == {"status": "removed", "repository": "solo", "path": "repos/solo"}
+    assert not (workspace / "repos" / "solo").exists()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_multiple_clones_requires_repository(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "alpha")
+    _clone_from(bare, tmp_path / "ws" / "repos" / "beta")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone"}, ctx)
+
+    assert "error" in result
+    assert result["available_repos"] == ["alpha", "beta"]
+    ctx.session.request_user_selection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_clone_dirty_note_in_question(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    (tmp_path / "ws" / "repos" / "repo" / "README.md").write_text("modified")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.session = _make_session("confirm")
+    result = await tool.execute({"operation": "remove_clone", "repository": "repo"}, ctx)
+
+    assert result["status"] == "removed"
+    kwargs = ctx.session.request_user_selection.call_args.kwargs
+    assert "未提交" in kwargs["question"]
+
+
+def test_remove_clone_in_schema():
+    """Verify remove_clone is exposed in the tool schema."""
+    tool = GitRepoTool()
+    schema_str = str(tool.parameters)
+    assert "remove_clone" in schema_str

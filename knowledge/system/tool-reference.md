@@ -106,11 +106,11 @@ Java/Spring Boot tests: detect in order `./mvnw test` → `mvn test` → `./grad
 
 ## git_repo
 
-Clone, checkout, pull, branch, commit, push, search, inspect local checkouts scoped to the project workspace. Authentication injected automatically; force push not supported.
+Clone, checkout, pull, branch, commit, push, search, remove clones, and inspect local checkouts scoped to the project workspace. Authentication injected automatically; force push not supported.
 
 ```
-Operations: clone, checkout, pull, status, search, log, show, blame, list_repos, unshallow,
-            branch_create, branch_prepare, sync_branch, commit, push
+Operations: clone, checkout, pull, status, search, log, show, blame, list_repos, remove_clone,
+            unshallow, branch_create, branch_prepare, sync_branch, commit, push
 
 Inputs (choose one per call):
   repository      — remote "owner/repo" used only for clone (resolves to repos/<name>/ in workspace)
@@ -133,6 +133,9 @@ Key operations:
                     paths; rejects commit if other files are already staged; returns SHA and files list
   push            — ordinary push only; returns status "rejected" with sync instructions on non-fast-forward;
                     force_with_lease is not available
+  remove_clone    — permanently deletes a clone (repos/<name>) together with its auto-built code-graph
+                    cache (.tmp/repo_graph/<name>); prompts the user for confirmation (确认删除 / 取消)
+                    before deleting; returns status removed|cancelled
 ```
 
 Force push permanently disabled. Non-fast-forward push → run sync_branch, resolve conflicts, retest, push normally.

@@ -9,6 +9,18 @@ import type { AgentInfo, ModelConfig } from '@/types'
 const STORAGE_KEY = 'agents-universe:currentAgentSlug'
 const STORAGE_KEY_CONFIG_ID = 'agents-universe:selectedConfigId'
 
+/** Per-project agent selection key.
+ *
+ * A single global key made the restored agent last-project-wins: switching
+ * projects changed the selection for EVERY project, and since getLatest /
+ * list_conversations filter conversations by agent, reopening a project with
+ * the wrong agent restored showed an empty conversation tree — "all previous
+ * records lost". The legacy global key stays as the fallback for the
+ * no-project scope and as a one-time migration read. */
+function agentStorageKey(scope: string | null | undefined): string {
+  return scope ? `agents-universe:agent:${scope}` : STORAGE_KEY
+}
+
 /** Reserved config_id for the composer's "auto" model option. */
 export const AUTO_MODEL_CONFIG_ID = 'auto'
 
@@ -28,7 +40,7 @@ export const useAgentStore = defineStore('agent', () => {
     const changed = currentAgent.value?.slug !== agent.slug
     currentAgent.value = agent
     try {
-      localStorage.setItem(STORAGE_KEY, agent.slug)
+      localStorage.setItem(agentStorageKey(loadedForProject.value), agent.slug)
     } catch { /* storage unavailable — selection survives in memory only */ }
     if (changed) {
       // Conversations are bound to (project, agent). Switching agents while
@@ -77,7 +89,12 @@ export const useAgentStore = defineStore('agent', () => {
       // Storage can throw (Safari private mode, disabled storage) — the saved
       // selection is a convenience, never something worth breaking the load.
       let savedSlug: string | null = null
-      try { savedSlug = localStorage.getItem(STORAGE_KEY) } catch { /* storage unavailable — fall back to the first agent */ }
+      try {
+        savedSlug = localStorage.getItem(agentStorageKey(scope))
+        // One-time migration: selections saved under the legacy global key
+        // (pre-per-project) still restore for scopes without their own key.
+        if (!savedSlug) savedSlug = localStorage.getItem(STORAGE_KEY)
+      } catch { /* storage unavailable — fall back to the first agent */ }
       const saved = savedSlug
         ? agents.value.find(a => a.slug === savedSlug && !a.project_id) ?? agents.value.find(a => a.slug === savedSlug)
         : null

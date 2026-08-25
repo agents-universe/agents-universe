@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from sqlalchemy import select
 
 from agent_core.agent import Agent
 from api.main import app
+from api.models._compat import now_utc
 from api.models.conversation import Conversation, Message
 from api.models.conversation_run import ConversationRun
 from api.models.user import UserModelConfig
@@ -208,6 +210,100 @@ async def test_run_failed_on_agent_exception(agent_spy, db, make_project):
     assert run.ended_at is not None
 
 
+async def _assistant_messages(db, conversation_id: str) -> list[Message]:
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+        .order_by(Message.sequence_num)
+    )
+    return list(result.scalars().all())
+
+
+async def test_run_failed_and_error_row_on_api_error(agent_spy, db, make_project):
+    """provider exception with nothing streamed: the run is failed with the
+    error text AND an assistant error row is persisted — the live error
+    bubble must survive a reload (the reported "records lost" bug)."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        await kwargs["session"].emit("error", message="LLM API error: 404 model=deepseek-v4-flash")
+        await kwargs["session"].emit(
+            "stream_end", message_id=msg_id, total_tokens=0, stop_reason="api_error"
+        )
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "failed"
+    assert "404" in run.error_message
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert "404" in msgs[0].content
+    import json as _json
+    refs = _json.loads(msgs[0].knowledge_refs)
+    assert refs.get("error") is True
+
+
+async def test_run_failed_on_empty_model_response(agent_spy, db, make_project):
+    """A stream_end with no content and no stop_reason (empty model output)
+    must not look like a completed turn: run failed with an explanation and
+    an error-flagged assistant row fills the void in history — the user sees
+    why there is no reply instead of a silently unanswered question."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+
+    async def _run(kwargs):
+        await kwargs["session"].emit("stream_end", message_id=str(uuid.uuid4()), total_tokens=5)
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "failed"
+    assert "no output" in run.error_message
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert "no output" in msgs[0].content
+    import json as _json
+    refs = _json.loads(msgs[0].knowledge_refs)
+    assert refs.get("error") is True
+
+
+async def test_run_failed_with_partial_text_on_api_error(agent_spy, db, make_project):
+    """api_error after some text streamed: partial text is persisted as an
+    error-flagged row (mirroring the live failStreaming bubble) and the run
+    is failed with the error detail."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        await kwargs["session"].emit("stream_delta", delta="partial reply ")
+        await kwargs["session"].emit("error", message="LLM API error: timeout")
+        await kwargs["session"].emit(
+            "stream_end", message_id=msg_id, total_tokens=9, stop_reason="api_error"
+        )
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "failed"
+    assert "timeout" in run.error_message
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert msgs[0].content == "partial reply "
+    import json as _json
+    refs = _json.loads(msgs[0].knowledge_refs)
+    assert refs.get("error") is True
+
+
 async def test_run_interrupted_on_task_cancel(agent_spy, db, make_project):
     """User Stop cancels agent_task → the abort path (3e) marks interrupted."""
     conv = await _make_conversation(db, make_project)
@@ -283,12 +379,18 @@ async def test_get_latest_run_endpoint(client, db, make_project):
         conversation_id=conv.conversation_id,
         status="interrupted",
         streaming_snapshot="old text",
+        # Explicit, distinct timestamps: two rows inserted in one commit can
+        # land on the same clock tick on coarse-resolution clocks (Windows),
+        # and latest_run's tie-break is run_id DESC — a random coin flip that
+        # flakes this test. The ordering is the point, not the tie-break.
+        started_at=now_utc() - timedelta(seconds=1),
     )
     newer = ConversationRun(
         conversation_id=conv.conversation_id,
         status="completed",
         user_message_id="um-1",
         tokens_used=42,
+        started_at=now_utc(),
     )
     db.add_all([older, newer])
     await db.commit()

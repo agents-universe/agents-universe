@@ -1256,6 +1256,10 @@ async def _handle_message(
                 _tool_calls_buf: list[dict] = []
                 _images_buf: list[dict] = []
                 _files_buf: list[dict] = []
+                # Turn-level LLM failure (provider exception / request over
+                # limit). Persisted on the run row at stream_end — the live
+                # error bubble is client-only and would vanish on reload.
+                _turn_error: str | None = None
 
                 async for event in session.events():
                     # Forward to the client via manager.  If no WS is
@@ -1328,15 +1332,54 @@ async def _handle_message(
                             _upsert_file_records(_files_buf, event.data.get("files", []))
                         elif event.type == "error":
                             err_msg = event.data.get("message", "error")
+                            _turn_error = err_msg
                             for tc in _tool_calls_buf:
                                 if tc["status"] == "running":
                                     tc["output"] = {"error": err_msg}
                                     tc["status"] = "error"
                         elif event.type == "stream_end":
                             msg_id = event.data.get("message_id")
-                            if (msg_id and (_text_buf or _tool_calls_buf or _images_buf or _files_buf)):
+                            # Terminal run-state transition. The snapshot is
+                            # kept for interrupted runs (recovery); completed
+                            # runs leave the Message row authoritative. Turns
+                            # that ended in a failure (provider exception,
+                            # refusal, empty output) must NOT be marked
+                            # "completed" — the frontend's RunNotice + rerun
+                            # affordance only fires on failed/interrupted, and
+                            # a completed run with no message row looks like a
+                            # silently vanished turn after reload.
+                            _stop_reason = event.data.get("stop_reason")
+                            _has_content = bool(_text_buf or _tool_calls_buf or _images_buf or _files_buf)
+                            if _stop_reason in ("aborted", "interrupted"):
+                                _run_status = "interrupted"
+                            elif _stop_reason == "api_error" or _turn_error:
+                                _run_status = "failed"
+                            elif _stop_reason == "refusal":
+                                _run_status = "failed"
+                                _turn_error = _turn_error or "Model refused to respond"
+                            elif _stop_reason == "context_exceeded":
+                                _run_status = "failed"
+                                _turn_error = _turn_error or "Conversation exceeds the model's context window"
+                            elif _stop_reason == "content_filter":
+                                _run_status = "failed"
+                                _turn_error = _turn_error or "Response blocked by the content filter"
+                            elif _stop_reason in ("max_tokens", "pause_turn_exhausted") and not _has_content:
+                                # Truncated before any text arrived — nothing
+                                # to persist, but "no output" would mislead.
+                                _run_status = "failed"
+                                _turn_error = _turn_error or "Response truncated before any output"
+                            elif not _has_content:
+                                # Nothing to persist and no error: an empty
+                                # model response. Mark it failed so the reopen
+                                # shows a notice + rerun instead of a question
+                                # that silently went unanswered.
+                                _run_status = "failed"
+                                _turn_error = _turn_error or "Model returned no output"
+                            else:
+                                _run_status = "completed"
+                            if (msg_id and (_has_content or _turn_error)):
                                 _log.info(
-                                    "Persisting assistant stream: conversation=%s message_id=%s text_chars=%d tool_calls=%d plan_task_calls=%d images=%d files=%d",
+                                    "Persisting assistant stream: conversation=%s message_id=%s text_chars=%d tool_calls=%d plan_task_calls=%d images=%d files=%d error=%s",
                                     conversation_id,
                                     msg_id,
                                     len(_text_buf),
@@ -1344,6 +1387,7 @@ async def _handle_message(
                                     sum(tc.get("tool") == "plan_task" for tc in _tool_calls_buf),
                                     len(_images_buf),
                                     len(_files_buf),
+                                    bool(_turn_error),
                                 )
                                 # Shield the persist: a teardown cancel (drain
                                 # timeout, handler cancellation) landing mid-commit
@@ -1351,10 +1395,13 @@ async def _handle_message(
                                 # message. The shielded task runs to completion.
                                 _persist_guard = asyncio.create_task(
                                     _persist_assistant_message(
-                                        event_db, conversation_id, _text_buf, _tool_calls_buf, msg_id,
+                                        event_db, conversation_id,
+                                        _text_buf if _has_content else (_turn_error or ""),
+                                        _tool_calls_buf, msg_id,
                                         images=_images_buf if _images_buf else None,
                                         files=_files_buf if _files_buf else None,
-                                        interrupted=event.data.get("stop_reason") == "interrupted",
+                                        interrupted=_run_status == "interrupted",
+                                        error=_run_status == "failed",
                                         agent_slug=agent_config.slug,
                                         model_name=_model_name,
                                     )
@@ -1366,21 +1413,18 @@ async def _handle_message(
                                     # persist finish before unwinding.
                                     await _persist_guard
                                     raise
-                            # Terminal run-state transition. The snapshot is
-                            # kept for interrupted runs (recovery); completed
-                            # runs leave the Message row authoritative.
-                            _stop_reason = event.data.get("stop_reason")
-                            _run_status = "interrupted" if _stop_reason in ("aborted", "interrupted") else "completed"
                             if run_id:
                                 try:
                                     from api.services.conversation_runs import finish_run
                                     await finish_run(
                                         run_id, _run_status,
+                                        error_message=_turn_error if _run_status == "failed" else None,
                                         tokens_used=int(event.data.get("total_tokens") or 0),
                                         snapshot=_text_buf if _run_status == "interrupted" else None,
                                     )
                                 except Exception:
                                     _log.warning("finish_run(stream_end) failed for %s", conversation_id, exc_info=True)
+                            _turn_error = None
                             _text_buf = ""
                             _tool_calls_buf = []
                             _images_buf = []
@@ -2230,6 +2274,7 @@ async def _persist_assistant_message(
     db, conversation_id: str, content: str, tool_calls: list[dict],
     message_id: str | None = None, images: list[dict] | None = None,
     files: list[dict] | None = None, *, interrupted: bool = False,
+    error: bool = False,
     agent_slug: str | None = None, model_name: str | None = None,
 ) -> None:
     """Save an assistant message to DB after stream_end."""
@@ -2258,6 +2303,11 @@ async def _persist_assistant_message(
         # Partial output cut short by an in-flight user injection — the
         # frontend renders this as a distinct "interrupted" message.
         refs["interrupted"] = True
+    if error:
+        # Turn-level LLM failure persisted as an assistant row (content is
+        # the error text when the turn produced nothing else) so the failure
+        # survives reloads — the live error bubble is client-only.
+        refs["error"] = True
     knowledge_refs_json = _json.dumps(refs) if refs else None
     msg = DbMessage(
         message_id=message_id or str(_uuid.uuid4()),

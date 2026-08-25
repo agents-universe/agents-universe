@@ -197,6 +197,9 @@ export interface DbMessage {
   images?: ImageRecord[] | null
   attachments?: AttachmentRecord[] | null
   interrupted?: boolean
+  /** Turn-level LLM failure (provider exception / empty output); the content
+   *  holds the error text when nothing else streamed. */
+  error?: boolean
   created_at: string
 }
 

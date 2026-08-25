@@ -15,8 +15,9 @@ Zero-dependency and self-contained on purpose: it must not import agent_core
 Root sets (computed in-process):
   - write roots = the project workspace + the system temp dir (pytest tmp_path,
     pip/npm scratch) + per-user tool caches under $HOME (.cache, .matplotlib,
-    .npm, .node-gyp) so npm native builds (node-gyp) and plotting libraries
-    keep working. TEMP/TMP/TMPDIR are intentionally NOT modified.
+    .npm, .node-gyp, .semgrep) so npm native builds (node-gyp), plotting
+    libraries, and the semgrep CLI keep working. TEMP/TMP/TMPDIR are
+    intentionally NOT modified.
   - read roots  = write roots + Python installation dirs (sys.base_prefix,
     sys.prefix, site-packages) so stdlib/3rd-party imports and
     ``python -m pytest`` keep working.
@@ -41,8 +42,11 @@ Residual risks (accepted, defense-in-depth only):
     what ``Pool``/``Process`` use), and only outside strict mode — library
     tooling such as ``detect-secrets scan`` parallelizes through it. The
     workers inherit this audit hook and the spawn session, and ``os.exec``
-    stays blocked, so they remain file-guarded and reachable by the timeout
-    kill.
+    outside the ``_AGENT_EXEC_ALLOWLIST`` directories stays blocked, so they
+    remain file-guarded and reachable by the timeout kill. The allowlist
+    itself (the semgrep venv, whose console script execvp's the native
+    osemgrep binary) opens no new surface: in non-strict mode those same
+    binaries were already spawnable unguarded via ``subprocess.Popen``.
   - ``os.stat``/``os.lstat``/``os.access``/``os.readlink`` emit NO audit events
     in CPython 3.12 (verified on Linux and Windows despite the docs table), so
     pure metadata/existence probing of outside paths is not blocked. File
@@ -56,6 +60,7 @@ import sys
 
 _ROOT_ENV = "_AGENT_PROJECT_ROOT"
 _BLOCK_SUBPROCESS_ENV = "_AGENT_BLOCK_SUBPROCESS"
+_EXEC_ALLOWLIST_ENV = "_AGENT_EXEC_ALLOWLIST"
 
 
 def _canon(p: str) -> str:
@@ -99,12 +104,13 @@ if _project_root:
         read = set(write)
         # Per-user tool caches: node-gyp downloads/builds under ~/.cache
         # (npm native modules spawned via the shell tool), matplotlib keeps
-        # its font cache there, npm/node-gyp also use ~/.npm and ~/.node-gyp.
-        # These are not project data, so write access here does not weaken
-        # cross-project isolation.
+        # its font cache there, npm/node-gyp also use ~/.npm and ~/.node-gyp,
+        # and semgrep keeps its settings and first-run state in ~/.semgrep
+        # (the CLI writes settings.yml at startup). These are not project
+        # data, so write access here does not weaken cross-project isolation.
         home = os.path.expanduser("~")
         if home and home != "~":
-            for sub in (".cache", ".matplotlib", ".npm", ".node-gyp"):
+            for sub in (".cache", ".matplotlib", ".npm", ".node-gyp", ".semgrep"):
                 p = _canon(os.path.join(home, sub))
                 write.add(p)
                 read.add(p)
@@ -167,6 +173,18 @@ if _project_root:
     # reaching Redis/MSSQL/API on the compose network.
     _NETWORK_MODE = os.environ.get("_AGENT_NETWORK_MODE", "all")
     _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
+    # Directories whose binaries a guarded Python may os.exec into (see
+    # sandbox.py _EXEC_ALLOW_DIRS - the semgrep console script execvp's the
+    # native osemgrep binary out of its venv to replace its own process).
+    # Canonicalized so symlinked entries resolve to their real targets.
+    _exec_allow = set()
+    for _entry in os.environ.get(_EXEC_ALLOWLIST_ENV, "").split(os.pathsep):
+        if _entry:
+            try:
+                _exec_allow.add(_canon(_entry))
+            except Exception:
+                continue  # unresolvable entry - fail closed
+    _EXEC_ALLOW_DIRS = frozenset(_exec_allow)
     # NOTE: strict mode deliberately does NOT block `import subprocess`.
     # matplotlib and pandas import it internally (font probing, IO helpers);
     # blocking the import broke both. The guard instead denies the Popen CALL
@@ -317,6 +335,27 @@ if _project_root:
             return
 
         if event in ("os.system", "os.exec", "os.spawn"):
+            # os.exec into an _EXEC_ALLOW_DIRS directory is the one admission
+            # (non-strict only): the semgrep console script replaces itself
+            # with the native osemgrep binary from its venv via os.execvp, and
+            # the audit event fires before the process image is swapped. The
+            # exec'd process keeps the shell tool's session, so the timeout
+            # kill still reaches it; every other target - including
+            # PATH-resolved bare names, which carry no directory to check -
+            # stays denied. In strict mode the allowlist is ignored: an exec
+            # there would swap the guarded interpreter for an unguarded
+            # binary past the Popen block.
+            if (
+                event == "os.exec"
+                and not _STRICT
+                and args
+                and isinstance(args[0], str)
+            ):
+                try:
+                    if _is_within(_EXEC_ALLOW_DIRS, _canon(args[0])):
+                        return
+                except Exception:
+                    pass  # unresolvable target - fail closed below
             raise PermissionError(
                 f"[agent-guard] {event} is blocked in the agent sandbox; "
                 "use the shell tool instead"

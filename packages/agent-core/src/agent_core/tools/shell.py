@@ -113,6 +113,17 @@ def _build_env(
     `git_identity` carries only the identity fields the repo does not define.
     """
     env = context.safe_env()
+    # An EMPTY proxy var (the .env placeholder `HTTPS_PROXY=`) means "no
+    # proxy" to Python's urllib, but osemgrep's OCaml proxy parser treats the
+    # blank value as a URI and crashes ("No host was provided in URI") before
+    # any scan starts. Drop empty-valued proxy URLs so children see them
+    # unset; non-empty values pass through untouched.
+    for proxy_key in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ):
+        if not env.get(proxy_key):
+            env.pop(proxy_key, None)
     java_home = env.get("JAVA_HOME", "")
     if java_home:
         java_bin = os.path.join(java_home, "bin")
@@ -533,7 +544,8 @@ class ShellTool(Tool):
         "Allowed: git, ls, cat, grep, find, jq, echo, printf, pwd, head, tail, wc, "
         "sort, uniq, diff, mkdir, cp, mv, touch, stat, file, date, basename, dirname, "
         "which, whoami, uname, printenv, test, export, sed, awk, gawk, cut, tr, "
-        "npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew. "
+        "npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew, "
+        "/opt/semgrep-venv/bin/semgrep (static analysis; the only absolute command path). "
         "Every command in a compound pipeline (separated by ; | && ||) must be in the allowlist. "
         "All paths must stay inside the current project: absolute paths, '~', and '..' segments are rejected "
         "for file arguments, and redirection targets are validated the same way (the system temp dir is also allowed). "

@@ -49,6 +49,7 @@ def guarded_env(project_root: Path, fake_temp: Path, *, strict: bool = False) ->
     env.pop("_AGENT_PROJECT_ROOT", None)
     env.pop("_AGENT_BLOCK_SUBPROCESS", None)
     env.pop("_AGENT_NETWORK_MODE", None)
+    env.pop("_AGENT_EXEC_ALLOWLIST", None)
     env.update(python_guard_env(project_root, strict=strict))
     # The guard's network default is now "all" (SANDBOX_NETWORK unset). These
     # tests assert the blocking behavior, so pin the child to the old default.
@@ -100,6 +101,17 @@ def test_guard_env_keeps_only_in_project_pythonpath(tmp_path, monkeypatch):
 
 def test_guard_env_strict_blocks_subprocess(tmp_path):
     assert python_guard_env(tmp_path, strict=True)["_AGENT_BLOCK_SUBPROCESS"] == "1"
+
+
+def test_guard_env_sets_exec_allowlist(tmp_path):
+    """The non-strict guard env carries the os.exec allowlist (the semgrep
+    venv binaries); the strict env must not - an exec there would swap the
+    guarded interpreter for an unguarded binary past the Popen block."""
+    from agent_core.sandbox import _EXEC_ALLOW_DIRS
+
+    env = python_guard_env(tmp_path / "proj")
+    assert env["_AGENT_EXEC_ALLOWLIST"] == os.pathsep.join(_EXEC_ALLOW_DIRS)
+    assert "_AGENT_EXEC_ALLOWLIST" not in python_guard_env(tmp_path / "proj", strict=True)
 
 
 def test_guard_dir_contains_sitecustomize():
@@ -518,6 +530,59 @@ def test_guard_blocks_pty_and_os_system(sandbox_dirs):
     r = run_python("import os; os.system('echo hi')", cwd=proj_a, env=env)
     assert r.returncode != 0 and "agent-guard" in r.stderr
     r = run_python("import os; os.execvp('echo', ['echo'])", cwd=proj_a, env=env)
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
+def test_guard_allows_exec_into_allowlisted_dir(sandbox_dirs, tmp_path):
+    """os.exec into a _AGENT_EXEC_ALLOWLIST directory passes the audit hook
+    (non-strict only): the semgrep console script execvp's the native
+    osemgrep binary from its venv this way, and the hook must step aside or
+    the scan dies at startup. The target here does not exist, so a pass
+    surfaces as FileNotFoundError from the OS rather than an [agent-guard]
+    denial - asserting the hook's decision without depending on real exec
+    semantics (which differ between POSIX and Windows)."""
+    proj_a, _, fake_temp = sandbox_dirs
+    allow = tmp_path / "allowbin"
+    allow.mkdir()
+    env = guarded_env(proj_a, fake_temp)
+    env["_AGENT_EXEC_ALLOWLIST"] = str(allow)
+    target = str(allow / "no-such-binary")
+    r = run_python(
+        f"import os; os.execvp({target!r}, [{target!r}])", cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0
+    assert "agent-guard" not in r.stderr
+    assert "FileNotFoundError" in r.stderr
+
+
+def test_guard_blocks_exec_outside_allowlist(sandbox_dirs, tmp_path):
+    """Setting the allowlist admits only targets inside it; a sibling
+    directory - and a PATH-resolved bare name, which carries no directory to
+    check - stays denied."""
+    proj_a, _, fake_temp = sandbox_dirs
+    allow = tmp_path / "allowbin"
+    allow.mkdir()
+    env = guarded_env(proj_a, fake_temp)
+    env["_AGENT_EXEC_ALLOWLIST"] = str(allow)
+    target = str(tmp_path / "elsewhere" / "no-such-binary")
+    r = run_python(
+        f"import os; os.execvp({target!r}, [{target!r}])", cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
+def test_guard_strict_blocks_exec_even_in_allowlist(sandbox_dirs, tmp_path):
+    """Strict mode ignores the exec allowlist entirely: code_executor scripts
+    must not swap the guarded interpreter out from under the Popen block."""
+    proj_a, _, fake_temp = sandbox_dirs
+    allow = tmp_path / "allowbin"
+    allow.mkdir()
+    env = guarded_env(proj_a, fake_temp, strict=True)
+    env["_AGENT_EXEC_ALLOWLIST"] = str(allow)
+    target = str(allow / "no-such-binary")
+    r = run_python(
+        f"import os; os.execvp({target!r}, [{target!r}])", cwd=proj_a, env=env,
+    )
     assert r.returncode != 0 and "agent-guard" in r.stderr
 
 

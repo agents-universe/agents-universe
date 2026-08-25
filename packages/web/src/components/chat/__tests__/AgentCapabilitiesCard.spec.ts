@@ -15,38 +15,28 @@ const agent: AgentInfo = {
 }
 
 describe('AgentCapabilitiesCard', () => {
-  it('renders label, description, skills and workflows', () => {
+  it('renders label and description as plain text', () => {
     const wrapper = mount(AgentCapabilitiesCard, { props: { agent } })
     const text = wrapper.text()
     expect(text).toContain('QA Agent')
     expect(text).toContain('Finds bugs')
-    expect(text).toContain('code-review')
-    expect(text).toContain('Reviews code')
-    expect(text).toContain('test-plan')
-    expect(text).toContain('Plans tests')
   })
 
-  it('renders static tools but excludes mcp markers from the tools section', () => {
-    const wrapper = mount(AgentCapabilitiesCard, { props: { agent } })
-    expect(wrapper.text()).toContain('read_file')
-    // 'mcp:github' appears only inside the MCP section as the bare slug
-    expect(wrapper.text()).not.toContain('mcp:github')
-  })
-
-  it('renders the MCP section with a badge', () => {
-    const wrapper = mount(AgentCapabilitiesCard, { props: { agent } })
-    const mcpItem = wrapper.find('.agent-tooltip__item:has(.mcp-badge)')
-    expect(mcpItem.exists()).toBe(true)
-    expect(mcpItem.text()).toContain('github')
-  })
-
-  it('omits empty sections', () => {
-    const bare = mount(AgentCapabilitiesCard, {
-      props: { agent: { ...agent, skills: [], workflows: [], tools: undefined } },
+  it('omits the description element when the agent has none', () => {
+    const wrapper = mount(AgentCapabilitiesCard, {
+      props: { agent: { ...agent, description: '' } },
     })
-    // Header only — no section headings at all
-    expect(bare.findAll('.agent-tooltip__section')).toHaveLength(0)
-    expect(bare.text()).toContain('QA Agent')
+    expect(wrapper.text()).toContain('QA Agent')
+    expect(wrapper.find('.agent-capabilities-desc').exists()).toBe(false)
+  })
+
+  it('renders no capability list sections (skills/workflows/tools/MCP)', () => {
+    const wrapper = mount(AgentCapabilitiesCard, { props: { agent } })
+    expect(wrapper.findAll('.agent-tooltip__section')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('code-review')
+    expect(wrapper.text()).not.toContain('test-plan')
+    expect(wrapper.text()).not.toContain('read_file')
+    expect(wrapper.text()).not.toContain('github')
   })
 
   it('renders nothing for a null agent', () => {

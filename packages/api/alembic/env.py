@@ -16,7 +16,11 @@ import api.models  # ensure all models are imported
 config = context.config
 settings = get_settings()
 
-if config.config_file_name is not None:
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    # Apply alembic.ini's logging config for CLI runs. Programmatic
+    # migrations (api.main._run_migrations) set configure_logger=False —
+    # fileConfig here would replace the app's root logger (INFO, stdout)
+    # with alembic's WARN/stderr config and silently swallow all app logs.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

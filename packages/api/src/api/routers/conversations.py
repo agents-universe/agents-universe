@@ -67,6 +67,7 @@ def serialize_message(m: DbMessage) -> dict:
         "images": refs and refs.get("images") or None,
         "attachments": refs and refs.get("attachments") or None,
         "interrupted": bool(refs and refs.get("interrupted")),
+        "error": bool(refs and refs.get("error")),
         "sequence_num": m.sequence_num,
         "created_at": m.created_at.isoformat(),
     }

@@ -9,6 +9,10 @@
     <!-- Partial text recovered from the interrupted run's snapshot — the
          message row was never persisted, so this is all that survived. -->
     <pre v-if="props.run.streaming_snapshot" class="run-notice-snapshot">{{ props.run.streaming_snapshot }}</pre>
+    <!-- Failed runs: the reason the turn died (provider exception, empty
+         output…). Empty text means the turn was marked failed with no
+         captured detail. -->
+    <pre v-else-if="props.run.status === 'failed' && props.run.error_message" class="run-notice-snapshot">{{ props.run.error_message }}</pre>
   </div>
 </template>
 

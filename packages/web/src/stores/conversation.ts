@@ -411,6 +411,9 @@ export const useConversationStore = defineStore('conversation', () => {
         })) : undefined,
         attachments: m.attachments?.length ? m.attachments : undefined,
         interrupted: m.interrupted || undefined,
+        // Persisted turn-level failure (mirror of the live error bubble's
+        // isError) — renders with the error styling after a reload.
+        isError: m.error || undefined,
         timestamp: new Date(m.created_at).getTime(),
       }))
 

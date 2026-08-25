@@ -78,6 +78,10 @@ async def _run_migrations() -> None:
 
     cfg = Config(str(alembic_ini))
     cfg.set_main_option("script_location", str(alembic_ini.parent / "alembic"))
+    # env.py's fileConfig (alembic.ini logging) would replace the app's root
+    # logger with WARN/stderr, swallowing every INFO log for the process
+    # lifetime — see alembic/env.py.
+    cfg.attributes["configure_logger"] = False
     for attempt in range(3):
         try:
             await asyncio.to_thread(command.upgrade, cfg, "head")

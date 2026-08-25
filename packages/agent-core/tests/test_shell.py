@@ -138,6 +138,22 @@ def test_build_env_merges_extra_after_safe_env(monkeypatch):
     assert env["APP_USERNAME"] == "alice"        # non-credential keys pass through
     env_no_extra = shell_module._build_env(ctx)
     assert "APP_PASSWORD" not in env_no_extra     # safe_env strips PASSWORD keys
+    # The guard env for every shell command carries the os.exec allowlist so
+    # the semgrep console script's execvp into its venv passes the audit hook.
+    assert "_AGENT_EXEC_ALLOWLIST" in env_no_extra
+
+
+def test_build_env_drops_empty_proxy_vars(monkeypatch):
+    """An empty HTTPS_PROXY (the .env placeholder) is 'no proxy' to Python but
+    a fatal URI parse error to osemgrep's OCaml proxy code - it must not reach
+    any child process. Non-empty values pass through for real proxy setups."""
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    monkeypatch.setenv("https_proxy", "")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.corp:8080")
+    ctx = make_context()
+    env = shell_module._build_env(ctx)
+    assert "HTTPS_PROXY" not in env and "https_proxy" not in env
+    assert env["HTTP_PROXY"] == "http://proxy.corp:8080"
 
 
 # ---------------------------------------------------------------------------

@@ -207,6 +207,7 @@ ENV JAVA_HOME=/usr/lib/jvm/msopenjdk-21-amd64 \
     MAVEN_USER_HOME=/home/appuser/.m2 \
     GRADLE_USER_HOME=/home/appuser/.gradle \
     PYTHONPATH=/app/src \
+    SEMGREP_SEND_METRICS=off \
     PATH="/usr/lib/jvm/msopenjdk-21-amd64/bin:${PATH}" \
     npm_config_cache=/tmp/npm-cache
 

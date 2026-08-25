@@ -18,6 +18,19 @@ GUARD_DIR = Path(__file__).parent / "sandbox_guard"
 
 _ROOT_ENV = "_AGENT_PROJECT_ROOT"
 _BLOCK_SUBPROCESS_ENV = "_AGENT_BLOCK_SUBPROCESS"
+_EXEC_ALLOWLIST_ENV = "_AGENT_EXEC_ALLOWLIST"
+
+# Directories whose binaries a guarded (non-strict) Python may os.exec into.
+# The semgrep console script in _ALLOWED_ABSOLUTE_COMMANDS ends by execvp'ing
+# the native osemgrep binary out of its venv (replacing its own process); the
+# sitecustomize audit hook would otherwise deny the os.exec event and kill the
+# scan mid-run - the Dockerfile build-time smoke check cannot catch this
+# because it runs without the guard env. No new escape surface: non-strict
+# mode already admits subprocess.Popen of these same binaries, and the
+# exec'd process keeps the shell tool's session so the timeout kill still
+# reaches it. Strict mode (code_executor) never sets the env var, and the
+# hook ignores it there regardless.
+_EXEC_ALLOW_DIRS = ("/opt/semgrep-venv",)
 
 
 def spawn_in_new_session(*, posix_only: bool = True) -> dict[str, bool]:
@@ -89,14 +102,18 @@ def python_guard_env(project_root: str | Path, *, strict: bool = False) -> dict[
     which installs the audit hook. The env is inherited by any nested Python
     the command spawns, so the guard propagates. strict=True additionally
     blocks ``import subprocess`` (used by code_executor; the shell tool stays
-    non-strict so pytest plugins that need subprocess keep working). Inherited
-    PYTHONPATH entries outside the project are dropped (see
-    ``_guard_pythonpath``). TEMP/TMP/TMPDIR are deliberately left untouched.
+    non-strict so pytest plugins that need subprocess keep working) and with
+    it the os.exec allowlist below. Inherited PYTHONPATH entries outside the
+    project are dropped (see ``_guard_pythonpath``). TEMP/TMP/TMPDIR are
+    deliberately left untouched.
     """
     env = {_ROOT_ENV: str(Path(project_root).resolve())}
     env["PYTHONPATH"] = _guard_pythonpath(project_root, os.environ.get("PYTHONPATH", ""))
     if strict:
         env[_BLOCK_SUBPROCESS_ENV] = "1"
+    else:
+        # os.exec admission for the semgrep venv binaries (see _EXEC_ALLOW_DIRS).
+        env[_EXEC_ALLOWLIST_ENV] = os.pathsep.join(_EXEC_ALLOW_DIRS)
     return env
 
 

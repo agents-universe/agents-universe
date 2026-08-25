@@ -4,6 +4,47 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-25
+
+### 新增
+
+- **渗透测试专家智能体** - 新增全局智能体 `pentest-expert`（渗透性测试专家）：白盒渗透测试工具链（sqlmap / semgrep / bandit / pip-audit / detect-secrets / sslyze / dirsearch / wafw00f，镜像内置并在构建期冒烟验证），配套 7 个 `security/*` 技能与 `full-project-pentest` 全项目渗透工作流；出站攻击请求保留 `api_request` 逐次确认门
+- **会话运行持久化** - conversation runs 落库提供后台执行反馈；会话打开 / 重连时展示最近一次运行的中断 / 失败状态与恢复的部分文本，支持一键重发原始消息
+- **git_repo remove_clone** - 删除克隆仓库及其代码图缓存；含未推送提交的脏工作区需用户确认后才可删除
+- **api_request 免确认开关** - 智能体 frontmatter `api_request_no_confirm` 可按智能体关闭逐次确认
+- **办公助手 PDF 生成**
+- **工具循环预算提升** - 提升至 60/30，超限时上报告警事件
+- **新会话智能体简介** - 新会话以纯文本展示智能体标签与描述，替代原引导开场
+
+### 修复
+
+- **渗透工具链在 shell 沙箱完全可用** - semgrep 独立 venv（mcp 版本冲突隔离）后，审计钩子按 `_AGENT_EXEC_ALLOWLIST` 放行其 os.exec；`~/.semgrep` 加入 per-user 工具状态根；子进程环境清理空值代理变量；镜像默认 `SEMGREP_SEND_METRICS=off`
+- **shell 沙箱放行 multiprocessing worker fork** - detect-secrets 等库级并行工具恢复可用，直接 `os.fork` 仍被拒
+- **Web** - 模型配置覆盖在重开时被还原；SSO 会话超时后首次登录回跳；聊天面板底部跟随、中途注入位置与压缩按钮；弹窗仅在完整外点点击时关闭；Mermaid 分块加载与源回退
+- **QA** - 截图空心精确标注与 bbox 测量修正
+- **构建与测试** - 可复现构建与静态资源 404；无 Chromium 环境自动跳过 browser bbox 测试
+
+## [1.1.0] - 2026-08-21
+
+### 新增
+
+- **仓库知识图谱自动构建** - git clone / checkout / pull 后自动构建代码知识图谱
+- **脚本执行器补全** - 顶部导航、Playwright 测试运行、创建表单
+- **中英文界面切换** - vue-i18n 全站国际化
+- **新手引导** - 引导式漫游 + what's-new 弹窗，用户偏好服务端持久化
+- **script_writer 工具** - 配套 custom-script-writer 技能，技术负责人按需生成测试脚本
+- **任务来源优先路由** - Jira / PR 任务先调用权威数据源
+- **Gemini 迁移至 google-genai SDK**；api_request SSRF 校验后固定解析 IP；回复标注实际执行模型；「其他」分类更名「自定义项目」；「+ 新建对话」在智能体确定后自动开始会话
+
+### 修复
+
+- 运行失败展示与重载后运行状态保持；脚本运行器与媒体服务加固；Mermaid 图重复绘制；模型 id 变更保留手动 tier / 上下文窗口覆盖；静态扫描清理 undefined-name 运行时错误
+- 工程化：Web lint 迁移 ESLint 9 flat config
+
+## [1.0.0] - 2026-08-20
+
+首个稳定版本。
+
 ### 新增
 
 - **项目分类** — 创建项目时选择分类（软件项目 / 数据分析 / 文档知识库 / 其他），不同分类初始化不同的知识条目子集；分类注册表 `knowledge/categories.yaml`，前后端共用；「其他」分类项目创建后自动路由到项目定制专家进行知识定制访谈；「数据分析」分类新增 7 个数据专用知识条目（数据源清单、表模型、加工链路、指标口径字典、分析场景、SQL 模式、分析模式），组成 11 个知识条目的子集

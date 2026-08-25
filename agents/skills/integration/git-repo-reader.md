@@ -63,6 +63,7 @@ git_repo(operation="blame", repository="repo-name", path="src/file.ts")
 git_repo(operation="status", repository="repo-name")
 git_repo(operation="list_repos")
 git_repo(operation="unshallow", repository="repo-name")
+git_repo(operation="remove_clone", repository="repo-name")
 ```
 
 ## Secondary Tool: `github`
@@ -83,7 +84,7 @@ When you learn about a git repository URL for the first time:
 
 1. Clone via `git_repo(operation="clone", repository="org/repo-name")` (operations in Primary Tool above). Authentication and base URL resolve automatically from Settings -> Integrations; no URL normalization or knowledge update is needed before cloning.
 
-2. **Do NOT create knowledge files when cloning for learning/exploration purposes.** Only create a knowledge reference file when the repository is a long-term project dependency that other skills will repeatedly reference. Skip this step if the user asked to "look at", "check", "read", or "learn" the code; the clone is temporary or exploratory (e.g. analyzing a single PR or file); or the repository was already recorded in knowledge from a prior session.
+2. **Do NOT create knowledge files when cloning for learning/exploration purposes.** Only create a knowledge reference file when the repository is a long-term project dependency that other skills will repeatedly reference. Skip this step if the user asked to "look at", "check", "read", or "learn" the code; the clone is temporary or exploratory (e.g. analyzing a single PR or file) — if the user later asks to clean it up, delete it via `remove_clone` (see "Removing a Temporary Clone"); or the repository was already recorded in knowledge from a prior session.
 
    If you do need to persist the reference (e.g. the user explicitly says "add this repo to the project"), create:
    ```json
@@ -101,6 +102,16 @@ Before querying history, ensure the local clone is current and on the default br
 ### When Full History Is Needed
 
 Shallow clones cannot run full-history `git log` or `git blame` on old commits. If a history query returns incomplete results, run `git_repo(operation="unshallow", repository="repo-name")`.
+
+### Removing a Temporary Clone
+
+When the user asks to clean up or delete a clone (e.g. "删除克隆" / "清理仓库"), or a clone created only for exploratory analysis is no longer needed, remove it with:
+
+```json
+git_repo(operation="remove_clone", repository="repo-name")
+```
+
+This is the ONLY supported way to delete a clone: it asks the user to confirm before deleting, and removes both the checkout under `repos/{name}` and its auto-built code-graph cache under `.tmp/repo_graph/{name}`. Deleting is permanent — local changes, unpushed commits, and the code graph are destroyed — so call it only when the user has explicitly asked for cleanup, and surface the confirmation prompt when it appears. Never attempt `rm -rf` via the shell tool: it is not allowed and would not remove the code-graph cache.
 
 ## Data Source Priority
 

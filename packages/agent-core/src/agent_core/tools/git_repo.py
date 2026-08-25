@@ -6,8 +6,10 @@ import logging
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,8 @@ from ._auth import get_token_optional
 from ._repo_paths import _REPO_PATH_RE, extract_repo_name, list_clones, repos_dir, resolve_repo_path
 from .base import Tool, ToolContext
 from ..knowledge.graph.builder import maybe_build_auto
+from ..knowledge.graph.model import repo_graph_dir
+from ..knowledge.graph.store import invalidate_cached
 
 _log = logging.getLogger(__name__)
 _TIMEOUT_CLONE = 300
@@ -79,6 +83,24 @@ def _sanitize_output(text: str, token: str | None) -> str:
     return text.replace(token, "***") if token and text else text
 
 
+def _rmtree_force(path: Path) -> None:
+    """Remove a directory tree, clearing read-only attributes first on win32.
+
+    git loose objects are created with the read-only attribute on Windows, and
+    shutil.rmtree then fails with WinError 5 on them (the clone rollback masks
+    this with ignore_errors). Clear the attribute everywhere first so a genuine
+    failure (e.g. an antivirus file lock) still surfaces as remove_failed.
+    """
+    if sys.platform == "win32":
+        for root, _dirs, files in os.walk(path):
+            for name in files + _dirs:
+                try:
+                    os.chmod(os.path.join(root, name), stat.S_IWRITE)
+                except OSError:
+                    pass
+    shutil.rmtree(path)
+
+
 def _safe_git_env() -> dict[str, str]:
     """os.environ with credential-like keys stripped for the git subprocess.
 
@@ -116,10 +138,11 @@ class GitRepoTool(Tool):
     )
     description = (
         "Manage workspace-scoped git repositories. Operations: clone, checkout, pull, status, "
-        "search, log, show, blame, list_repos, unshallow, branch_create, branch_prepare, "
-        "sync_branch, commit, push. Authentication is injected automatically; force push is not "
-        "supported. Every operation except list_repos requires exactly one of 'repository' or "
-        "'repository_path'."
+        "search, log, show, blame, list_repos, remove_clone, unshallow, branch_create, "
+        "branch_prepare, sync_branch, commit, push. Authentication is injected automatically; "
+        "force push is not supported. Every operation except list_repos requires exactly one of "
+        "'repository' or 'repository_path'. remove_clone permanently deletes a cloned repository "
+        "(and its cached code graph) after the user confirms."
     )
     parameters = {
         "type": "object",
@@ -128,7 +151,7 @@ class GitRepoTool(Tool):
                 "type": "string",
                 "enum": [
                     "clone", "checkout", "pull", "status", "search", "log", "show",
-                    "blame", "list_repos", "unshallow", "branch_create",
+                    "blame", "list_repos", "remove_clone", "unshallow", "branch_create",
                     "branch_prepare", "sync_branch", "commit", "push",
                 ],
             },
@@ -181,6 +204,7 @@ class GitRepoTool(Tool):
             "show": self._op_show,
             "blame": self._op_blame,
             "list_repos": self._op_list_repos,
+            "remove_clone": self._op_remove_clone,
             "unshallow": self._op_unshallow,
             "branch_create": self._op_branch_create,
             "branch_prepare": self._op_branch_prepare,
@@ -569,6 +593,90 @@ class GitRepoTool(Tool):
                 if "error" not in check:
                     repos.append(path.name)
         return {"repos": repos}
+
+    async def _op_remove_clone(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        # Same resolution as every other op, including the single-clone fallback
+        # (auto-selecting the only clone). The confirm gate below is the backstop.
+        path, error = self._resolve_repo_path(params, context)
+        if error:
+            return error
+
+        repos_root = self._repos_dir(context)
+        # Containment: the resolved path must be a DIRECT child of repos/.
+        # resolve_repo_path blocks traversal and repository="."/"..", but
+        # repository_path="." or "repos" resolves inside the workspace and would
+        # pass is_relative_to — an rmtree there would destroy the project or every
+        # clone at once.
+        try:
+            rel = path.relative_to(repos_root)
+        except ValueError:
+            return {"error": "remove_clone only supports clones directly under repos/"}
+        if len(rel.parts) != 1:
+            return {"error": "remove_clone only supports clones directly under repos/"}
+
+        # Must look like a clone: a directory with a .git entry (same check
+        # list_clones uses) — never rmtree an arbitrary directory.
+        if not path.is_dir() or not (path / ".git").exists():
+            return {"error": f"Not a cloned repository: {self._display(path, context)}"}
+
+        if context.session is None:
+            return {"error": "git_repo remove_clone requires an active conversation session."}
+
+        # Cheap, best-effort dirty info for the question text (one git status).
+        # On failure the note is skipped; never a hard gate — a dirty clone with
+        # unpushed local commits is exactly what the confirm dialog protects.
+        dirty_note = ""
+        clean, status_error = await self._is_clean(path)
+        if not status_error and not clean:
+            dirty_note = "（工作区有未提交的改动）"
+
+        try:
+            result = await context.session.request_user_selection(
+                prompt_id=str(uuid.uuid4()),
+                field_key=f"remove_clone_{path.name}",
+                question=f"确认删除克隆仓库 {path.name}？{dirty_note}",
+                kind="selection",
+                options=[
+                    {"label": "确认删除", "value": "confirm"},
+                    {"label": "取消", "value": "cancel"},
+                ],
+                allow_other=False,
+                task_id=context.current_task_id,
+                timeout=120.0,
+            )
+        except RuntimeError as exc:
+            return {"error": str(exc)}
+
+        repo_ref = params.get("repository") or params.get("repository_path") or path.name
+        if result != "confirm":
+            return {
+                "status": "cancelled",
+                "repository": repo_ref,
+                "path": self._display(path, context),
+            }
+
+        # Remove the auto-built code-graph cache alongside the clone — a shell
+        # `rm -rf` could never cover this; it is a selling point of routing
+        # removal through git_repo. invalidate_cached drops the in-memory memo so
+        # a same-named re-clone can never serve a stale graph; rmtree is a no-op
+        # when the dir does not exist.
+        kg_dir = repo_graph_dir(context.project_fs_path, path.name)
+        invalidate_cached(kg_dir)
+        shutil.rmtree(kg_dir, ignore_errors=True)
+
+        # Precedent for sync rmtree on the event loop: _op_clone's failed-clone
+        # rollback. _rmtree_force handles Windows read-only git objects; a real
+        # failure (e.g. a file lock) surfaces as remove_failed.
+        try:
+            _rmtree_force(path)
+        except OSError as exc:
+            return {"error": f"Could not remove clone: {exc}", "status": "remove_failed"}
+
+        return {
+            "status": "removed",
+            "repository": repo_ref,
+            "path": self._display(path, context),
+        }
 
     async def _op_unshallow(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         repo, error = await self._require_repo(params, context)

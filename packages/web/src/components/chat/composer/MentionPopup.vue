@@ -29,10 +29,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Bot } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const { t } = useI18n()
 const props = defineProps<{ excludeSlug?: string }>()
@@ -65,11 +66,7 @@ function selectCurrent() {
   if (filtered.value[cursor.value]) emit('select', filtered.value[cursor.value])
 }
 
-// Close on a complete click (press + release) outside — a stray press alone
-// (e.g. starting a text selection) must not dismiss the popup.
-function handleClickOutside(e: MouseEvent) {
-  if (popupEl.value && !popupEl.value.contains(e.target as Node)) emit('close')
-}
-onMounted(() => document.addEventListener('click', handleClickOutside))
-onUnmounted(() => document.removeEventListener('click', handleClickOutside))
+// Close only on a complete outside click (press + release both outside);
+// a press inside the popup released outside is a drag, not a dismissal.
+useClickOutside(popupEl, () => emit('close'))
 </script>

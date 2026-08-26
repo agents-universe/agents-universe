@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="emit('close')" @keydown.esc="emit('close')">
+    <div class="modal-overlay" ref="overlayEl" @keydown.esc="emit('close')">
       <div class="modal-dialog picker-dialog">
         <!-- Header -->
         <div class="modal-header">
@@ -72,9 +72,12 @@ import { Bot, Star, Search, X } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
+import { useClickOutside } from '@/composables/useClickOutside'
 import type { AgentInfo } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const agentStore = useAgentStore()

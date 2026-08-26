@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="emit('close')" @keydown.esc="emit('close')">
+    <div class="modal-overlay" ref="overlayEl" @keydown.esc="emit('close')">
       <div class="modal-dialog picker-dialog">
         <!-- Header -->
         <div class="modal-header">
@@ -134,8 +134,11 @@ import type { Project, ProjectCategory } from '@/types'
 import DeleteProjectDialog from './DeleteProjectDialog.vue'
 import ProjectSettingsDialog from './ProjectSettingsDialog.vue'
 import CategoryPicker from './CategoryPicker.vue'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const emit = defineEmits<{ close: [] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const projectStore = useProjectStore()

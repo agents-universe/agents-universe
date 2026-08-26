@@ -77,7 +77,7 @@
       </div>
     </div>
 
-    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+    <div v-if="showCreate" class="modal-overlay" ref="overlayEl">
       <div class="modal-dialog executor-create-dialog">
         <div class="modal-header">
           <h3 class="modal-title">{{ t('scriptExecutor.createTitle') }}</h3>
@@ -125,6 +125,7 @@ import { Plus } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { apiFetch } from '@/api/client'
 import { apiBase } from '@/utils/basePath'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 interface ScriptItem { script_id: string; run_id?: string; name: string; status: string; script_type: string }
 interface SpecItem { slug: string; run_id?: string; title: string; file: string; status: string }
@@ -154,6 +155,8 @@ const baseUrl = ref('')
 
 // Create-script form
 const showCreate = ref(false)
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => showCreate.value = false, true)
 const createName = ref('')
 const createType = ref<'python' | 'bash'>('python')
 const createContent = ref('')

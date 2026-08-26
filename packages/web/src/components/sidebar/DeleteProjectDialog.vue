@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="!deleting && emit('close')" @keydown.esc="!deleting && emit('close')">
+    <div class="modal-overlay" ref="overlayEl" @keydown.esc="!deleting && emit('close')">
       <div class="modal-dialog delete-project-dialog">
         <div class="modal-header">
           <div class="modal-header-left">
@@ -64,10 +64,13 @@ import { Trash2, X } from 'lucide-vue-next'
 import type { Project } from '@/types'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const { t } = useI18n()
 const props = defineProps<{ project: Project }>()
 const emit = defineEmits<{ close: []; deleted: [projectId: string] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => !deleting.value && emit('close'), true)
 
 const confirmInput = ref('')
 const deleting = ref(false)

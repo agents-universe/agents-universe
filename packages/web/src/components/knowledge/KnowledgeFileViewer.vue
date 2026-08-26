@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="emit('close')">
+    <div class="modal-overlay" ref="overlayEl">
       <!-- Stacked panels: each navigation level is a panel sliding from right -->
       <TransitionGroup name="knowledge-panel-slide">
         <div
@@ -95,6 +95,7 @@ import { useProjectStore } from '@/stores/project'
 import { knowledgeApi } from '@/api/knowledge'
 import type { KnowledgeChildItem, KnowledgeAncestor } from '@/types'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
+import { useClickOutside } from '@/composables/useClickOutside'
 import MermaidBlock from '@/components/chat/MermaidBlock.vue'
 
 interface NavEntry {
@@ -110,6 +111,8 @@ interface NavEntry {
 
 const props = defineProps<{ slug: string }>()
 const emit = defineEmits<{ close: [] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const projectStore = useProjectStore()

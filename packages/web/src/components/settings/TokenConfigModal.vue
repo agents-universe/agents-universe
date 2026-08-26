@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="emit('close')">
+    <div class="modal-overlay" ref="overlayEl">
       <div class="modal-dialog token-config-modal">
         <div class="modal-header">
           <div class="modal-header-left">
@@ -414,9 +414,12 @@ import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
 import { inferTier } from '@/utils/modelTier'
 import { inferContextWindow } from '@/utils/contextWindow'
+import { useClickOutside } from '@/composables/useClickOutside'
 import type { ProjectSecret } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => emit('close'), true)
 const { t } = useI18n()
 const agentStore = useAgentStore()
 const projectStore = useProjectStore()

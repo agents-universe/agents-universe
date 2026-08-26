@@ -18,6 +18,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const emit = defineEmits<{ select: [slug: string]; close: [] }>()
 
@@ -48,17 +49,10 @@ function handleKeydown(e: KeyboardEvent) {
   else if (e.key === 'Escape') { emit('close') }
 }
 
-// Close on a complete click (press + release) outside — a stray press alone
-// (e.g. starting a text selection) must not dismiss the popup.
-function handleClickOutside(e: MouseEvent) {
-  if (popupEl.value && !popupEl.value.contains(e.target as Node)) emit('close')
-}
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-  document.addEventListener('keydown', handleKeydown)
-})
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-  document.removeEventListener('keydown', handleKeydown)
-})
+// Close only on a complete outside click (press + release both outside);
+// a press inside the popup released outside is a drag, not a dismissal.
+useClickOutside(popupEl, () => emit('close'))
+
+onMounted(() => document.addEventListener('keydown', handleKeydown))
+onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 </script>

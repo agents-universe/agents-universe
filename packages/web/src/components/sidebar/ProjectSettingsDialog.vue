@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" @click.self="emit('close')" @keydown.esc="emit('close')">
+    <div class="modal-overlay" ref="overlayEl" @keydown.esc="emit('close')">
       <div class="modal-dialog project-settings-dialog">
         <div class="modal-header">
           <div class="modal-header-left">
@@ -92,9 +92,12 @@ import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
 import { useProjectStore } from '@/stores/project'
 import { useProjectMembersStore } from '@/stores/projectMembers'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const props = defineProps<{ project: Project }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const projectStore = useProjectStore()

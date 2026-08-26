@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="tour.whatsNewVisible" class="modal-overlay" @click.self="close" @keydown.esc="close">
+    <div v-if="tour.whatsNewVisible" class="modal-overlay" ref="overlayEl" @keydown.esc="close">
       <div class="modal-dialog whats-new-dialog" role="dialog" aria-modal="true">
         <div class="modal-header">
           <h3 class="modal-title">{{ t('whatsNew.title') }}</h3>
@@ -32,12 +32,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
 import { useTourStore } from '@/stores/tour'
 import { RELEASES } from '@/tour/releases'
 import { entriesToShow } from '@/tour/whatsNew'
+import { useClickOutside } from '@/composables/useClickOutside'
 
 const tour = useTourStore()
 const { t } = useI18n()
@@ -47,4 +48,7 @@ const entries = computed(() => entriesToShow(tour.lastSeenVersion, RELEASES))
 function close() {
   void tour.dismissWhatsNew()
 }
+
+const overlayEl = ref<HTMLElement | null>(null)
+useClickOutside(overlayEl, close, true)
 </script>

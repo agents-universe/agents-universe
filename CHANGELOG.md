@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **仓库知识图谱支持 Java** - 代码图新增 Java 语言解析（tree-sitter java grammar）：类 / 接口 / 枚举 / 方法符号，跨文件 import（含 static import）解析、继承（extends / implements）与构造调用边；语言按源根（src/main/java、src、仓库根）解析包路径。符号索引按语言隔离，避免 Java 与 TS 同名符号（如 Greeter）互相干扰
+
 ## [1.2.0] - 2026-08-25
 
 ### 新增

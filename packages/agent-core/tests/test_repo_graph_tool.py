@@ -22,6 +22,21 @@ SAMPLE = {
         "def parse_json(text):\n"
         "    return text\n"
     ),
+    "src/main/java/com/example/app/Main.java": (
+        "package com.example.app;\n"
+        "import com.example.lib.Greeter;\n"
+        "public class Main {\n"
+        "    public static void main(String[] args) {\n"
+        "        new Greeter().greet();\n"
+        "    }\n"
+        "}\n"
+    ),
+    "src/main/java/com/example/lib/Greeter.java": (
+        "package com.example.lib;\n"
+        "public class Greeter {\n"
+        "    public String greet() { return \"hi\"; }\n"
+        "}\n"
+    ),
 }
 
 
@@ -76,18 +91,23 @@ async def test_build_then_all_ops(project: Path, grammars):
 
     result = await tool.execute({"operation": "build"}, ctx)
     assert result["status"] == "built"
-    assert result["stats"]["files"] == 2
+    assert result["stats"]["files"] == 4
     assert "repo_map" in result and "repo=sample" in result["repo_map"]
     assert result["graph_path"].endswith("graph.json")
 
     # default force=True: an explicit build always re-checks the working tree
     again = await tool.execute({"operation": "build"}, ctx)
     assert again["status"] == "built"
-    assert again["stats"]["reused"] == 2  # nothing changed -> cache hits
+    assert again["stats"]["reused"] == 4  # nothing changed -> cache hits
 
     query = await tool.execute(
         {"operation": "query", "repository": "sample", "query": "parse"}, ctx)
     assert any(m["name"] == "parse_json" for m in query["matches"])
+
+    # java files are indexed too
+    jquery = await tool.execute(
+        {"operation": "query", "repository": "sample", "query": "greet"}, ctx)
+    assert any(m["name"] == "Greeter.greet" for m in jquery["matches"])
 
     nb = await tool.execute(
         {"operation": "neighbors", "symbol": "main"}, ctx)

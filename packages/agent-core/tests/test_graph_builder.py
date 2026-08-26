@@ -77,6 +77,34 @@ FILES = {
     "broken.py": "{{{ this is not python at all\n",
     "vendor/x.js": "var noisy = 1;\n",
     "notes.md": "# notes\nnot code\n",
+    "src/main/java/com/example/app/MainApp.java": (
+        "package com.example.app;\n"
+        "import com.example.lib.Greeter;\n"
+        "import static com.example.lib.Util.helper;\n"
+        "public class MainApp extends BaseApp implements Service {\n"
+        "    public static void main(String[] args) {\n"
+        "        Greeter g = new Greeter(\"hi\");\n"
+        "        g.greet();\n"
+        "        helper();\n"
+        "    }\n"
+        "    void start() { this._go(); }\n"
+        "    void _go() {}\n"
+        "}\n"
+        "class BaseApp {}\n"
+        "interface Service {}\n"
+    ),
+    "src/main/java/com/example/lib/Greeter.java": (
+        "package com.example.lib;\n"
+        "public class Greeter {\n"
+        "    public String greet() { return \"hi\"; }\n"
+        "}\n"
+    ),
+    "src/main/java/com/example/lib/Util.java": (
+        "package com.example.lib;\n"
+        "public class Util {\n"
+        "    public static void helper() {}\n"
+        "}\n"
+    ),
 }
 
 
@@ -122,7 +150,7 @@ async def test_build_content(repo: Path, tmp_path: Path, grammars):
     summary = await _build(repo, tmp_path)
     assert summary["status"] == "built"
     stats = summary["stats"]
-    assert stats["files"] == 7
+    assert stats["files"] == 10
     assert stats["failed"] == 1          # broken.py
     assert stats["skipped"] == 0
     assert stats["unresolved_calls"] == 2  # os.getcwd, json.loads
@@ -135,6 +163,11 @@ async def test_build_content(repo: Path, tmp_path: Path, grammars):
     assert "f:notes.md" not in nodes
     assert "f:main.py" in nodes and nodes["f:main.py"].lang == "python"
     assert "f:app.ts" in nodes and nodes["f:app.ts"].lang == "typescript"
+    # java file nodes + symbols
+    java_app = "f:src/main/java/com/example/app/MainApp.java"
+    assert java_app in nodes and nodes[java_app].lang == "java"
+    assert nodes["s:src/main/java/com/example/app/MainApp.java:MainApp"].type == "class"
+    assert nodes["s:src/main/java/com/example/app/MainApp.java:MainApp.main"].type == "function"
     # symbols with line numbers
     assert nodes["s:util/helper.py:parse_json"].line == 2
     assert nodes["s:lib/util.ts:Greeter"].type == "class"
@@ -155,6 +188,19 @@ async def test_build_content(repo: Path, tmp_path: Path, grammars):
     # import edges file -> file
     assert ("f:main.py", "f:util/helper.py", "imports") in edges
     assert ("f:app.ts", "f:lib/util.ts", "imports") in edges
+    # java: cross-file call via instance + static import + constructor
+    mj = "s:src/main/java/com/example/app/MainApp.java"
+    gj = "s:src/main/java/com/example/lib/Greeter.java"
+    uj = "s:src/main/java/com/example/lib/Util.java"
+    assert (f"{mj}:MainApp.main", f"{gj}:Greeter.greet", "calls") in edges
+    assert (f"{mj}:MainApp.main", f"{gj}:Greeter", "calls") in edges
+    assert (f"{mj}:MainApp.main", f"{uj}:Util.helper", "calls") in edges
+    assert (f"{mj}:MainApp.start", f"{mj}:MainApp._go", "calls") in edges
+    # java: inheritance + imports
+    assert (f"{mj}:MainApp", f"{mj}:BaseApp", "inherits") in edges
+    assert (f"{mj}:MainApp", f"{mj}:Service", "inherits") in edges
+    assert (java_app, "f:src/main/java/com/example/lib/Greeter.java", "imports") in edges
+    assert (java_app, "f:src/main/java/com/example/lib/Util.java", "imports") in edges
 
     assert len(compact_map(graph)) <= 1200
     assert "hint:" in compact_map(graph)
@@ -184,7 +230,7 @@ async def test_incremental_reparse_only_changed(repo: Path, tmp_path: Path):
         summary = await _build(repo, tmp_path, force=True)
         assert summary["status"] == "built"
         assert summary["stats"]["parsed"] == 1
-        assert summary["stats"]["reused"] == 6
+        assert summary["stats"]["reused"] == 9
         assert counted.call_count == 1  # only the edited file is re-parsed
 
     graph = load_cached(tmp_path / "kg")
@@ -197,7 +243,7 @@ async def test_deleted_file_drops_from_graph(repo: Path, tmp_path: Path):
     _run("rm", "util/helper.py", cwd=repo)
     _run("commit", "-am", "drop helper", cwd=repo)
     summary = await _build(repo, tmp_path, force=True)
-    assert summary["stats"]["files"] == 6
+    assert summary["stats"]["files"] == 9
     graph = load_cached(tmp_path / "kg")
     assert graph.node("s:util/helper.py:parse_json") is None
     assert graph.node("f:util/helper.py") is None

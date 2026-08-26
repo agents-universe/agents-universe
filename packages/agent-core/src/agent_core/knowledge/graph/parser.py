@@ -156,7 +156,11 @@ def _chain_text(node) -> str | None:
         obj = _chain_text(node.child_by_field_name("object"))
         prop = _chain_text(node.child_by_field_name("property"))
         return f"{obj}.{prop}" if obj and prop else None
-    if typ == "dotted_name":  # python imports
+    if typ == "field_access":  # java: obj.field (static or instance)
+        obj = _chain_text(node.child_by_field_name("object"))
+        field = _chain_text(node.child_by_field_name("field"))
+        return f"{obj}.{field}" if obj and field else None
+    if typ in ("scoped_identifier", "dotted_name"):  # python/java dotted paths
         parts = [_node_text(child) for child in node.children if child.type == "identifier"]
         return ".".join(parts) if parts else None
     return None
@@ -217,6 +221,27 @@ def _extract_inheritance(ctx: _Ctx, class_node, class_qname: str) -> None:
                 chain = _chain_text(child)
                 if chain:
                     _record_inherits(ctx, chain, class_qname)
+        return
+    if spec.is_java():
+        # java: `superclass` field wraps a type_identifier; the implements
+        # clause lives in the `interfaces` field as a type_list.
+        superclass = class_node.child_by_field_name("superclass")
+        if superclass is not None:
+            # the `superclass` field wraps a type_identifier (the base class)
+            type_node = next(
+                (c for c in superclass.children if c.type == "type_identifier"), None
+            )
+            chain = _chain_text(type_node) if type_node is not None else None
+            if chain:
+                _record_inherits(ctx, chain, class_qname)
+        interfaces = class_node.child_by_field_name("interfaces")
+        if interfaces is not None:
+            for child in interfaces.children:
+                if child.type == "type_list":
+                    for type_node in child.children:
+                        chain = _chain_text(type_node)
+                        if chain:
+                            _record_inherits(ctx, chain, class_qname)
         return
     # ts/js: class_heritage -> extends_clause / implements_clause -> expressions
     for child in class_node.children:
@@ -319,6 +344,27 @@ def _parse_imports_ts(ctx: _Ctx, node) -> None:
                 })
 
 
+def _parse_imports_java(ctx: _Ctx, node) -> None:
+    """import_declaration: full dotted path, optional static + wildcard.
+
+    Java imports always name a fully-qualified type (com.example.lib.Greeter)
+    or a wildcard package (com.example.lib.*); static imports name a member.
+    The graph only keeps the module for import edges, so the last segment is
+    dropped (resolved to a file by package structure at assembly time).
+    """
+    scoped = None
+    for child in node.children:
+        if child.type == "scoped_identifier":
+            scoped = child
+            break
+    if scoped is None:
+        return
+    # Strip a trailing wildcard: com.example.lib.* -> com.example.lib
+    text = _node_text(scoped)
+    module = text[:-2] if text.endswith(".*") else text
+    ctx.result.imports.append({"module": module, "name": None, "alias": None})
+
+
 def _is_require_call(spec: LanguageSpec, node) -> bool:
     if not spec.is_ts_family():
         return False
@@ -388,6 +434,25 @@ def _walk(node, ctx: _Ctx) -> None:
             _walk(child, ctx)
         return
 
+    if spec.is_java() and typ in ("method_invocation", "object_creation_expression"):
+        # java: callee splits across name + object fields (method_invocation)
+        # or sits in the type field (object_creation_expression = `new X(...)`).
+        if typ == "method_invocation":
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node) if name_node is not None else ""
+            if name:
+                obj = node.child_by_field_name("object")
+                obj_chain = _chain_text(obj) if obj is not None else None
+                _record_call(ctx, f"{obj_chain}.{name}" if obj_chain else name)
+        else:
+            type_node = node.child_by_field_name("type")
+            chain = _chain_text(type_node) if type_node is not None else None
+            if chain:
+                _record_call(ctx, chain)
+        for child in node.children:  # arguments may contain nested calls
+            _walk(child, ctx)
+        return
+
     if typ == spec.call_node or (spec.is_ts_family() and typ == "new_expression"):
         # `new X(...)` is a constructor call — same edge shape as a call.
         if typ == "new_expression":
@@ -408,6 +473,8 @@ def _walk(node, ctx: _Ctx) -> None:
             _parse_imports_python(ctx, node)
         elif spec.is_ts_family():
             _parse_imports_ts(ctx, node)
+        elif spec.is_java():
+            _parse_imports_java(ctx, node)
         return
 
     for child in node.children:

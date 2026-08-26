@@ -342,13 +342,19 @@ def _assemble_graph(
 
     langs = sorted({detect_language(rel) for rel in results if detect_language(rel)})
     module_index = set(results)
+    # Java source roots (src/main/java, src/, repo root) — package paths are
+    # relative to one of these. Derived from the tracked .java files.
+    java_roots = _java_source_roots(results)
 
     # Pass 1: file nodes, symbol nodes, per-file indexes.
+    # qname/last_seg indexes are keyed by (lang, name) so same-named symbols in
+    # different languages (Java Greeter vs TS Greeter) never collide.
     file_node_ids: dict[str, str] = {}
     file_symbols: dict[str, set[str]] = {}
-    qname_index: dict[str, list[str]] = {}
-    last_seg_index: dict[str, list[str]] = {}  # last qname segment -> node ids
+    qname_index: dict[tuple[str, str], list[str]] = {}
+    last_seg_index: dict[tuple[str, str], list[str]] = {}  # (lang, last seg)
     for rel, entry in results.items():
+        lang = entry.get("lang", "")
         file_node_ids[rel] = file_id(rel)
         add_node(GraphNode(
             id=file_id(rel), type="file", name=rel,
@@ -367,8 +373,8 @@ def _assemble_graph(
                 id=node_id, type=symbol.get("type", "symbol"),
                 name=qname, line=symbol.get("line", 0),
             ))
-            qname_index.setdefault(qname, []).append(node_id)
-            last_seg_index.setdefault(qname.rsplit(".", 1)[-1], []).append(node_id)
+            qname_index.setdefault((lang, qname), []).append(node_id)
+            last_seg_index.setdefault((lang, qname.rsplit(".", 1)[-1]), []).append(node_id)
         file_symbols[rel] = symbols
 
     # Pass 2: imports -> file-level edges (external modules only counted).
@@ -379,7 +385,7 @@ def _assemble_graph(
             module = imp.get("module") or ""
             if not module:
                 continue
-            target_rel = _resolve_module(module, rel, lang, module_index)
+            target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
             if target_rel is None:
                 external_imports += 1
                 continue
@@ -407,10 +413,11 @@ def _assemble_graph(
                 dst = _resolve_call(
                     target, rel, lang, symbols, aliases, file_symbols,
                     file_node_ids, qname_index, last_seg_index, module_index,
+                    java_roots,
                 )
             else:
                 dst = _resolve_symbol(
-                    target, rel, file_symbols, qname_index, last_seg_index
+                    target, rel, lang, file_symbols, qname_index, last_seg_index
                 )
             if dst is None:
                 unresolved += 1
@@ -438,13 +445,43 @@ def _assemble_graph(
 
 # --- module (import) resolution -------------------------------------------
 
-def _resolve_module(module: str, rel: str, lang: str, module_index: set[str]) -> str | None:
+def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
+    """Most-specific source roots for the tracked .java files.
+
+    A FQCN import like com.example.lib.Greeter resolves relative to the root
+    that contains its package dir. Common roots are src/main/java and src/;
+    files at the repo root imply the root itself. Longer roots are tried
+    first because they match the file most precisely.
+    """
+    java_files = [rel for rel, entry in results.items() if entry.get("lang") == "java"]
+    if not java_files:
+        return []
+    roots = {""}  # repo root always applies
+    for rel in java_files:
+        parts = rel.split("/")
+        # the package path is everything under the source root; any prefix of
+        # the file path can be the root — collect the shortest sensible ones
+        # (src/main/java, src/main, src, ...) up to the file's parent.
+        for i in range(1, len(parts)):
+            roots.add("/".join(parts[:i]))
+    return sorted((r for r in roots if r), key=lambda r: -r.count("/"))
+
+
+def _resolve_module(
+    module: str,
+    rel: str,
+    lang: str,
+    module_index: set[str],
+    java_roots: list[str] | None = None,
+) -> str | None:
     """Map an import specifier to a tracked rel path; None when external."""
     rel_dir = posixpath.dirname(rel)
     if lang == "python":
         candidates = _py_module_candidates(module, rel_dir)
     elif lang in ("typescript", "tsx", "javascript", "jsx"):
         candidates = _ts_module_candidates(module, rel_dir)
+    elif lang == "java":
+        candidates = _java_candidates_with_roots(module, java_roots or [""])
     else:
         return None
     for candidate in candidates:
@@ -461,6 +498,36 @@ def _py_module_candidates(module: str, rel_dir: str) -> list[str]:
         return [f"{rel_dir}/__init__.py"] if rel_dir else []
     prefix = f"{rel_dir}/" if module.startswith(".") else ""
     return [f"{prefix}{dotted}.py", f"{prefix}{dotted}/__init__.py"]
+
+
+def _java_candidates_with_roots(module: str, roots: list[str]) -> list[str]:
+    """FQCN candidates under every source root, most specific root first."""
+    base = _java_module_candidates(module)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for root in roots:  # roots are pre-sorted most-specific first
+        for candidate in base:
+            full = posixpath.join(root, candidate) if root else candidate
+            if full not in seen:
+                seen.add(full)
+                ordered.append(full)
+    return ordered
+
+
+def _java_module_candidates(module: str) -> list[str]:
+    """FQCN -> package-relative file-path candidates, most specific first.
+
+    Java imports name a fully-qualified type (com.example.lib.Greeter), a
+    package (com.example.lib.*) or a static member (com.example.lib.Util.run).
+    Every dotted prefix maps to a candidate .java file (the last segment may be
+    a type or a member), so a type import hits Greeter.java and a static import
+    falls through to Util.java. Paths are relative to a source root; the
+    builder tries each root (src/main/java, src, repo root) as a prefix.
+    """
+    parts = module.split(".")
+    if not parts or not all(parts):
+        return []
+    return ["/".join(parts[:i]) + ".java" for i in range(len(parts), 0, -1)]
 
 
 def _ts_module_candidates(module: str, rel_dir: str) -> list[str]:
@@ -537,9 +604,10 @@ def _resolve_call(
     aliases: dict[str, tuple[str, str | None]],
     file_symbols: dict[str, set[str]],
     file_node_ids: dict[str, str],
-    qname_index: dict[str, list[str]],
-    last_seg_index: dict[str, list[str]],
+    qname_index: dict[tuple[str, str], list[str]],
+    last_seg_index: dict[tuple[str, str], list[str]],
     module_index: set[str],
+    java_roots: list[str] | None = None,
 ) -> str | None:
     """Resolve a call target to a node id, or None (unresolved).
 
@@ -551,7 +619,7 @@ def _resolve_call(
     matched = _match_alias(target, aliases)
     if matched is not None:
         module, rest = matched
-        target_rel = _resolve_module(module, rel, lang, module_index)
+        target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
         if target_rel is None:
             return None
         if rest:
@@ -559,23 +627,26 @@ def _resolve_call(
             if symbol:
                 return symbol_id(target_rel, symbol)
         return file_node_ids[target_rel]
-    return _resolve_symbol(target, rel, file_symbols, qname_index, last_seg_index)
+    return _resolve_symbol(target, rel, lang, file_symbols, qname_index, last_seg_index)
 
 
 def _resolve_symbol(
     target: str,
     rel: str,
+    lang: str,
     file_symbols: dict[str, set[str]],
-    qname_index: dict[str, list[str]],
-    last_seg_index: dict[str, list[str]],
+    qname_index: dict[tuple[str, str], list[str]],
+    last_seg_index: dict[tuple[str, str], list[str]],
 ) -> str | None:
-    """Global qname/suffix resolution; prefers unique or same-file matches.
+    """Language-scoped qname/suffix resolution; prefers unique or same-file
+    matches. Scoping by lang keeps same-named symbols in different languages
+    (Java Greeter vs TS Greeter) from colliding.
 
     Calls through local variables ("app.start", "g.greet") can't be typed
     statically, so when the full target doesn't match, progressively shorter
     suffixes are tried (longest first) and the first unambiguous hit wins.
     """
-    ids = qname_index.get(target)
+    ids = qname_index.get((lang, target))
     if ids:
         if len(ids) == 1:
             return ids[0]
@@ -588,7 +659,7 @@ def _resolve_symbol(
     for drop in range(len(parts)):
         candidate = ".".join(parts[drop:])
         matches = [
-            nid for nid in last_seg_index.get(parts[-1], [])
+            nid for nid in last_seg_index.get((lang, parts[-1]), [])
             if (qname := parse_node_id(nid)[2]) and (
                 qname == candidate or qname.endswith("." + candidate)
             )

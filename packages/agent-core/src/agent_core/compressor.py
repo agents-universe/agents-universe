@@ -187,6 +187,83 @@ def truncate_oversized_tool_messages(messages: list[Message]) -> int:
     return truncated
 
 
+def demote_image_messages(messages: list[Message]) -> int:
+    """Replace base64 image parts with lightweight text references.
+
+    Vision blocks are the single largest irreducible line item on the wire:
+    base64 inflates raw bytes 4/3 and there is no summarization path for them.
+    Demoting them keeps the turn alive at the cost of vision — the agent can
+    still retrieve the file with `filesystem read_file` when it needs it.
+    Returns the count demoted. Only the content part under a message's list
+    content is touched; roles, tool_calls and ids are preserved.
+    """
+    demoted = 0
+    for m in messages:
+        if not isinstance(m.content, list):
+            continue
+        parts = []
+        changed = False
+        for part in m.content:
+            if isinstance(part, dict) and part.get("type") == "image":
+                media_type = part.get("media_type", "image")
+                parts.append({
+                    "type": "text",
+                    "text": (
+                        f"[Attachment image ({media_type}) removed from context to fit the "
+                        "request size limit — use filesystem read_file on its path to "
+                        "inspect it if needed]"
+                    ),
+                })
+                demoted += 1
+                changed = True
+            else:
+                parts.append(part)
+        if changed:
+            m.content = parts
+    return demoted
+
+
+def request_byte_breakdown(
+    messages: list[Message],
+    tool_defs: list[ToolDefinition] | None = None,
+) -> dict[str, int]:
+    """Per-section wire bytes for the over-limit error message.
+
+    Splits the estimated body into four actionable buckets so the user (or an
+    operator trimming AGENT_MAX_REQUEST_BYTES) can see what dominates: the
+    system prompt (which carries the in-full knowledge load), attachment image
+    data, plain history text, and tool schemas.
+    """
+    system = 0
+    images = 0
+    text = 0
+    tools = 0
+    for m in messages:
+        if isinstance(m.content, str):
+            content_bytes = estimate_wire_bytes(m.content)
+        else:
+            content_bytes = 0
+            for part in m.content:
+                if not isinstance(part, dict):
+                    content_bytes += estimate_wire_bytes(str(part))
+                elif part.get("type") == "image":
+                    images += 24 + len(part.get("data") or "")
+                else:
+                    content_bytes += estimate_wire_bytes(part.get("text") or "")
+        if m.role == "system":
+            system += content_bytes
+        else:
+            text += content_bytes
+        if m.tool_calls:
+            text += estimate_wire_bytes(json.dumps(m.tool_calls, ensure_ascii=True, default=str))
+    for t in tool_defs or []:
+        tools += _TOOL_OVERHEAD_BYTES
+        tools += estimate_wire_bytes(t.name)
+        tools += estimate_wire_bytes(t.description)
+        tools += estimate_wire_bytes(json.dumps(t.parameters, ensure_ascii=True, default=str))
+    return {"system": system, "images": images, "text": text, "tools": tools}
+
+
 def force_compress_history(
     messages: list[Message],
     byte_limit: int,
@@ -198,7 +275,11 @@ def force_compress_history(
     cases are system-prompt (knowledge), recent text or attachments — a
     summary of the early segment cannot shrink those, and skipping the LLM
     keeps this hot-path guard deterministic and free of timeout/failure
-    handling. Returns "ok" (unchanged), "truncated" (shrunk) or "over_limit".
+    handling. Returns "ok" (unchanged), "truncated" (tool outputs shrunk) or
+    "over_limit". Image demotion is deliberately NOT here: it discards vision
+    and belongs after the LLM-summarization + knowledge-demotion stages of the
+    async degradation chain (agent._degrade_request), not in this cheap,
+    first-line truncation pass.
     """
     if estimate_request_bytes(messages, tool_defs) <= byte_limit:
         return "ok"
@@ -268,17 +349,24 @@ async def compress_history(
     messages: list[Message],
     token_budget: int,
     provider: LLMProvider,
+    force: bool = False,
 ) -> list[Message]:
     """Compress early messages into a summary if history is too long.
 
     Returns a new message list with:
     - A system summary message at the front (if compression happened)
     - The most recent RECENT_TURNS_KEEP messages preserved as-is
+
+    ``force`` bypasses the token-threshold check. It is set when the request
+    is byte-over-limit but token-under-limit (CJK escaping, base64 images) so
+    a summary still shrinks the many-message history the token heuristic
+    missed. The short-history branch (<= RECENT_TURNS_KEEP) still truncates
+    in place rather than invoking the LLM.
     """
     total_tokens = estimate_history_tokens(messages)
     threshold = int(token_budget * COMPRESS_THRESHOLD_RATIO)
 
-    if total_tokens <= threshold:
+    if not force and total_tokens <= threshold:
         return messages
 
     # If too few messages to split, truncate large tool results in-place

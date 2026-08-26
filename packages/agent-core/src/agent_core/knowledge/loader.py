@@ -222,6 +222,27 @@ def unload_all_dynamic(result: KnowledgeContextResult) -> list[str]:
     return unloaded
 
 
+def demote_loaded_entry(result: KnowledgeContextResult, slug: str) -> bool:
+    """Move one loaded static knowledge file into overflow. Returns True.
+
+    Used by the request-size degradation loop, which peels the largest file
+    and re-measures the payload before demoting the next. Both loaded_content
+    and loaded_entries drop the slug so a subsequent system-prompt rebuild is
+    consistent; the overflow registry keeps the slug discoverable so the agent
+    can still fetch it with knowledge_rw read.
+    """
+    if slug not in result.loaded_content:
+        return False
+    result.loaded_content.pop(slug)
+    entry = next((e for e in result.loaded_entries if e.slug == slug), None)
+    if entry is not None:
+        result.loaded_entries.remove(entry)
+        if slug not in result.overflow_slugs:
+            result.overflow_slugs.append(slug)
+            result.overflow_entries[slug] = entry
+    return True
+
+
 def refresh_dynamic_entry(
     result: KnowledgeContextResult,
     slug: str,

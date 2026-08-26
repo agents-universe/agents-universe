@@ -10,6 +10,7 @@ Blocks:
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -68,6 +69,61 @@ def _is_ip_blocked(ip_str: str) -> bool:
     return False
 
 
+# Hostname strings glibc's inet_aton maps to real addresses even though
+# ipaddress.ip_address() rejects every one of them since Python 3.9.6:
+# integer ("2130706433" == 127.0.0.1), hex ("0x7f000001"), octal/leading-zero
+# dotted ("010.0.0.1" == 8.0.0.1), abbreviated ("127.1" == 127.0.0.1). A
+# literal-IP guard that only consults ipaddress calls these "hostnames" and
+# lets the request through — glibc's getaddrinfo then connects to the mapped
+# loopback/private/metadata address, defeating the always-on literal check
+# whenever SSRF_ENABLED skips DNS resolution (the default).
+_NUMERIC_HOST_RE = re.compile(r"^[0-9a-fA-FxX.]+$")
+
+
+def _inet_aton_mapped(host: str) -> str | None:
+    """Dotted quad a numeric *host* resolves to under inet_aton semantics.
+
+    inet_aton accepts up to four dot-separated components (decimal, octal
+    when leading 0, hex with 0x), the last absorbing the remaining bytes:
+    "127.1" is 127.0.0.1, "2130706433" is 127.0.0.1, "2852039166" is
+    169.254.169.254 (the AWS metadata address). Returns None when *host* is
+    not an inet_aton-accepted form — i.e. a real hostname that DNS resolves
+    on its own.
+    """
+    if not host or len(host) > 64 or not _NUMERIC_HOST_RE.match(host):
+        return None
+    if host.startswith(".") or host.endswith(".") or ".." in host:
+        return None  # inet_aton rejects these; getaddrinfo then fails DNS — inert
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    components: list[int] = []
+    for part in parts:
+        try:
+            if part.lower().startswith("0x"):
+                value = int(part[2:], 16)
+            elif len(part) > 1 and part.startswith("0"):
+                value = int(part, 8)
+            else:
+                value = int(part, 10)
+        except ValueError:
+            return None  # e.g. "08.0.0.1" — invalid octal, inet_aton fails
+        if value > 0xFFFFFFFF:
+            return None
+        components.append(value)
+    address = 0
+    for value in components[:-1]:
+        if value > 0xFF:
+            return None  # non-last components are bytes — inet_aton fails
+        address = (address << 8) | value
+    last = components[-1]
+    remaining = 4 - (len(components) - 1)
+    if last >= (1 << (8 * remaining)):
+        return None
+    address = (address << (8 * remaining)) | last
+    return str(ipaddress.IPv4Address(address))
+
+
 def validate_url(url: str, *, allow_any_port: bool = False) -> None:
     """Validate URL scheme, host, and port BEFORE making a request.
 
@@ -94,7 +150,14 @@ def validate_url(url: str, *, allow_any_port: bool = False) -> None:
         if _is_ip_blocked(host):
             raise SSRFError(f"Blocked IP in URL: {host}")
     except ValueError:
-        pass  # Not an IP literal (it's a hostname) — will be resolved later
+        # Not a canonical IP literal — but it may still be an inet_aton
+        # alternate form ipaddress rejects ("2130706433" is 127.0.0.1,
+        # "2852039166" is the AWS metadata address). glibc's getaddrinfo
+        # accepts these, so letting one through is an SSRF bypass whenever
+        # SSRF_ENABLED skips DNS resolution. Map and re-check.
+        mapped = _inet_aton_mapped(host)
+        if mapped is not None and _is_ip_blocked(mapped):
+            raise SSRFError(f"Blocked IP in URL: {host} (={mapped})")
 
     # Port check — `parsed.port` raises ValueError on non-numeric
     # or out-of-range ports ("http://h:abc/", "http://h:99999/"); callers

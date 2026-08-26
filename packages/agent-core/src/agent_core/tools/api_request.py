@@ -56,7 +56,13 @@ def _is_private_ip(host: str) -> bool:
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
-        return False
+        # Alternate inet_aton forms ipaddress rejects but glibc's getaddrinfo
+        # maps to real addresses ("2130706433" → 127.0.0.1) — re-check the
+        # mapped quad so the always-on literal guard sees them too.
+        from ._ssrf import _inet_aton_mapped
+
+        mapped = _inet_aton_mapped(host)
+        return _is_private_ip(mapped) if mapped is not None else False
     return (
         addr.is_loopback
         or addr.is_link_local

@@ -10,9 +10,11 @@ from agent_core.compressor import (
     RECENT_TURNS_KEEP,
     compress_history,
     compression_budget,
+    demote_image_messages,
     estimate_request_bytes,
     estimate_wire_bytes,
     force_compress_history,
+    request_byte_breakdown,
     truncate_oversized_tool_messages,
 )
 from agent_core.providers.base import Message, ToolDefinition
@@ -221,3 +223,55 @@ async def test_compress_history_short_branch_still_truncates():
     assert result is messages
     assert messages[2].content.endswith("\n[... truncated ...]")
     provider.complete.assert_not_awaited()
+
+
+async def test_compress_history_force_overrides_token_threshold():
+    """force=True summarizes a many-message history even when tokens are under
+    the threshold — the byte-over-limit case the token heuristic misses."""
+    messages: list[Message] = []
+    for i in range(12):
+        messages.append(_message("user", f"short {i}"))
+        messages.append(_message("assistant", f"reply {i}"))
+
+    provider = _mock_provider()
+    result = await compress_history(messages, token_budget=10_000_000, provider=provider, force=True)
+
+    # Summarization happened despite the huge token budget.
+    assert result[0].role == "user"
+    assert "summary" in result[0].content
+    assert result[1].role == "assistant"
+    assert len(result) < len(messages)
+
+    # force=False with the same budget is a no-op.
+    untouched = await compress_history(messages, token_budget=10_000_000, provider=provider, force=False)
+    assert untouched is messages
+
+
+def test_demote_image_messages_keeps_other_parts():
+    """Only image parts become text refs; text parts survive unchanged."""
+    msg = Message(role="user", content=[
+        {"type": "text", "text": "hello"},
+        {"type": "image", "media_type": "image/png", "data": "A" * 1000},
+    ])
+    count = demote_image_messages([msg])
+
+    assert count == 1
+    assert msg.content[0] == {"type": "text", "text": "hello"}
+    assert msg.content[1]["type"] == "text"
+    assert "image" in msg.content[1]["text"].lower()
+    assert estimate_request_bytes([msg]) < 1000
+
+
+def test_request_byte_breakdown_attributes_buckets():
+    """The over-limit error must name what dominates the body."""
+    system = Message(role="system", content="汉" * 1000)
+    text = Message(role="user", content="hello")
+    image = Message(role="user", content=[{"type": "image", "media_type": "image/png", "data": "B" * 5000}])
+    tool = ToolDefinition(name="t", description="d", parameters={"type": "object"})
+
+    bd = request_byte_breakdown([system, text, image], [tool])
+
+    assert bd["system"] > 0
+    assert bd["images"] >= 5000
+    assert bd["text"] > 0
+    assert bd["tools"] > 0

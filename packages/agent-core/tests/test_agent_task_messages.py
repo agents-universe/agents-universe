@@ -308,6 +308,47 @@ def test_request_byte_outcome_truncates_or_reports_over_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_degrade_request_demotes_knowledge_then_images(monkeypatch):
+    """The async degradation chain shrinks an over-limit body without an LLM
+    call: largest knowledge file -> overflow, then images -> text refs."""
+    import agent_core.agent as agent_module
+    from agent_core.knowledge.loader import KnowledgeContextResult, KnowledgeEntry
+
+    monkeypatch.setattr(agent_module, "MAX_REQUEST_BYTES", 2000)
+    agent = _make_agent()
+    ctx = KnowledgeContextResult()
+    ctx.loaded_content["big/slug"] = "k" * 4000
+    ctx.loaded_entries = [KnowledgeEntry(
+        knowledge_id="disk:big/slug", slug="big/slug", title="Big", fs_path="",
+        category="big", cross_references=[], word_count=0,
+    )]
+    agent._project_context = ctx
+
+    # A system prompt is rebuilt from project_context; an image rides on the
+    # user message. Force the rebuild by forgetting any prior static cache.
+    messages = [
+        Message(role="system", content=agent._build_system_prompt()),
+        Message(role="user", content=[{"type": "image", "media_type": "image/png", "data": "Z" * 3000}]),
+    ]
+
+    class _NoStreamProvider:
+        model_name = "test-model"
+        context_window = 128_000
+
+    outcome = await agent._degrade_request(messages, [], _NoStreamProvider())
+
+    # Knowledge was demoted and its slug recorded as overflow.
+    assert "big/slug" not in ctx.loaded_content
+    assert "big/slug" in ctx.overflow_slugs
+    # The image was demoted to a text ref (outcome fits, or all levers ran).
+    flattened = "".join(
+        p.get("text", "") for p in messages[-1].content if isinstance(p, dict)
+    )
+    assert "image" in flattened.lower()
+    assert outcome in ("ok", "over_limit")
+
+
+@pytest.mark.asyncio
 async def test_task_loop_raises_on_over_limit_payload(monkeypatch):
     """An over-limit payload must stop the task with a RuntimeError (never
     reaching the provider) so _run_task's except path emits task_failed and

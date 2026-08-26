@@ -43,6 +43,7 @@ from .compressor import (
     estimate_history_tokens,
     estimate_request_bytes,
     force_compress_history,
+    request_byte_breakdown,
 )
 from .knowledge.loader import KnowledgeContextResult
 from .model_routing import resolve_tier_config
@@ -577,8 +578,22 @@ class Agent:
                     reserved_input + min(self._config.max_tokens, MAX_OUTPUT_RESERVE), comp_provider.context_window,
                 )
             else:
+                # Byte-aware: the token threshold can miss byte-heavy history
+                # (CJK JSON escaping, base64 images). If the assembled request
+                # would exceed the gateway byte cap, force-summarize the early
+                # history even when tokens are under threshold.
+                _probe_messages = (
+                    [Message(role="system", content=system)]
+                    + history
+                    + [Message(role="user", content=user_message)]
+                )
+                byte_over = (
+                    estimate_request_bytes(_probe_messages, tool_defs) > MAX_REQUEST_BYTES
+                )
                 async with _asyncio.timeout(30):
-                    history = await compress_history(history, available_budget, comp_provider)
+                    history = await compress_history(
+                        history, available_budget, comp_provider, force=byte_over
+                    )
         except TimeoutError:
             _log.warning("History compression timed out, keeping recent messages only")
             await session.emit("warning", message="History compression timed out, keeping recent messages only")
@@ -872,14 +887,111 @@ class Agent:
         (system-prompt knowledge, recent text or attachments dominate)."""
         size_mb = estimate_request_bytes(messages, tool_defs) / (1024 * 1024)
         limit_mb = MAX_REQUEST_BYTES // (1024 * 1024)
+        bd = request_byte_breakdown(messages, tool_defs)
         msg = (
             f"请求内容过大(约 {size_mb:.1f} MB,上限 {limit_mb} MB),"
             "自动精简后仍超出限制,已停止发送。"
         )
+        # Actionable attribution: name the biggest bucket so the user knows
+        # whether to trim knowledge files, drop attachments or start over.
+        parts = []
+        if bd["system"]:
+            parts.append(f"知识/系统提示约 {bd['system'] / (1024 * 1024):.1f} MB")
+        if bd["images"]:
+            parts.append(f"附件图片约 {bd['images'] / (1024 * 1024):.1f} MB")
+        if bd["text"]:
+            parts.append(f"历史文本约 {bd['text'] / (1024 * 1024):.1f} MB")
+        if bd["tools"]:
+            parts.append(f"工具定义约 {bd['tools'] / (1024 * 1024):.1f} MB")
+        if parts:
+            msg += " 构成:" + "、".join(parts) + "。"
         if self._project_context and self._project_context.loaded_entries:
-            msg += f" 当前加载了 {len(self._project_context.loaded_entries)} 个知识文件,可尝试减少。"
-        msg += " 或删除过大的工具输出、新建会话后再试。"
+            msg += f" 当前加载 {len(self._project_context.loaded_entries)} 个知识文件,可在项目中减少或分拆。"
+        msg += " 或调高 AGENT_MAX_REQUEST_BYTES、新建会话后再试。"
         return msg
+
+    async def _degrade_request(
+        self,
+        messages: list[Message],
+        tool_defs: list[ToolDefinition],
+        provider: LLMProvider,
+    ) -> str:
+        """Shrink an over-limit request body, least-destructive first.
+
+        Runs once at the top of a turn (after the synchronous truncation pass
+        in force_compress_history). The three async/content-aware stages below
+        are what that deterministic pass cannot do safely:
+
+          1. Force LLM summarization of the early history — catches byte-heavy
+             history the token threshold missed (CJK escaping, images).
+          2. Demote the largest static knowledge files into overflow and
+             rebuild the system prompt — the in-full knowledge load is the one
+             irreducible bulk on the system prompt.
+          3. Demote base64 images to path references — destructive to vision,
+             kept last.
+
+        Returns "ok" once the payload fits, "over_limit" if every stage ran
+        and it still does not. Never raises: each stage is a soft budget
+        lever, and the caller escalates to a hard stop only on "over_limit".
+        """
+        if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+            return "ok"
+
+        # 1. History: force-summarize the early segment (the current turn's
+        #    user message lives in messages[-1] and survives as the recent tail).
+        from .compressor import RECENT_TURNS_KEEP
+        if len(messages) - 1 > RECENT_TURNS_KEEP:
+            try:
+                system_msgs = [m for m in messages if m.role == "system"]
+                history = [m for m in messages if m.role != "system"]
+                reserved = estimate_history_tokens(system_msgs)
+                available_budget = compression_budget(
+                    provider.context_window, reserved, self._config.max_tokens
+                )
+                if available_budget > 0:
+                    import asyncio as _asyncio
+                    async with _asyncio.timeout(30):
+                        compressed = await compress_history(
+                            history, available_budget, provider, force=True
+                        )
+                    if compressed is not history:
+                        messages[:] = system_msgs + compressed
+                        _log.warning("request degrade: force-summarized early history")
+            except Exception as e:
+                _log.warning("request degrade: history summarization failed: %s", e, exc_info=True)
+            if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+                return "ok"
+
+        # 2. Knowledge: drop the largest static files first, then rebuild.
+        if self._project_context and self._project_context.loaded_content:
+            from .knowledge.loader import demote_loaded_entry
+            demoted = 0
+            while (
+                estimate_request_bytes(messages, tool_defs) > MAX_REQUEST_BYTES
+                and self._project_context.loaded_content
+            ):
+                largest = max(
+                    self._project_context.loaded_content,
+                    key=lambda s: len(self._project_context.loaded_content[s].encode("utf-8")),
+                )
+                if not demote_loaded_entry(self._project_context, largest):
+                    break
+                demoted += 1
+            if demoted:
+                self._invalidate_static_cache()
+                messages[0] = Message(role="system", content=self._build_system_prompt())
+                _log.warning("request degrade: demoted %d knowledge files into overflow", demoted)
+            if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+                return "ok"
+
+        # 3. Images: last resort — trade vision for a live turn.
+        from .compressor import demote_image_messages
+        if demote_image_messages(messages):
+            _log.warning("request degrade: demoted image messages to text references")
+        if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+            return "ok"
+
+        return "over_limit"
 
     async def _run_loop(
         self,
@@ -973,14 +1085,17 @@ class Agent:
                     pending_tool_ids,
                 )
                 if self._request_byte_outcome(messages, tool_defs) == "over_limit":
-                    # Over the wire limit even after in-place truncation —
-                    # stop the turn with an actionable error instead of
-                    # letting the provider gateway reject it with an opaque
-                    # 413, and close the stream like the api_error path.
-                    await session.emit("error", message=self._over_limit_message(messages, tool_defs))
-                    await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
-                    emitted_end = True
-                    break
+                    # Sync truncation (tool outputs) was not enough. Escalate
+                    # to the async degradation chain — force-summarize history,
+                    # demote the largest knowledge files, then strip images —
+                    # before giving up with an actionable error instead of
+                    # letting the gateway reject the body with an opaque 413.
+                    if await self._degrade_request(messages, tool_defs, provider) == "over_limit":
+                        await session.emit("error", message=self._over_limit_message(messages, tool_defs))
+                        await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
+                        emitted_end = True
+                        break
+                    _log.info("request degrade succeeded, resuming turn")
                 try:
                     async for chunk in provider.stream(
                         messages, tool_defs, max_tokens=self._config.max_tokens
@@ -1755,11 +1870,14 @@ class Agent:
                 pending_tool_ids,
             )
             if self._request_byte_outcome(messages, tool_defs) == "over_limit":
-                # Over the wire limit even after in-place truncation — the
-                # task loop surfaces failures via RuntimeError (caught by
-                # _run_task → task_failed → _emit_task_stream_end), so raise
-                # here and let that path close the stream exactly once.
-                raise RuntimeError(self._over_limit_message(messages, tool_defs))
+                # Sync truncation was not enough. Escalate to the async
+                # degradation chain first; the task loop surfaces a genuine
+                # over-limit via RuntimeError (caught by _run_task →
+                # task_failed → _emit_task_stream_end), so raise only after
+                # every soft lever has been pulled.
+                if await self._degrade_request(messages, tool_defs, provider) == "over_limit":
+                    raise RuntimeError(self._over_limit_message(messages, tool_defs))
+                _log.info("request degrade succeeded in task loop, resuming")
             try:
                 async for chunk in provider.stream(
                     messages, tool_defs, max_tokens=self._config.max_tokens

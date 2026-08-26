@@ -70,6 +70,19 @@ def test_every_registered_tool_has_non_empty_prompt_hint():
         assert tool.prompt_hint.strip(), f"Tool {name!r} has an empty prompt_hint"
 
 
+def test_plan_task_always_injected_even_when_tools_omit_it():
+    # plan_task is framework-level behavior (the agent loop intercepts it into
+    # task mode), not an ordinary tool an agent definition may forget. An
+    # explicit tools: list that omits it must still get it — otherwise
+    # workflow-driven agents silently lose the visible plan card.
+    registry = build_tool_registry(["shell", "filesystem"])
+    assert "plan_task" in registry
+    assert set(registry) >= {"shell", "filesystem", "plan_task"}
+    # And an empty explicit list (agent that lists no tools) still plans.
+    registry = build_tool_registry([])
+    assert "plan_task" in registry
+
+
 def test_every_declared_tool_class_loads_with_hint():
     classes = list(_CORE_TOOLS)
     for module_name in _OPTIONAL_TOOL_MODULES:

@@ -330,19 +330,50 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.activeToolCalls).toHaveLength(0)
   })
 
-  it('task stream_end after task_completed also winds down', () => {
+  it('failed task with stranded stream buffer does not leak red X into next turn', () => {
+    // Regression: agent-core's _execute_and_finish crash path emits task_failed
+    // WITHOUT the task's own stream_end. The stranded per-task buffer kept
+    // hasParallelTasks true at turn end, so clearStreamingState was skipped and
+    // the failed/skipped plan leaked into the next turn — a retried task then
+    // never repainted (permanent red X + grey-skipped).
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setTasks([
+      { task_id: 'A1', title: 'Task A', status: 'pending' },
+      { task_id: 'B1', title: 'Task B', status: 'pending', depends_on: ['A1'] },
+    ], 'conv-a')
+
+    // Task A streams some text, then crashes (no stream_end for A1).
+    store.appendDelta('partial output', 'A1', 'conv-a')
+    store.updateTask('A1', { status: 'failed', error: 'crash' }, 'conv-a')
+    store.updateTask('B1', { status: 'skipped', error: 'Skipped: dependency failed' }, 'conv-a')
+    expect(store.taskStreamingText('A1', 'conv-a')).toBe('') // buffer dropped
+
+    // Main stream_end: with no stranded buffer, the turn winds down cleanly.
+    store.pushStreamingMessage('assistant-1', 'summary', false, 'conv-a')
+    expect(store.tasks).toHaveLength(0)
+
+    // Next turn starts clean — no stale red X / grey-skipped plan.
+    store.startThinking('conv-a')
+    expect(store.tasks).toHaveLength(0)
+  })
+
+  it('task_completed clears the task buffer and winds down (stream_end race)', () => {
+    // task_completed can arrive BEFORE its task stream_end (event reordering).
+    // Completion is the task's true end: the per-task buffer must be dropped
+    // (the stream can no longer deliver more text) and the turn winds down,
+    // not wait for a stream_end that may never come (crash path).
     const store = useConversationStore()
     store.startConversation('conv-a')
     store.startThinking('conv-a')
     store.setTasks([{ task_id: 't1', title: 'Plan', status: 'running' }], 'conv-a')
     store.appendDelta('partial task text', 't1', 'conv-a')
 
-    // task_completed lands first — plan now terminal, but the per-task
-    // buffer is still streaming, so the turn stays alive.
     store.updateTask('t1', { status: 'completed' }, 'conv-a')
-    expect(store.isStreaming).toBe(true)
+    expect(store.isStreaming).toBe(false)
+    expect(store.taskStreamingText('t1', 'conv-a')).toBe('')
 
-    // The task's own stream_end clears the buffer and winds down.
+    // A late stream_end is idempotent — nothing to wind down again.
     store.finalizeStreaming('assistant-1', 't1', 'conv-a')
     expect(store.isStreaming).toBe(false)
     expect(store.taskStreamingText('t1', 'conv-a')).toBe('')

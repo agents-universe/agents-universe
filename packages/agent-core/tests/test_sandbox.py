@@ -955,6 +955,71 @@ def test_browser_url_gate_enforces_port_allowlist_when_ssrf_enabled(tmp_path, mo
     _check_browser_url("http://8.8.8.8:5173/")
 
 
+def test_inet_aton_mapper():
+    """The alternate numeric forms ipaddress rejects still map to real IPs
+    via glibc inet_aton (verified against a python:3.12-slim container) —
+    the mapper must reproduce exactly what getaddrinfo would connect to."""
+    from agent_core.tools._ssrf import _inet_aton_mapped
+
+    assert _inet_aton_mapped("2130706433") == "127.0.0.1"
+    assert _inet_aton_mapped("0x7f000001") == "127.0.0.1"
+    assert _inet_aton_mapped("2852039166") == "169.254.169.254"
+    assert _inet_aton_mapped("127.1") == "127.0.0.1"
+    assert _inet_aton_mapped("017700000001") == "127.0.0.1"
+    assert _inet_aton_mapped("0x7f.0.0.1") == "127.0.0.1"
+    assert _inet_aton_mapped("010.0.0.1") == "8.0.0.1"
+    # Canonical forms round-trip unchanged.
+    assert _inet_aton_mapped("127.0.0.1") == "127.0.0.1"
+    assert _inet_aton_mapped("8.8.8.8") == "8.8.8.8"
+    assert _inet_aton_mapped("1.2.3.4") == "1.2.3.4"
+    # Not inet_aton forms — real hostnames / inert strings.
+    assert _inet_aton_mapped("example.com") is None
+    assert _inet_aton_mapped("x1.2.3.4") is None
+    assert _inet_aton_mapped("999.1.2.3") is None
+    assert _inet_aton_mapped("127.0.0.1.") is None
+    assert _inet_aton_mapped("08.0.0.1") is None
+    assert _inet_aton_mapped("1.2.3.4.5") is None
+    assert _inet_aton_mapped("0x") is None
+    assert _inet_aton_mapped("") is None
+
+
+def test_browser_url_gate_blocks_inet_aton_alternate_ip_forms(tmp_path, monkeypatch):
+    """The always-on literal-IP guard must also catch the inet_aton alternate
+    forms ipaddress rejects — with SSRF_ENABLED off (the default) glibc's
+    getaddrinfo would connect them to loopback/metadata unblocked."""
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    for url in (
+        "http://2130706433/",  # 127.0.0.1
+        "http://0x7f000001:8080/",  # 127.0.0.1, non-allowlisted port
+        "http://2852039166/latest/meta-data/",  # 169.254.169.254
+        "http://127.1/",  # 127.0.0.1
+        "http://017700000001/",  # 127.0.0.1 (octal)
+        "http://0x7f.0.0.1/",  # 127.0.0.1 (hex component)
+    ):
+        with pytest.raises(Exception, match="Blocked IP"):
+            _check_browser_url(url)
+    # Public mapped forms and real hostnames are unaffected.
+    _check_browser_url("http://010.0.0.1/")  # 8.0.0.1 — public
+    _check_browser_url("http://8.8.8.8/")
+    _check_browser_url("http://example.com/")
+
+
+def test_api_request_rejects_inet_aton_alternate_ip_forms(monkeypatch):
+    """api_request's own literal check (independent of SSRF_ENABLED) rejects
+    the same alternate forms."""
+    from agent_core.tools.api_request import _validate_url_safety
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    for url in (
+        "http://2130706433:8000/health",
+        "http://2852039166/latest/meta-data/iam/security-credentials/",
+        "http://127.1/x",
+    ):
+        assert _validate_url_safety(url, None) is not None
+    assert _validate_url_safety("http://8.8.8.8/x", None) is None
+    assert _validate_url_safety("http://example.com/x", None) is None
+
+
 def test_spawn_in_new_session_platform_kwargs():
     """POSIX spawns go into their own session so terminate_process_tree can
     reach grandchildren; Windows asyncio subprocess has no session support."""

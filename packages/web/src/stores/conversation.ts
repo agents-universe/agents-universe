@@ -899,6 +899,18 @@ export const useConversationStore = defineStore('conversation', () => {
     if (idx >= 0) {
       rt.tasks[idx] = { ...rt.tasks[idx], ...updates }
     }
+    // A task reaching a terminal state (completed/failed/skipped) via the
+    // crash path never gets its own stream_end — agent-core's
+    // _execute_and_finish emits task_failed without closing the task stream.
+    // The stranded per-task buffer keeps hasParallelTasks true at turn end,
+    // so clearStreamingState is skipped and the stale plan (red X / grey
+    // skipped) leaks into the next turn — a retried task then never
+    // repaints. Clearing the buffer on terminal status lets the turn wind
+    // down and drop the stale plan. Idempotent on the normal path (stream_end
+    // already deleted it).
+    if (updates.status === 'completed' || updates.status === 'failed' || updates.status === 'skipped') {
+      delete rt.streamingByTask[id]
+    }
     // The task's stream_end can arrive BEFORE its task_completed (the agent
     // emits them in that order) — at that point planActive was still true,
     // so finalizeStreaming did not wind down. The last task becoming

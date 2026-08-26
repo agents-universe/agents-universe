@@ -1,8 +1,8 @@
 """Language detection and per-language tree-sitter node-type maps.
 
 Grammar objects load lazily from ``tree_sitter_language_pack`` (bundles the
-python/typescript/javascript/tsx/jsx/vue grammars) and are cached — the pack
-is only imported on first build/query, keeping plain ``import agent_core``
+python/typescript/javascript/tsx/jsx/vue/java grammars) and are cached — the
+pack is only imported on first build/query, keeping plain ``import agent_core``
 light. No .scm query files: the parser walks the AST generically from these
 tables, so the tree-sitter query API (which churns across versions) never
 comes into play.
@@ -27,6 +27,7 @@ SUPPORTED_EXT: dict[str, str] = {
     ".cjs": "javascript",
     ".jsx": "jsx",
     ".vue": "vue",
+    ".java": "java",
 }
 
 # Committed vendor/build dirs are still skipped even when git ls-files lists
@@ -58,6 +59,9 @@ class LanguageSpec:
     def is_ts_family(self) -> bool:
         return self.key in ("typescript", "tsx", "javascript", "jsx")
 
+    def is_java(self) -> bool:
+        return self.key == "java"
+
 
 _PY_BUILTINS = frozenset({
     "print", "len", "range", "str", "int", "float", "bool", "list", "dict",
@@ -68,6 +72,17 @@ _PY_BUILTINS = frozenset({
     "object", "classmethod", "staticmethod", "property", "Exception",
     "ValueError", "TypeError", "KeyError", "NotImplementedError", "hash",
     "callable", "reversed", "ord", "chr", "divmod", "pow", "oct", "hex",
+})
+
+_JAVA_BUILTINS = frozenset({
+    "System", "Math", "String", "StringBuilder", "Integer", "Long", "Double",
+    "Float", "Boolean", "Character", "Byte", "Short", "Object", "Class",
+    "Arrays", "Collections", "List", "ArrayList", "LinkedList", "Map", "HashMap",
+    "LinkedHashMap", "TreeMap", "Set", "HashSet", "TreeSet", "Optional",
+    "Objects", "Comparator", "Iterable", "Iterator", "Enum", "Thread",
+    "Runnable", "Exception", "RuntimeException", "Error", "Throwable",
+    "Number", "BigDecimal", "BigInteger", "Stream", "Collectors", "Function",
+    "Supplier", "Consumer", "Predicate",
 })
 
 _JS_BUILTINS = frozenset({
@@ -159,6 +174,21 @@ _SPECS: dict[str, LanguageSpec] = {
         import_nodes=(),
         inherited_field=None,
         builtins=frozenset(),
+    ),
+    "java": LanguageSpec(
+        key="java",
+        symbol_nodes={
+            "class_declaration": "class",
+            "interface_declaration": "class",
+            "enum_declaration": "class",
+            "method_declaration": "function",
+            "constructor_declaration": "function",
+        },
+        call_node="method_invocation",
+        call_callee_field="",        # callee splits across name + object fields
+        import_nodes=("import_declaration",),
+        inherited_field=None,        # superclass / super_interfaces fields
+        builtins=_JAVA_BUILTINS,
     ),
 }
 

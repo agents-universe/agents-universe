@@ -69,7 +69,12 @@ def build_tool_registry(tool_names: list[str] | None = None) -> dict[str, Tool]:
 
     for cls in _CORE_TOOLS:
         instance = cls()
-        if tool_names is None or instance.name in tool_names:
+        # plan_task is framework-level behavior (the loop intercepts it into
+        # task mode), not an ordinary tool an agent definition may omit. An
+        # explicit tools: list that forgets it must not silently strip the
+        # agent's ability to plan — always inject it. Every other core tool
+        # follows the list.
+        if tool_names is None or instance.name == "plan_task" or instance.name in tool_names:
             if instance.name in registry:
                 raise ValueError(f"Duplicate tool name: {instance.name!r}")
             registry[instance.name] = instance

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ref } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
-import { useWebSocket } from './useWebSocket'
+import { closeAllConnections, closeConnection, useWebSocket, _failedConversations } from './useWebSocket'
 
 /**
  * Drive the real onmessage → _dispatch path with a stubbed WebSocket.
@@ -28,12 +28,18 @@ function fire(ws: FakeWebSocket, payload: unknown) {
 }
 
 function mount(convId: string) {
-  useWebSocket(ref(convId))
-  return instances[instances.length - 1]
+  const s = ref(convId)
+  const api = useWebSocket(s)
+  return { ws: instances[instances.length - 1], status: api.status }
+}
+
+function statusFor(convId: string) {
+  return mount(convId).status.value
 }
 
 describe('useWebSocket image/file output payload guards', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     setActivePinia(createPinia())
     localStorage.clear()
     instances = []
@@ -41,13 +47,14 @@ describe('useWebSocket image/file output payload guards', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
   it('malformed image/file payloads do not crash or pollute the store', () => {
     const store = useConversationStore()
     store.startConversation('conv-a')
-    const ws = mount('conv-a')
+    const { ws } = mount('conv-a')
 
     // Missing keys, explicit null, and non-array values must all be skipped
     // — the old code passed undefined straight into push(...images).
@@ -67,10 +74,50 @@ describe('useWebSocket image/file output payload guards', () => {
     expect(store.messages[0].attachments).toBeUndefined()
   })
 
+  it('closeConnection purges a conversation\'s failed tombstone', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-fail-a')
+    const { ws } = mount('conv-fail-a')
+
+    // Drive the failure path to exhaustion: the fake socket never opens
+    // (readyState stays 0), so each retry closes with onclose firing;
+    // _scheduleRetry re-arms _open and the give-up branch marks the id
+    // failed after MAX_RETRIES. Advance timers to run the retry ladder.
+    for (let i = 0; i < 5; i++) {
+      ws.onclose!({} as CloseEvent)
+      vi.advanceTimersByTime(10_000)
+    }
+
+    expect(_failedConversations.has('conv-fail-a')).toBe(true)
+
+    // Deleting the conversation calls closeConnection — without the fix the
+    // tombstone survives forever (the set grows one entry per deleted
+    // conversation).
+    closeConnection('conv-fail-a')
+    expect(_failedConversations.has('conv-fail-a')).toBe(false)
+  })
+
+  it('closeAllConnections clears every failed tombstone', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-fail-b')
+    const { ws } = mount('conv-fail-b')
+    for (let i = 0; i < 5; i++) {
+      ws.onclose!({} as CloseEvent)
+      vi.advanceTimersByTime(10_000)
+    }
+
+    expect(_failedConversations.has('conv-fail-b')).toBe(true)
+
+    // A project/agent switch closes all connections — tombstones must not
+    // survive across contexts.
+    closeAllConnections()
+    expect(_failedConversations.size).toBe(0)
+  })
+
   it('well-formed payloads still dispatch into the runtime', () => {
     const store = useConversationStore()
     store.startConversation('conv-a')
-    const ws = mount('conv-a')
+    const { ws } = mount('conv-a')
 
     fire(ws, {
       type: 'image_output',

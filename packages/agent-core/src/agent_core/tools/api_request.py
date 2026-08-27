@@ -52,6 +52,33 @@ def _is_sensitive_header(name: str) -> bool:
     return bool(_SENSITIVE_HEADER_RE.search(name))
 
 
+def _coerce_dict_field(value: Any, field: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Coerce an LLM-stringified dict param to a real dict.
+
+    The schema declares objects, but LLMs routinely pass a bare string
+    (`path_params: "{\"id\": \"42\"}"`). Iterating that raw string (or
+    ``dict(string)`` for secret_refs) raised AttributeError/ValueError, which
+    the agent loop degrades into a confusing "str object has no attribute
+    items". Returns (coerced, None) on success or (None, error) when the
+    string cannot be parsed — the caller returns a clear tool error instead
+    of letting the exception propagate.
+    """
+    if value is None or isinstance(value, dict):
+        return (value or {}), None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return {}, None
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return None, f"{field} must be a JSON object, got: {stripped[:120]!r}"
+        if isinstance(parsed, dict):
+            return parsed, None
+        return None, f"{field} must be a JSON object, got a {type(parsed).__name__}: {stripped[:120]!r}"
+    return None, f"{field} must be a JSON object, got {type(value).__name__}"
+
+
 def _is_private_ip(host: str) -> bool:
     try:
         addr = ipaddress.ip_address(host)
@@ -454,9 +481,15 @@ class ApiRequestTool(Tool):
         timeout_seconds = min(max(timeout_seconds, 1), 120)
         require_confirmation: bool = params.get("require_confirmation", False)
         allowed_hosts: list[str] | None = params.get("allowed_hosts")
-        path_params: dict[str, str] = params.get("path_params") or {}
-        query_params: dict[str, Any] = params.get("query_params") or {}
-        extra_headers: dict[str, str] = params.get("headers") or {}
+        path_params, _err = _coerce_dict_field(params.get("path_params"), "path_params")
+        if _err:
+            return {"error": _err}
+        query_params, _err = _coerce_dict_field(params.get("query_params"), "query_params")
+        if _err:
+            return {"error": _err}
+        extra_headers, _err = _coerce_dict_field(params.get("headers"), "headers")
+        if _err:
+            return {"error": _err}
         json_body = params.get("json_body")
         auth_header_name: str | None = params.get("auth_header_name")
         auth_prefix: str | None = params.get("auth_prefix")
@@ -569,7 +602,9 @@ class ApiRequestTool(Tool):
         if auth_type != "none":
             secret_refs_map: dict[str, str] = {}
             if params.get("secret_refs"):
-                secret_refs_map = dict(params["secret_refs"])
+                secret_refs_map, _err = _coerce_dict_field(params.get("secret_refs"), "secret_refs")
+                if _err:
+                    return {"error": _err}
             elif secret_ref:
                 secret_refs_map = {"_default": secret_ref}
 

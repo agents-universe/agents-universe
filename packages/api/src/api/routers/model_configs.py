@@ -62,6 +62,19 @@ def _normalize_base_url(value: str | None) -> str | None:
     return normalized.rstrip("/")
 
 
+def _redact_key(text: str, key: str) -> str:
+    """Scrub the submitted key out of a provider error message.
+
+    Providers echo the credential back in 401 bodies ("Incorrect API key
+    provided: sk-...", "invalid x-api-key: <key>") — returning that verbatim
+    to the client prints the key it just submitted. Same rule as
+    api_keys.py / tokens.py / integrations.py.
+    """
+    if key:
+        text = text.replace(key, "[REDACTED]")
+    return text
+
+
 def _validate_url_mode(value: str | None) -> str | None:
     if value is not None and value not in ("base_url", "full_url"):
         raise ValueError("url_mode must be 'base_url' or 'full_url'")
@@ -447,7 +460,7 @@ async def _do_test(provider: str, model_id: str, api_key: str, base_url: str | N
         except Exception:
             body = {}
         error_msg = body.get("error", {}).get("message", "") or resp.text[:200]
-        return {"ok": False, "error": f"HTTP {resp.status_code}: {error_msg}"}
+        return {"ok": False, "error": f"HTTP {resp.status_code}: {_redact_key(error_msg, api_key)}"}
     except SSRFError as e:
         return {"ok": False, "error": f"Blocked URL: {e}"}
     except Exception:

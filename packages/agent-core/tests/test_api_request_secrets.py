@@ -371,3 +371,92 @@ async def test_headers_only_redacts_secret_values():
     assert result["headers"]["x-echo"] == "Bearer [REDACTED:_default]"
     assert result["headers"]["x-other"] == "harmless"
     assert "set-cookie" not in result["headers"]
+
+
+@pytest.mark.asyncio
+async def test_stringified_path_params_coerce_to_dict():
+    """LLM 把对象参数传成 JSON 字符串时不能抛 AttributeError，而应正常解析。"""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+
+    with patch("agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value="tok")):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/users/{id}",
+                "base_url": "https://api.example.com",
+                "path_params": '{"id": "42"}',
+            },
+            http,
+            session=FakeSession(),
+        )
+
+    assert result["status"] == 200
+    assert http.stream.call_args.args[1] == "https://api.example.com/users/42"
+
+
+@pytest.mark.asyncio
+async def test_stringified_query_params_coerce_to_dict():
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+
+    with patch("agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value="tok")):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/search",
+                "base_url": "https://api.example.com",
+                "query_params": '{"q": "alpha", "limit": "10"}',
+            },
+            http,
+            session=FakeSession(),
+        )
+
+    assert result["status"] == 200
+    assert http.stream.call_args.kwargs["params"] == {"q": "alpha", "limit": "10"}
+
+
+@pytest.mark.asyncio
+async def test_unparseable_dict_field_returns_clear_error():
+    """不可解析的字符串必须返回工具错误，而不是异常传播成泛化失败。"""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+
+    result = await _run(
+        {
+            "integration_key": "svc",
+            "method": "GET",
+            "path": "/x",
+            "base_url": "https://api.example.com",
+            "path_params": "not-a-dict",
+        },
+        http,
+        session=FakeSession(),
+    )
+
+    assert "must be a JSON object" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_stringified_secret_refs_coerce_to_dict():
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+
+    with patch(
+        "agent_core.tools._auth.get_token_optional",
+        new=AsyncMock(side_effect=["svc-user", "svc-pass"]),
+    ):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/health",
+                "base_url": "https://api.example.com",
+                "auth_type": "basic",
+                "secret_refs": '{"username": "svc:user", "password": "svc:pass"}',
+                "secret_scope": "user",
+            },
+            http,
+        )
+
+    assert result["status"] == 200
+    expected = "Basic " + base64.b64encode(b"svc-user:svc-pass").decode()
+    assert _sent_headers(http)["Authorization"] == expected

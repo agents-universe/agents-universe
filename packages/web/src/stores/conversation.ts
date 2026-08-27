@@ -275,11 +275,14 @@ export const useConversationStore = defineStore('conversation', () => {
     if (!id) return
     const rt = runtimes.get(id)
     if (!rt) return
-    if (!rt.activeToolCalls.length && !rt.streamingContent && !rt.streamingImages.length && !rt.streamingFiles.length) return
+    if (!rt.activeToolCalls.length && !rt.streamingContent
+        && !Object.keys(rt.streamingByTask).length
+        && !rt.streamingImages.length && !rt.streamingFiles.length) return
     try {
       localStorage.setItem(`agents-universe:draft:${id}`, JSON.stringify({
         activeToolCalls: rt.activeToolCalls,
         streamingContent: rt.streamingContent,
+        streamingByTask: rt.streamingByTask,
         streamingImages: rt.streamingImages,
         streamingFiles: rt.streamingFiles,
         tasks: rt.tasks,
@@ -318,6 +321,7 @@ export const useConversationStore = defineStore('conversation', () => {
       const draft = JSON.parse(raw) as {
         activeToolCalls: ToolCallRecord[]
         streamingContent: string
+        streamingByTask?: Record<string, string>
         streamingImages: ImageRecord[]
         streamingFiles: AttachmentRecord[]
         tasks: AgentTask[]
@@ -328,7 +332,8 @@ export const useConversationStore = defineStore('conversation', () => {
         localStorage.removeItem(`agents-universe:draft:${targetId}`)
         return
       }
-      if (!draft.activeToolCalls?.length && !draft.streamingContent) return
+      if (!draft.activeToolCalls?.length && !draft.streamingContent
+          && !draft.streamingByTask) return
       const recovered: Message = {
         // Unique per interruption: with a fixed `recovered-{targetId}` id, a
         // SECOND interruption in the same runtime (draft re-saved, loadHistory
@@ -359,6 +364,12 @@ export const useConversationStore = defineStore('conversation', () => {
       }
       rt.messages = [...rt.messages, recovered]
       if (draft.tasks?.length) rt.tasks = draft.tasks
+      // Restore per-task partial text so TaskPlanCard shows each task's
+      // streamed output after a reload (drafts are the recovery record for
+      // an interrupted execution; losing this would drop the partials).
+      if (draft.streamingByTask && typeof draft.streamingByTask === 'object') {
+        rt.streamingByTask = { ...draft.streamingByTask }
+      }
     } catch { /* ignore */ }
   }
 
@@ -821,6 +832,11 @@ export const useConversationStore = defineStore('conversation', () => {
     const id = targetId ?? activeId.value
     if (!id) return
     const rt = ensureRuntime(id)
+    // Match FIFO among same-content entries: the server consumes injections
+    // in order, so the OLDEST still-unmatched pending message is the one this
+    // ack belongs to. Content alone is ambiguous when the user rapid-fires
+    // two identical messages — without the positional tie-break the second
+    // ack could overwrite the first entry's serverId.
     const pending = rt.pendingInjected.find((p) => p.serverId === null && p.content === content)
     if (pending) pending.serverId = serverId
   }
@@ -829,8 +845,12 @@ export const useConversationStore = defineStore('conversation', () => {
     const id = targetId ?? activeId.value
     if (!id) return
     const rt = ensureRuntime(id)
+    // Prefer an exact serverId match (idempotent, immune to duplicate
+    // content); fall back to the oldest same-content unmatched entry.
     const pending = rt.pendingInjected.find(
-      (p) => (p.serverId !== null && p.serverId === serverId) || (p.serverId === null && p.content === content),
+      (p) => p.serverId === serverId,
+    ) ?? rt.pendingInjected.find(
+      (p) => p.serverId === null && p.content === content,
     )
     if (!pending) return
     // Replace the optimistic id with the server id and move the message to
@@ -847,7 +867,7 @@ export const useConversationStore = defineStore('conversation', () => {
     rt.pendingInjected = rt.pendingInjected.filter((p) => p !== pending)
   }
 
-  function rejectInjected(content: string, message: string, targetId?: string) {
+  function rejectInjected(content: string, message: string, targetId?: string, serverId?: string | null) {
     // input_rejected / input_not_processed: the message is settled without
     // the agent consuming it. Clear the pending entry and attach the
     // server's notice to the optimistic message — a user's words must never
@@ -855,7 +875,12 @@ export const useConversationStore = defineStore('conversation', () => {
     const id = targetId ?? activeId.value
     if (!id) return
     const rt = ensureRuntime(id)
-    const pending = rt.pendingInjected.find((p) => p.content === content)
+    // Prefer an exact serverId match (the server sends one on the watchdog
+    // path); otherwise FIFO tie-break among same-content unmatched entries —
+    // the oldest is the one being rejected (server settles in order).
+    const pending = serverId
+      ? rt.pendingInjected.find((p) => p.serverId === serverId)
+      : rt.pendingInjected.find((p) => p.serverId === null && p.content === content)
     if (!pending) return
     const idx = rt.messages.findIndex((m) => m.id === pending.optimisticId)
     if (idx >= 0) {

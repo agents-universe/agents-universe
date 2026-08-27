@@ -37,7 +37,9 @@ const _connections = new Map<string, ConnectionEntry>()
 // status computed checks this set first. Reactive so the computed re-runs
 // when a conversation enters/leaves the failed state (a plain Set mutation
 // never triggers it, leaving the UI stuck on 'disconnected').
-const _failedConversations = reactive(new Set<string>())
+// Exported for tests: the close paths must purge tombstones, else the set
+// grows one entry per conversation that failed and was then closed/deleted.
+export const _failedConversations = reactive(new Set<string>())
 
 /** Close the oldest idle (non-streaming) connection to stay under the limit.
  * Returns true if a connection was evicted. */
@@ -81,11 +83,18 @@ export function closeAllConnections() {
   for (const id of Array.from(_connections.keys())) {
     _cleanupConnection(id)
   }
+  // A switch away leaves the previous project's failed tombstones behind;
+  // reconnect (connect()) re-adds them if the new attempt fails again.
+  _failedConversations.clear()
 }
 
 /** Close the WS connection for a single conversation (e.g. on delete). */
 export function closeConnection(id: string) {
   _cleanupConnection(id)
+  // A deleted conversation's failed marker would otherwise live forever —
+  // the only removal path was a later connect() for the same id, and a
+  // deleted id is never reopened. Keep the tombstone set bounded.
+  _failedConversations.delete(id)
 }
 
 export function useWebSocket(conversationId: Ref<string | null>) {
@@ -343,7 +352,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         // turn ended first) — attach the server's notice to the message.
         // Unlike 'error', the streaming state is NOT cleared: the turn may
         // still be running.
-        conv.rejectInjected((msg.content as string) ?? '', (msg.message as string) ?? 'Message was not processed.', convId)
+        conv.rejectInjected((msg.content as string) ?? '', (msg.message as string) ?? 'Message was not processed.', convId, (msg.message_id as string | null) ?? null)
         break
       case 'token_update':
         conv.setTokens(msg.used as number, msg.budget as number, convId)

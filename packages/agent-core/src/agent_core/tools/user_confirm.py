@@ -119,6 +119,10 @@ class UserConfirmTool(Tool):
 
         question = params["question"]
         options = params.get("options", [])
+        # The schema declares an array of {label, value} — a stringified list
+        # would break the dialog rendering. Reject instead of mis-prompting.
+        if isinstance(options, str):
+            return {"error": "options must be an array of {label, value} objects, not a string"}
         field_key = params.get("field_key", service_key or "")
         allow_other = params.get("allow_other", True)
 

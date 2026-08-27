@@ -12,6 +12,7 @@ import httpx
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token
 from ._http import ensure_http_client
+from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
 
@@ -94,6 +95,11 @@ class GitHubTool(Tool):
             body = e.response.text[:500] if e.response else ""
             status = e.response.status_code
             _log.warning("github %s HTTP %d: %s", operation, status, body[:200])
+            # Gateways echo the submitted credential back in error bodies
+            # ("Bad credentials: <token>") — the same pattern kong.py
+            # redacts. Scrub the resolved token before the body reaches the
+            # LLM/history, then truncate so a masked value is never cut off.
+            body = redact_secrets(body, {"git": token})[:500]
             hint = ""
             if status == 403:
                 hint = (

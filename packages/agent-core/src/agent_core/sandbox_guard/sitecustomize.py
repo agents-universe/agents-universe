@@ -452,7 +452,12 @@ if _project_root:
 
         if event in _WRITE_TWO_PATHS:
             if len(args) >= 2:
-                _check("write", args[0], _WRITE_ROOTS)
+                # Two-path ops are asymmetric: args[0] is the source (a read,
+                # e.g. the src of os.rename / shutil.copyfile) and args[1] is
+                # the destination (the only write). Checking both against
+                # write roots denied copying a file from a read-only root
+                # (site-packages, the framework source) into the project.
+                _check("read", args[0], _READ_ROOTS)
                 _check("write", args[1], _WRITE_ROOTS)
             return
 

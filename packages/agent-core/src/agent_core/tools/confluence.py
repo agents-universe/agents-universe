@@ -13,6 +13,7 @@ import httpx
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token, get_token_optional
 from ._http import ensure_http_client
+from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +112,13 @@ class ConfluenceTool(Tool):
         except httpx.HTTPStatusError as e:
             body = e.response.text[:500] if e.response else ""
             _log.warning("confluence %s HTTP %d: %s", operation, e.response.status_code, body[:200])
+            # Atlassian can echo the credential in error bodies — scrub the
+            # resolved token and email before the body reaches the LLM/history
+            # (same pattern as kong.py / api_request.py), then truncate.
+            body = redact_secrets(
+                body,
+                {"confluence": client.api_token, "jira:email": client.email},
+            )[:500]
             return {"error": f"Confluence API returned {e.response.status_code}: {body}"}
         except Exception as e:
             _log.warning("confluence %s failed: %s", operation, e, exc_info=True)
@@ -142,6 +150,11 @@ class ConfluenceTool(Tool):
 
     async def _op_get_pages(self, params: dict, client: "_ConfluenceClient") -> dict:
         page_ids = params.get("page_ids", [])
+        # Same LLM-stringified-param defense as max_pages above: a bare
+        # string would be iterated character-by-character below, issuing one
+        # fetch per character instead of per page.
+        if isinstance(page_ids, str):
+            page_ids = [p.strip() for p in page_ids.split(",") if p.strip()]
         if not page_ids:
             return {"error": "page_ids is required (array of page IDs)"}
         pages = []

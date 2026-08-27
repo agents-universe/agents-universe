@@ -172,4 +172,8 @@ async def test_api_key(
             return {"ok": True, "provider": provider, "note": "connectivity test not implemented for this provider"}
     except Exception as exc:
         logger.error("API key test failed for %s: %s", provider, traceback.format_exc())
-        return {"ok": False, "provider": provider, "error": str(exc) or "Token test failed"}
+        # The SDK's error message can embed the submitted key value (e.g.
+        # OpenAI's "Incorrect API key provided: sk-...") — returning it raw
+        # would print the credential back to the client. Never include the
+        # key in the error message (same rule as token_vault / integrations).
+        return {"ok": False, "provider": provider, "error": f"{type(exc).__name__}: API key rejected by provider"}

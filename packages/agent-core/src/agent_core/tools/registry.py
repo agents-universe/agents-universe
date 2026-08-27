@@ -16,6 +16,11 @@ from .shell import ShellTool
 from .sql_query import SqlQueryTool
 from .web_fetch import WebFetchTool
 
+# plan_task is framework-level behavior (the loop intercepts it into task
+# mode), not an ordinary tool an agent definition may omit. Always injected,
+# but never inside _CORE_TOOLS — see build_tool_registry.
+_PLAN_TOOL = PlannerTool
+
 _CORE_TOOLS: list[type[Tool]] = [
     FilesystemTool,
     KnowledgeRWTool,
@@ -69,15 +74,18 @@ def build_tool_registry(tool_names: list[str] | None = None) -> dict[str, Tool]:
 
     for cls in _CORE_TOOLS:
         instance = cls()
-        # plan_task is framework-level behavior (the loop intercepts it into
-        # task mode), not an ordinary tool an agent definition may omit. An
-        # explicit tools: list that forgets it must not silently strip the
-        # agent's ability to plan — always inject it. Every other core tool
-        # follows the list.
-        if tool_names is None or instance.name == "plan_task" or instance.name in tool_names:
+        if tool_names is None or instance.name in tool_names:
             if instance.name in registry:
                 raise ValueError(f"Duplicate tool name: {instance.name!r}")
             registry[instance.name] = instance
+
+    # plan_task is framework-level behavior (the loop intercepts it into task
+    # mode), not an ordinary tool an agent definition may omit — an explicit
+    # tools: list that forgets it must not silently strip the agent's ability
+    # to plan. It is injected AFTER the allowlist so it can never leak the
+    # other core tools in: only plan_task itself is exempt from the list.
+    if tool_names is not None and "plan_task" not in registry:
+        registry["plan_task"] = _PLAN_TOOL()
 
     for name in _OPTIONAL_TOOL_MODULES:
         if tool_names is not None and name not in tool_names:

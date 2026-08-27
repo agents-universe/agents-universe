@@ -1,6 +1,7 @@
 """Tests for /api/model-configs CRUD + complexity_tier inference."""
 from __future__ import annotations
 
+import httpx
 import pytest
 
 
@@ -171,3 +172,44 @@ async def test_user_isolation(client, as_user):
         # Only the virtual system-default entry (is_system) may appear — never
         # another user's saved configs.
         assert [c for c in resp.json() if not c["is_system"]] == []
+
+
+class _EchoingAsyncClient:
+    """httpx.AsyncClient stand-in returning a fixed 401 response."""
+
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **k):
+        return self.response
+
+
+async def test_test_endpoint_does_not_leak_api_key(client, monkeypatch):
+    """A provider 401 body echoing the api_key must be scrubbed before the
+    error reaches the client (same rule as api_keys.py / tokens.py)."""
+    key = "sk-leakme-000011112222"
+    created = (
+        await _create(client, model_id="claude-haiku-4-5", api_key=key)
+    ).json()
+    cid = created["config_id"]
+
+    resp401 = httpx.Response(
+        401,
+        json={"error": {"message": f"Incorrect API key provided: {key}"}},
+        request=httpx.Request("POST", "http://test/invoke"),
+    )
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: _EchoingAsyncClient(resp401))
+
+    resp = await client.post(f"/api/model-configs/{cid}/test")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert key not in str(body)
+    assert "leakme" not in str(body)
+    assert "[REDACTED]" in str(body)

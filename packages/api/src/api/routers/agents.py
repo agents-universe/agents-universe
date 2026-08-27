@@ -41,20 +41,35 @@ class SyncResult(BaseModel):
     removed: list[str]
 
 
+def _split_scalar(raw: str) -> list[str]:
+    """Split a scalar frontmatter value into its list items.
+
+    Same defense as ``memory_rw._coerce_tags``: a bare string
+    (`tools: "shell, filesystem"`) means multiple items, and a single slug is
+    a one-item list. Slugs never contain commas, so comma-splitting is safe.
+    """
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _parse_refs(raw: str | None) -> list[SkillRef]:
     if not raw:
         return []
     try:
         items = json.loads(raw)
-        result = []
-        for item in items:
-            if isinstance(item, str):
-                result.append(SkillRef(slug=item))
-            elif isinstance(item, dict):
-                result.append(SkillRef(slug=item.get("slug", ""), description=item.get("description", "")))
-        return result
     except (json.JSONDecodeError, TypeError):
-        return []
+        items = _split_scalar(raw)
+    if isinstance(items, str):
+        # JSON stringified scalar: `_j` turned a scalar frontmatter value
+        # into `"\"code-review\""`. Resolve it the same way the loader does
+        # (comma-split) so the list endpoint matches the runtime.
+        return [SkillRef(slug=s) for s in _split_scalar(items)]
+    result = []
+    for item in items if isinstance(items, (list, tuple)) else []:
+        if isinstance(item, str):
+            result.append(SkillRef(slug=item))
+        elif isinstance(item, dict):
+            result.append(SkillRef(slug=item.get("slug", ""), description=item.get("description", "")))
+    return result
 
 
 def _parse_tool_list(raw: str | None) -> list[str]:
@@ -62,9 +77,12 @@ def _parse_tool_list(raw: str | None) -> list[str]:
         return []
     try:
         items = json.loads(raw)
-        return [str(t) for t in items if isinstance(t, str)] if isinstance(items, list) else []
     except (json.JSONDecodeError, TypeError):
-        return []
+        return _split_scalar(raw)
+    if isinstance(items, str):
+        # JSON stringified scalar — comma-separated, same as the loader.
+        return _split_scalar(items)
+    return [str(t) for t in items if isinstance(t, str)] if isinstance(items, list) else []
 
 
 def _to_response(a: Agent) -> AgentResponse:

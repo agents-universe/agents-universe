@@ -188,8 +188,18 @@ class ImageAnnotatorTool(Tool):
 
         title = params.get("title", "")
         subtitle = params.get("subtitle", "")
+        # The schema declares arrays but LLMs routinely stringify them —
+        # a bare string would iterate character-by-character below and crash
+        # on .get(). Reject it instead of producing an unannotated image.
         focus_areas = params.get("focus_areas", []) or []
         annotations = params.get("annotations", []) or []
+        if isinstance(focus_areas, str) or isinstance(annotations, str):
+            return {
+                "error": (
+                    "focus_areas/annotations must be arrays of objects, not a "
+                    "string — check the tool's parameter schema and retry."
+                )
+            }
 
         # ---- typography scales with image size: a fixed 11px chip on a 4K ----
         # capture is unreadable; a scaled 22px chip on a 640px thumbnail is huge.

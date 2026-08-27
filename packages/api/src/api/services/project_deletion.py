@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.models._compat import now_utc
 from api.models.agent import Agent
 from api.models.conversation import AgentTask, Conversation, Message
+from api.models.conversation_run import ConversationRun
 from api.models.knowledge import KnowledgeLoadEvent, KnowledgeMetadata, KnowledgeVersion
 from api.models.memory import EpisodicMemory, PersonalMemory
 from api.models.mcp_server import MCPServer
@@ -226,6 +227,7 @@ async def delete_project(db: AsyncSession, project_id: str, owner_id: str, confi
                 KnowledgeLoadEvent.conversation_id.in_(conversations) | KnowledgeLoadEvent.knowledge_id.in_(knowledge)
             ))
             await db.execute(delete(TaskEvent).where(TaskEvent.conversation_id.in_(conversations)))
+            await db.execute(delete(ConversationRun).where(ConversationRun.conversation_id.in_(conversations)))
             await db.execute(delete(Message).where(Message.conversation_id.in_(conversations)))
             await db.execute(update(AgentTask).where(AgentTask.conversation_id.in_(conversations)).values(parent_task_id=None))
             await db.execute(delete(AgentTask).where(AgentTask.conversation_id.in_(conversations)))

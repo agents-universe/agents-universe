@@ -31,6 +31,24 @@ def _context_window(model: str) -> int:
     return 200_000
 
 
+# Per-model output ceilings (max_tokens) for the Anthropic Messages API.
+# Agent configs default max_tokens to 128000 (agent.py AgentConfig), which
+# every Anthropic model rejects with HTTP 400 — the API refuses a ceiling
+# above the model's actual output cap. Clamp like the OpenAI provider's
+# _clamp_max_tokens, but model-aware: haiku-class caps at 8k, sonnet-class at
+# 64k, opus-class at 128k. Unrecognized models get sonnet's 64k — the safest
+# ceiling that still fits every known Anthropic family (haiku's 8k would be
+# needlessly restrictive for future models, and 64k exceeds no current cap).
+def _max_output_tokens(model: str) -> int:
+    m = model.lower()
+    if "haiku" in m:
+        return 8_192
+    if "opus" in m:
+        return 128_000
+    # sonnet-class and any unrecognized model.
+    return 64_000
+
+
 class AnthropicClaudeProvider(LLMProvider):
     """Anthropic Claude via the anthropic SDK (direct) or raw httpx (gateway).
 
@@ -253,7 +271,7 @@ class AnthropicClaudeProvider(LLMProvider):
         system, anthropic_messages = self._to_anthropic_messages(messages)
         payload: dict = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
+            "max_tokens": min(max_tokens, _max_output_tokens(self._model)),
             "temperature": temperature,
             "messages": anthropic_messages,
         }
@@ -428,7 +446,7 @@ class AnthropicClaudeProvider(LLMProvider):
         system, anthropic_messages = self._to_anthropic_messages(messages)
         kwargs: dict = dict(
             model=self._model,
-            max_tokens=max_tokens,
+            max_tokens=min(max_tokens, _max_output_tokens(self._model)),
             temperature=temperature,
             messages=anthropic_messages,
         )
@@ -455,7 +473,7 @@ class AnthropicClaudeProvider(LLMProvider):
         system, anthropic_messages = self._to_anthropic_messages(messages)
         kwargs: dict = dict(
             model=self._model,
-            max_tokens=max_tokens,
+            max_tokens=min(max_tokens, _max_output_tokens(self._model)),
             temperature=temperature,
             messages=anthropic_messages,
         )

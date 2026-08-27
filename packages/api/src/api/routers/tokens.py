@@ -33,6 +33,19 @@ def _normalize_base_url(value: str | None) -> str | None:
     return normalized.rstrip("/")
 
 
+def _redact_key(text: str, key: str) -> str:
+    """Scrub the submitted key out of a provider error message.
+
+    Providers echo the credential back in 401 bodies ("Incorrect API key
+    provided: sk-...", "401 bearer <token>") — returning that verbatim to
+    the client prints the key it just submitted. Same rule as
+    api_keys.py's test endpoint.
+    """
+    if key:
+        text = text.replace(key, "[REDACTED]")
+    return text
+
+
 class TokenUpsert(BaseModel):
     display_name: str | None = Field(None, max_length=255)
     # None => keep the existing key and update metadata only.
@@ -236,7 +249,7 @@ async def test_token(
             except Exception:
                 body = {}
             error_msg = body.get("error", {}).get("message", "") or body.get("message", "") or resp.text[:200]
-            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {error_msg}"}
+            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {_redact_key(error_msg, plain)}"}
 
         elif provider == "openai":
             import httpx
@@ -268,7 +281,7 @@ async def test_token(
             except Exception:
                 body = {}
             error_msg = body.get("error", {}).get("message", "") or resp.content.decode("utf-8", errors="replace")[:200]
-            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {error_msg}"}
+            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {_redact_key(error_msg, plain)}"}
 
         elif provider == "azure_openai":
             import httpx
@@ -295,7 +308,7 @@ async def test_token(
             except Exception:
                 body = {}
             error_msg = body.get("error", {}).get("message", "") or resp.content.decode("utf-8", errors="replace")[:200]
-            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {error_msg}"}
+            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {_redact_key(error_msg, plain)}"}
 
         else:
             # jira:email, kong:*, and other plain values - no live test
@@ -305,4 +318,6 @@ async def test_token(
         return {"ok": False, "provider": provider, "error": f"Blocked URL: {e}"}
     except Exception as exc:
         logger.error("Token test failed for %s: %s", service_key, traceback.format_exc())
-        return {"ok": False, "provider": provider, "error": str(exc) or "Token test failed"}
+        # str(exc) from SDKs/httpx can embed the submitted key ("Incorrect API
+        # key provided: sk-...") — never return it raw.
+        return {"ok": False, "provider": provider, "error": _redact_key(str(exc) or "Token test failed", plain) or "Token test failed"}

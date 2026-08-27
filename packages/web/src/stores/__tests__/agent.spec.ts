@@ -53,6 +53,26 @@ describe('agent store per-project selection', () => {
     expect(localStorage.getItem('agents-universe:currentAgentSlug')).toBeNull()
   })
 
+  it('setCurrentAgent persists under the LIVE project scope even when loadedForProject is mid-reload (undefined)', async () => {
+    // reloadAgents() sets loadedForProject=undefined BEFORE its fetch lands;
+    // a sidebar click in that window used to write the slug to the legacy
+    // global key, seeding every project without its own key. The live scope
+    // comes from the project store's localStorage key instead.
+    localStorage.setItem('agents-universe:currentProjectId', 'proj-2')
+    getAgentsMock.mockResolvedValue([pentest, qaProj2])
+    const agentStore = useAgentStore()
+
+    // Simulate reloadAgents' pre-fetch window: scope reset, fetch unresolved.
+    const pending = agentStore.fetchAgents('proj-2')  // not awaited yet
+    agentStore.setCurrentAgent(qaProj2)
+
+    expect(localStorage.getItem('agents-universe:agent:proj-2')).toBe('qa-agent')
+    // The legacy global key must stay untouched even in this window.
+    expect(localStorage.getItem('agents-universe:currentAgentSlug')).toBeNull()
+
+    await pending
+  })
+
   it('restores the scoped selection per project (no cross-project leak)', async () => {
     localStorage.setItem('agents-universe:agent:proj-2', 'qa-agent')
     localStorage.setItem('agents-universe:currentAgentSlug', 'pentest-expert')

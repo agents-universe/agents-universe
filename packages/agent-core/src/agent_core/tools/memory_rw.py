@@ -21,6 +21,23 @@ _SECRET_PATTERN = re.compile(
 )
 
 
+def _coerce_tags(value: Any) -> list[str]:
+    """Normalize the tags param to a list of strings.
+
+    The schema declares an array, but LLMs routinely pass a bare string
+    ("important,qa" or "important"). Storing that raw would serialize a JSON
+    string instead of an array — recall then treats it as a substring match
+    and returns wrong memories. Same defense as confluence's page_ids.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [t.strip() for t in value.split(",") if t.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(t) for t in value if t is not None]
+    return []
+
+
 class MemoryRWTool(Tool):
 
     prompt_hint = (
@@ -153,7 +170,7 @@ class MemoryRWTool(Tool):
             content = params.get("content")
             if not content:
                 return {"error": "content is required for save"}
-            tags = params.get("tags", [])
+            tags = _coerce_tags(params.get("tags"))
             scope = params.get("scope", "project")
             # The parameters schema lists recall scopes too — a scope like
             # "session"/"all" silently stored the memory under the project
@@ -229,7 +246,7 @@ class MemoryRWTool(Tool):
     async def _op_recall(self, params: dict, context: ToolContext) -> dict:
         scope = params.get("scope", "all")
         query = params.get("query")
-        tags_filter = params.get("tags", [])
+        tags_filter = _coerce_tags(params.get("tags"))
         # Clamp hard: a negative limit would slice from the END of the result
         # list (results[:-3] drops the newest entries), zero would return
         # nothing, and non-numeric input would TypeError.
@@ -374,7 +391,7 @@ class MemoryRWTool(Tool):
             sql_params["content"] = params["content"]
         if params.get("tags") is not None:
             updates.append("tags = :tags")
-            sql_params["tags"] = json.dumps(params["tags"])
+            sql_params["tags"] = json.dumps(_coerce_tags(params["tags"]))
         if not updates:
             return {"error": "Nothing to update — provide content or tags"}
 

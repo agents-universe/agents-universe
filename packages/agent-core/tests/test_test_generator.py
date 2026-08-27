@@ -42,3 +42,14 @@ async def test_default_output_dir_unaffected(tmp_path):
     result = await tool.execute(_params(), _context(proj_a))
     assert result.get("success") is True
     assert (proj_a / "tests" / "generated" / "proj-1.spec.ts").exists()
+
+
+async def test_stringified_test_cases_rejected(tmp_path):
+    """A string test_cases must be rejected instead of generating a garbage
+    spec or crashing on character iteration."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    tool = TestGeneratorTool()
+    result = await tool.execute(_params(test_cases="just one case"), _context(proj))
+    assert "error" in result
+    assert "array" in result["error"].lower()

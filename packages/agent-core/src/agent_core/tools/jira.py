@@ -13,6 +13,7 @@ import httpx
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token, get_token_optional
 from ._http import ensure_http_client
+from .shell import redact_secrets
 from ._wiki import markdown_to_wiki
 
 _log = logging.getLogger(__name__)
@@ -95,6 +96,14 @@ class JiraTool(Tool):
         except httpx.HTTPStatusError as e:
             body = e.response.text[:500] if e.response else ""
             _log.warning("jira %s HTTP %d: %s", operation, e.response.status_code, body[:200])
+            # Atlassian can echo the credential in error bodies (401 "Bad
+            # credentials", SSO redirects) — scrub the resolved token and
+            # email before the body reaches the LLM/history (same pattern as
+            # kong.py / api_request.py), then truncate post-mask.
+            body = redact_secrets(
+                body,
+                {"jira": client.api_token, "jira:email": client.email},
+            )[:500]
             return {"error": f"Jira API returned {e.response.status_code}: {body}"}
         except Exception as e:
             _log.warning("jira %s failed: %s", operation, e, exc_info=True)

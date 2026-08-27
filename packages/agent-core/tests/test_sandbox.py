@@ -518,6 +518,55 @@ def test_guard_denies_copyfile_outside(sandbox_dirs):
     assert not (proj_b / "copy.txt").exists()
 
 
+def test_guard_allows_copyfile_from_readonly_root_into_project(sandbox_dirs, tmp_path):
+    """Two-path ops are asymmetric: the source is a READ, only the destination
+    is a write. Copying a template from a read-only root (the framework source
+    dir is a read root) into the project must succeed — the old guard checked
+    both args against write roots and wrongly denied it."""
+    proj_a, _, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    # Put a template file inside a READ-only root: the guard's own source dir
+    # is always a read root (it is on PYTHONPATH).
+    guard_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "src", "agent_core", "sandbox_guard",
+    )
+    template = os.path.join(guard_dir, "sitecustomize.py")
+    code = (
+        "import shutil, os; "
+        f"shutil.copyfile({template!r}, os.path.join(os.getcwd(), 'copied-guard.py')); "
+        "print('COPIED')"
+    )
+    r = run_python(code, cwd=proj_a, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "COPIED" in r.stdout
+    assert (proj_a / "copied-guard.py").exists()
+
+
+def test_guard_denies_copyfile_src_outside_read_roots(sandbox_dirs):
+    """The source arg is still guarded — reading it must stay within the read
+    roots. A sibling project's file is not a read root, so copying FROM it is
+    denied even though the destination is the project."""
+    proj_a, proj_b, fake_temp = sandbox_dirs
+    r = run_python(
+        "import shutil; shutil.copyfile('../proj-b/secret.txt', 'leak.txt')",
+        cwd=proj_a, env=guarded_env(proj_a, fake_temp),
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+    assert not (proj_a / "leak.txt").exists()
+
+
+def test_guard_allows_rename_within_project(sandbox_dirs):
+    proj_a, _, fake_temp = sandbox_dirs
+    r = run_python(
+        "import os; os.rename('local.txt', 'renamed.txt'); print('RENAMED')",
+        cwd=proj_a, env=guarded_env(proj_a, fake_temp),
+    )
+    assert r.returncode == 0, r.stderr
+    assert "RENAMED" in r.stdout
+    assert (proj_a / "renamed.txt").exists()
+
+
 def test_guard_blocks_pty_and_os_system(sandbox_dirs):
     proj_a, _, fake_temp = sandbox_dirs
     env = guarded_env(proj_a, fake_temp)

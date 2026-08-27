@@ -27,10 +27,33 @@ async def test_secret_test_plain_keys_return_saved(client, make_project):
     assert body["note"] == "saved"
 
 
-async def test_secret_test_jira_errors_without_network(client, make_project):
-    """Jira fails fast without a network call when config is incomplete."""
+async def test_secret_test_jira_errors_without_network(client, make_project, monkeypatch):
+    """Jira fails fast without a network call when config is incomplete.
+
+    Hermetic: no dependence on ambient env/config or on which other tests
+    ran first (a stored jira:email + a dev .env atlassian_base_url would
+    otherwise push this into a real, order-dependent HTTP call). The email
+    resolution is pinned to None, forcing the deterministic "Jira Email not
+    configured" branch; httpx is mocked as a tripwire so any accidental
+    network attempt fails loudly instead of hitting the real service.
+    """
     project = await make_project()
     secret = await _create_secret(client, project, "jira")
+
+    import httpx
+
+    class _NeverReached(httpx.AsyncClient):
+        def __init__(self, *a, **k):
+            raise AssertionError("test_service_token attempted a network call")
+
+    monkeypatch.setattr("httpx.AsyncClient", _NeverReached)
+    async def _no_email(*a, **k):
+        return None
+
+    monkeypatch.setattr(
+        "api.services.token_tests._resolve_atlassian_email",
+        _no_email,
+    )
 
     resp = await client.post(
         f"/api/projects/{project.project_id}/secrets/{secret['secret_id']}/test"
@@ -38,8 +61,10 @@ async def test_secret_test_jira_errors_without_network(client, make_project):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is False
-    # Either fail-fast path is fine (depends on env config), as long as no
-    # HTTP call is attempted: missing base URL, or missing jira:email.
+    # Deterministic fail-fast: whichever of the two incomplete-config
+    # branches fires (missing base URL, or missing jira:email once a base
+    # URL exists), no HTTP call is attempted — the tripwire client above
+    # would raise otherwise.
     assert ("No base URL configured" in body["error"]
             or "Jira Email not configured" in body["error"])
 

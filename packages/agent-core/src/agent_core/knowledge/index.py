@@ -445,7 +445,7 @@ async def reindex_one(
     except ImportError:
         return {"error": "DB models not available"}
 
-    from sqlalchemy import select
+    from sqlalchemy import case, select
     from sqlalchemy.exc import IntegrityError
 
     content = path.read_text(encoding="utf-8")
@@ -483,10 +483,22 @@ async def reindex_one(
         while current_parent and depth_val < _MAX_HIERARCHY_DEPTH:
             depth_val += 1
             parent_row = await db_session.execute(
-                select(KnowledgeMetadata.parent_slug).where(
+                select(KnowledgeMetadata.parent_slug)
+                .where(
                     KnowledgeMetadata.slug == current_parent,
                     (KnowledgeMetadata.project_id == project_id) | (KnowledgeMetadata.project_id == None),  # noqa: E711
                 )
+                # A global row and a project row can share the slug (project
+                # shadowing). Both match this filter, and scalar_one_or_none
+                # would raise MultipleResultsFound — take only the first and
+                # let the project row shadow the global one.
+                .order_by(
+                    case(
+                        (KnowledgeMetadata.project_id == project_id, 0),
+                        else_=1,
+                    )
+                )
+                .limit(1)
             )
             row = parent_row.scalar_one_or_none()
             current_parent = row if row else None

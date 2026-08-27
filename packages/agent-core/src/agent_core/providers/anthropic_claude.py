@@ -74,13 +74,21 @@ class AnthropicClaudeProvider(LLMProvider):
         self._base_url = (base_url or "").rstrip("/")
 
         if self._is_gateway:
-            self._http = httpx.AsyncClient(verify=ssl_verify, timeout=120.0)
+            # Phased timeout: read must survive large-prompt time-to-first-
+            # token; a plain 120s scalar also capped write-heavy bodies.
+            self._http = httpx.AsyncClient(
+                verify=ssl_verify,
+                timeout=httpx.Timeout(300.0, connect=10.0, write=120.0, pool=60.0),
+            )
         else:
             import os
-            http_client = httpx.AsyncClient(verify=ssl_verify, timeout=60.0)
+            http_client = httpx.AsyncClient(
+                verify=ssl_verify,
+                timeout=httpx.Timeout(300.0, connect=10.0, write=120.0, pool=60.0),
+            )
             # Keep a reference so close() can release it even if SDK init fails
             self._http = http_client
-            kwargs: dict = {"api_key": api_key, "http_client": http_client}
+            kwargs: dict = {"api_key": api_key, "http_client": http_client, "max_retries": 1}
             if base_url:
                 kwargs["base_url"] = base_url
             _proxy_keys = ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"]

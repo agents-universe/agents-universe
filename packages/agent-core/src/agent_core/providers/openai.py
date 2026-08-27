@@ -37,6 +37,20 @@ def _context_window(model: str) -> int:
     return 128_000
 
 
+def _http_timeout() -> httpx.Timeout:
+    """Phased request timeout for provider HTTP clients.
+
+    A 60s scalar applied to every phase made READ 60s: a large-prompt
+    stream (100k+ token histories) routinely needs over a minute for the
+    first chunk, so turns died with "Request timed out" after the SDK's
+    retries. The openai SDK adopts a custom http_client's timeout as its
+    per-request timeout (overriding its own 600s default), so the phases
+    must be right here: read generous, connect tight, write sized for
+    multi-MB uploads.
+    """
+    return httpx.Timeout(300.0, connect=10.0, write=120.0, pool=60.0)
+
+
 class OpenAIProvider(LLMProvider):
     """OpenAI via the openai SDK."""
 
@@ -53,7 +67,10 @@ class OpenAIProvider(LLMProvider):
             else:
                 # Base URL mode: auto-append /v1 if no version segment detected.
                 kwargs["base_url"] = b if re.search(r"/v\d+$", b) else f"{b}/v1"
-        kwargs["http_client"] = httpx.AsyncClient(verify=ssl_verify, timeout=60.0)
+        kwargs["http_client"] = httpx.AsyncClient(verify=ssl_verify, timeout=_http_timeout())
+        # One retry still covers transient 429/5xx; the SDK default (2) would
+        # stretch a dead endpoint to 3 x 300s reads before surfacing.
+        kwargs["max_retries"] = 1
         self._client = AsyncOpenAI(**kwargs)
         self._model = model
         # Per-config override from Settings → AI Models; None = name-matched default.
@@ -305,7 +322,8 @@ class AzureOpenAIProvider(OpenAIProvider):
             azure_endpoint=base,
             azure_deployment=model,
             api_version=api_version,
-            http_client=httpx.AsyncClient(verify=ssl_verify, timeout=60.0),
+            http_client=httpx.AsyncClient(verify=ssl_verify, timeout=_http_timeout()),
+            max_retries=1,
         )
         self._model = model
         self._display_model = model

@@ -38,6 +38,7 @@ import frontmatter
 from .compressor import (
     MAX_OUTPUT_RESERVE,
     MAX_REQUEST_BYTES,
+    SUMMARY_MARKER,
     compress_history,
     compression_budget,
     estimate_history_tokens,
@@ -618,7 +619,7 @@ class Agent:
                 byte_over = (
                     estimate_request_bytes(_probe_messages, tool_defs) > MAX_REQUEST_BYTES
                 )
-                async with _asyncio.timeout(30):
+                async with _asyncio.timeout(60):
                     history = await compress_history(
                         history, available_budget, comp_provider, force=byte_over
                     )
@@ -901,11 +902,17 @@ class Agent:
         self,
         messages: list[Message],
         tool_defs: list[ToolDefinition],
+        tool_wire_bytes: int | None = None,
     ) -> str:
         """Enforce the wire byte ceiling: truncates oversized tool messages in
         place (the in-memory pass; the manual compression path persists it)
-        and returns "ok" / "truncated" / "over_limit"."""
-        outcome = force_compress_history(messages, MAX_REQUEST_BYTES, tool_defs)
+        and returns "ok" / "truncated" / "over_limit".
+
+        tool_wire_bytes carries the precomputed wire size of tool_defs so the
+        per-iteration call skips re-estimating static tool schemas."""
+        outcome = force_compress_history(
+            messages, MAX_REQUEST_BYTES, tool_defs, tool_wire_bytes=tool_wire_bytes
+        )
         if outcome == "truncated":
             _log.warning("agent: request byte guard truncated oversized tool outputs")
         return outcome
@@ -962,7 +969,8 @@ class Agent:
         and it still does not. Never raises: each stage is a soft budget
         lever, and the caller escalates to a hard stop only on "over_limit".
         """
-        if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+        tools_wire = estimate_request_bytes([], tool_defs)
+        if estimate_request_bytes(messages, tool_defs, tools_wire) <= MAX_REQUEST_BYTES:
             return "ok"
 
         # 1. History: force-summarize the early segment (the current turn's
@@ -972,13 +980,19 @@ class Agent:
             try:
                 system_msgs = [m for m in messages if m.role == "system"]
                 history = [m for m in messages if m.role != "system"]
+                # step5 may already have summarized this turn; re-summarizing
+                # the summary pair drifts the context for no byte win.
+                already_summarized = bool(history) and (
+                    isinstance(history[0].content, str)
+                    and history[0].content.startswith(SUMMARY_MARKER)
+                )
                 reserved = estimate_history_tokens(system_msgs)
                 available_budget = compression_budget(
                     provider.context_window, reserved, self._config.max_tokens
                 )
-                if available_budget > 0:
+                if available_budget > 0 and not already_summarized:
                     import asyncio as _asyncio
-                    async with _asyncio.timeout(30):
+                    async with _asyncio.timeout(60):
                         compressed = await compress_history(
                             history, available_budget, provider, force=True
                         )
@@ -987,7 +1001,7 @@ class Agent:
                         _log.warning("request degrade: force-summarized early history")
             except Exception as e:
                 _log.warning("request degrade: history summarization failed: %s", e, exc_info=True)
-            if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+            if estimate_request_bytes(messages, tool_defs, tools_wire) <= MAX_REQUEST_BYTES:
                 return "ok"
 
         # 2. Knowledge: drop the largest static files first, then rebuild.
@@ -995,7 +1009,7 @@ class Agent:
             from .knowledge.loader import demote_loaded_entry
             demoted = 0
             while (
-                estimate_request_bytes(messages, tool_defs) > MAX_REQUEST_BYTES
+                estimate_request_bytes(messages, tool_defs, tools_wire) > MAX_REQUEST_BYTES
                 and self._project_context.loaded_content
             ):
                 largest = max(
@@ -1009,14 +1023,14 @@ class Agent:
                 self._invalidate_static_cache()
                 messages[0] = Message(role="system", content=self._build_system_prompt())
                 _log.warning("request degrade: demoted %d knowledge files into overflow", demoted)
-            if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+            if estimate_request_bytes(messages, tool_defs, tools_wire) <= MAX_REQUEST_BYTES:
                 return "ok"
 
         # 3. Images: last resort — trade vision for a live turn.
         from .compressor import demote_image_messages
         if demote_image_messages(messages):
             _log.warning("request degrade: demoted image messages to text references")
-        if estimate_request_bytes(messages, tool_defs) <= MAX_REQUEST_BYTES:
+        if estimate_request_bytes(messages, tool_defs, tools_wire) <= MAX_REQUEST_BYTES:
             return "ok"
 
         return "over_limit"
@@ -1039,6 +1053,9 @@ class Agent:
         max_pause_continuations = 3
         pause_count = 0
         emitted_end = False
+        # Byte-guard constant: tool schemas are static within a loop, and the
+        # per-iteration guard must not re-estimate them every step.
+        tools_wire = estimate_request_bytes([], tool_defs)
         # per-loop prompt revision — each loop tracks its own last
         # build; a change by ANY parallel task bumps the shared revision.
         prompt_revision = self._prompt_revision
@@ -1112,7 +1129,7 @@ class Agent:
                     history_summary,
                     pending_tool_ids,
                 )
-                if self._request_byte_outcome(messages, tool_defs) == "over_limit":
+                if self._request_byte_outcome(messages, tool_defs, tools_wire) == "over_limit":
                     # Sync truncation (tool outputs) was not enough. Escalate
                     # to the async degradation chain — force-summarize history,
                     # demote the largest knowledge files, then strip images —
@@ -1872,6 +1889,9 @@ class Agent:
         # iteration resets full_text, but the task summary (task_completed)
         # must reflect the whole task, not just the final turn.
         full_text_total: list[str] = []
+        # Byte-guard constant: tool schemas are static within a loop, and the
+        # per-iteration guard must not re-estimate them every step.
+        tools_wire = estimate_request_bytes([], tool_defs)
         # per-loop prompt revision (see _run_loop) — parallel tasks
         # each rebuild their own system prompt on the shared revision bump.
         prompt_revision = self._prompt_revision
@@ -1897,7 +1917,7 @@ class Agent:
                 task_history,
                 pending_tool_ids,
             )
-            if self._request_byte_outcome(messages, tool_defs) == "over_limit":
+            if self._request_byte_outcome(messages, tool_defs, tools_wire) == "over_limit":
                 # Sync truncation was not enough. Escalate to the async
                 # degradation chain first; the task loop surfaces a genuine
                 # over-limit via RuntimeError (caught by _run_task →

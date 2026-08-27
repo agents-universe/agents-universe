@@ -677,7 +677,7 @@ async def _handle_message(
     from api.config import get_settings
     from api.database import AsyncSessionLocal
     from agent_core.agent import Agent, AgentConfig
-    from agent_core.compressor import compress_history, estimate_history_tokens
+    from agent_core.compressor import estimate_history_tokens
     from agent_core.knowledge.loader import load_project_context
     from agent_core.model_routing import cheapest_tier, resolve_tier_config
     from agent_core.providers.base import Message

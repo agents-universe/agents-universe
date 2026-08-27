@@ -8,12 +8,16 @@ from unittest.mock import AsyncMock
 from agent_core.compressor import (
     MAX_OUTPUT_RESERVE,
     RECENT_TURNS_KEEP,
+    SUMMARY_INPUT_MAX_CHARS,
+    SUMMARY_MARKER,
+    build_summary_pair,
     compress_history,
     compression_budget,
     demote_image_messages,
     estimate_request_bytes,
     estimate_wire_bytes,
     force_compress_history,
+    format_early_history,
     request_byte_breakdown,
     truncate_oversized_tool_messages,
 )
@@ -275,3 +279,102 @@ def test_request_byte_breakdown_attributes_buckets():
     assert bd["images"] >= 5000
     assert bd["text"] > 0
     assert bd["tools"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Summarization input cap (auto path) and summary marker
+# ---------------------------------------------------------------------------
+
+
+def test_format_early_history_caps_total_input():
+    """Over the cap the TAIL is kept and the dropped head is marked - the
+    summarization call must stay bounded so it can beat the timeout."""
+    early = [Message(role="user", content=f"msg {i} " + "x" * 500) for i in range(30)]
+    out = format_early_history(early, max_chars=2000)
+
+    assert "omitted from the summary input" in out
+    assert "msg 29" in out          # most recent line survives
+    assert "msg 0 " not in out      # oldest dropped
+    assert len(out) < 2000 + 600    # marker + kept tail, roughly bounded
+
+
+def test_format_early_history_always_keeps_last_line():
+    """A cap smaller than any single line still keeps the last line - an
+    empty summary input would disable compression entirely."""
+    early = [Message(role="user", content="x" * 900) for _ in range(5)]
+    out = format_early_history(early, max_chars=500)
+
+    assert out.count("USER:") == 1
+    assert "xxx" in out
+    assert "4 earlier messages omitted" in out
+
+
+def test_format_early_history_uncapped_keeps_all():
+    early = [Message(role="user", content=f"m{i}") for i in range(5)]
+    out = format_early_history(early)
+    assert out == "\n".join(f"USER: m{i}" for i in range(5))
+
+
+async def test_compress_history_bounds_summary_input():
+    """compress_history passes the cap through: the provider receives at most
+    SUMMARY_INPUT_MAX_CHARS of history text, not the full early segment."""
+    messages: list[Message] = []
+    for i in range(60):
+        messages.append(Message(role="user", content=f"user payload {i} " * 300))
+        messages.append(Message(role="assistant", content=f"assistant payload {i} " * 300))
+
+    provider = _mock_provider()
+    result = await compress_history(messages, token_budget=100, provider=provider, force=True)
+
+    assert result[0].content.startswith(SUMMARY_MARKER)
+    sent = provider.complete.call_args.args[0]
+    user_text = sent[1].content
+    assert len(user_text) < SUMMARY_INPUT_MAX_CHARS + 1000
+    assert "payload 55" in user_text    # newest early line survives the cap
+    assert "omitted from the summary" in user_text
+
+
+def test_build_summary_pair_uses_marker():
+    pair = build_summary_pair("sum text")
+    assert pair[0].content.startswith(SUMMARY_MARKER)
+    assert pair[0].role == "user"
+
+
+# ---------------------------------------------------------------------------
+# Estimate fast paths
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_wire_bytes_ascii_fast_path():
+    """ASCII text skips the CJK scan and only applies the escape factor."""
+    assert estimate_wire_bytes("hello world") == int(11 * 1.15)
+    assert estimate_wire_bytes("你好") == int((2 * 6 + 0) * 1.15)
+    assert estimate_wire_bytes("abc你好def") == int((2 * 6 + 6) * 1.15)
+
+
+def test_tool_calls_wire_bytes_close_to_dump_estimate():
+    """Per-part estimation stays within the old json.dumps-based margin."""
+    import json as _json
+
+    from agent_core.compressor import _tool_calls_wire_bytes
+
+    tool_calls = [{
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "some_tool", "arguments": '{"query": "' + "你好" * 50 + '"}'},
+    }]
+    old = estimate_wire_bytes(_json.dumps(tool_calls, ensure_ascii=True, default=str))
+    new = _tool_calls_wire_bytes(tool_calls)
+    assert abs(new - old) / old < 0.2
+
+
+def test_estimate_request_bytes_tool_wire_bytes_matches_full_estimate():
+    """The tool_wire_bytes fast path is equivalent to estimating tools inline."""
+    tools = [ToolDefinition(name="t1", description="d1", parameters={"type": "object"})]
+    msgs = [_message("user", "hello"), _assistant_with_call(1)]
+
+    full = estimate_request_bytes(msgs, tools)
+    tools_only = estimate_request_bytes([], tools)
+    assert tools_only > 0
+    assert estimate_request_bytes(msgs) + tools_only == full
+    assert estimate_request_bytes(msgs, tools, tool_wire_bytes=tools_only) == full

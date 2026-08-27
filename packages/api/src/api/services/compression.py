@@ -20,11 +20,11 @@ from agent_core.compressor import (
     RECENT_TURNS_KEEP,
     SUMMARY_PROMPT,
     build_summary_pair,
+    early_history_lines,
     estimate_wire_bytes,
-    format_early_history,
     split_early_recent,
 )
-from agent_core.providers.base import Message
+from agent_core.providers.base import LLMProvider, Message
 
 from api.models.conversation import Conversation, Message as DbMessage
 
@@ -274,6 +274,85 @@ def _default_model(provider: str) -> str:
     return defaults.get(provider, "gpt-4o-mini")
 
 
+# Map-reduce summarization knobs for the manual path. A single complete()
+# over the whole early text (2000 chars per message x up to 200 rows)
+# reliably outruns any fixed timeout, so exactly the conversations that
+# needed compressing could not be compressed. Chunks run bounded-concurrent.
+_SUMMARY_CHUNK_CHARS = 30_000
+_SUMMARY_CHUNK_CONCURRENCY = 3
+_SUMMARY_TOTAL_TIMEOUT = 300.0
+
+
+def _chunk_lines(lines: list[str], chunk_chars: int) -> list[str]:
+    """Group whole message lines into chunks of at most chunk_chars.
+
+    Lines are never split across chunks - a boundary mid-message drops the
+    role prefix and mangles the summarization context. An oversized single
+    line becomes its own chunk.
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in lines:
+        if current and size + len(line) + 1 > chunk_chars:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def _complete_summary(
+    provider: LLMProvider, user_text: str, system_prompt: str = SUMMARY_PROMPT
+) -> str:
+    """One non-streaming summarization call; returns stripped text."""
+    response = await provider.complete(
+        [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=user_text),
+        ],
+        tools=None,
+    )
+    return (response.message.content or "").strip()
+
+
+async def _summarize_early(provider: LLMProvider, early_lines: list[str]) -> str:
+    """Summarize the early history, map-reduce when it spans chunks.
+
+    Each ~30k-char chunk is summarized independently (bounded concurrency),
+    then the partial summaries merge into one - sequential chunks would
+    multiply latency past the total timeout on long conversations.
+    """
+    chunks = _chunk_lines(early_lines, _SUMMARY_CHUNK_CHARS)
+    if len(chunks) == 1:
+        return await _complete_summary(
+            provider, "Conversation to summarize:\n\n" + chunks[0]
+        )
+    semaphore = asyncio.Semaphore(_SUMMARY_CHUNK_CONCURRENCY)
+
+    async def _one(i: int, chunk: str) -> str:
+        async with semaphore:
+            return await _complete_summary(
+                provider,
+                f"Conversation to summarize (part {i + 1}/{len(chunks)}):\n\n" + chunk,
+            )
+
+    partials = await asyncio.gather(*(_one(i, c) for i, c in enumerate(chunks)))
+    merged = "\n\n".join(f"[Part {i + 1}]\n{p}" for i, p in enumerate(partials) if p)
+    merge_prompt = (
+        "You are given partial summaries of one long conversation, in order. "
+        "Merge them into one concise summary. Preserve key facts and decisions, "
+        "important tool call results (file paths, URLs, data found), unresolved "
+        "questions, pending work, and context needed to continue. "
+        "Output only the merged summary."
+    )
+    return await _complete_summary(
+        provider, "Partial summaries to merge:\n\n" + merged, system_prompt=merge_prompt
+    )
+
+
 async def compress_conversation(
     db: AsyncSession,
     conversation_id: str,
@@ -352,22 +431,20 @@ async def compress_conversation(
     if first_kept_row == 0:
         raise CompressionError(409, "会话太短，无需压缩。")
 
-    early_text = format_early_history(early_msgs)
-    if not early_text:
+    early_lines = early_history_lines(early_msgs)
+    if not early_lines:
         raise CompressionError(409, "会话没有可压缩的内容。")
 
     provider = await _resolve_provider(db, user_id)
-    summary_messages = [
-        Message(role="system", content=SUMMARY_PROMPT),
-        Message(role="user", content=f"Conversation to summarize:\n\n{early_text}"),
-    ]
 
     # Fail-safe: a manual compression is destructive — never delete the early
-    # rows if the summary could not be produced.
+    # rows if the summary could not be produced. Summarization runs
+    # map-reduce over ~30k-char chunks (see _summarize_early).
     try:
-        async with asyncio.timeout(30):
-            response = await provider.complete(summary_messages, tools=None)
-        summary = (response.message.content or "").strip() or "Previous conversation context unavailable."
+        async with asyncio.timeout(_SUMMARY_TOTAL_TIMEOUT):
+            summary = await _summarize_early(provider, early_lines)
+        if not summary:
+            summary = "Previous conversation context unavailable."
     except Exception:
         _log.warning("Manual compression failed for conversation %s", conversation_id, exc_info=True)
         raise CompressionError(502, "压缩失败，请重试。")

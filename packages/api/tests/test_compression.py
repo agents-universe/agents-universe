@@ -652,3 +652,147 @@ async def test_compress_fat_short_tool_row_content_truncated(client, db, make_pr
     tool_row = next(r for r in rows if r.role == "tool")
     assert len(tool_row.content) == 2001
     assert tool_row.content.endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# Map-reduce summarization for long conversations
+# ---------------------------------------------------------------------------
+
+
+async def _seed_big_conversation(db, project, count: int = 40) -> str:
+    """Seed a conversation whose early text exceeds one summary chunk."""
+    conv = Conversation(
+        project_id=project.project_id,
+        user_id="test-user",
+        token_budget=128000,
+    )
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    cid = str(conv.conversation_id)
+    for i in range(count):
+        db.add(DbMessage(
+            conversation_id=cid,
+            role="user" if i % 2 == 0 else "assistant",
+            content=f"message {i} " + "x" * 2000,
+            sequence_num=i + 1,
+        ))
+    await db.commit()
+    return cid
+
+
+@pytest.mark.asyncio
+async def test_compress_map_reduces_long_conversations(client, db, make_project, monkeypatch):
+    """Early text beyond one chunk is summarized map-reduce style: one call
+    per ~30k-char chunk plus a merge; the merged summary is persisted."""
+    project = await make_project()
+    cid = await _seed_big_conversation(db, project, count=40)
+
+    import api.services.compression as compression_service
+
+    calls: list[str] = []
+
+    class MapReduceProvider:
+        async def complete(self, messages, tools=None):
+            user_text = messages[1].content
+            calls.append(user_text[:45])
+            if "Partial summaries to merge" in user_text:
+                return SimpleNamespace(message=SimpleNamespace(content="MERGED SUMMARY"))
+            return SimpleNamespace(message=SimpleNamespace(content="part summary"))
+
+    async def _resolve(db_, user_id):
+        return MapReduceProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    resp = await client.post(f"/api/conversations/{cid}/compress")
+    assert resp.status_code == 200, resp.text
+
+    data = resp.json()
+    assert data["summary"] == "MERGED SUMMARY"
+    assert data["deleted_count"] == 32
+    assert data["kept_count"] == 8
+    # ~64k chars of early text -> 3 chunks + 1 merge call
+    assert len(calls) == 4
+    assert any("(part 1/3)" in c for c in calls)
+
+    result = await db.execute(
+        DbMessage.__table__.select().where(DbMessage.conversation_id == cid)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 10
+
+    from sqlalchemy import select as sa_select
+    first = (await db.execute(
+        sa_select(DbMessage.content).where(
+            DbMessage.conversation_id == cid
+        ).order_by(DbMessage.sequence_num).limit(1)
+    )).scalar_one()
+    assert "MERGED SUMMARY" in first
+
+
+@pytest.mark.asyncio
+async def test_compress_chunk_failure_leaves_history_intact(client, db, make_project, monkeypatch):
+    """A failure on any chunk aborts the whole compression with 502 and
+    deletes nothing - the fail-safe must cover the map-reduce path too."""
+    project = await make_project()
+    cid = await _seed_big_conversation(db, project, count=40)
+
+    import api.services.compression as compression_service
+
+    class FlakyProvider:
+        def __init__(self):
+            self.n = 0
+
+        async def complete(self, messages, tools=None):
+            self.n += 1
+            if self.n > 1:
+                raise RuntimeError("chunk 2 failed")
+            return SimpleNamespace(message=SimpleNamespace(content="ok"))
+
+    async def _resolve(db_, user_id):
+        return FlakyProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    resp = await client.post(f"/api/conversations/{cid}/compress")
+    assert resp.status_code == 502
+
+    result = await db.execute(
+        DbMessage.__table__.select().where(DbMessage.conversation_id == cid)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 40
+
+
+@pytest.mark.asyncio
+async def test_compress_total_timeout_502(client, db, make_project, monkeypatch):
+    """A summarization slower than the total timeout fails closed with 502
+    and deletes nothing."""
+    project = await make_project()
+    conv = await _seed_conversation(db, project, message_count=20)
+
+    import api.services.compression as compression_service
+
+    monkeypatch.setattr(compression_service, "_SUMMARY_TOTAL_TIMEOUT", 0.05)
+
+    class HangingProvider:
+        async def complete(self, messages, tools=None):
+            await asyncio.sleep(1.0)
+            return SimpleNamespace(message=SimpleNamespace(content="late"))
+
+    async def _resolve(db_, user_id):
+        return HangingProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    resp = await client.post(f"/api/conversations/{conv.conversation_id}/compress")
+    assert resp.status_code == 502
+
+    result = await db.execute(
+        DbMessage.__table__.select().where(
+            DbMessage.conversation_id == str(conv.conversation_id)
+        )
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 20

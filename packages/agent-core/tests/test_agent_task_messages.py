@@ -380,3 +380,65 @@ async def test_task_loop_raises_on_over_limit_payload(monkeypatch):
             messages, [], _UnreachableProvider(), session,
             task_id="t1", turn=1, task_tool_ctx=ctx,
         )
+
+
+# ---------------------------------------------------------------------------
+# _degrade_request stage-1 idempotency and byte-guard tool precompute
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_degrade_request_skips_re_summarization_of_summary(monkeypatch):
+    """Stage 1 must not re-summarize a history step5 already compressed this
+    turn (summary-of-a-summary drifts context); later stages still run."""
+    import agent_core.agent as agent_module
+    from agent_core.compressor import build_summary_pair
+
+    monkeypatch.setattr(agent_module, "MAX_REQUEST_BYTES", 2000)
+    agent = _make_agent()
+
+    called: list[bool] = []
+
+    async def _fake_compress(messages, budget, provider, force=False):
+        called.append(force)
+        return messages
+
+    monkeypatch.setattr(agent_module, "compress_history", _fake_compress)
+
+    class _P:
+        model_name = "m"
+        context_window = 128_000
+
+    summarized = (
+        [Message(role="system", content="s" * 3000)]
+        + build_summary_pair("prior summary")
+        + [Message(role="user", content=f"filler {i} " + "x" * 200) for i in range(10)]
+    )
+    outcome = await agent._degrade_request(summarized, [], _P())
+
+    assert called == []               # stage 1 skipped: history leads with marker
+    assert outcome == "over_limit"    # no levers left: still over, reported
+
+    # Control: without the marker, stage 1 runs the forced summarization.
+    fresh = (
+        [Message(role="system", content="s" * 3000)]
+        + [Message(role="user", content=f"filler {i} " + "x" * 200) for i in range(12)]
+    )
+    await agent._degrade_request(fresh, [], _P())
+    assert called == [True]
+
+
+def test_request_byte_outcome_accepts_precomputed_tools_bytes():
+    """The precomputed tool wire size keeps the byte-guard outcome identical."""
+    from agent_core.compressor import estimate_request_bytes
+    from agent_core.providers.base import ToolDefinition
+
+    agent = _make_agent()
+    tools = [ToolDefinition(name="t", description="d", parameters={"type": "object"})]
+    tools_wire = estimate_request_bytes([], tools)
+    assert tools_wire > 0
+
+    assert agent._request_byte_outcome([Message(role="user", content="hello")], tools) == "ok"
+    assert agent._request_byte_outcome(
+        [Message(role="user", content="hello")], tools, tools_wire
+    ) == "ok"

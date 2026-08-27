@@ -17,6 +17,17 @@ COMPRESS_THRESHOLD_RATIO = 0.6
 RECENT_TURNS_KEEP = 8
 TOKENS_PER_WORD = 1.3
 TOKENS_PER_CJK_CHAR = 0.6
+# Total cap on the summarization input text (auto path). A non-streaming
+# complete() over an unbounded input (2000 chars/message x up to 200
+# messages) reliably outruns the caller's asyncio timeout, so compression
+# degraded to "keep recent only" every turn on exactly the conversations
+# that needed it. 60k chars is <= ~36k tokens - small enough to summarize
+# well inside the timeout, big enough to carry the recent arc.
+SUMMARY_INPUT_MAX_CHARS = 60_000
+# Marker prefixing the summary user message built by build_summary_pair.
+# agent._degrade_request checks it to skip re-summarizing an already
+# summarized history (a summary of a summary drifts the context).
+SUMMARY_MARKER = "[Earlier conversation summary"
 # Output tokens reserved for generation when computing the history budget.
 # max_tokens defaults to 128000 in every agent config; reserving it all
 # against a 128k context window made the budget always <= 0 and automatic
@@ -59,6 +70,8 @@ _CJK_RE = re.compile(
 
 @lru_cache(maxsize=256)
 def _estimate_tokens(text: str) -> int:
+    if text.isascii():
+        return int(len(text.split()) * TOKENS_PER_WORD)
     cjk_chars = len(_CJK_RE.findall(text))
     cjk_tokens = int(cjk_chars * TOKENS_PER_CJK_CHAR)
     non_cjk_text = _CJK_RE.sub("", text)
@@ -113,14 +126,48 @@ def estimate_wire_bytes(text: str) -> int:
     heuristic underestimates them badly. ASCII text inflates ~15% from JSON
     quotes and escapes.
     """
+    if text.isascii():
+        # ASCII payloads need no CJK scan: this runs over MB-scale tool
+        # outputs on every byte-guard call, and the regex was the dominant
+        # per-call cost for ASCII-heavy content.
+        return int(len(text) * _ESCAPE_FACTOR)
     cjk = len(_CJK_RE.findall(text))
     other = len(text) - cjk
     return int((cjk * 6 + other) * _ESCAPE_FACTOR)
 
 
+def _tool_calls_wire_bytes(tool_calls: list) -> int:
+    """Wire estimate of a tool_calls block without json.dumps-ing it whole.
+
+    The arguments strings are the bulk; dumping the entire block on every
+    estimate call re-escaped MBs of CJK for a threshold number nobody looks
+    at. Per-part estimates keep the same conservative margin (the 1.15
+    escape factor covers the JSON keys/braces no longer counted).
+    """
+    total = 32
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            total += 64
+            continue
+        total += 32
+        total += estimate_wire_bytes(str(tc.get("id") or ""))
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            total += estimate_wire_bytes(str(fn.get("name") or ""))
+            args = fn.get("arguments")
+            total += estimate_wire_bytes(
+                args if isinstance(args, str)
+                else json.dumps(args or {}, ensure_ascii=True, default=str)
+            )
+        else:
+            total += estimate_wire_bytes(str(fn))
+    return total
+
+
 def estimate_request_bytes(
     messages: list[Message],
     tool_defs: list[ToolDefinition] | None = None,
+    tool_wire_bytes: int | None = None,
 ) -> int:
     """Estimate the serialized request body size (bytes on the wire).
 
@@ -129,6 +176,10 @@ def estimate_request_bytes(
     payloads can be MBs (same reasoning as _estimate_tokens_safe). The cost
     is O(payload) per call; the provider serializes the same payload right
     after, so this is not the bottleneck.
+
+    tool_wire_bytes skips re-estimating tool_defs (their schemas are static
+    within a turn): the per-iteration byte guard in the agent loops passes
+    the value computed once before the loop.
     """
     total = 0
     for m in messages:
@@ -147,11 +198,13 @@ def estimate_request_bytes(
                 else:
                     total += estimate_wire_bytes(part.get("text") or "")
         if m.tool_calls:
-            total += estimate_wire_bytes(json.dumps(m.tool_calls, ensure_ascii=True, default=str))
+            total += _tool_calls_wire_bytes(m.tool_calls)
         if m.tool_call_id:
             total += len(m.tool_call_id) + 16
         if m.name:
             total += len(m.name) + 16
+    if tool_wire_bytes is not None:
+        return total + tool_wire_bytes
     for t in tool_defs or []:
         total += _TOOL_OVERHEAD_BYTES
         total += estimate_wire_bytes(t.name)
@@ -255,7 +308,7 @@ def request_byte_breakdown(
         else:
             text += content_bytes
         if m.tool_calls:
-            text += estimate_wire_bytes(json.dumps(m.tool_calls, ensure_ascii=True, default=str))
+            text += _tool_calls_wire_bytes(m.tool_calls)
     for t in tool_defs or []:
         tools += _TOOL_OVERHEAD_BYTES
         tools += estimate_wire_bytes(t.name)
@@ -268,6 +321,7 @@ def force_compress_history(
     messages: list[Message],
     byte_limit: int,
     tool_defs: list[ToolDefinition] | None = None,
+    tool_wire_bytes: int | None = None,
 ) -> str:
     """Enforce a byte ceiling on the request payload before a provider call.
 
@@ -281,10 +335,10 @@ def force_compress_history(
     async degradation chain (agent._degrade_request), not in this cheap,
     first-line truncation pass.
     """
-    if estimate_request_bytes(messages, tool_defs) <= byte_limit:
+    if estimate_request_bytes(messages, tool_defs, tool_wire_bytes) <= byte_limit:
         return "ok"
     truncate_oversized_tool_messages(messages)
-    if estimate_request_bytes(messages, tool_defs) <= byte_limit:
+    if estimate_request_bytes(messages, tool_defs, tool_wire_bytes) <= byte_limit:
         return "truncated"
     return "over_limit"
 
@@ -314,9 +368,14 @@ def split_early_recent(messages: list[Message]) -> tuple[list[Message], list[Mes
     return early, recent
 
 
-def format_early_history(early: list[Message]) -> str:
-    """Build the summarization input text from the early segment."""
-    early_text_parts = []
+def early_history_lines(early: list[Message]) -> list[str]:
+    """Per-message formatted lines of the early segment (2000-char cap each).
+
+    Shared building block: format_early_history joins them into the auto
+    summarization input; the manual compression service chunks them for its
+    map-reduce pass.
+    """
+    lines = []
     for m in early:
         role_label = m.role.upper()
         content = _content_as_str(m.content)
@@ -324,8 +383,40 @@ def format_early_history(early: list[Message]) -> str:
             tool_names = [tc.get("function", {}).get("name", "?") for tc in m.tool_calls if isinstance(tc, dict)]
             content += f" [tools: {', '.join(tool_names)}]"
         if content.strip():
-            early_text_parts.append(f"{role_label}: {content[:2000]}")
-    return "\n".join(early_text_parts)
+            lines.append(f"{role_label}: {content[:2000]}")
+    return lines
+
+
+def format_early_history(early: list[Message], max_chars: int | None = None) -> str:
+    """Build the summarization input text from the early segment.
+
+    max_chars caps the TOTAL input: the summarization call is non-streaming,
+    and an unbounded input (2000 chars per message x up to 200 loaded
+    messages) reliably outruns the caller's asyncio timeout, so compression
+    degraded to "keep recent only" on exactly the conversations that needed
+    it. When over the cap the TAIL (most recent) is kept - recency matters
+    most for continuation - and the drop is marked explicitly.
+    """
+    parts = early_history_lines(early)
+    if max_chars is not None:
+        total = sum(len(p) + 1 for p in parts)
+        if total > max_chars:
+            kept: list[str] = []
+            size = 0
+            for part in reversed(parts):
+                # Always keep the most recent line even if it alone busts the
+                # cap - an empty summary input would disable compression.
+                if kept and size + len(part) + 1 > max_chars:
+                    break
+                kept.append(part)
+                size += len(part) + 1
+            kept.reverse()
+            dropped = len(parts) - len(kept)
+            return (
+                f"[... {dropped} earlier messages omitted from the summary input "
+                f"to stay within {max_chars} characters ...]" + "\n" + "\n".join(kept)
+            )
+    return "\n".join(parts)
 
 
 def build_summary_pair(summary: str) -> list[Message]:
@@ -336,7 +427,7 @@ def build_summary_pair(summary: str) -> list[Message]:
     """
     summary_msg = Message(
         role="user",
-        content=f"[Earlier conversation summary — this is automated context, not a user message]\n\n{summary}",
+        content=f"{SUMMARY_MARKER} - this is automated context, not a user message]\n\n{summary}",
     )
     ack_msg = Message(
         role="assistant",
@@ -361,7 +452,9 @@ async def compress_history(
     is byte-over-limit but token-under-limit (CJK escaping, base64 images) so
     a summary still shrinks the many-message history the token heuristic
     missed. The short-history branch (<= RECENT_TURNS_KEEP) still truncates
-    in place rather than invoking the LLM.
+    in place rather than invoking the LLM. The summarization input is capped
+    at SUMMARY_INPUT_MAX_CHARS so the call completes well inside the
+    caller's asyncio timeout.
     """
     total_tokens = estimate_history_tokens(messages)
     threshold = int(token_budget * COMPRESS_THRESHOLD_RATIO)
@@ -376,7 +469,7 @@ async def compress_history(
 
     early, recent = split_early_recent(messages)
 
-    early_text = format_early_history(early)
+    early_text = format_early_history(early, max_chars=SUMMARY_INPUT_MAX_CHARS)
     if not early_text:
         return messages
 

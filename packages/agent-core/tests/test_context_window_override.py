@@ -81,3 +81,29 @@ def test_every_provider_accepts_the_api_handler_cred_shape():
     # azure takes endpoint instead of base_url.
     p = get_provider("azure_openai", {**common, "endpoint": "https://example.openai.azure.com"})
     assert p.context_window == 1000
+
+
+def test_provider_http_timeouts_are_phased():
+    """The openai SDK adopts a custom http_client's timeout as its own
+    per-request timeout (silently overriding its 600s default) - a plain
+    60s scalar there made large-prompt streams die with "Request timed
+    out". Read must be generous; connect tight; write sized for MB bodies.
+    Retries capped at 1 so a dead endpoint surfaces in ~2 attempts."""
+    from agent_core.providers.anthropic_claude import AnthropicClaudeProvider
+    from agent_core.providers.openai import AzureOpenAIProvider, OpenAIProvider
+
+    p = OpenAIProvider(api_key="x", model="gpt-4o")
+    t = p._client._client.timeout
+    assert (t.read, t.connect, t.write, t.pool) == (300.0, 10.0, 120.0, 60.0)
+    assert p._client.max_retries == 1
+
+    az = AzureOpenAIProvider(api_key="x", endpoint="https://example.openai.azure.com", model="gpt-4o")
+    t = az._client._client.timeout
+    assert (t.read, t.connect, t.write, t.pool) == (300.0, 10.0, 120.0, 60.0)
+    assert az._client.max_retries == 1
+
+    gw = AnthropicClaudeProvider(
+        api_key="x", model="claude-haiku-4-5", base_url="https://gateway.example.com"
+    )
+    t = gw._http.timeout
+    assert (t.read, t.connect, t.write, t.pool) == (300.0, 10.0, 120.0, 60.0)

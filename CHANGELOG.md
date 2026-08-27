@@ -8,6 +8,12 @@
 
 - **仓库知识图谱支持 Java** - 代码图新增 Java 语言解析（tree-sitter java grammar）：类 / 接口 / 枚举 / 方法符号，跨文件 import（含 static import）解析、继承（extends / implements）与构造调用边；语言按源根（src/main/java、src、仓库根）解析包路径。符号索引按语言隔离，避免 Java 与 TS 同名符号（如 Greeter）互相干扰
 
+### 修复
+
+- **压缩导致的 LLM API 超时** - 自动压缩在大会话上频发 "LLM API error: timeout"：摘要输入无总量上限（非流式调用必然超时）、降级链二次压缩、以及 httpx 60s 标量超时被 openai SDK 采纳为每次请求的生效超时（大 prompt 首 token 延迟普遍超过 60s，SDK 原生 600s 默认被覆盖）。分相超时（read 300s / connect 10s / write 120s，max_retries=1）+ 摘要输入封顶 60k 字符（保尾部）+ 降级链幂等守卫（已压缩历史不再二次摘要）
+- **手动压缩大会话必失败** - 30s 超时包不住无上限的摘要输入，最需要压缩的会话反而压不动；改为 map-reduce（~30k 字符/块、并发 3、总超时 300s），任一块失败仍不删除任何历史
+- **字节估算阻塞事件循环** - ASCII 快路径跳过 CJK 正则、tool_calls 免整包 json.dumps、工具 schema 字节数提升到循环外计算一次，消除大会话每轮数十秒的同步 CPU
+
 ## [1.2.0] - 2026-08-25
 
 ### 新增

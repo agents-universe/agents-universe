@@ -2264,6 +2264,11 @@ async def _prepare_and_persist_user_message(
         sequence_num=next_seq,
     )
     db.add(user_msg_record)
+    # Last-activity timestamp: the conversation list and /latest order by
+    # COALESCE(updated_at, created_at) - a new user message is what moves an
+    # old conversation back to the top of the sidebar. Bumped on the same
+    # locked row/commit as the message itself.
+    conv.updated_at = datetime.now(timezone.utc)
     # Auto-set conversation title from the first sentence of the first user message
     if set_title and not conv.title and content:
         first_line = content.split('\n', 1)[0].strip()
@@ -2308,7 +2313,7 @@ async def _persist_assistant_message(
     """Save an assistant message to DB after stream_end."""
     import json as _json
     import uuid as _uuid
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, update
     from api.models.conversation import Conversation, Message as DbMessage
 
     await db.execute(
@@ -2351,6 +2356,13 @@ async def _persist_assistant_message(
         sequence_num=next_seq,
     )
     db.add(msg)
+    # Last-activity timestamp (same contract as the user-message persist):
+    # the reply landing in history is also "the conversation was just used".
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.conversation_id == conversation_id)
+        .values(updated_at=datetime.now(timezone.utc))
+    )
     await db.commit()
 
 

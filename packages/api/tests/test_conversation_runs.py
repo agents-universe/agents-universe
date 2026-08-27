@@ -23,6 +23,8 @@ from api.models.user import UserModelConfig
 from api.services.conversation_runs import (
     finish_run,
     interrupt_stale_runs,
+    interrupt_stale_tasks,
+    materialize_interrupted_snapshots,
     update_run_snapshot,
 )
 from api.services.token_vault import encrypt
@@ -174,7 +176,10 @@ async def test_run_completed_after_stream_end(agent_spy, db, make_project):
 
 
 async def test_run_interrupted_on_aborted_stream_end(agent_spy, db, make_project):
-    """stop_reason=aborted → interrupted, partial text kept in the snapshot."""
+    """stop_reason=aborted → interrupted, partial text persisted as the
+    interrupted assistant row. The run's snapshot stays empty: a persisted
+    partial must not be recovered twice (startup materialization skips it -
+    non-null snapshot means "not yet in messages")."""
     conv = await _make_conversation(db, make_project)
     await _add_config(db)
     msg_id = str(uuid.uuid4())
@@ -190,8 +195,15 @@ async def test_run_interrupted_on_aborted_stream_end(agent_spy, db, make_project
 
     run = await _get_run(db, conv.conversation_id)
     assert run.status == "interrupted"
-    assert run.streaming_snapshot == "partial output "
+    assert run.streaming_snapshot is None
     assert run.ended_at is not None
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert msgs[0].content == "partial output "
+    import json as _json
+    refs = _json.loads(msgs[0].knowledge_refs)
+    assert refs.get("interrupted") is True
 
 
 async def test_run_failed_on_agent_exception(agent_spy, db, make_project):
@@ -341,6 +353,146 @@ async def test_startup_sweep_interrupts_stale_runs(db, make_project):
     await db.refresh(done)
     assert done.status == "completed"
     assert done.ended_at is None
+
+
+async def test_sweep_materializes_interrupted_snapshot(db, make_project):
+    """A hard-killed run's partial output lands in the message history as an
+    interrupted assistant row (visible on reopen AND in the next turn's agent
+    context - the user continues by typing). The snapshot is cleared, so the
+    sweep is idempotent."""
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    run = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="partial work",
+    )
+    db.add(run)
+    await db.commit()
+
+    n = await materialize_interrupted_snapshots(db)
+
+    assert n == 1
+    await db.refresh(run)
+    assert run.streaming_snapshot is None
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert msgs[0].content == "partial work"
+    assert msgs[0].sequence_num == 2
+    import json as _json
+    assert _json.loads(msgs[0].knowledge_refs).get("interrupted") is True
+
+    # Nothing left to recover on a second pass.
+    assert await materialize_interrupted_snapshots(db) == 0
+    assert len(await _assistant_messages(db, conv.conversation_id)) == 1
+
+
+async def test_sweep_skips_materialization_when_reply_persisted(db, make_project):
+    """An interrupted run whose turn already persisted an assistant row (the
+    stream_end path) keeps its snapshot cleared but inserts nothing - the
+    partial must not be recovered twice."""
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    reply = Message(
+        conversation_id=conv.conversation_id, role="assistant",
+        content="partial work", sequence_num=2,
+    )
+    db.add_all([user, reply])
+    await db.commit()
+    run = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="partial work",
+    )
+    db.add(run)
+    await db.commit()
+
+    n = await materialize_interrupted_snapshots(db)
+
+    assert n == 0
+    await db.refresh(run)
+    assert run.streaming_snapshot is None
+    assert len(await _assistant_messages(db, conv.conversation_id)) == 1
+
+
+async def test_sweep_materializes_only_latest_run_per_conversation(db, make_project):
+    """Two dead runs in one conversation: only the latest snapshot is
+    recovered (an older one is buried under newer turns - stale), but both
+    are cleared so the sweep stays idempotent."""
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    db.add(user)
+    await db.commit()
+    older = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="older partial",
+        started_at=now_utc() - timedelta(seconds=2),
+    )
+    newer = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="newer partial",
+        started_at=now_utc(),
+    )
+    db.add_all([older, newer])
+    await db.commit()
+
+    n = await materialize_interrupted_snapshots(db)
+
+    assert n == 1
+    await db.refresh(older)
+    await db.refresh(newer)
+    assert older.streaming_snapshot is None
+    assert newer.streaming_snapshot is None
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert msgs[0].content == "newer partial"
+
+
+async def test_interrupt_stale_tasks_flips_running_to_failed(db, make_project):
+    """Startup settles mid-flight tasks: running becomes failed (it never
+    completed in the dead process) with a reason; pending stays pending so
+    the plan remains resumable, completed untouched."""
+    from api.models.conversation import AgentTask
+
+    conv = await _make_conversation(db, make_project)
+    rows = [
+        AgentTask(conversation_id=conv.conversation_id, sequence_num=1, title="done",
+                  status="completed", result_summary="all good"),
+        AgentTask(conversation_id=conv.conversation_id, sequence_num=2, title="mid",
+                  status="running"),
+        AgentTask(conversation_id=conv.conversation_id, sequence_num=3, title="todo",
+                  status="pending"),
+    ]
+    db.add_all(rows)
+    await db.commit()
+
+    n = await interrupt_stale_tasks(db)
+
+    assert n == 1
+    result = await db.execute(select(AgentTask).order_by(AgentTask.sequence_num))
+    tasks = list(result.scalars().all())
+    assert [t.status for t in tasks] == ["completed", "failed", "pending"]
+    assert "interrupted" in tasks[1].error_message
+    assert tasks[1].completed_at is not None
+    assert tasks[0].error_message is None
 
 
 async def test_finish_run_guard_and_snapshot(db, make_project):

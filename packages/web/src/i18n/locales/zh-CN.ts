@@ -212,9 +212,8 @@ export default {
     abortFailed: '中止失败，请重试。',
     compressConfirm: '确定压缩当前上下文？',
     compressFailed: '压缩失败',
-    runInterrupted: '上次运行被中断，未完成。',
-    runFailed: '上次运行失败。',
-    rerun: '重跑',
+    runInterrupted: '上次运行被中断。直接输入消息即可继续之前的任务。',
+    runFailed: '上次运行失败。可直接输入消息重试。',
   },
   streamingStatus: {
     waitingInput: '等待输入：{title}',

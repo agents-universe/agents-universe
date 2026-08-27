@@ -78,6 +78,19 @@ class TestGeneratorTool(Tool):
         test_cases = params.get("test_cases", [])
         if not issue_key or not test_cases:
             return {"error": "issue_key and test_cases are required"}
+        # The schema declares an array of objects but LLMs sometimes stringify
+        # it — a bare string would iterate character-by-character in
+        # _generate_spec and crash on .get(). Reject instead of writing a
+        # garbage spec.
+        if isinstance(test_cases, str) or (
+            isinstance(test_cases, list) and any(not isinstance(tc, dict) for tc in test_cases)
+        ):
+            return {
+                "error": (
+                    "test_cases must be an array of objects with title/steps/"
+                    "expected_results — check the tool's parameter schema."
+                )
+            }
 
         output_dir = params.get("output_dir", "tests/generated")
         try:

@@ -650,6 +650,66 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.pendingInjected.length).toBe(0)
   })
 
+  it('identical rapid-fire injections match FIFO, not by content only', () => {
+    // Two messages with the SAME text sent while the agent runs: the server
+    // ack (input_queued) echoes only content + a per-entry message_id, so the
+    // store must bind each ack to the oldest still-unmatched entry of that
+    // content. Content-only matching would stamp both acks onto the first
+    // entry (or, without a serverId, never disambiguate).
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.registerInjectedMessage('opt-1', 'same text', 'conv-a')
+    store.registerInjectedMessage('opt-2', 'same text', 'conv-a')
+
+    // First ack binds to opt-1 (oldest unmatched), second to opt-2.
+    store.markInputQueued('srv-1', 'same text', 'conv-a')
+    store.markInputQueued('srv-2', 'same text', 'conv-a')
+
+    expect(store.pendingInjected).toEqual([
+      { optimisticId: 'opt-1', content: 'same text', serverId: 'srv-1' },
+      { optimisticId: 'opt-2', content: 'same text', serverId: 'srv-2' },
+    ])
+  })
+
+  it('confirmInjected with duplicate content prefers the exact serverId', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({ id: 'opt-1', role: 'user', content: 'dup', timestamp: 1 })
+    store.addMessage({ id: 'opt-2', role: 'user', content: 'dup', timestamp: 2 })
+    store.registerInjectedMessage('opt-1', 'dup', 'conv-a')
+    store.registerInjectedMessage('opt-2', 'dup', 'conv-a')
+    store.markInputQueued('srv-1', 'dup', 'conv-a')
+    store.markInputQueued('srv-2', 'dup', 'conv-a')
+
+    // Confirm the SECOND entry — an exact serverId match must win over the
+    // content fallback (which would otherwise latch onto opt-1).
+    store.confirmInjected('srv-2', 'dup', 'conv-a')
+
+    expect(store.messages.some((m) => m.id === 'srv-2')).toBe(true)
+    expect(store.pendingInjected).toEqual([
+      { optimisticId: 'opt-1', content: 'dup', serverId: 'srv-1' },
+    ])
+  })
+
+  it('rejectInjected with duplicate content prefers the exact serverId', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({ id: 'opt-1', role: 'user', content: 'dup', timestamp: 1 })
+    store.addMessage({ id: 'opt-2', role: 'user', content: 'dup', timestamp: 2 })
+    store.registerInjectedMessage('opt-1', 'dup', 'conv-a')
+    store.registerInjectedMessage('opt-2', 'dup', 'conv-a')
+    store.markInputQueued('srv-1', 'dup', 'conv-a')
+    store.markInputQueued('srv-2', 'dup', 'conv-a')
+
+    // The watchdog path rejects by message_id — must settle opt-2, not opt-1.
+    store.rejectInjected('dup', 'was not processed', 'conv-a', 'srv-2')
+
+    expect(store.messages.some((m) => m.content.includes('was not processed'))).toBe(true)
+    expect(store.pendingInjected).toEqual([
+      { optimisticId: 'opt-1', content: 'dup', serverId: 'srv-1' },
+    ])
+  })
+
   it('loadHistory drops stale local messages older than the history tail', () => {
     // Compression replaced old rows with a summary line — stale local copies
     // from before the summary must not resurrect alongside it.
@@ -721,6 +781,80 @@ describe('conversation store - per-conversation runtime', () => {
     })], 'conv-a')
 
     expect(store.messages.length).toBe(1)
+    expect(store.messages[0].id).toBe('h1')
+    localStorage.removeItem('agents-universe:draft:conv-a')
+  })
+
+  it('task-only streaming turn persists streamingByTask into the draft', () => {
+    // Regression: workflow-driven agents stream per-task text via
+    // appendDelta(delta, taskId) with no main-thread content and (between
+    // tool calls) no active tool cards. The old _saveDraft gate checked only
+    // activeToolCalls/streamingContent/images/files, so such a turn never
+    // wrote a draft — its partial task text was unrecoverable on refresh.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('partial task text', 't1', 'conv-a')
+
+    const raw = localStorage.getItem('agents-universe:draft:conv-a')
+    expect(raw).not.toBeNull()
+    const draft = JSON.parse(raw!)
+    expect(draft.streamingByTask).toEqual({ t1: 'partial task text' })
+    expect(draft.streamingContent).toBe('')
+    localStorage.removeItem('agents-universe:draft:conv-a')
+  })
+
+  it('restores a task-only draft (streamingByTask present, no tool calls)', () => {
+    // Regression: the old _applyDraft gate bailed when activeToolCalls and
+    // streamingContent were both empty, so a task-only draft was never
+    // restored — TaskPlanCard lost every task's partial output on reload.
+    localStorage.setItem('agents-universe:draft:conv-a', JSON.stringify({
+      activeToolCalls: [],
+      streamingContent: '',
+      streamingByTask: { t1: 'partial task text', t2: 'more text' },
+      streamingImages: [],
+      streamingFiles: [],
+      tasks: [],
+      savedAt: Date.now(),
+    }))
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'persisted reply',
+      created_at: '2026-01-01T00:00:00Z',
+    })], 'conv-a')
+
+    expect(store.taskStreamingText('t1', 'conv-a')).toBe('partial task text')
+    expect(store.taskStreamingText('t2', 'conv-a')).toBe('more text')
+    // The interruption is still surfaced as a recovery note.
+    expect(store.messages.some((m) => m.id.startsWith('recovered-'))).toBe(true)
+    localStorage.removeItem('agents-universe:draft:conv-a')
+  })
+
+  it('does not restore an empty draft (no content anywhere)', () => {
+    // The apply gate must still skip drafts with nothing to recover — an
+    // empty storage entry must not fabricate a blank recovery bubble.
+    localStorage.setItem('agents-universe:draft:conv-a', JSON.stringify({
+      activeToolCalls: [],
+      streamingContent: '',
+      streamingImages: [],
+      streamingFiles: [],
+      tasks: [],
+      savedAt: Date.now(),
+    }))
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'persisted reply',
+      created_at: '2026-01-01T00:00:00Z',
+    })], 'conv-a')
+
+    expect(store.messages).toHaveLength(1)
     expect(store.messages[0].id).toBe('h1')
     localStorage.removeItem('agents-universe:draft:conv-a')
   })

@@ -1,0 +1,19 @@
+# Gitleaks allowlist for intentional test fixtures.
+#
+# The credential-scrubbing tests deliberately assign fake, high-entropy keys
+# (`key = "kong-key-leakme-12345"`, `key = "sk-leakme-1234567890"`) so they
+# can prove the scrub path removes the credential. Those are NOT real
+# secrets — the strings literally contain "leakme"/"keepme" — but their
+# entropy trips gitleaks' generic-api-key rule.
+#
+# The allowlist matches those fixture VALUES only, wherever they appear. Real
+# secrets never contain these marker substrings, so the scan stays fully
+# effective in every file.
+[allowlist]
+description = "fake credential fixtures used by scrubbing tests"
+regexes = [
+  '''(?i)leakme''',
+  '''(?i)keepme''',
+  '''sk-test-key-1234''',
+  '''should-never-leak''',
+]

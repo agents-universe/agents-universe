@@ -1,6 +1,7 @@
 """Mock tests for GitHub tool: create_pr, fork, star operations."""
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from agent_core.tools.github import GitHubTool
@@ -191,3 +192,54 @@ async def test_star_puts_star():
     http.put.assert_awaited_once_with(
         "https://ghe.example/api/v3/user/starred/team/service", headers={}
     )
+
+
+class _FakeCtx:
+    """Minimal ToolContext stand-in: token lookup + config + shared http client."""
+
+    def __init__(self, http):
+        self.user_id = "u1"
+        self._token = None
+        self.http_client = http
+        self.http_client_no_proxy = None
+        self.ssl_verify = True
+        self._cfg = {"GIT_BASE_URL": "https://ghe.example", "GIT_API_BASE_PATH": "/api/v3"}
+        self.secret_key = "test-secret-key"
+
+    def cfg(self, key, default=None):
+        return self._cfg.get(key, default)
+
+
+async def _fake_get_token(context, service_key):
+    return "ghp_secret-token-123456"
+
+
+@pytest.mark.asyncio
+async def test_http_error_body_redacts_token():
+    """GitHub gateways echo the submitted credential back in error bodies
+    (same pattern kong.py redacts). The resolved token must never reach the
+    LLM/history inside the returned error message."""
+    http = AsyncMock()
+
+    async def _boom(*args, **kwargs):
+        resp = httpx.Response(
+            401,
+            text='{"message": "Bad credentials: ghp_secret-token-123456"}',
+            request=httpx.Request("GET", "https://ghe.example/api/v3/user"),
+        )
+        raise httpx.HTTPStatusError(
+            "Unauthorized", request=resp.request, response=resp
+        )
+
+    http.get.side_effect = _boom
+
+    ctx = _FakeCtx(http)
+    with patch("agent_core.tools.github.get_token", _fake_get_token):
+        result = await GitHubTool().execute(
+            {"operation": "is_starred", "repository": "team/service"},
+            ctx,
+        )
+
+    assert result["error"].startswith("GitHub API returned 401")
+    assert "ghp_secret-token-123456" not in result["error"]
+    assert "REDACTED" in result["error"]

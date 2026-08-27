@@ -600,6 +600,10 @@ async def script_run_ws(run_id: str, ws: WebSocket):
                     .join(Project, Project.project_id == AutomationScript.project_id)
                     .where(
                         ScriptRun.run_id == run_id,
+                        # Re-assert ownership on every poll, not just at
+                        # connect: the socket outlives the run and must keep
+                        # refusing a run that was re-parented mid-stream.
+                        ScriptRun.triggered_by == user_id,
                         Project.is_active == True,  # noqa: E712
                     )
                 )

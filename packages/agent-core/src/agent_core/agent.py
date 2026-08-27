@@ -116,6 +116,22 @@ class AgentConfig:
     # (used by autonomous automation agents like QA that do data-setup calls).
     api_request_no_confirm: bool = False
 
+    @staticmethod
+    def _list_field(value: object) -> list[str]:
+        """Normalize a frontmatter list field to a list of strings.
+
+        LLM-written agent files often spell a list as a scalar:
+        `tools: "shell, filesystem"`. A raw scalar must not be returned as-is
+        — ``Agent.__init__`` iterates ``config.tools`` per item, so a string
+        would be iterated per character and silently drop every tool. Same
+        defense as ``memory_rw._coerce_tags``: strip and split on comma.
+        """
+        if isinstance(value, str):
+            return [v.strip() for v in value.split(",") if v.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value]
+        return []
+
     @classmethod
     def from_file(cls, path: str) -> "AgentConfig":
         post = frontmatter.load(path)
@@ -124,10 +140,10 @@ class AgentConfig:
             slug=meta["slug"],
             description=meta.get("description", ""),
             system_prompt=post.content,
-            tools=meta.get("tools", []),
-            skills=meta.get("skills", []),
-            workflows=meta.get("workflows", []),
-            knowledge=meta.get("knowledge", []),
+            tools=cls._list_field(meta.get("tools")),
+            skills=cls._list_field(meta.get("skills")),
+            workflows=cls._list_field(meta.get("workflows")),
+            knowledge=cls._list_field(meta.get("knowledge")),
             max_tokens=meta.get("max_tokens", 128000),
             token_budget=meta.get("token_budget", 100000),
             api_request_no_confirm=bool(meta.get("api_request_no_confirm", False)),
@@ -400,6 +416,14 @@ class Agent:
                 normalized_task["depends_on"] = [
                     id_map.get(str(dep), str(dep)) for dep in depends_on
                 ]
+            elif isinstance(depends_on, str):
+                # LLM stringified the dependency list — split it, or the DAG
+                # below would iterate character-by-character and silently
+                # drop every dependency (task runs too early).
+                normalized_task["depends_on"] = [
+                    id_map.get(str(dep), str(dep))
+                    for dep in depends_on.split(",") if dep.strip()
+                ]
             normalized.append(normalized_task)
 
         return normalized
@@ -424,6 +448,10 @@ class Agent:
         for t in tasks:
             tid = str(t["id"])
             raw_deps = t.get("depends_on") or []
+            if isinstance(raw_deps, str):
+                # Same defense as _normalize_task_plan: a stringified list
+                # would be iterated character-by-character below.
+                raw_deps = [d.strip() for d in raw_deps.split(",") if d.strip()]
             valid = {str(d) for d in raw_deps if str(d) in task_ids}
             deps[tid] = set(valid)
             for dep_id in valid:

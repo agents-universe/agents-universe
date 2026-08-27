@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from api.paths import PROJECTS_ROOT
+from api.routers.agents import _parse_refs, _parse_tool_list
 
 
 def _write_project_agent(ws_slug: str, agent_slug: str, display_name: str | None = None) -> None:
@@ -11,6 +12,36 @@ def _write_project_agent(ws_slug: str, agent_slug: str, display_name: str | None
         f'---\nslug: "{agent_slug}"\ndisplay_name: "{display_name or agent_slug}"\n---\n\nBody\n',
         encoding="utf-8",
     )
+
+
+def test_parse_tool_list_handles_scalar_json_string():
+    # agent_sync JSON-dumps a scalar `tools:` frontmatter value, so a list
+    # like `tools: "shell, filesystem"` is stored as `"\"shell, filesystem\""`.
+    assert _parse_tool_list('"shell, filesystem"') == ["shell", "filesystem"]
+
+
+def test_parse_tool_list_handles_plain_list():
+    assert _parse_tool_list('["shell", "filesystem"]') == ["shell", "filesystem"]
+
+
+def test_parse_tool_list_handles_raw_non_json():
+    assert _parse_tool_list("shell, filesystem") == ["shell", "filesystem"]
+
+
+def test_parse_refs_handles_scalar_json_string():
+    assert [r.slug for r in _parse_refs('"code-review"')] == ["code-review"]
+
+
+def test_parse_refs_handles_scalar_comma_json_string():
+    assert [r.slug for r in _parse_refs('"code-review, knowledge-manager"')] == [
+        "code-review",
+        "knowledge-manager",
+    ]
+
+
+def test_parse_refs_handles_list_of_dicts():
+    refs = _parse_refs('[{"slug": "a", "description": "A"}, "b"]')
+    assert [(r.slug, r.description) for r in refs] == [("a", "A"), ("b", "")]
 
 
 async def test_list_without_project_is_global_only(client, make_project):

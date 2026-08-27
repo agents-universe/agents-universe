@@ -31,6 +31,19 @@ async def test_service_token(
     # service_key may or may not contain ":" (e.g. "git", "jira", "jira:email", "kong:dev")
     provider = service_key.split(":", 1)[0]
 
+    def _redact(text: str, *secrets: str) -> str:
+        """Scrub the submitted credential(s) out of an error message.
+
+        Jira/Confluence gateways echo the credential in 401 bodies ("Bad
+        credentials: <token>") — returning that verbatim to the client prints
+        the key it just submitted. Same rule as api_keys.py / tokens.py.
+        """
+        for secret in secrets:
+            if secret:
+                text = text.replace(secret, "[REDACTED]")
+        return text
+
+    email = ""  # bound in the jira/confluence branches; referenced by _redact in except
     try:
         if provider == "git":
             from api.services.git_client import GitClient
@@ -61,7 +74,7 @@ async def test_service_token(
                 resp = await http.get(f"{jira.base_url}/rest/api/2/myself", headers=jira._headers)
             if resp.status_code == 200:
                 return {"ok": True, "provider": provider, "display_name": resp.json().get("displayName", "")}
-            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {_redact(resp.text[:200], plain, email)}"}
 
         elif provider == "confluence" and ":" not in service_key:
             from api.services.confluence_client import ConfluenceClient
@@ -79,7 +92,7 @@ async def test_service_token(
                 resp = await http.get(f"{conf._rest_base}/user/current", headers=conf._headers)
             if resp.status_code == 200:
                 return {"ok": True, "provider": provider, "display_name": resp.json().get("displayName", "")}
-            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            return {"ok": False, "provider": provider, "error": f"HTTP {resp.status_code}: {_redact(resp.text[:200], plain, email)}"}
 
         else:
             # jira:email, kong:*, and other plain values - no live test
@@ -87,7 +100,9 @@ async def test_service_token(
 
     except Exception as exc:
         traceback.print_exc()
-        return {"ok": False, "provider": provider, "error": str(exc) or "Token test failed"}
+        # str(exc) can embed the submitted credential ("Incorrect API key
+        # provided: sk-...") — never return it raw.
+        return {"ok": False, "provider": provider, "error": _redact(str(exc) or "Token test failed", plain, email) or "Token test failed"}
 
 
 async def _resolve_atlassian_email(db, user_id: str, project_id: str | None, cfg) -> str | None:

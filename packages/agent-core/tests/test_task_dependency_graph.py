@@ -98,6 +98,28 @@ def test_normalize_preserves_no_deps():
     assert normalized[1]["depends_on"] == []
 
 
+def test_normalize_coerces_string_depends_on():
+    """An LLM-stringified depends_on ("t1,t2") must split into a real list —
+    otherwise the DAG iterates characters and silently drops every dependency,
+    letting the task run before its prerequisites."""
+    tasks = _make_tasks([("t1", []), ("t2", ["t1"])])
+    # Stringify t2's deps the way an LLM tool-call argument might.
+    tasks[1]["depends_on"] = "t1"
+    normalized = Agent._normalize_task_plan(tasks)
+    new_id_1 = normalized[0]["id"]
+    assert normalized[1]["depends_on"] == [new_id_1]
+
+
+def test_graph_coerces_string_depends_on():
+    """_build_dependency_graph must survive a raw string depends_on too."""
+    tasks = _make_tasks([("a", []), ("b", ["a"])])
+    tasks[1]["depends_on"] = "a"
+    deps, dependents = Agent._build_dependency_graph(tasks)
+    # b depends on a → not initially ready.
+    assert "a" in deps["b"]
+    assert "b" in dependents["a"]
+
+
 # ── Existing tests still pass (regression) ──────────────────────────────
 # These are from test_agent_task_messages.py - verifying they still work
 # with the refactored code.

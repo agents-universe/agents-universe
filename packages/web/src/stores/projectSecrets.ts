@@ -45,8 +45,14 @@ export const useProjectSecretsStore = defineStore('projectSecrets', () => {
   }
 
   async function remove(projectId: string, secretId: string) {
+    const seq = loadSeq
     await deleteProjectSecret(projectId, secretId)
-    secrets.value = secrets.value.filter((s) => s.secret_id !== secretId)
+    // Same seq guard as create/update: a project switch while the DELETE was
+    // in flight (reset() bumped loadSeq) must not let this filter run against
+    // the NEW project's list — a matching secret_id there would vanish from
+    // the UI (not the DB). Reloading the DB list is also strictly more
+    // correct than a blind local filter (it cannot leave a stale row behind).
+    if (seq === loadSeq) await load(projectId)
   }
 
   function reset() {

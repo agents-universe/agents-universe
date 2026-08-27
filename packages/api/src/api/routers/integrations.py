@@ -41,6 +41,25 @@ def _external_error(service: str, e: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=f"External service unavailable: {service}")
 
 
+def _scrub_secret(value, secret: str):
+    """Recursively replace ``secret`` with ``[REDACTED]`` in strings.
+
+    Kong gateways echo the submitted x-api-key back in error bodies
+    ("invalid x-api-key: <token>") — the proxy returns those bodies to the
+    frontend verbatim, so the key must be scrubbed first (same rule as
+    kong.py / api_keys.py / tokens.py).
+    """
+    if not secret:
+        return value
+    if isinstance(value, dict):
+        return {k: _scrub_secret(v, secret) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_secret(v, secret) for v in value]
+    if isinstance(value, str):
+        return value.replace(secret, "[REDACTED]")
+    return value
+
+
 # ── System defaults ───────────────────────────────────────────────────────
 
 @router.get("/defaults")
@@ -414,10 +433,10 @@ async def kong_request(
                 body = resp.text
         else:
             body = resp.text
-        return {"status": resp.status_code, "body": body}
+        return {"status": resp.status_code, "body": _scrub_secret(body, token)}
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:
-        return {"status": e.response.status_code, "body": e.response.text}
+        return {"status": e.response.status_code, "body": _scrub_secret(e.response.text, token)}
     except Exception as e:
         raise _external_error("kong", e)

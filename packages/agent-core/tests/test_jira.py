@@ -1,6 +1,6 @@
 """Jira tool: JIRA_PROJECT_KEY must come from integration settings — cfg()'s
 credential-key guard (final segment "KEY") would never return it."""
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -103,3 +103,52 @@ async def test_add_comment_posts_wiki_markup_not_markdown():
 
     sent = http.post.call_args.kwargs["json"]["body"]
     assert sent == "h3. 执行结果\n\n* 通过\n* *回归通过*"
+
+
+class _MinimalCtx:
+    """Minimal stand-in for execute(): _build_client is patched, so only the
+    token getters and cfg() need to exist."""
+
+    def __init__(self):
+        self.user_id = "u1"
+        self.secret_key = "test-secret-key"
+
+    def cfg(self, key, default=None):
+        return default
+
+
+@pytest.mark.asyncio
+async def test_http_error_body_redacts_credential():
+    """Atlassian can echo the credential in 401 bodies — the resolved token
+    must never reach the LLM/history inside the returned error message."""
+    import httpx
+
+    tool = JiraTool()
+
+    client = AsyncMock()
+    client.api_token = "ATATT-secret-token-999"
+    client.email = "agent@example.com"
+    client.base_url = "https://jira.example.com"
+    client.auth_type = "bearer"
+
+    def _boom(key):
+        resp = httpx.Response(
+            401,
+            text='{"message": "Bad credentials: ATATT-secret-token-999"}',
+            request=httpx.Request("GET", "https://jira.example.com/rest/api/2/issue/DDM-1"),
+        )
+        raise httpx.HTTPStatusError("Unauthorized", request=resp.request, response=resp)
+
+    client.get_issue = AsyncMock(side_effect=_boom)
+
+    with patch("agent_core.tools.jira.get_token", return_value="ATATT-secret-token-999"), \
+         patch("agent_core.tools.jira.get_token_optional", return_value="agent@example.com"), \
+         patch.object(tool, "_build_client", new=AsyncMock(return_value=client)):
+        result = await tool.execute(
+            {"operation": "get_issue", "issue_key": "DDM-1"},
+            _MinimalCtx(),
+        )
+
+    assert result["error"].startswith("Jira API returned 401")
+    assert "ATATT-secret-token-999" not in result["error"]
+    assert "REDACTED" in result["error"]

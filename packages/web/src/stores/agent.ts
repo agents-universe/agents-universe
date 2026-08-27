@@ -39,8 +39,24 @@ export const useAgentStore = defineStore('agent', () => {
   function setCurrentAgent(agent: AgentInfo) {
     const changed = currentAgent.value?.slug !== agent.slug
     currentAgent.value = agent
+    // Persist under the LIVE current-project scope, not loadedForProject:
+    // reloadAgents() sets loadedForProject=undefined before its fetch lands,
+    // and a project-switch fetch leaves it holding the PREVIOUS project — a
+    // click in either window would write the slug under the wrong scope (the
+    // legacy global key), and _reconcileCurrentAgent's global-key fallback
+    // would then seed every project that never saved its own key (the exact
+    // "last-project-wins" leak the per-project key design exists to prevent).
+    // The project store persists its selection to localStorage synchronously
+    // and reads the same key via getSavedProjectId(), so reading the key here
+    // gives the live scope without importing the store (avoids the agent →
+    // project cycle) and without an async dynamic import (the persist must
+    // land before setCurrentAgent returns).
+    let scope: string | null | undefined = loadedForProject.value
     try {
-      localStorage.setItem(agentStorageKey(loadedForProject.value), agent.slug)
+      scope = localStorage.getItem('agents-universe:currentProjectId') ?? loadedForProject.value
+    } catch { /* storage unavailable — fall back to the loaded scope */ }
+    try {
+      localStorage.setItem(agentStorageKey(scope), agent.slug)
     } catch { /* storage unavailable — selection survives in memory only */ }
     if (changed) {
       // Conversations are bound to (project, agent). Switching agents while

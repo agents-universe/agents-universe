@@ -83,6 +83,28 @@ def test_plan_task_always_injected_even_when_tools_omit_it():
     assert "plan_task" in registry
 
 
+def test_allowlist_is_exact_plan_task_is_the_only_exemption():
+    # plan_task is exempt from an explicit tools: list; every OTHER core tool
+    # must honor the declaration. A tool omitted from the list (here memory_rw
+    # and knowledge_rw) must NOT be injected — the system prompt promises the
+    # agent "exactly the tools listed below", and memory_rw's secret-rejection
+    # guard is bypassable, so an undeclared memory_rw is a silent credential
+    # leak vector on agents whose definitions never asked for it.
+    registry = build_tool_registry(["shell", "filesystem"])
+    assert set(registry) == {"shell", "filesystem", "plan_task"}
+    assert "memory_rw" not in registry
+    assert "knowledge_rw" not in registry
+    # Declaring it makes it available again.
+    registry = build_tool_registry(["shell", "memory_rw"])
+    assert "memory_rw" in registry
+    # The agent's prompt section must not advertise undeclared tools.
+    agent = _make_agent(["shell"])
+    section = agent._get_static_prompt().split("## Available Tools & Behaviors", 1)[1]
+    assert "- **shell** —" in section
+    assert "- **memory_rw** —" not in section
+    assert "- **filesystem** —" not in section
+
+
 def test_every_declared_tool_class_loads_with_hint():
     classes = list(_CORE_TOOLS)
     for module_name in _OPTIONAL_TOOL_MODULES:

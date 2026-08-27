@@ -197,3 +197,15 @@ async def test_huge_image_rejected_before_decode(setup):
     )
     # normal image passes the guard; assert the guard exists via monkey-sized probe
     assert "error" not in result
+
+
+async def test_stringified_focus_areas_rejected_cleanly(setup):
+    """LLMs sometimes pass focus_areas as a string — must get a clear error,
+    not a character-by-character AttributeError crash."""
+    project, src, out = setup
+    result = await ImageAnnotatorTool().execute(
+        {"image_path": str(src), "output_path": str(out), "focus_areas": "box at 100,100"},
+        make_context(str(project)),
+    )
+    assert "error" in result
+    assert "array" in result["error"].lower()

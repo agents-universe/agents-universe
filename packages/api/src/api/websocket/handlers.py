@@ -1377,6 +1377,14 @@ async def _handle_message(
                                 _turn_error = _turn_error or "Model returned no output"
                             else:
                                 _run_status = "completed"
+                            # Whether the interrupted partial output landed in a
+                            # Message row below (drives the snapshot decision at
+                            # finish_run: a persisted partial needs no recovery
+                            # snapshot - see materialize_interrupted_snapshots).
+                            _persisted_interrupted = (
+                                _run_status == "interrupted"
+                                and bool(msg_id and (_has_content or _turn_error))
+                            )
                             if (msg_id and (_has_content or _turn_error)):
                                 _log.info(
                                     "Persisting assistant stream: conversation=%s message_id=%s text_chars=%d tool_calls=%d plan_task_calls=%d images=%d files=%d error=%s",
@@ -1420,7 +1428,18 @@ async def _handle_message(
                                         run_id, _run_status,
                                         error_message=_turn_error if _run_status == "failed" else None,
                                         tokens_used=int(event.data.get("total_tokens") or 0),
-                                        snapshot=_text_buf if _run_status == "interrupted" else None,
+                                        # Keep the snapshot ONLY when the partial
+                                        # output never made it into a Message row:
+                                        # the startup sweep materializes it later.
+                                        # A persisted turn already carries its
+                                        # partial in history - a kept snapshot
+                                        # would duplicate it on recovery.
+                                        snapshot=(
+                                            _text_buf
+                                            if _run_status == "interrupted"
+                                            and not _persisted_interrupted
+                                            else None
+                                        ),
                                     )
                                 except Exception:
                                     _log.warning("finish_run(stream_end) failed for %s", conversation_id, exc_info=True)
@@ -2083,7 +2102,16 @@ async def _load_active_task_plan(db, conversation_id: str) -> str:
     for task in tasks:
         icon = STATUS_ICON.get(task.status, " ")
         suffix = f" ({task.status})" if task.status not in ("pending", "completed") else ""
-        lines.append(f"[{icon}] {task.sequence_num}. {task.title}{suffix}")
+        # Outcome detail per task: a resumed conversation (previous run
+        # interrupted) must let the agent tell finished work from work to
+        # redo without re-reading the whole history. Truncated - the summary
+        # is a pointer, not a transcript.
+        detail = ""
+        if task.status == "completed" and task.result_summary:
+            detail = f" - {task.result_summary[:200]}"
+        elif task.status == "failed" and task.error_message:
+            detail = f" - {task.error_message[:200]}"
+        lines.append(f"[{icon}] {task.sequence_num}. {task.title}{suffix}{detail}")
     return "\n".join(lines)
 
 

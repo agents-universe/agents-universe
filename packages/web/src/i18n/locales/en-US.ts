@@ -212,9 +212,8 @@ export default {
     abortFailed: 'Abort failed, please retry.',
     compressConfirm: 'Compress the current context?',
     compressFailed: 'Compression failed',
-    runInterrupted: 'The last run was interrupted before it finished.',
-    runFailed: 'The last run failed.',
-    rerun: 'Rerun',
+    runInterrupted: 'The last run was interrupted. Type a message to continue the task where it stopped.',
+    runFailed: 'The last run failed. Type a message to retry.',
   },
   streamingStatus: {
     waitingInput: 'Waiting for input: {title}',

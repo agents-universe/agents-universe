@@ -140,9 +140,16 @@ async def lifespan(app: FastAPI):
             logging.getLogger("agents_universe.startup").exception("Project deletion sweep failed")
         # In-flight turns from a previous process are dead (all run state is
         # in-memory): flip their rows so a reopened conversation shows an
-        # interrupted notice instead of a silently vanished turn. Single
-        # replica — see interrupt_stale_runs docstring.
-        from .services.conversation_runs import interrupt_stale_runs
+        # interrupted notice instead of a silently vanished turn. The partial
+        # output of those turns is then materialized into the message history
+        # so the next turn's agent context includes it (the user continues by
+        # typing, not re-running), and mid-flight task rows settle to failed.
+        # Single replica — see interrupt_stale_runs docstring.
+        from .services.conversation_runs import (
+            interrupt_stale_runs,
+            interrupt_stale_tasks,
+            materialize_interrupted_snapshots,
+        )
         try:
             _stale = await interrupt_stale_runs(sweep_db)
             if _stale:
@@ -153,6 +160,24 @@ async def lifespan(app: FastAPI):
             # Recoverable; must never prevent the API from starting.
             import logging
             logging.getLogger("agents_universe.startup").exception("Conversation run sweep failed")
+        try:
+            _recovered = await materialize_interrupted_snapshots(sweep_db)
+            if _recovered:
+                logging.getLogger("agents_universe.startup").info(
+                    "Materialized %d interrupted-run snapshots into history", _recovered
+                )
+        except Exception:
+            import logging
+            logging.getLogger("agents_universe.startup").exception("Snapshot materialization sweep failed")
+        try:
+            _stale_tasks = await interrupt_stale_tasks(sweep_db)
+            if _stale_tasks:
+                logging.getLogger("agents_universe.startup").info(
+                    "Settled %d stale agent tasks to failed", _stale_tasks
+                )
+        except Exception:
+            import logging
+            logging.getLogger("agents_universe.startup").exception("Agent task sweep failed")
 
     app.state.knowledge_cache = KnowledgeCache()
 

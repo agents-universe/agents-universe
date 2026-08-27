@@ -2,12 +2,12 @@
   <div class="run-notice" :class="`run-notice-${props.run.status}`">
     <div class="run-notice-head">
       <span class="run-notice-label">{{ label }}</span>
-      <button v-if="props.canRerun" class="run-notice-rerun" @click="emit('rerun')">
-        {{ t('chatPanel.rerun') }}
-      </button>
     </div>
-    <!-- Partial text recovered from the interrupted run's snapshot — the
-         message row was never persisted, so this is all that survived. -->
+    <!-- Partial text recovered from the interrupted run's snapshot - the
+         message row was never persisted, so this is all that survived.
+         Normally the startup sweep has already materialized the partial into
+         the history above; this block is the fallback for a snapshot that
+         has not been recovered yet. -->
     <pre v-if="props.run.streaming_snapshot" class="run-notice-snapshot">{{ props.run.streaming_snapshot }}</pre>
     <!-- Failed runs: the reason the turn died (provider exception, empty
          output…). Empty text means the turn was marked failed with no
@@ -23,10 +23,7 @@ import type { ConversationRun } from '@/types'
 
 const props = defineProps<{
   run: ConversationRun
-  canRerun: boolean
 }>()
-
-const emit = defineEmits<{ rerun: [] }>()
 
 const { t } = useI18n()
 
@@ -58,22 +55,6 @@ const label = computed(() =>
 .run-notice-label {
   font-weight: 500;
   color: var(--color-text, inherit);
-}
-.run-notice-rerun {
-  flex-shrink: 0;
-  padding: 2px 10px;
-  border: 1px solid currentColor;
-  border-radius: 6px;
-  background: transparent;
-  color: #b45309;
-  cursor: pointer;
-  font-size: 12px;
-}
-.run-notice-failed .run-notice-rerun {
-  color: #b91c1c;
-}
-.run-notice-rerun:hover {
-  background: rgba(0, 0, 0, 0.05);
 }
 .run-notice-snapshot {
   margin: 6px 0 0;

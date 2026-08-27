@@ -19,7 +19,6 @@ describe('RunNotice', () => {
     const wrapper = mount(RunNotice, {
       props: {
         run: { ...base, error_message: 'LLM API error: 404 model=deepseek-v4-flash' },
-        canRerun: true,
       },
     })
     expect(wrapper.text()).toContain('LLM API error: 404')
@@ -29,7 +28,6 @@ describe('RunNotice', () => {
     const wrapper = mount(RunNotice, {
       props: {
         run: { ...base, status: 'interrupted', streaming_snapshot: 'partial text' },
-        canRerun: false,
       },
     })
     expect(wrapper.text()).toContain('partial text')
@@ -37,7 +35,7 @@ describe('RunNotice', () => {
 
   it('omits the error text when the failed run has none', () => {
     const wrapper = mount(RunNotice, {
-      props: { run: base, canRerun: false },
+      props: { run: base },
     })
     expect(wrapper.find('.run-notice-snapshot').exists()).toBe(false)
   })

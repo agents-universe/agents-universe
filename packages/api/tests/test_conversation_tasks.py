@@ -180,3 +180,35 @@ async def test_persist_terminal_task_event_skipped_writes_row_and_log(client, db
         )
     )).scalars().all()
     assert len(events) == 1, f"应写入 1 条 task_skipped 日志，got {len(events)}"
+
+
+async def test_load_active_task_plan_includes_outcome_details(client, db, make_project):
+    """_load_active_task_plan：完成/失败任务附上 result_summary / error_message，
+    中断后继续任务时 agent 不必重读历史即可分辨已完成与需重做的工作。"""
+    project = await make_project()
+    conv = await _make_conversation(client, db, project)
+    _add_task(db, conv.conversation_id, f"t-done-{_uid()}", "任务A", 1, "completed")
+    _add_task(db, conv.conversation_id, f"t-fail-{_uid()}", "任务B", 2, "failed")
+    _add_task(db, conv.conversation_id, f"t-todo-{_uid()}", "任务C", 3, "pending")
+    await db.commit()
+
+    from api.models.conversation import AgentTask as _AgentTask
+
+    # 会话内按状态定位（共享测试库中其他用例的任务不可被波及）
+    rows = (await db.execute(
+        select(_AgentTask).where(_AgentTask.conversation_id == conv.conversation_id)
+    )).scalars().all()
+    for row in rows:
+        if row.status == "completed":
+            row.result_summary = "生成了报告初稿"
+        elif row.status == "failed":
+            row.error_message = "运行中断"
+    await db.commit()
+
+    from api.websocket.handlers import _load_active_task_plan
+
+    ctx = await _load_active_task_plan(db, conv.conversation_id)
+
+    assert "[✓] 1. 任务A - 生成了报告初稿" in ctx
+    assert "[✗] 2. 任务B (failed) - 运行中断" in ctx
+    assert "[ ] 3. 任务C" in ctx

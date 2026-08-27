@@ -19,20 +19,20 @@ function makeRun(over: Partial<ConversationRun> = {}): ConversationRun {
 
 describe('RunNotice', () => {
   it('shows the interrupted label for interrupted runs', () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun(), canRerun: true } })
-    expect(wrapper.find('.run-notice-label').text()).toBe('上次运行被中断，未完成。')
+    const wrapper = mount(RunNotice, { props: { run: makeRun() } })
+    expect(wrapper.find('.run-notice-label').text()).toBe('上次运行被中断。直接输入消息即可继续之前的任务。')
     expect(wrapper.classes()).not.toContain('run-notice-failed')
   })
 
   it('shows the failed label and failed styling for failed runs', () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun({ status: 'failed' }), canRerun: true } })
-    expect(wrapper.find('.run-notice-label').text()).toBe('上次运行失败。')
+    const wrapper = mount(RunNotice, { props: { run: makeRun({ status: 'failed' }) } })
+    expect(wrapper.find('.run-notice-label').text()).toBe('上次运行失败。可直接输入消息重试。')
     expect(wrapper.classes()).toContain('run-notice-failed')
   })
 
   it('renders the recovered partial text from the snapshot', () => {
     const wrapper = mount(RunNotice, {
-      props: { run: makeRun({ streaming_snapshot: 'partial answer...' }), canRerun: true },
+      props: { run: makeRun({ streaming_snapshot: 'partial answer...' }) },
     })
     const snapshot = wrapper.find('.run-notice-snapshot')
     expect(snapshot.exists()).toBe(true)
@@ -40,23 +40,12 @@ describe('RunNotice', () => {
   })
 
   it('hides the snapshot when the run has no recovered text', () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun(), canRerun: true } })
+    const wrapper = mount(RunNotice, { props: { run: makeRun() } })
     expect(wrapper.find('.run-notice-snapshot').exists()).toBe(false)
   })
 
-  it('shows the rerun button when canRerun and the message still exists', () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun(), canRerun: true } })
-    expect(wrapper.find('.run-notice-rerun').exists()).toBe(true)
-  })
-
-  it('hides the rerun button when the original user message was compacted away', () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun(), canRerun: false } })
-    expect(wrapper.find('.run-notice-rerun').exists()).toBe(false)
-  })
-
-  it('emits rerun when the button is clicked', async () => {
-    const wrapper = mount(RunNotice, { props: { run: makeRun(), canRerun: true } })
-    await wrapper.find('.run-notice-rerun').trigger('click')
-    expect(wrapper.emitted('rerun')).toHaveLength(1)
+  it('never renders a rerun button - continuation is typing, not clicking', () => {
+    const wrapper = mount(RunNotice, { props: { run: makeRun() } })
+    expect(wrapper.find('button').exists()).toBe(false)
   })
 })

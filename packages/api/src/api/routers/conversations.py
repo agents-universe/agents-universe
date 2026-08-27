@@ -89,6 +89,10 @@ async def get_latest_conversation(
     current_user: UserInfo = Depends(get_current_user),
     project: Project = Depends(authorize_project),
 ):
+    # Activity order, not creation order: updated_at bumps on every persisted
+    # message, so a conversation the user returns to sorts by its last
+    # message time. Legacy rows predate the bump (NULL) - COALESCE falls back
+    # to created_at for them.
     query = (
         select(Conversation)
         .where(
@@ -96,7 +100,7 @@ async def get_latest_conversation(
             Conversation.user_id == current_user.user_id,
             Conversation.status == "active",
         )
-        .order_by(Conversation.created_at.desc())
+        .order_by(func.coalesce(Conversation.updated_at, Conversation.created_at).desc())
         .limit(1)
     )
     if agent_slug:
@@ -167,6 +171,9 @@ async def list_conversations(
         .scalar_subquery()
     )
 
+    # Activity order, not creation order: updated_at bumps on every persisted
+    # message, so resuming after a reload lands in the conversation that was
+    # actually used last. Legacy NULL rows fall back to created_at.
     query = (
         select(
             Conversation,
@@ -182,7 +189,7 @@ async def list_conversations(
             Conversation.user_id == current_user.user_id,
             Conversation.status == "active",
         )
-        .order_by(Conversation.created_at.desc())
+        .order_by(func.coalesce(Conversation.updated_at, Conversation.created_at).desc())
         .limit(50)
     )
     if agent_slug:
@@ -207,6 +214,9 @@ async def list_conversations(
             "last_run_status": row.last_run_status,
             "is_running": ws_manager.is_turn_active(str(row.Conversation.conversation_id)),
             "created_at": row.Conversation.created_at.isoformat(),
+            # Last-activity time (NULL for legacy rows never bumped) - the
+            # sidebar shows this in preference to created_at.
+            "updated_at": row.Conversation.updated_at.isoformat() if row.Conversation.updated_at else None,
         }
         for row in rows
     ]

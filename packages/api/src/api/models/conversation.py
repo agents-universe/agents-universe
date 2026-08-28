@@ -22,6 +22,10 @@ class Conversation(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), nullable=False)
     agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.agent_id"))
     user_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Origin of the conversation: NULL/"" = ordinary sidebar conversation;
+    # "publish" = public-initiated (embedded page or external API), filtered
+    # from the user's sidebar.
+    source: Mapped[str | None] = mapped_column(String(20))
     title: Mapped[str | None] = mapped_column(Unicode(255))
     status: Mapped[str] = mapped_column(String(50), default="active")
     token_budget: Mapped[int] = mapped_column(Integer, default=128000)

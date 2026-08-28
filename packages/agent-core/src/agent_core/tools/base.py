@@ -89,6 +89,10 @@ class ToolContext:
         self.framework_root = framework_root
         self.secret_key = secret_key
         self.session_memories: list[dict] = session_memories if session_memories is not None else []
+        # Whether this run may pause for human interaction. False for headless
+        # runs (published agents) — confirmation prompts must degrade to a
+        # readable error instead of blocking on an answer nobody can give.
+        self.interactive: bool = True
         self.upload_file_lookup = upload_file_lookup
         self.upload_file_names = upload_file_names
         self.ssl_verify: bool = False

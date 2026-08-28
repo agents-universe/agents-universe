@@ -171,6 +171,20 @@ class ConnectionManager:
     def get_abort_event(self, conversation_id: str) -> asyncio.Event | None:
         return self._abort_events.get(conversation_id)
 
+    def ensure_abort_event(self, conversation_id: str) -> asyncio.Event:
+        """Return the conversation's abort event, creating it if absent.
+
+        WS turns get theirs from ``connect()``; SSE publish streams never open
+        a socket, so without this their abort would be a no-op (signal_abort
+        on a missing event is silently dropped). Idempotent and thread-safe by
+        construction (single-threaded event loop).
+        """
+        event = self._abort_events.get(conversation_id)
+        if event is None:
+            event = asyncio.Event()
+            self._abort_events[conversation_id] = event
+        return event
+
     def signal_abort(self, conversation_id: str) -> None:
         event = self._abort_events.get(conversation_id)
         if event:

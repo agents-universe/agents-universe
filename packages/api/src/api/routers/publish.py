@@ -402,6 +402,13 @@ async def publish_stream(
         _publish_semaphore.release()
         raise HTTPException(status_code=409, detail="该会话已有一轮运行")
 
+    # SSE paths never open a WS, so no abort event exists (WS turns get one
+    # from connect()). Without it, run_turn's abort watcher is never created
+    # and an abort request is a silent no-op. Create the event up front and
+    # clear any stale set state from a previous turn on this conversation.
+    manager.ensure_abort_event(conversation)
+    manager.reset_abort(conversation)
+
     stream = SSEStream()
     from types import SimpleNamespace
     from api.services.agent_turn import run_turn
@@ -673,6 +680,12 @@ async def post_publish_session_run(
     if not await manager.claim_turn(conversation):
         _publish_semaphore.release()
         raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+
+    # Same abort-event guarantee as the API-key stream: SSE never connects a
+    # WS, so the event (and with it run_turn's abort watcher) must exist
+    # before the turn starts, or "stop" is a silent no-op.
+    manager.ensure_abort_event(conversation)
+    manager.reset_abort(conversation)
 
     stream = SSEStream()
     from types import SimpleNamespace

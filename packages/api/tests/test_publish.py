@@ -520,6 +520,49 @@ async def test_session_run_bad_token(client, db, make_project, as_user):
     assert r2.status_code == 404
 
 
+async def test_session_run_creates_abort_event(
+    client, db, make_project, as_user, monkeypatch
+):
+    """The SSE stream path must register an abort event for the conversation.
+
+    Abort events are normally created on WS ``connect()``; publish streams
+    never open a socket, so without ensure_abort_event run_turn's abort
+    watcher is never created and "stop" is a silent no-op. Hitting the stream
+    endpoint must leave a settable event behind.
+    """
+    publish, _ = await _make_publish(db, make_project)
+    token = _make_viewer_token(str(publish.publish_id), "test-user")
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "hi"})
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    from api.services.publish import get_or_create_publish_conversation
+    from api.websocket.manager import manager
+
+    conv_id = await get_or_create_publish_conversation(db, publish)
+    # No WS was ever connected, so no event exists yet.
+    assert manager.get_abort_event(conv_id) is None
+
+    async with as_user("test-user"):
+        async with client.stream(
+            "POST", f"/api/p/{publish.publish_id}/session/run",
+            json={"token": token, "message": "ping"},
+        ) as resp:
+            assert resp.status_code == 200
+            async for _ in resp.aiter_lines():
+                pass
+
+    # The stream registered the event; abort now actually fires.
+    event = manager.get_abort_event(conv_id)
+    assert event is not None
+    assert not event.is_set()
+    manager.signal_abort(conv_id)
+    assert event.is_set()
+
+
 async def test_session_abort(client, db, make_project, as_user, monkeypatch):
     """A viewer can abort the running turn of the shared publish conversation."""
     publish, _ = await _make_publish(db, make_project)

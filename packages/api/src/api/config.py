@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     # true/false overrides. Defaulting to False leaks the session cookie over
     # plaintext on HTTPS deployments .
     oauth_secure_cookie: bool | None = None
+    # Lifetime of the OAuth state nonce, the duplicate-callback recovery cache,
+    # and the signed anchor cookie. All three must outlive a full login
+    # round-trip: a user can sit on the SSO page (or the api container can
+    # restart mid-login) long past 10 minutes, and an expired state bounces
+    # them back to the login page instead of signing them in.
+    oauth_state_ttl: int = 1800
 
     @property
     def cookie_secure(self) -> bool:

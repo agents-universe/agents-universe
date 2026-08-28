@@ -72,7 +72,7 @@ async def delete_session(redis: Redis, session_id: str) -> None:
 
 # ── OAuth state (CSRF nonce) ───────────────────────────────────────────────
 
-async def save_oauth_state(redis: Redis, state: str, ttl: int = 300) -> None:
+async def save_oauth_state(redis: Redis, state: str, ttl: int = 1800) -> None:
     await redis.setex(f"oauth_state:{state}", ttl, "1")
 
 
@@ -98,7 +98,7 @@ async def validate_and_consume_state(redis: Redis, state: str) -> bool:
 
 # ── OAuth session cache (duplicate-callback resilience) ────────────────────
 
-async def save_oauth_session(redis: Redis, state: str, session_id: str, ttl: int = 600) -> None:
+async def save_oauth_session(redis: Redis, state: str, session_id: str, ttl: int = 1800) -> None:
     """Cache the session_id that resulted from an OAuth callback.
 
     Browsers (speculative prefetch, proxy retries) sometimes fire the

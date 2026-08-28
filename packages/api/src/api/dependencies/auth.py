@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 import redis.exceptions
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -33,6 +33,7 @@ class UserInfo:
 
 async def get_current_user(
     request: Request,
+    response: Response,
     redis: Redis = Depends(get_redis),
 ) -> UserInfo:
     """Validate the session cookie and return the authenticated user."""
@@ -62,6 +63,21 @@ async def get_current_user(
         # Best-effort tracking/renewal — a failed EXPIRE must not fail the
         # request (the session key itself is still valid until its TTL).
         _log.warning("Session tracking/renewal failed: %s", e)
+    # Sliding cookie: the Redis session is renewed above, but the browser
+    # cookie is only set at login with a fixed max_age — without re-sending
+    # it the browser deletes the cookie at the original login+24h mark while
+    # the session is still valid, kicking an active user to the login page.
+    # FastAPI merges cookies set on the injected Response into the actual
+    # response (JSON and plain HTTP; streaming responses skip the merge).
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=session_id,
+        max_age=settings.session_ttl,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path="/",
+    )
     return UserInfo(user_id=data["user_id"], display_name=data.get("display_name"))
 
 

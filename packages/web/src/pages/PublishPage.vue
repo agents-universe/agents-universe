@@ -17,92 +17,105 @@
       <!-- Ambient glow -->
       <div class="publish-glow" aria-hidden="true" />
 
-      <header class="publish-header">
-        <div class="publish-agent-avatar">
-          <Bot :size="24" />
-        </div>
-        <div class="publish-header-info">
-          <span class="publish-header-eyebrow">{{ t('publishPage.embeddedTitle') }}</span>
-          <h1 class="publish-title">{{ session.title || session.agent?.display_name || session.agent?.slug || t('publishPage.untitled') }}</h1>
-          <p v-if="session.description" class="publish-desc">{{ session.description }}</p>
-        </div>
-        <span class="publish-badge" title="模型由发布者绑定">
-          <Zap :size="11" />
-          {{ t('publishPage.publisherModelBadge') }}
-        </span>
-      </header>
-
-      <div class="publish-chat">
-        <!-- History -->
-        <div class="publish-messages" ref="scrollEl">
-          <div v-if="!messages.length && !streamingText" class="publish-welcome">
-            <div class="publish-welcome-icon">
-              <Sparkles :size="22" />
-            </div>
-            <p class="publish-welcome-title">{{ t('publishPage.welcomeTitle') }}</p>
-            <p class="publish-welcome-hint">{{ t('publishPage.welcomeHint') }}</p>
+      <!-- The window is a centered floating dialog card: a real "chat box"
+           with its own header bar, message area and composer — not a page
+           that fills the viewport. -->
+      <div class="publish-window">
+        <header class="publish-header">
+          <div class="publish-agent-avatar">
+            <Bot :size="24" />
           </div>
-
-          <div
-            v-for="msg in messages"
-            :key="msg.message_id"
-            class="publish-bubble"
-            :class="[msg.role === 'user' ? 'user' : 'assistant', { error: msg.error }]"
-          >
-            <div v-if="msg.role !== 'user'" class="publish-bubble-meta">
-              <span class="publish-bubble-dot" />
-              <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
-              <span class="publish-bubble-time">{{ fmtTime(msg.created_at) }}</span>
-            </div>
-            <div class="publish-bubble-body" v-html="renderMarkdown(msg.content)" />
+          <div class="publish-header-info">
+            <span class="publish-header-eyebrow">{{ t('publishPage.embeddedTitle') }}</span>
+            <h1 class="publish-title">{{ session.title || session.agent?.display_name || session.agent?.slug || t('publishPage.untitled') }}</h1>
+            <p v-if="session.description" class="publish-desc">{{ session.description }}</p>
           </div>
-
-          <div v-if="streamingText" class="publish-bubble assistant streaming">
-            <div class="publish-bubble-meta">
-              <span class="publish-bubble-dot" />
-              <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
-              <span class="publish-typing">{{ t('publishPage.typing') }}</span>
-            </div>
-            <div class="publish-bubble-body" v-html="renderMarkdown(streamingText)" />
-            <span class="publish-cursor" />
-          </div>
-        </div>
-
-        <form class="publish-composer" @submit.prevent="submit">
-          <div class="publish-composer-box">
-            <textarea
-              v-model="draft"
-              :placeholder="t('publishPage.placeholder')"
-              :disabled="sending || running"
-              rows="1"
-              @keydown.enter.exact.prevent="submit"
-              @keydown.enter.exact.meta="submit"
-              @input="autosize"
-              ref="composerEl"
-            />
-          </div>
+          <span class="publish-badge" title="模型由发布者绑定">
+            <Zap :size="11" />
+            {{ t('publishPage.publisherModelBadge') }}
+          </span>
           <button
-            v-if="running"
             type="button"
-            class="publish-abort"
-            :disabled="sending"
-            @click="abort"
-            :title="t('publishPage.abort')"
+            class="publish-close"
+            :title="t('common.close')"
+            @click="close"
           >
-            <Square :size="14" />
-            <span>{{ t('publishPage.abort') }}</span>
+            <X :size="16" />
           </button>
-          <button
-            v-else
-            type="submit"
-            class="publish-send"
-            :disabled="sending || running || !draft.trim()"
-            :title="t('publishPage.send')"
-          >
-            <Send :size="15" />
-            <span>{{ sending ? t('publishPage.sending') : t('publishPage.send') }}</span>
-          </button>
-        </form>
+        </header>
+
+        <div class="publish-chat">
+          <!-- History -->
+          <div class="publish-messages" ref="scrollEl">
+            <div v-if="!messages.length && !streamingText" class="publish-welcome">
+              <div class="publish-welcome-icon">
+                <Sparkles :size="22" />
+              </div>
+              <p class="publish-welcome-title">{{ t('publishPage.welcomeTitle') }}</p>
+              <p class="publish-welcome-hint">{{ t('publishPage.welcomeHint') }}</p>
+            </div>
+
+            <div
+              v-for="msg in messages"
+              :key="msg.message_id"
+              class="publish-bubble"
+              :class="[msg.role === 'user' ? 'user' : 'assistant', { error: msg.error }]"
+            >
+              <div v-if="msg.role !== 'user'" class="publish-bubble-meta">
+                <span class="publish-bubble-dot" />
+                <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
+                <span class="publish-bubble-time">{{ fmtTime(msg.created_at) }}</span>
+              </div>
+              <div class="publish-bubble-body" v-html="renderMarkdown(msg.content)" />
+            </div>
+
+            <div v-if="streamingText" class="publish-bubble assistant streaming">
+              <div class="publish-bubble-meta">
+                <span class="publish-bubble-dot" />
+                <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
+                <span class="publish-typing">{{ t('publishPage.typing') }}</span>
+              </div>
+              <div class="publish-bubble-body" v-html="renderMarkdown(streamingText)" />
+              <span class="publish-cursor" />
+            </div>
+          </div>
+
+          <form class="publish-composer" @submit.prevent="submit">
+            <div class="publish-composer-box">
+              <textarea
+                v-model="draft"
+                :placeholder="t('publishPage.placeholder')"
+                :disabled="sending || running"
+                rows="1"
+                @keydown.enter.exact.prevent="submit"
+                @keydown.enter.exact.meta="submit"
+                @input="autosize"
+                ref="composerEl"
+              />
+            </div>
+            <button
+              v-if="running"
+              type="button"
+              class="publish-abort"
+              :disabled="sending"
+              @click="abort"
+              :title="t('publishPage.abort')"
+            >
+              <Square :size="14" />
+              <span>{{ t('publishPage.abort') }}</span>
+            </button>
+            <button
+              v-else
+              type="submit"
+              class="publish-send"
+              :disabled="sending || running || !draft.trim()"
+              :title="t('publishPage.send')"
+            >
+              <Send :size="15" />
+              <span>{{ sending ? t('publishPage.sending') : t('publishPage.send') }}</span>
+            </button>
+          </form>
+        </div>
       </div>
     </template>
   </div>
@@ -110,13 +123,14 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bot, Send, Square, Sparkles, Loader2, Zap, AlertTriangle } from 'lucide-vue-next'
+import { Bot, Send, Square, Sparkles, Loader2, Zap, AlertTriangle, X } from 'lucide-vue-next'
 import { publishApi } from '@/api/publish'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
+const router = useRouter()
 const { t } = useI18n()
 
 const publishId = computed(() => route.params.publishId as string)
@@ -136,6 +150,17 @@ const composerEl = ref<HTMLTextAreaElement | null>(null)
 let inflight = false
 
 const token = computed(() => session.value?.token ?? '')
+
+// Close the floating chat window. Back to where the user came from (usually
+// the publishes management page); a direct visit/refresh leaves no in-app
+// history, so router.back() would exit the app entirely — fall back to /app.
+function close() {
+  if (router.options.history.state.back !== null) {
+    router.back()
+  } else {
+    router.push('/app')
+  }
+}
 
 function fmtTime(iso: string): string {
   if (!iso) return ''
@@ -263,36 +288,72 @@ onUnmounted(() => { inflight = false })
 </script>
 
 <style scoped>
+/* Full-viewport flexbox that centers the chat window — the page itself is
+   just a stage; the dialog card below carries the "this is a chat box" look. */
 .publish-page {
-  max-width: 820px;
-  margin: 0 auto;
-  padding: 28px 16px 32px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  position: relative;
+}
+
+/* The floating dialog card: solid opaque body, strong border, deep shadow,
+   a gradient top edge and an inner chat area — reads as a window, not as
+   page content laid on the background. */
+.publish-window {
+  position: relative;
+  width: min(880px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 40px rgba(107, 159, 255, 0.06);
+}
+
+/* Gradient top edge echoing the composer's glow line */
+.publish-window::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 10%, rgba(107, 159, 255, 0.35) 50%, transparent 90%);
+  z-index: 2;
 }
 
 /* Ambient glow behind the header, echoing the app's aurora background */
 .publish-glow {
   position: absolute;
-  top: -120px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
-  width: 560px;
-  height: 320px;
+  transform: translate(-50%, -50%);
+  width: 640px;
+  height: 480px;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(107, 159, 255, 0.12) 0%, rgba(139, 92, 246, 0.06) 45%, transparent 70%);
   pointer-events: none;
   filter: blur(6px);
+  z-index: 0;
+}
+
+/* All three regions sit inside the window, so pointer events pass through
+   the glow. */
+.publish-window > * {
+  position: relative;
+  z-index: 1;
 }
 
 .publish-state {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 50vh;
 }
 
 .publish-spinner {
@@ -325,14 +386,12 @@ onUnmounted(() => { inflight = false })
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  margin-bottom: 18px;
-  padding: 18px 20px;
+  padding: 16px 18px;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur, 12px));
   -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4), 0 0 24px rgba(107, 159, 255, 0.05);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .publish-agent-avatar {
@@ -391,27 +450,44 @@ onUnmounted(() => { inflight = false })
   margin-top: 2px;
 }
 
+/* Close button in the header bar — same visual as the modal close. */
+.publish-close {
+  flex: none;
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.publish-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-color: var(--border-strong);
+}
+
 .publish-chat {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur, 12px));
-  -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
 }
 
 .publish-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 240px;
 }
 
 /* Welcome / empty state */
@@ -697,8 +773,13 @@ onUnmounted(() => { inflight = false })
 .publish-abort:disabled { opacity: 0.4; cursor: not-allowed; }
 
 @media (max-width: 640px) {
-  .publish-page { padding: 16px 10px 20px; }
-  .publish-header { padding: 14px 14px; }
+  .publish-page { padding: 8px; }
+  .publish-window {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    border-radius: 12px;
+  }
+  .publish-header { padding: 12px 12px; }
   .publish-badge { display: none; }
   .publish-messages { padding: 14px; }
 }

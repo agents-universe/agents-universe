@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .database import engine
 from .logging_setup import setup_logging
+import logging
 from .middleware.logging import StructuredLoggingMiddleware
 
 settings = get_settings()
@@ -100,6 +101,7 @@ async def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log = logging.getLogger("agents_universe.startup")
     from .services.redis_client import init_redis, close_redis
     from agent_core.knowledge.cache import KnowledgeCache
     from agent_core.skills.registry import SkillRegistry
@@ -136,8 +138,7 @@ async def lifespan(app: FastAPI):
             await startup_sweep(sweep_db)
         except Exception:
             # Cleanup is recoverable; it must never prevent the API from starting.
-            import logging
-            logging.getLogger("agents_universe.startup").exception("Project deletion sweep failed")
+            log.exception("Project deletion sweep failed")
         # In-flight turns from a previous process are dead (all run state is
         # in-memory): flip their rows so a reopened conversation shows an
         # interrupted notice instead of a silently vanished turn. The partial
@@ -153,31 +154,28 @@ async def lifespan(app: FastAPI):
         try:
             _stale = await interrupt_stale_runs(sweep_db)
             if _stale:
-                logging.getLogger("agents_universe.startup").info(
+                log.info(
                     "Marked %d stale conversation runs interrupted", _stale
                 )
         except Exception:
             # Recoverable; must never prevent the API from starting.
-            import logging
-            logging.getLogger("agents_universe.startup").exception("Conversation run sweep failed")
+            log.exception("Conversation run sweep failed")
         try:
             _recovered = await materialize_interrupted_snapshots(sweep_db)
             if _recovered:
-                logging.getLogger("agents_universe.startup").info(
+                log.info(
                     "Materialized %d interrupted-run snapshots into history", _recovered
                 )
         except Exception:
-            import logging
-            logging.getLogger("agents_universe.startup").exception("Snapshot materialization sweep failed")
+            log.exception("Snapshot materialization sweep failed")
         try:
             _stale_tasks = await interrupt_stale_tasks(sweep_db)
             if _stale_tasks:
-                logging.getLogger("agents_universe.startup").info(
+                log.info(
                     "Settled %d stale agent tasks to failed", _stale_tasks
                 )
         except Exception:
-            import logging
-            logging.getLogger("agents_universe.startup").exception("Agent task sweep failed")
+            log.exception("Agent task sweep failed")
 
     app.state.knowledge_cache = KnowledgeCache()
 

@@ -430,6 +430,10 @@ export default {
     abort: 'Stop',
     loadFailed: 'Failed to load the page',
     runFailed: 'Run failed, please retry',
+    assistant: 'Assistant',
+    typing: 'typing…',
+    welcomeTitle: 'Start a conversation',
+    welcomeHint: 'This is a published agent service; the model is bound by the publisher. Send a message to get started.',
   },
   publishesPage: {
     title: 'Agent Service Publish',
@@ -452,6 +456,7 @@ export default {
     revoked: 'Revoked',
     revoke: 'Revoke',
     newKey: 'New key',
+    noKeys: 'No API keys yet — create one for external calls',
     keyNamePlaceholder: 'Key name (optional)',
     keyCopied: 'Key copied',
     keyCreateFailed: 'Failed to create key',

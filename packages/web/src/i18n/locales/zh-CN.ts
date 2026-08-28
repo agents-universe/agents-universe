@@ -430,6 +430,10 @@ export default {
     abort: '停止',
     loadFailed: '页面加载失败',
     runFailed: '运行失败，请重试',
+    assistant: '助手',
+    typing: '输入中…',
+    welcomeTitle: '开始对话吧',
+    welcomeHint: '这是一个已发布的智能体服务，模型由发布者绑定。输入一条消息试试。',
   },
   publishesPage: {
     title: '智能体服务发布',
@@ -452,6 +456,7 @@ export default {
     revoked: '已吊销',
     revoke: '吊销',
     newKey: '新建密钥',
+    noKeys: '尚无 API 密钥，创建一个以便外部调用',
     keyNamePlaceholder: '密钥名称（可选）',
     keyCopied: '密钥已复制',
     keyCreateFailed: '创建密钥失败',

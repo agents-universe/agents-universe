@@ -8,7 +8,8 @@
           <p class="publishes-sub">{{ t('publishesPage.subtitle') }}</p>
         </div>
       </div>
-      <button class="btn-primary" @click="showCreate = true">
+      <button class="btn-primary publishes-new" @click="showCreate = true">
+        <Plus :size="15" />
         {{ t('publishesPage.newPublish') }}
       </button>
     </header>
@@ -17,31 +18,68 @@
       {{ message.ok ? '✓' : '✗' }} {{ message.text }}
     </p>
 
-    <div v-if="loading" class="publishes-state">{{ t('common.loading') }}</div>
+    <div v-if="loading" class="publishes-state">
+      <Loader2 :size="18" class="publishes-spin" />
+      <span>{{ t('common.loading') }}</span>
+    </div>
 
-    <div v-else-if="!publishes.length" class="publishes-state">
-      {{ t('publishesPage.empty') }}
+    <div v-else-if="!publishes.length" class="publishes-empty">
+      <span class="publishes-empty-icon"><Rocket :size="28" /></span>
+      <p class="publishes-empty-title">{{ t('publishesPage.empty') }}</p>
+      <button class="btn-primary" @click="showCreate = true">{{ t('publishesPage.newPublish') }}</button>
     </div>
 
     <div v-else class="publishes-list">
       <div v-for="p in publishes" :key="p.publish_id" class="publish-card">
         <div class="publish-card-main">
           <div class="publish-card-head">
-            <span class="publish-card-title">{{ p.title || p.agent_slug }}</span>
-            <span class="publish-card-slug">/p/{{ p.publish_id }}</span>
+            <div class="publish-card-heading">
+              <span class="publish-card-title">{{ p.title || p.agent_slug }}</span>
+              <code class="publish-card-slug">/p/{{ p.publish_id }}</code>
+            </div>
+            <div class="publish-card-status">
+              <span :class="['publish-status-chip', p.page_enabled ? 'on' : 'off']">
+                <span class="publish-status-dot" />
+                {{ t('publishesPage.pageToggle') }}
+              </span>
+              <span :class="['publish-status-chip', p.api_enabled ? 'on' : 'off']">
+                <span class="publish-status-dot" />
+                {{ t('publishesPage.apiToggle') }}
+              </span>
+            </div>
           </div>
+
           <p v-if="p.description" class="publish-card-desc">{{ p.description }}</p>
+
           <div class="publish-card-meta">
-            <span class="publish-card-meta-item">{{ agentLabel(p.agent_slug) }}</span>
-            <span class="publish-card-meta-item">{{ projectLabel(p.project_id) }}</span>
-            <span class="publish-card-meta-item">{{ modelLabel(p.model_config_id) }}</span>
-            <span class="publish-card-meta-item">{{ fmtDate(p.created_at) }}</span>
+            <span class="publish-meta-chip">
+              <Bot :size="12" />
+              {{ agentLabel(p.agent_slug) }}
+            </span>
+            <span class="publish-meta-chip">
+              <Folder :size="12" />
+              {{ projectLabel(p.project_id) }}
+            </span>
+            <span class="publish-meta-chip">
+              <Cpu :size="12" />
+              {{ modelLabel(p.model_config_id) }}
+            </span>
+            <span class="publish-meta-chip">
+              <Clock :size="12" />
+              {{ fmtDate(p.created_at) }}
+            </span>
           </div>
 
           <!-- Keys -->
           <div class="publish-keys">
+            <div v-if="!keysByPublish[p.publish_id]?.length" class="publish-keys-empty">
+              <KeyRound :size="12" />
+              {{ t('publishesPage.noKeys') }}
+            </div>
             <div v-for="k in keysByPublish[p.publish_id]" :key="k.key_id" class="publish-key-row">
+              <span class="publish-key-icon"><KeyRound :size="12" /></span>
               <code class="publish-key-hint">{{ k.key_hint }}</code>
+              <span v-if="k.name" class="publish-key-name">{{ k.name }}</span>
               <span :class="['publish-key-status', k.is_active ? 'on' : 'off']">
                 {{ k.is_active ? t('publishesPage.active') : t('publishesPage.revoked') }}
               </span>
@@ -60,6 +98,7 @@
                 @keydown.enter.prevent="createKey(p)"
               />
               <button class="btn-sm" @click="createKey(p)" :disabled="busy">
+                <Plus :size="12" />
                 {{ t('publishesPage.newKey') }}
               </button>
               <span v-if="freshKeys[p.publish_id]" class="publish-fresh-key">
@@ -70,31 +109,47 @@
 
           <!-- Copy once -->
           <div v-if="pendingKeys[p.publish_id]" class="publish-copy-once">
+            <AlertTriangle :size="13" />
             <code class="publish-raw-key">{{ pendingKeys[p.publish_id] }}</code>
-            <button class="btn-sm" @click="copyKey(p.publish_id)">
+            <button class="btn-sm publish-copy-btn" @click="copyKey(p.publish_id)">
+              <Copy :size="12" />
               {{ t('publishesPage.copyKey') }}
             </button>
           </div>
         </div>
 
         <div class="publish-card-actions">
-          <button class="btn-sm" @click="openPage(p)" :disabled="!p.page_enabled">
-            {{ t('publishesPage.openPage') }}
-          </button>
-          <button class="btn-sm" @click="copyPageLink(p)" :disabled="!p.page_enabled">
-            {{ t('publishesPage.copyLink') }}
-          </button>
-          <label class="publish-toggle">
-            <input type="checkbox" :checked="p.page_enabled" @change="togglePage(p, $event)" :disabled="busy" />
-            {{ t('publishesPage.pageToggle') }}
-          </label>
-          <label class="publish-toggle">
-            <input type="checkbox" :checked="p.api_enabled" @change="toggleApi(p, $event)" :disabled="busy" />
-            {{ t('publishesPage.apiToggle') }}
-          </label>
-          <button class="btn-sm danger" @click="remove(p)" :disabled="busy">
-            {{ t('common.delete') }}
-          </button>
+          <div class="publish-card-actions-left">
+            <button class="btn-sm" @click="openPage(p)" :disabled="!p.page_enabled">
+              <ExternalLink :size="12" />
+              {{ t('publishesPage.openPage') }}
+            </button>
+            <button class="btn-sm secondary" @click="copyPageLink(p)" :disabled="!p.page_enabled">
+              <Link :size="12" />
+              {{ t('publishesPage.copyLink') }}
+            </button>
+          </div>
+
+          <div class="publish-card-actions-right">
+            <label class="publish-toggle" :title="t('publishesPage.pageToggle')">
+              <span class="publish-toggle-label">{{ t('publishesPage.pageToggle') }}</span>
+              <span class="publish-switch" :class="{ on: p.page_enabled }">
+                <input type="checkbox" :checked="p.page_enabled" @change="togglePage(p, $event)" :disabled="busy" />
+                <span class="publish-switch-knob" />
+              </span>
+            </label>
+            <label class="publish-toggle" :title="t('publishesPage.apiToggle')">
+              <span class="publish-toggle-label">{{ t('publishesPage.apiToggle') }}</span>
+              <span class="publish-switch" :class="{ on: p.api_enabled }">
+                <input type="checkbox" :checked="p.api_enabled" @change="toggleApi(p, $event)" :disabled="busy" />
+                <span class="publish-switch-knob" />
+              </span>
+            </label>
+            <button class="btn-sm danger" @click="remove(p)" :disabled="busy">
+              <Trash2 :size="12" />
+              {{ t('common.delete') }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -126,7 +181,7 @@
 
             <label class="publish-field">
               <span class="publish-field-label">{{ t('publishesPage.agent') }}</span>
-              <select v-model="form.agent_slug" class="input">
+              <select v-model="form.agent_slug" class="input" :disabled="!form.project_id">
                 <option value="" disabled>{{ t('publishesPage.chooseAgent') }}</option>
                 <option v-for="a in scopedAgents" :key="a.slug" :value="a.slug">
                   {{ a.label || a.slug }}
@@ -175,7 +230,10 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Rocket, X } from 'lucide-vue-next'
+import {
+  Rocket, X, Plus, Bot, Folder, Cpu, Clock, KeyRound, Copy, Link,
+  ExternalLink, Trash2, Loader2, AlertTriangle,
+} from 'lucide-vue-next'
 import { publishApi } from '@/api/publish'
 import { projectsApi } from '@/api/projects'
 import { agentsApi } from '@/api/agents'
@@ -434,11 +492,12 @@ onMounted(() => {
 
 <style scoped>
 .publishes-page {
-  max-width: 860px;
+  max-width: 900px;
   margin: 0 auto;
-  padding: 32px 16px;
+  padding: 32px 16px 48px;
 }
 
+/* ── Header ─────────────────────────────────────────────────────────── */
 .publishes-header {
   display: flex;
   align-items: center;
@@ -457,116 +516,245 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: rgba(122, 162, 247, 0.12);
-  color: var(--accent);
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-gradient);
+  color: #fff;
+  box-shadow: var(--accent-glow);
 }
 
 .publishes-title {
   margin: 0;
-  font-size: 20px;
+  font-size: 21px;
   font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .publishes-sub {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 
-.publishes-message {
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  margin-bottom: 12px;
+.publishes-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
-.publishes-message.success { background: rgba(16, 185, 129, 0.12); color: #34d399; }
-.publishes-message.error { background: rgba(239, 68, 68, 0.12); color: #f87171; }
 
+/* ── Messages ───────────────────────────────────────────────────────── */
+.publishes-message {
+  padding: 9px 13px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  margin-bottom: 14px;
+}
+.publishes-message.success { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
+.publishes-message.error { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+
+/* ── States ─────────────────────────────────────────────────────────── */
 .publishes-state {
   padding: 48px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.publishes-spin { animation: publishes-spin 0.9s linear infinite; }
+
+@keyframes publishes-spin { to { transform: rotate(360deg); } }
+
+.publishes-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 56px 0;
   text-align: center;
   color: var(--text-muted);
 }
 
+.publishes-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.publishes-empty-title {
+  margin: 0;
+  font-size: 13.5px;
+  max-width: 360px;
+  line-height: 1.6;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
 .publishes-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .publish-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur, 12px));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
   overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.publish-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(107, 159, 255, 0.04);
 }
 
 .publish-card-main {
-  padding: 14px 16px;
+  padding: 16px 18px;
 }
 
 .publish-card-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.publish-card-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .publish-card-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 
 .publish-card-slug {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', 'Cascadia Code', monospace);
 }
 
+.publish-card-status {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.publish-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.publish-status-chip.on { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
+.publish-status-chip.off { background: rgba(127, 127, 127, 0.12); color: var(--text-muted); }
+
+.publish-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.publish-status-chip.on .publish-status-dot { box-shadow: 0 0 6px currentColor; }
+
 .publish-card-desc {
-  margin: 6px 0 0;
-  font-size: 12px;
+  margin: 8px 0 0;
+  font-size: 12.5px;
   color: var(--text-secondary);
+  line-height: 1.6;
 }
 
 .publish-card-meta {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--text-muted);
+  margin-top: 12px;
 }
 
+.publish-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 9px;
+}
+
+/* ── Keys ───────────────────────────────────────────────────────────── */
 .publish-keys {
-  margin-top: 12px;
+  margin-top: 14px;
   border-top: 1px solid var(--border);
-  padding-top: 10px;
+  padding-top: 12px;
   display: flex;
   flex-direction: column;
+  gap: 7px;
+}
+
+.publish-keys-empty {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
 }
 
 .publish-key-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.publish-key-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
 }
 
 .publish-key-hint {
   font-size: 11px;
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', 'Cascadia Code', monospace);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.publish-key-name {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .publish-key-status {
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
 }
-.publish-key-status.on { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-.publish-key-status.off { background: rgba(127, 127, 127, 0.15); color: var(--text-muted); }
+.publish-key-status.on { background: rgba(74, 222, 128, 0.14); color: #4ade80; }
+.publish-key-status.off { background: rgba(127, 127, 127, 0.14); color: var(--text-muted); }
 
 .publish-key-add {
   display: flex;
@@ -574,52 +762,124 @@ onMounted(() => {
   gap: 8px;
 }
 
+.publish-key-add .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .publish-key-name-input {
-  width: 180px;
+  width: 190px;
   font-size: 12px;
 }
 
 .publish-fresh-key {
   font-size: 11px;
-  color: #34d399;
+  color: #4ade80;
 }
 
 .publish-copy-once {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  background: rgba(245, 158, 11, 0.1);
+  margin-top: 10px;
+  padding: 9px 11px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
   border-radius: 8px;
+  color: #fbbf24;
 }
 
 .publish-raw-key {
   flex: 1;
   font-size: 12px;
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, 'SF Mono', 'Cascadia Code', monospace);
   color: #fbbf24;
   word-break: break-all;
 }
 
+.publish-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+/* ── Card actions ───────────────────────────────────────────────────── */
 .publish-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 18px;
+  border-top: 1px solid var(--border);
+  background: rgba(127, 127, 127, 0.05);
+}
+
+.publish-card-actions-left,
+.publish-card-actions-right {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-secondary, rgba(127, 127, 127, 0.05));
 }
 
+.publish-card-actions .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 0;
+}
+
+/* ── Toggle switch ──────────────────────────────────────────────────── */
 .publish-toggle {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.publish-toggle-label {
+  font-size: 11.5px;
   color: var(--text-secondary);
 }
 
+.publish-switch {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.35);
+  transition: background 0.2s;
+  flex: none;
+}
+.publish-switch.on { background: var(--accent-gradient); }
+
+.publish-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.publish-switch input:disabled { cursor: not-allowed; }
+
+.publish-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.publish-switch.on .publish-switch-knob { transform: translateX(15px); }
+
+/* ── Create modal ───────────────────────────────────────────────────── */
 .publish-create-modal {
   max-width: 480px;
 }
@@ -627,18 +887,20 @@ onMounted(() => {
 .publish-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px;
+  gap: 12px;
+  padding: 8px 4px 4px;
+  overflow-y: auto;
 }
 
 .publish-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .publish-field-label {
   font-size: 12px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -646,5 +908,13 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 2px;
+}
+
+@media (max-width: 640px) {
+  .publishes-page { padding: 20px 10px 32px; }
+  .publish-card-actions { flex-direction: column; align-items: stretch; }
+  .publish-card-actions-left,
+  .publish-card-actions-right { justify-content: space-between; }
 }
 </style>

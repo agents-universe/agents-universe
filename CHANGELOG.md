@@ -2,18 +2,29 @@
 
 本项目的所有重要变更都会记录在此文件，格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.3.0] - 2026-08-29
 
 ### 新增
 
 - **智能体即服务（Agent-as-a-Service）** - 把智能体和所在项目资源发布成 **API**（`POST /api/p/{publish_id}/stream`，SSE 流式，`thread_id` 钉会话保多轮上下文）或 **系统内嵌页面**（`/p/{publish_id}`，SSO 登录后按访问者签发绑定（发布, 访问者）的 HMAC 查看令牌，以发布者身份执行）。两种形态都运行在**发布者绑定**的模型配置上。发布管理在 `/settings/publishes`：创建 / 开关页面与 API 入口 / API 密钥（SHA-256 哈希 + 4 位 hint，明文只展示一次，可吊销）/ 删除。共享发布会话归发布者所有，查看者不可见发布者的其他会话与记忆；`page_enabled=false` 与页面对外一律 404；进程级信号量限并发（超限 429），同会话并发 409。无头执行内核抽取为 `services/agent_turn.py`（WS 变薄壳，`ToolContext.interactive=False` 下确认型工具返回可读错误而非静默放行）
 - **仓库知识图谱支持 Java** - 代码图新增 Java 语言解析（tree-sitter java grammar）：类 / 接口 / 枚举 / 方法符号，跨文件 import（含 static import）解析、继承（extends / implements）与构造调用边；语言按源根（src/main/java、src、仓库根）解析包路径。符号索引按语言隔离，避免 Java 与 TS 同名符号（如 Greeter）互相干扰
+- **会话按最近活跃排序** - `conversations.updated_at` 自初始 schema 即存在但从未写入；现于每条消息持久化时更新，会话列表与 /latest 按 `COALESCE(updated_at, created_at) DESC` 排序——回到旧会话即重新置顶
+- **中断任务续跑而非重跑** - 中断的运行不再提供 rerun 按钮：启动清扫把硬杀运行的 streaming_snapshot 物化为 interrupted 辅助消息（历史 + 下一轮智能体上下文），将陈旧 running agent_tasks 落为 failed；活跃计划上下文携带逐任务结果摘要，续跑轮可区分已完成与待重做的工作；`stream_end` 在部分输出落库后不再保留快照
+- **超限请求降级而非硬失败** - 把字节量跟踪接入压缩决策并新增最小破坏降级链：超过网关字节上限的请求（CJK JSON 转义、base64 图片）自行收缩而非以不透明 413 失败
+- **工作流驱动智能体恢复可见计划** - pentest-expert 的系统提示令其走固定工作流阶段而非调用 `plan_task`，整项目请求从不发出 `task_plan_created`，UI 无计划卡片；现将工作流阶段物化为显式任务计划后再按工作流文件执行
 
 ### 修复
 
 - **压缩导致的 LLM API 超时** - 自动压缩在大会话上频发 "LLM API error: timeout"：摘要输入无总量上限（非流式调用必然超时）、降级链二次压缩、以及 httpx 60s 标量超时被 openai SDK 采纳为每次请求的生效超时（大 prompt 首 token 延迟普遍超过 60s，SDK 原生 600s 默认被覆盖）。分相超时（read 300s / connect 10s / write 120s，max_retries=1）+ 摘要输入封顶 60k 字符（保尾部）+ 降级链幂等守卫（已压缩历史不再二次摘要）
 - **手动压缩大会话必失败** - 30s 超时包不住无上限的摘要输入，最需要压缩的会话反而压不动；改为 map-reduce（~30k 字符/块、并发 3、总超时 300s），任一块失败仍不删除任何历史
 - **字节估算阻塞事件循环** - ASCII 快路径跳过 CJK 正则、tool_calls 免整包 json.dumps、工具 schema 字节数提升到循环外计算一次，消除大会话每轮数十秒的同步 CPU
+- **失败轮次静默丢失** - LLM 报错 / 拒答 / 上下文溢出 / 空输出等失败轮次此前零持久痕迹（无 assistant 行、run 标记 completed、error_message 为空），重开会话后错误气泡消失且无任何解释；`stream_end` 现把这些停止路径映射为 failed 并填充 error_message，回放可见
+- **SSO 首次登录回跳与会话 cookie 漂移** - OAuth state nonce、重复回调恢复缓存与锚点 cookie 硬编码 600s 过期，登录往返超窗即被踢回登录页（SSO 页面停留或 api 容器重启时必现）；统一会话 cookie 生命周期并放开回跳窗口
+- **lifespan 日志导入遮蔽** - 在四个 except 块内 `import logging` 使其成为整个函数局部变量，正常路径（无异常、导入未执行）走到 try 内打日志时触发 `UnboundLocalError`；会话运行 / 快照 / 任务清扫在恢复行数时必打 INFO，冷启动即现
+- **SSRF 守卫放行 inet_aton 变体 IP** - `ipaddress.ip_address` 拒绝 glibc inet_aton 变体形式（`2130706433` == 127.0.0.1、`127.1`、八进制 `010.0.0.1` 等），在 SSRF_ENABLED 跳过 DNS 解析（默认）时直通回环 / 元数据；新增复刻 inet_aton 语义的映射器，在 `validate_url` 与 `api_request` 字面守卫双处复检
+- **对话框在拖拽中误关** - 浏览器在按下 / 释放目标的共同最深祖先派发 click，对话框内按下、外部释放仍产生目标在外部的 click，拖拽中误关弹窗；改用共享 `useClickOutside` composable（mousedown 记录 + mouseup 判定），弹层用 contains()、全屏背板用直接命中检查
+- **reindex_one 深度走查双范围歧义** - 全局知识与项目知识可共享 slug（项目遮蔽），父级深度走查双范围过滤命中两行导致 `MultipleResultsFound`；项目行优先取一，与 `loader._fetch_all_entries` 遮蔽语义一致
+- **审计清扫验证缺陷加固** - 全部提供商 / 令牌端点（api_keys、model_configs、tokens、integrations、token_tests、github、jira、confluence）从错误体与 `str(exc)` 中擦除已解析密钥 / 邮箱；LLM 字符串化参数强制转换、工具循环耗尽告警等一并修复
 
 ## [1.2.0] - 2026-08-25
 

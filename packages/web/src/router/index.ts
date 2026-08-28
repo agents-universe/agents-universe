@@ -41,6 +41,16 @@ const router = createRouter({
       component: () => import('@/pages/TokenConfigPage.vue'),
     },
     {
+      path: '/settings/publishes',
+      component: () => import('@/pages/PublishesPage.vue'),
+    },
+    {
+      // Embedded agent-service page. Outside AppLayout on purpose: it is a
+      // self-contained chat for one published agent, not a project workspace.
+      path: '/p/:publishId',
+      component: () => import('@/pages/PublishPage.vue'),
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/app',
     },

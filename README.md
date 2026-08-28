@@ -431,6 +431,37 @@ Agent 执行的每条命令、每段代码都运行在**双层沙箱**中，文�
 - Node.js 无等效运行时 hook，node 脚本的越界读取依赖命令级验证约束
 - 非严格模式下，受守卫的 Python 派生的非 Python 子进程不在文件守卫覆盖内
 
+## 智能体即服务（Agent-as-a-Service）
+
+把任意智能体和它所在项目的资源发布成 **API** 或 **系统内嵌页面**，两种形态都运行在**发布者绑定**的模型配置上。
+
+**发布管理**（SSO 登录后，`/settings/publishes`）：
+
+- 选择一个项目（需有管理权）、一个智能体、一个你自己的模型配置，即可创建发布
+- 发布可分别开关「页面」与「API」两个入口；删除发布会同时删除其全部密钥
+- 每次新建密钥只返回一次明文，之后仅存 SHA-256 哈希 + 4 位提示（`key_hint`）
+
+**API 形态** — SSE 流式对话，`Authorization: Bearer <key>` 鉴权：
+
+```bash
+curl -N -X POST "$BASE/api/p/{publish_id}/stream" \
+  -H "Authorization: Bearer $PUBLISH_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "你好", "thread_id": "any-caller-thread-id"}'
+```
+
+流返回标准的 agent 事件帧（`stream_delta` / `tool_call_start` / `stream_end` …），每帧一行 `data: {json}`。`thread_id` 把同一调用方的多轮对话钉在专属会话上以保留上下文。
+
+**页面形态** — `/p/{publish_id}` 是系统内的一个链接：访问者必须已 SSO 登录（与主应用同一会话），页面按访问者签发**绑定（发布, 访问者）的 HMAC 查看令牌**（服务端派生、不落库），后续 `POST /api/p/{publish_id}/session/run` 用该令牌以**发布者身份**执行，走与 API 相同的 SSE 流。
+
+**安全模型**：
+
+- API 密钥只存在于请求头，永不进 URL、永不回显、不落明文；哈希比较用 `hmac.compare_digest`
+- 共享的发布会话归**发布者**所有：查看者不拥有会话，也看不见发布者的其他会话/记忆/项目
+- 页面与 `page_enabled=false` 的发布对外一律 404，无存在性泄露
+- 进程级信号量（16 并发）限制同一 worker 上的并发运行，超限即 429；同一会话并发运行返回 409
+- 非交互模式（`interactive=False`）下 `user_confirm` 等确认型工具直接返回可读错误，不会静默放行
+
 ## 测试
 
 ```bash

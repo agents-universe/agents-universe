@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **智能体即服务（Agent-as-a-Service）** - 把智能体和所在项目资源发布成 **API**（`POST /api/p/{publish_id}/stream`，SSE 流式，`thread_id` 钉会话保多轮上下文）或 **系统内嵌页面**（`/p/{publish_id}`，SSO 登录后按访问者签发绑定（发布, 访问者）的 HMAC 查看令牌，以发布者身份执行）。两种形态都运行在**发布者绑定**的模型配置上。发布管理在 `/settings/publishes`：创建 / 开关页面与 API 入口 / API 密钥（SHA-256 哈希 + 4 位 hint，明文只展示一次，可吊销）/ 删除。共享发布会话归发布者所有，查看者不可见发布者的其他会话与记忆；`page_enabled=false` 与页面对外一律 404；进程级信号量限并发（超限 429），同会话并发 409。无头执行内核抽取为 `services/agent_turn.py`（WS 变薄壳，`ToolContext.interactive=False` 下确认型工具返回可读错误而非静默放行）
 - **仓库知识图谱支持 Java** - 代码图新增 Java 语言解析（tree-sitter java grammar）：类 / 接口 / 枚举 / 方法符号，跨文件 import（含 static import）解析、继承（extends / implements）与构造调用边；语言按源根（src/main/java、src、仓库根）解析包路径。符号索引按语言隔离，避免 Java 与 TS 同名符号（如 Greeter）互相干扰
 
 ### 修复

@@ -99,6 +99,10 @@ async def get_latest_conversation(
             Conversation.project_id == project_id,
             Conversation.user_id == current_user.user_id,
             Conversation.status == "active",
+            # Public-initiated (publish) conversations stay out of the
+            # sidebar — they are owned by the publisher but serve external
+            # callers, not the user's own chat.
+            (Conversation.source.is_(None) | (Conversation.source != "publish")),
         )
         .order_by(func.coalesce(Conversation.updated_at, Conversation.created_at).desc())
         .limit(1)
@@ -188,6 +192,8 @@ async def list_conversations(
             Conversation.project_id == project_id,
             Conversation.user_id == current_user.user_id,
             Conversation.status == "active",
+            # Same sidebar exclusion as the /latest lookup above.
+            (Conversation.source.is_(None) | (Conversation.source != "publish")),
         )
         .order_by(func.coalesce(Conversation.updated_at, Conversation.created_at).desc())
         .limit(50)

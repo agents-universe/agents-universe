@@ -19,6 +19,9 @@
       <button class="settings-btn" :title="t('sidebar.footer.tokenSettings')" @click="goSettings">
         <Settings :size="12" />
       </button>
+      <button class="settings-btn" :title="t('sidebar.footer.publishSettings')" @click="goPublishes">
+        <Rocket :size="12" />
+      </button>
       <button class="logout-btn" :title="t('sidebar.footer.logout')" @click="handleLogout">
         <LogOut :size="12" />
       </button>
@@ -33,7 +36,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Settings, LogOut, Languages, Compass, Bell } from 'lucide-vue-next'
+import { Settings, LogOut, Languages, Compass, Bell, Rocket } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
 import { withApi } from '@/utils/basePath'
@@ -57,6 +60,10 @@ function toggleLocale() {
 
 function goSettings() {
   router.push('/settings/tokens')
+}
+
+function goPublishes() {
+  router.push('/settings/publishes')
 }
 
 function startTour() {

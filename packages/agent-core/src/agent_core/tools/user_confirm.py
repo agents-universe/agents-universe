@@ -99,6 +99,16 @@ class UserConfirmTool(Tool):
         }
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        # Headless runs (published agents) must never block on a prompt nobody
+        # can answer: return a readable error the model can act on instead.
+        if not context.interactive:
+            return {
+                "error": (
+                    "user_confirm is unavailable in non-interactive runs. "
+                    "This agent is running unattended — do not ask the user "
+                    "for input; pick the safe default and continue."
+                ),
+            }
         if context.session is None:
             return {
                 "error": "user_confirm requires an active conversation session. "

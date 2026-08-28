@@ -46,10 +46,10 @@ _log = logging.getLogger("agents_universe.auth")
 # session theft.
 _ANCHOR_COOKIE = "oauth_anchor"
 # Anchor and oauth_session cache TTLs must cover the full state lifetime
-# (save_oauth_state ttl=600 in /auth/login): a speculative callback request
-# can consume the state minutes before the real navigation arrives — e.g.
-# while the user is still typing credentials after an SSO session timeout.
-_ANCHOR_TTL = 600
+# (save_oauth_state in /auth/login): a speculative callback request can
+# consume the state minutes before the real navigation arrives — e.g. while
+# the user is still typing credentials after an SSO session timeout. All
+# three are driven by settings.oauth_state_ttl so they expire together.
 
 
 def _anchor_value(state: str) -> str:
@@ -112,7 +112,7 @@ async def login(redis: Redis = Depends(get_redis)):
     settings = get_settings()
     endpoints = await discover(settings.oauth_sso_domain)
     state = str(uuid.uuid4())
-    await save_oauth_state(redis, state, ttl=600)
+    await save_oauth_state(redis, state, ttl=settings.oauth_state_ttl)
 
     params = {
         "response_type": "code",
@@ -137,7 +137,7 @@ async def login(redis: Redis = Depends(get_redis)):
     response.set_cookie(
         key=_ANCHOR_COOKIE,
         value=_anchor_value(state),
-        max_age=_ANCHOR_TTL,
+        max_age=settings.oauth_state_ttl,
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
@@ -187,12 +187,16 @@ async def auth_callback(
             )
             return response
 
-        # Genuinely invalid — state expired or was never saved.
+        # Genuinely invalid — state expired or was never saved. Re-issue the
+        # login redirect instead of dropping the user back to the web base URL
+        # with no session: if the SSO session is still valid, Casdoor bounces
+        # straight back through a fresh state and the user lands signed in
+        # without seeing a second login page.
         _log.warning(
-            "OAuth state not found (expired or invalid); "
-            "redirecting to web base URL. state=%s", state[:8],
+            "OAuth state not found (expired or invalid); re-issuing login. state=%s",
+            state[:8],
         )
-        return RedirectResponse(url=settings.web_base_url)
+        return RedirectResponse(url="/auth/login")
 
     basic = _basic_auth(settings.oauth_client_id, settings.oauth_client_secret)
 
@@ -254,7 +258,7 @@ async def auth_callback(
     # Cache the session for a short window so that a duplicate callback
     # (browser prefetch / proxy retry) can recover it without re-exchanging
     # the one-time authorization code.
-    await save_oauth_session(redis, state, session_id, ttl=_ANCHOR_TTL)
+    await save_oauth_session(redis, state, session_id, ttl=settings.oauth_state_ttl)
 
     response = RedirectResponse(url=settings.web_base_url)
     response.set_cookie(
@@ -273,7 +277,7 @@ async def auth_callback(
     response.set_cookie(
         key=_ANCHOR_COOKIE,
         value=_anchor_value(state),
-        max_age=_ANCHOR_TTL,
+        max_age=settings.oauth_state_ttl,
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,

@@ -11,7 +11,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 
 @pytest.fixture
@@ -22,6 +22,7 @@ def _mock_settings(mocker):
     s.auth_cookie_name = "x-auth-token"
     s.session_ttl = 86400
     s.active_users_window = 300
+    s.cookie_secure = False
     mocker.patch("api.dependencies.auth.get_settings", return_value=s)
     return s
 
@@ -44,20 +45,26 @@ def _make_request(cookie_value: str | None = "valid-session-id"):
 # ── get_current_user renews TTL after valid session ──────────────
 
 async def test_renews_ttl_after_valid_session(_mock_settings, _mock_redis):
-    """A successful session read must be followed by redis.expire."""
+    """A successful session read must be followed by redis.expire and a refreshed cookie."""
     from api.dependencies.auth import get_current_user
 
     _mock_redis.get = AsyncMock(
         return_value=json.dumps({"user_id": "u-1", "display_name": "Alice"})
     )
 
-    user = await get_current_user(request=_make_request(), redis=_mock_redis)
+    response = Response()
+    user = await get_current_user(
+        request=_make_request(), response=response, redis=_mock_redis
+    )
 
     assert user.user_id == "u-1"
     assert user.display_name == "Alice"
     _mock_redis.expire.assert_awaited_once_with(
         "session:valid-session-id", 86400
     )
+    # Sliding cookie: the browser cookie is refreshed with the session TTL.
+    assert response.headers.get("set-cookie")
+    assert "x-auth-token=valid-session-id" in response.headers["set-cookie"]
 
 
 # ── TTL is NOT renewed when session is missing ───────────────────
@@ -69,7 +76,9 @@ async def test_does_not_renew_when_session_missing(_mock_settings, _mock_redis):
     _mock_redis.get = AsyncMock(return_value=None)
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(request=_make_request("ghost-id"), redis=_mock_redis)
+        await get_current_user(
+            request=_make_request("ghost-id"), response=Response(), redis=_mock_redis
+        )
 
     assert exc.value.status_code == 401
     _mock_redis.expire.assert_not_awaited()
@@ -84,7 +93,9 @@ async def test_does_not_renew_when_session_data_corrupt(_mock_settings, _mock_re
     _mock_redis.get = AsyncMock(return_value=json.dumps({"foo": "bar"}))
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(request=_make_request(), redis=_mock_redis)
+        await get_current_user(
+            request=_make_request(), response=Response(), redis=_mock_redis
+        )
 
     assert exc.value.status_code == 401
     _mock_redis.expire.assert_not_awaited()
@@ -97,7 +108,9 @@ async def test_does_not_renew_when_no_cookie(_mock_settings, _mock_redis):
     from api.dependencies.auth import get_current_user
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(request=_make_request(None), redis=_mock_redis)
+        await get_current_user(
+            request=_make_request(None), response=Response(), redis=_mock_redis
+        )
 
     assert exc.value.status_code == 401
     _mock_redis.expire.assert_not_awaited()
@@ -115,7 +128,9 @@ async def test_does_not_renew_in_bypass_mode(mocker, _mock_redis):
     s.auth_bypass_user_id = "bypass-user"
     mocker.patch("api.dependencies.auth.get_settings", return_value=s)
 
-    user = await get_current_user(request=_make_request(None), redis=_mock_redis)
+    user = await get_current_user(
+        request=_make_request(None), response=Response(), redis=_mock_redis
+    )
 
     assert user.user_id == "bypass-user"
     _mock_redis.expire.assert_not_awaited()
@@ -147,12 +162,16 @@ async def test_ttl_matches_settings(_mock_redis, mocker):
     s.auth_cookie_name = "x-auth-token"
     s.session_ttl = 7200  # non-default to catch hard-coding
     s.active_users_window = 300
+    s.cookie_secure = False
     mocker.patch("api.dependencies.auth.get_settings", return_value=s)
 
     _mock_redis.get = AsyncMock(
         return_value=json.dumps({"user_id": "u-2", "display_name": "Bob"})
     )
 
-    await get_current_user(request=_make_request(), redis=_mock_redis)
+    response = Response()
+    await get_current_user(request=_make_request(), response=response, redis=_mock_redis)
 
     _mock_redis.expire.assert_awaited_once_with("session:valid-session-id", 7200)
+    # Sliding cookie max_age follows the (non-default) session_ttl.
+    assert "Max-Age=7200" in response.headers["set-cookie"]

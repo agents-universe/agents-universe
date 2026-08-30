@@ -27,12 +27,18 @@ const router = createRouter({
           component: () => import('@/pages/ChatPage.vue'),
         },
         {
+          path: 'workspace',
+          component: () => import('@/pages/WorkspacePage.vue'),
+        },
+        // Knowledge and scripts were merged into the unified workspace tab —
+        // keep the old URLs working via redirect so bookmarks/links survive.
+        {
           path: 'knowledge',
-          component: () => import('@/pages/KnowledgeBrowserPage.vue'),
+          redirect: (to) => ({ path: `/projects/${to.params.projectId}/workspace` }),
         },
         {
           path: 'scripts',
-          component: () => import('@/pages/ScriptExecutorPage.vue'),
+          redirect: (to) => ({ path: `/projects/${to.params.projectId}/workspace` }),
         },
       ],
     },

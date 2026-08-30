@@ -44,6 +44,14 @@ def resolve_within(base: str | Path, rel: str | Path) -> Path:
     Raises PathEscapeError if the normalized path escapes the base
     (e.g. via ``..`` segments or an absolute *rel*).
     """
+    rel_s = os.fspath(rel)
+    # Drive-letter ("C:\evil") / UNC ("\\server", "//server") prefixes are
+    # absolute on Windows but a mere relative directory on POSIX — an
+    # attempted escape would silently resolve into a folder named "C:" and
+    # come back 404 instead of 400. Reject the prefix on every host so the
+    # behavior does not depend on the OS.
+    if re.match(r"^[A-Za-z]:[\\/]", rel_s) or rel_s.startswith(("\\", "//")):
+        raise PathEscapeError(f"Path escapes allowed base {base}: {rel!r}")
     base_c = canonical(base)
     candidate = canonical(base_c / rel)
     if candidate != base_c and base_c not in candidate.parents:

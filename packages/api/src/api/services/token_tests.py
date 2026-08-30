@@ -112,8 +112,9 @@ async def _resolve_atlassian_email(db, user_id: str, project_id: str | None, cfg
     from api.models.user import UserToken
     from api.services.token_vault import decrypt
 
-    if cfg.atlassian_auth_type == "bearer":
-        return ""
+    # Resolve the email in bearer mode too: it is used for credential scrubbing
+    # as well as basic auth, so a server error that echoes it must be redacted
+    # regardless of auth type.
     email_result = await db.execute(
         select(UserToken).where(
             UserToken.service_key == "jira:email",
@@ -144,4 +145,8 @@ async def _resolve_atlassian_email(db, user_id: str, project_id: str | None, cfg
         ps = ps_result.scalars().first()
         if ps:
             return decrypt_project_secret(ps.encrypted_value, project_id)
+    if cfg.atlassian_auth_type == "bearer":
+        # Not needed for the request, but None would wrongly report
+        # "Jira Email not configured" before the live credential test.
+        return ""
     return None

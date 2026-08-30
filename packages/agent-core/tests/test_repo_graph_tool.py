@@ -135,6 +135,31 @@ async def test_build_then_all_ops(project: Path, grammars):
 
 
 @pytest.mark.asyncio
+async def test_build_warns_on_untracked_and_indexes_on_request(project: Path, grammars):
+    tool = RepoGraphTool()
+    ctx = make_context(project)
+    (Path(project) / "repos" / "sample" / "wip.java").write_text(
+        "package com.example;\n"
+        "public class Wip { public int size() { return 0; } }\n",
+        encoding="utf-8",
+    )
+    # default: committed files only, untracked .java reported in the warning
+    result = await tool.execute({"operation": "build"}, ctx)
+    assert result["status"] == "built"
+    assert result["stats"]["files"] == 4
+    assert "wip.java" in result["warning"]
+    # include_untracked folds it into the graph
+    result = await tool.execute(
+        {"operation": "build", "include_untracked": True}, ctx)
+    assert result["status"] == "built"
+    assert result["stats"]["files"] == 5
+    assert "warning" not in result
+    found = await tool.execute(
+        {"operation": "query", "repository": "sample", "query": "Wip"}, ctx)
+    assert any(m["name"] == "Wip.size" for m in found["matches"])
+
+
+@pytest.mark.asyncio
 async def test_single_clone_fallback(project: Path, grammars):
     """With exactly one clone, omitting repository resolves it implicitly."""
     await _build(project)

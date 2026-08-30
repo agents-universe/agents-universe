@@ -21,16 +21,31 @@ _MANIFEST = "index.json"
 
 
 class GraphCacheState:
-    def __init__(self, version: int = CACHE_VERSION, files: dict[str, dict] | None = None):
+    def __init__(
+        self,
+        version: int = CACHE_VERSION,
+        files: dict[str, dict] | None = None,
+        tracked_only: bool = True,
+    ):
         self.version = version
         self.files: dict[str, dict] = files if files is not None else {}
+        # Build mode the manifest was produced with: True = committed files
+        # only, False = committed + untracked. The builder's fast path must
+        # not serve a manifest built in the other mode (a tracked-only build
+        # could otherwise resurrect a graph that still lists uncommitted
+        # files, or an include_untracked build skip files it promised to add).
+        self.tracked_only = tracked_only
 
     def to_dict(self) -> dict[str, Any]:
-        return {"version": self.version, "files": self.files}
+        return {"version": self.version, "files": self.files, "tracked_only": self.tracked_only}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GraphCacheState":
-        return cls(version=data.get("version", CACHE_VERSION), files=data.get("files", {}))
+        return cls(
+            version=data.get("version", CACHE_VERSION),
+            files=data.get("files", {}),
+            tracked_only=data.get("tracked_only", True),
+        )
 
 
 class GraphCache:

@@ -74,6 +74,14 @@ class RepoGraphTool(Tool):
                 "type": "boolean",
                 "description": "Rebuild even when nothing changed (build only; default true).",
             },
+            "include_untracked": {
+                "type": "boolean",
+                "description": (
+                    "Index untracked source files too (build only; default false). "
+                    "Without it, untracked files are reported in the build warning "
+                    "instead of the graph."
+                ),
+            },
         },
         "required": ["operation"],
     }
@@ -125,9 +133,12 @@ class RepoGraphTool(Tool):
         # An explicit build means "rebuild after edits" — force by default so
         # the fast path can't mask a dirty working tree.
         force = bool(params.get("force", True))
+        include_untracked = bool(params.get("include_untracked", False))
         kg_dir = repo_graph_dir(context.project_fs_path, repo.name)
         try:
-            return await build_repo_graph(repo, kg_dir, force=force)
+            return await build_repo_graph(
+                repo, kg_dir, force=force, include_untracked=include_untracked
+            )
         except Exception as exc:  # never fail the turn on a graph build
             _log.exception("repo_graph build failed for %s", repo.name)
             return {"error": f"Build failed: {exc}"}

@@ -60,7 +60,10 @@ jobs:
     env:
       # conftest setdefaults TEST_DATABASE_URL, so this URL wins; the conftest
       # alembic fixture then runs the full migration chain against Postgres.
-      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agentsuniverse
+      # 127.0.0.1, not localhost: asyncpg resolves localhost to IPv6 ::1 first;
+      # the service container only listens on IPv4, so every connect waits out
+      # the IPv6 timeout before falling back (~10s each, hundreds of connects).
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/agentsuniverse
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -373,7 +373,7 @@ export default {
     tabConversations: '会话',
     tabKnowledge: '知识',
     tabMemory: '记忆',
-    tabScripts: '脚本',
+    tabWorkspace: '工作区',
   },
   emptyProject: {
     tagline: '企业级 AI Agent 框架',
@@ -391,6 +391,23 @@ export default {
     edit: '编辑',
     loadFailed: '加载知识文件失败',
     saveFailed: '保存知识文件失败，请重试',
+  },
+  workspace: {
+    title: '工作区',
+    refresh: '刷新文件树',
+    emptyTree: '暂无文件',
+    loadFailed: '加载文件树失败',
+    loadFileFailed: '读取文件失败',
+    saveFailed: '保存文件失败，请重试',
+    selectHint: '从左侧选择文件或脚本',
+    loadingFile: '加载中…',
+    edit: '编辑',
+    run: '运行',
+    running: '运行中…',
+    runHint: '点击「运行」在项目沙箱中执行脚本，输出会实时显示在这里。',
+    runFailed: '启动运行失败',
+    connectionLost: '连接中断，脚本最终状态未知（运行可能仍在后台执行）',
+    scriptsGroup: '脚本',
   },
   scriptExecutor: {
     title: '脚本执行器',
@@ -544,15 +561,11 @@ export default {
     },
     topNav: {
       title: '页面导航',
-      body: '顶部标签可在「会话」「知识」「脚本」三个页面间切换--知识库浏览器和脚本执行器都从这里进入。',
+      body: '顶部标签可在「会话」与「工作区」之间切换——工作区整合了文件树、知识浏览与脚本运行。',
     },
-    knowledgeBrowser: {
-      title: '知识库浏览器',
-      body: '在这里浏览和编辑完整知识库。用 [[slug]] 交叉引用连接文档，编辑后可保存。',
-    },
-    scripts: {
-      title: '脚本执行器',
-      body: '运行 QA 智能体生成的 Playwright 测试（首次运行会自动安装依赖与浏览器，日志中有阶段进度提示），或新建自定义脚本在项目工作区中运行，日志实时流式输出。',
+    workspace: {
+      title: '工作区',
+      body: '浏览项目工作区的完整文件树：Markdown 文档可查看和编辑保存，脚本（自定义脚本与 Playwright 测试）可直接运行并实时查看日志。',
     },
     settingsModels: {
       title: '设置 — AI 模型',

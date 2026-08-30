@@ -373,7 +373,7 @@ export default {
     tabConversations: 'Conversations',
     tabKnowledge: 'Knowledge',
     tabMemory: 'Memory',
-    tabScripts: 'Scripts',
+    tabWorkspace: 'Workspace',
   },
   emptyProject: {
     tagline: 'Enterprise AI Agent framework',
@@ -391,6 +391,23 @@ export default {
     edit: 'Edit',
     loadFailed: 'Failed to load knowledge file',
     saveFailed: 'Failed to save knowledge file, please retry',
+  },
+  workspace: {
+    title: 'Workspace',
+    refresh: 'Refresh file tree',
+    emptyTree: 'No files yet',
+    loadFailed: 'Failed to load file tree',
+    loadFileFailed: 'Failed to read file',
+    saveFailed: 'Failed to save file, please retry',
+    selectHint: 'Pick a file or script from the left',
+    loadingFile: 'Loading…',
+    edit: 'Edit',
+    run: 'Run',
+    running: 'Running…',
+    runHint: 'Click "Run" to execute the script in the project sandbox — output streams here live.',
+    runFailed: 'Failed to start run',
+    connectionLost: 'Connection lost, final script status unknown (it may still be running in the background)',
+    scriptsGroup: 'Scripts',
   },
   scriptExecutor: {
     title: 'Script executor',
@@ -542,17 +559,13 @@ export default {
       title: 'Context usage',
       body: 'Track how many tokens the current conversation has consumed relative to the model budget.',
     },
-    knowledgeBrowser: {
-      title: 'Knowledge browser',
-      body: 'Browse and edit the full knowledge base here. Use [[slug]] cross-links to connect documents, and save your changes.',
-    },
     topNav: {
       title: 'Page navigation',
-      body: 'The tabs at the top switch between Chat, Knowledge and Scripts - the knowledge browser and script executor are reached from here.',
+      body: 'The tabs at the top switch between Chat and Workspace - the workspace merges the file tree, knowledge browsing and script execution.',
     },
-    scripts: {
-      title: 'Script executor',
-      body: 'Run Playwright tests the QA agent generated (a first run installs dependencies and the browser automatically, with phase progress in the log), or create custom scripts to run against your project workspace with live streaming logs.',
+    workspace: {
+      title: 'Workspace',
+      body: 'Browse the full file tree of your project workspace: Markdown documents can be viewed and edited, and scripts (custom scripts and Playwright tests) can be run directly with live logs.',
     },
     settingsModels: {
       title: 'Settings — AI models',

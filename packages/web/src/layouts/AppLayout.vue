@@ -103,7 +103,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, Terminal, Shrink } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, FolderTree, Shrink } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useAgentStore } from '@/stores/agent'
 import { useConversationStore } from '@/stores/conversation'
@@ -221,17 +221,19 @@ const convStore = useConversationStore()
 const router = useRouter()
 
 /* ── Center top navigation ─────────────────────────────────────── */
-// /projects/{pid}/(chat|knowledge|scripts) page segment; non-project routes
-// (/app, /settings) have no page nav.
+// /projects/{pid}/(chat|workspace) page segment; non-project routes
+// (/app, /settings) have no page nav. Knowledge and scripts were merged into
+// the unified workspace tab, so their old segments also count as workspace
+// (they redirect to it).
 const pageSegment = computed(() => {
-  const m = route.path.match(/^\/projects\/[^/]+\/(chat|knowledge|scripts)(?:\/|$)/)
-  return m ? (m[1] as 'chat' | 'knowledge' | 'scripts') : null
+  const m = route.path.match(/^\/projects\/[^/]+\/(chat|workspace|knowledge|scripts)(?:\/|$)/)
+  if (!m) return null
+  return m[1] === 'chat' ? 'chat' : 'workspace'
 })
 
 const navTabs = computed(() => [
   { id: 'chat' as const, label: t('layout.tabConversations'), icon: MessageSquare },
-  { id: 'knowledge' as const, label: t('layout.tabKnowledge'), icon: BookOpen },
-  { id: 'scripts' as const, label: t('layout.tabScripts'), icon: Terminal },
+  { id: 'workspace' as const, label: t('layout.tabWorkspace'), icon: FolderTree },
 ])
 
 // Compress lives on the top nav row (right-aligned) rather than on its own
@@ -256,7 +258,7 @@ async function handleCompress() {
   }
 }
 
-function goToPage(segment: 'chat' | 'knowledge' | 'scripts') {
+function goToPage(segment: 'chat' | 'workspace') {
   const pid = route.params.projectId
   if (!pid) return
   // No query forwarding: ?new=1 belongs to a specific entry flow
@@ -269,9 +271,9 @@ function goToPage(segment: 'chat' | 'knowledge' | 'scripts') {
 /* ── Route param ↔ project store sync ─────────────────────────── */
 // ProjectTree pushes both together, but direct URL navigation / back-forward
 // (same route record, component reused) changes only route.params.projectId.
-// Without this, pages reading currentProject (ChatPage, ScriptExecutorPage)
+// Without this, pages reading currentProject (ChatPage, WorkspacePage)
 // keep showing the OLD project while the URL says otherwise, and
-// KnowledgeBrowserPage could even save edits into the wrong project.
+// WorkspacePage could even save edits into the wrong project.
 const routePid = computed(() => route.params.projectId as string | undefined)
 let pidSyncSeq = 0
 watch(routePid, async (pid) => {

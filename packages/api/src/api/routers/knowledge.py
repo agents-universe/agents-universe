@@ -46,6 +46,25 @@ def _resolve_slug_file(knowledge_dir: Path, slug: str) -> Path:
         raise HTTPException(status_code=400, detail=f"Invalid slug: {slug!r}")
 
 
+def _rehydrate_frontmatter(old_content: str, new_body: str) -> str:
+    """Merge a body-only edit back into the file's existing frontmatter.
+
+    The GET endpoint strips frontmatter before returning content, so a PUT
+    carries only the body. Writing that body verbatim would silently drop the
+    file's frontmatter (title/tags/parent/children) on save. Parse the
+    on-disk frontmatter and emit body + preserved metadata; a file without
+    frontmatter (or one that failed to parse) is written verbatim, matching
+    what GET surfaced.
+    """
+    try:
+        post = _fm.loads(old_content)
+    except Exception:
+        return new_body
+    if not post.metadata:
+        return new_body
+    return _fm.dumps(_fm.Post(new_body, **post.metadata))
+
+
 def _checked_db_fs_path(km: KnowledgeMetadata, project_knowledge_dir: Path) -> Path | None:
     """Return km.fs_path as a Path after verifying directory ownership.
 
@@ -385,8 +404,12 @@ async def update_knowledge(
         if await asyncio.to_thread(fs_path.exists):
             old_content = await asyncio.to_thread(fs_path.read_text, "utf-8")
 
+        # GET strips frontmatter from the content it returns, so the PUT body
+        # is body-only: re-merge it with the file's existing frontmatter so a
+        # save never wipes title/tags/parent metadata.
+        write_content = _rehydrate_frontmatter(old_content, body.content)
         try:
-            await asyncio.to_thread(fs_path.write_text, body.content, "utf-8")
+            await asyncio.to_thread(fs_path.write_text, write_content, "utf-8")
         except OSError:
             raise HTTPException(status_code=507, detail="Failed to write knowledge file")
 
@@ -419,8 +442,12 @@ async def update_knowledge(
     if not await asyncio.to_thread(file_path.exists):
         raise HTTPException(status_code=404, detail=f"Knowledge file not found: {slug}")
 
+    # Same contract as the DB branch: the GET stripped frontmatter, so merge
+    # the body-only edit back into the on-disk frontmatter.
+    old_content = await asyncio.to_thread(file_path.read_text, "utf-8")
+    write_content = _rehydrate_frontmatter(old_content, body.content)
     try:
-        await asyncio.to_thread(file_path.write_text, body.content, "utf-8")
+        await asyncio.to_thread(file_path.write_text, write_content, "utf-8")
     except OSError:
         raise HTTPException(status_code=507, detail="Failed to write knowledge file")
 

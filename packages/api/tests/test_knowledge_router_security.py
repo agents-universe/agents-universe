@@ -176,3 +176,89 @@ async def test_put_db_row_fs_path_outside_project_refused(client, db, make_proje
     )
     assert resp.status_code == 400
     assert target.read_text(encoding="utf-8") == "original"
+
+
+# ---------------------------------------------------------------------------
+# Frontmatter preservation on PUT
+# ---------------------------------------------------------------------------
+
+
+async def test_put_preserves_frontmatter_primary_file(client, make_project):
+    """GET strips frontmatter; PUT must merge the body-only edit back into the
+    file's existing frontmatter instead of wiping it (regression: the raw body
+    write dropped title/tags metadata on save)."""
+    project = await make_project()
+    _write(
+        project.slug,
+        "domain/foo.md",
+        "---\ntitle: Foo Doc\ntags: [a, b]\nparent: domain\n---\nhello world",
+    )
+
+    # What GET surfaces is body-only.
+    get_resp = await client.get(f"/api/projects/{project.project_id}/knowledge/domain/foo")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["content"] == "hello world"
+
+    resp = await client.put(
+        f"/api/projects/{project.project_id}/knowledge/domain/foo",
+        json={"content": "edited body"},
+    )
+    assert resp.status_code == 200
+
+    content = (PROJECTS_ROOT / project.slug / "knowledge" / "domain" / "foo.md").read_text(
+        encoding="utf-8"
+    )
+    assert "title: Foo Doc" in content
+    assert "tags:" in content
+    assert "a" in content and "b" in content
+    assert "parent: domain" in content
+    assert "edited body" in content
+    assert "hello world" not in content
+
+    # And the file still reads back cleanly with its metadata intact.
+    get_resp = await client.get(f"/api/projects/{project.project_id}/knowledge/domain/foo")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["content"] == "edited body"
+    assert get_resp.json()["title"] == "Foo Doc"
+
+
+async def test_put_preserves_frontmatter_db_row(client, db, make_project):
+    """Same guarantee for a DB-indexed (detail) knowledge file."""
+    project = await make_project()
+    f = _write(
+        project.slug,
+        "domain/detail.md",
+        "---\ntitle: Detail Doc\ncategory: domain\n---\noriginal body",
+    )
+    db.add(_db_row(str(project.project_id), "domain/detail", str(f)))
+    await db.commit()
+
+    resp = await client.put(
+        f"/api/projects/{project.project_id}/knowledge/domain/detail",
+        json={"content": "new body"},
+    )
+    assert resp.status_code == 200
+
+    content = f.read_text(encoding="utf-8")
+    assert "title: Detail Doc" in content
+    assert "category: domain" in content
+    assert "new body" in content
+    assert "original body" not in content
+
+
+async def test_put_plain_file_without_frontmatter_stays_verbatim(client, make_project):
+    """A file without frontmatter must keep the old raw-write behavior (no
+    synthetic frontmatter is introduced)."""
+    project = await make_project()
+    _write(project.slug, "domain/plain.md", "plain body")
+
+    resp = await client.put(
+        f"/api/projects/{project.project_id}/knowledge/domain/plain",
+        json={"content": "edited plain"},
+    )
+    assert resp.status_code == 200
+    content = (PROJECTS_ROOT / project.slug / "knowledge" / "domain" / "plain.md").read_text(
+        encoding="utf-8"
+    )
+    assert content == "edited plain"
+    assert "---" not in content

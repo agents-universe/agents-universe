@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { basePath, withApi } from '@/utils/basePath'
+import { useProjectStore } from '@/stores/project'
 
 const router = createRouter({
   history: createWebHistory(basePath || '/'),
@@ -30,6 +31,10 @@ const router = createRouter({
           path: 'workspace',
           component: () => import('@/pages/WorkspacePage.vue'),
         },
+        {
+          path: 'publishes',
+          component: () => import('@/pages/PublishesPage.vue'),
+        },
         // Knowledge and scripts were merged into the unified workspace tab —
         // keep the old URLs working via redirect so bookmarks/links survive.
         {
@@ -47,8 +52,22 @@ const router = createRouter({
       component: () => import('@/pages/TokenConfigPage.vue'),
     },
     {
+      // Publish management moved into the project layout as a top-level tab.
+      // Old bookmarks/links land on the current project's publishes tab.
+      // vue-router resolves `redirect` synchronously, so the project list is
+      // only validated when it is already loaded; on a cold load we trust the
+      // saved project id, and a stale id degrades like any other dead deep
+      // link (pick a project in the sidebar).
       path: '/settings/publishes',
-      component: () => import('@/pages/PublishesPage.vue'),
+      redirect: () => {
+        const store = useProjectStore()
+        const wanted = store.currentProject?.project_id ?? store.getSavedProjectId()
+        if (store.projects.length > 0) {
+          const match = store.projects.find(p => p.project_id === wanted) ?? store.projects[0]
+          return { path: `/projects/${match.project_id}/publishes` }
+        }
+        return wanted ? { path: `/projects/${wanted}/publishes` } : '/app'
+      },
     },
     {
       // Embedded agent-service page. Outside AppLayout on purpose: it is a

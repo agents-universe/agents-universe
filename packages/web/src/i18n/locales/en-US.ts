@@ -39,7 +39,6 @@ export default {
     },
     footer: {
       tokenSettings: 'API keys',
-      publishSettings: 'Publish service',
       logout: 'Log out',
       switchLanguage: 'Switch language',
       activeUsers: '{count} online',
@@ -374,6 +373,7 @@ export default {
     tabKnowledge: 'Knowledge',
     tabMemory: 'Memory',
     tabWorkspace: 'Workspace',
+    tabPublishes: 'Publishes',
   },
   emptyProject: {
     tagline: 'Enterprise AI Agent framework',
@@ -461,8 +461,6 @@ export default {
     empty: 'No publishes yet. Click "New publish" to start.',
     created: 'Publish created',
     createTitle: 'New publish',
-    project: 'Project',
-    chooseProject: 'Select a project',
     agent: 'Agent',
     chooseAgent: 'Select an agent',
     model: 'Model config',

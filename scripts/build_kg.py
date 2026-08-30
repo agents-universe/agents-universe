@@ -42,6 +42,12 @@ def main() -> int:
         help="re-hash and re-parse every candidate file (default: incremental)",
     )
     parser.add_argument(
+        "--include-untracked",
+        action="store_true",
+        help="also index untracked source files (default: committed files only; "
+        "untracked files are reported in the summary warning instead)",
+    )
+    parser.add_argument(
         "--name",
         help="graph directory name (default: repo directory name)",
     )
@@ -52,10 +58,14 @@ def main() -> int:
     kg_dir = repo_graph_dir(str(REPO_ROOT), name)
 
     async def _run() -> dict:
-        return await build_repo_graph(repo, kg_dir, force=args.force)
+        return await build_repo_graph(
+            repo, kg_dir, force=args.force, include_untracked=args.include_untracked
+        )
 
     summary = asyncio.run(_run())
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    if summary.get("warning"):
+        print(f"\nWarning: {summary['warning']}")
 
     graph = load_repo_graph(kg_dir)
     print(f"\nReport: {kg_dir / REPORT_FILE}")

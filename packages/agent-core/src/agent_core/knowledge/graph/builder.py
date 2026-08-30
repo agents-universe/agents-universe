@@ -173,8 +173,36 @@ def _walk_files(repo: Path) -> list[str]:
     return files
 
 
+async def _untracked_files(repo: Path) -> list[str] | None:
+    """git ls-files --others --exclude-standard -z; None when git is unusable.
+
+    ``--exclude-standard`` respects .gitignore, so build artifacts never land
+    in the graph. Used to warn about source files the graph is silently
+    missing (they are not tracked yet) and, on explicit request, to index
+    them.
+    """
+    git = _find_git()
+    if not git:
+        return None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            git, "-c", "core.quotepath=false", "ls-files", "--others",
+            "--exclude-standard", "-z", cwd=str(repo),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
+        )
+        out, _ = await process.communicate()
+    except OSError:
+        return None
+    if process.returncode != 0:
+        return None
+    # -z splits on NUL, so paths with spaces/newlines are safe (same as
+    # _tracked_files).
+    return [path for path in out.decode("utf-8", "replace").split("\0") if path]
+
+
 def _candidate_files(files: list[str]) -> list[str]:
-    """Tracked files worth indexing: supported ext, not in an excluded dir."""
+    """Files worth indexing: supported ext, not in an excluded dir."""
     return sorted({
         rel for rel in files
         if not any(part in EXCLUDED_DIRS for part in rel.split("/"))
@@ -182,16 +210,34 @@ def _candidate_files(files: list[str]) -> list[str]:
     })
 
 
+def _untracked_hint(untracked_candidates: list[str]) -> str | None:
+    """Human hint explaining why the graph is missing the untracked files."""
+    shown = untracked_candidates[:3]
+    more = len(untracked_candidates) - len(shown)
+    detail = ", ".join(shown) + (f", +{more} more" if more > 0 else "")
+    return (
+        f"committed source only; {len(untracked_candidates)} untracked source "
+        f"file(s) are not in the graph ({detail}). Commit them, or rebuild with "
+        "include_untracked=true to index them."
+    )
+
+
 async def build_repo_graph(
-    repo: Path, kg_dir: Path, force: bool = False
+    repo: Path, kg_dir: Path, force: bool = False, include_untracked: bool = False
 ) -> dict[str, Any]:
     """Build/refresh the graph for one checkout; returns a summary dict.
 
-    Fast path: head unchanged AND the manifest already covers every tracked
+    Fast path: head unchanged AND the manifest already covers every candidate
     source file -> up_to_date with zero hashing. Otherwise every candidate
     file is hashed but only changed ones are re-parsed (bounded thread pool);
     deleted files drop out of the manifest; then graph.json and
     graph_report.md are assembled purely from the manifest.
+
+    By default only *tracked* files are indexed (the graph mirrors committed
+    architecture). Files that exist on disk but are not tracked yet are
+    reported in the summary's ``warning`` so an empty-looking graph is never
+    silently misread as "no code". Pass ``include_untracked=True`` to fold
+    them into the candidates as well.
     """
     started = time.perf_counter()
     kg_dir.mkdir(parents=True, exist_ok=True)
@@ -202,7 +248,13 @@ async def build_repo_graph(
     if tracked is None:
         _log.info("git ls-files failed for %s; falling back to os.walk", repo)
         tracked = _walk_files(repo)
-    candidates = _candidate_files(tracked)
+    tracked_candidates = _candidate_files(tracked)
+    untracked = await _untracked_files(repo)
+    untracked_candidates = _candidate_files(untracked or [])
+    if include_untracked:
+        candidates = sorted(set(tracked_candidates) | set(untracked_candidates))
+    else:
+        candidates = tracked_candidates
     head = await _git_head_sha(repo)
 
     existing = load_repo_graph(kg_dir)
@@ -210,6 +262,7 @@ async def build_repo_graph(
         not force
         and existing is not None
         and existing.repo.head_sha == head
+        and state.tracked_only == (not include_untracked)
         and set(candidates) <= set(state.files)
     ):
         summary = {
@@ -220,6 +273,8 @@ async def build_repo_graph(
             "graph_path": str(kg_dir / GRAPH_FILE),
             "build_ms": int((time.perf_counter() - started) * 1000),
         }
+        if untracked_candidates and not include_untracked:
+            summary["warning"] = _untracked_hint(untracked_candidates)
         return summary
 
     counters = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
@@ -265,6 +320,9 @@ async def build_repo_graph(
     graph = _assemble_graph(repo.name, head, results, counters)
     graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
 
+    # Record the build mode so a later build in the other mode cannot reuse
+    # this manifest through the fast path.
+    state.tracked_only = not include_untracked
     cache.save(state)
     save_repo_graph(graph, kg_dir)
     (kg_dir / REPORT_FILE).write_text(render_report(graph), encoding="utf-8")
@@ -272,13 +330,16 @@ async def build_repo_graph(
     _log.info("repo graph %s: %d files, %d nodes, %d edges (%d ms)",
               repo.name, graph.stats.get("files", 0), graph.stats.get("nodes", 0),
               graph.stats.get("edges", 0), graph.stats["build_ms"])
-    return {
+    summary = {
         "status": "built",
         "head": head,
         "stats": graph.stats,
         "repo_map": compact_map(graph),
         "graph_path": str(kg_dir / GRAPH_FILE),
     }
+    if untracked_candidates and not include_untracked:
+        summary["warning"] = _untracked_hint(untracked_candidates)
+    return summary
 
 
 async def maybe_build_auto(

@@ -249,6 +249,65 @@ async def test_deleted_file_drops_from_graph(repo: Path, tmp_path: Path):
     assert graph.node("f:util/helper.py") is None
 
 
+# ---------------------------------------------------------------------------
+# Untracked files: warning by default, indexable on request
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_untracked_files_warn_but_not_indexed(repo: Path, tmp_path: Path, grammars):
+    (repo / "wip.py").write_text("def wip():\n    return 1\n", encoding="utf-8")
+    summary = await _build(repo, tmp_path, force=True)
+    # committed files only — wip.py is not in the graph
+    assert summary["stats"]["files"] == 10
+    assert "wip.py" in summary["warning"]
+    graph = load_cached(tmp_path / "kg")
+    assert graph.node("s:wip.py:wip") is None
+
+
+@pytest.mark.asyncio
+async def test_untracked_indexed_when_include_untracked(repo: Path, tmp_path: Path, grammars):
+    (repo / "wip.py").write_text("def wip():\n    return 1\n", encoding="utf-8")
+    summary = await _build(repo, tmp_path, force=True, include_untracked=True)
+    assert summary["stats"]["files"] == 11
+    assert "warning" not in summary
+    graph = load_cached(tmp_path / "kg")
+    assert graph.node("s:wip.py:wip") is not None
+
+
+@pytest.mark.asyncio
+async def test_untracked_warning_clears_after_commit(repo: Path, tmp_path: Path, grammars):
+    (repo / "wip.py").write_text("def wip():\n    return 1\n", encoding="utf-8")
+    assert "warning" in (await _build(repo, tmp_path, force=True))
+    _run("add", "wip.py", cwd=repo)
+    _run("commit", "-m", "add wip", cwd=repo)
+    summary = await _build(repo, tmp_path, force=True)
+    assert "warning" not in summary
+    assert summary["stats"]["files"] == 11
+
+
+@pytest.mark.asyncio
+async def test_untracked_warning_on_up_to_date_fast_path(repo: Path, tmp_path: Path, grammars):
+    await _build(repo, tmp_path)
+    (repo / "wip.py").write_text("def wip():\n    return 1\n", encoding="utf-8")
+    summary = await _build(repo, tmp_path)  # not forced -> fast path
+    assert summary["status"] == "up_to_date"
+    assert "wip.py" in summary["warning"]
+
+
+@pytest.mark.asyncio
+async def test_mode_switch_rebuilds_not_fast_path(repo: Path, tmp_path: Path):
+    """A manifest built with untracked files is not reused by a tracked-only
+    build, and vice versa — the fast path must never resurrect a stale mode."""
+    (repo / "wip.py").write_text("def wip():\n    return 1\n", encoding="utf-8")
+    await _build(repo, tmp_path, force=True, include_untracked=True)
+    # tracked-only rebuild must drop wip.py from the graph
+    summary = await _build(repo, tmp_path, force=True)
+    assert summary["status"] == "built"
+    assert summary["stats"]["files"] == 10
+    graph = load_cached(tmp_path / "kg")
+    assert graph.node("s:wip.py:wip") is None
+
+
 @pytest.mark.asyncio
 async def test_report_renders(repo: Path, tmp_path: Path, grammars):
     await _build(repo, tmp_path)

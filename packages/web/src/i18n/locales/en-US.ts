@@ -44,7 +44,6 @@ export default {
       switchLanguage: 'Switch language',
       activeUsers: '{count} online',
       takeTour: 'Guided tour',
-      whatsNew: "What's new",
     },
     projects: {
       title: 'Projects',
@@ -565,14 +564,7 @@ export default {
     },
     done: {
       title: "You're all set",
-      body: 'That covers the basics. You can replay this tour anytime from the sidebar, and you will see a "What\'s new" dialog whenever new features ship.',
+      body: 'That covers the basics. You can replay this tour anytime from the sidebar.',
     },
-  },
-  whatsNew: {
-    title: "What's new",
-    version: 'Version {version}',
-    releasedOn: 'Released {date}',
-    close: 'Got it',
-    empty: "You're all caught up",
   },
 }

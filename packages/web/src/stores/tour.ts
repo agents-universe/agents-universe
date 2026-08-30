@@ -1,9 +1,9 @@
 /**
- * Tour + what's-new orchestration store.
+ * Tour orchestration store.
  *
  * The tour is driven by the declarative registry in `src/tour/steps.ts`.
  * `start()` returns a promise that resolves when the tour stops (finish /
- * skip / Esc), which lets App.vue sequence tour → what's-new deterministically.
+ * skip / Esc).
  *
  * Persistence is server-side (`/api/preferences`); all local writes are
  * optimistic with a console.warn on failure — a failed patch means the tour
@@ -13,7 +13,6 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Router } from 'vue-router'
 import { patchPreferences, type UserPreferences } from '@/api/preferences'
-import { CURRENT_VERSION } from '@/tour/releases'
 import { resolveRoute, waitForRoute, waitForSelector } from '@/tour/engine'
 import { TOUR_STEPS, currentProjectId, isMobile, type TourStep } from '@/tour/steps'
 
@@ -25,8 +24,6 @@ export const useTourStore = defineStore('tour', () => {
   /** A step transition (route push / waitFor / action) is in flight. */
   const waiting = ref(false)
   const completed = ref(false)
-  const lastSeenVersion = ref<string | null>(null)
-  const whatsNewVisible = ref(false)
 
   let stopPromise: Promise<void> | null = null
   let stopResolve: (() => void) | null = null
@@ -34,7 +31,6 @@ export const useTourStore = defineStore('tour', () => {
 
   function setServerState(prefs: UserPreferences) {
     completed.value = prefs.onboarding_completed
-    lastSeenVersion.value = prefs.last_seen_version
   }
 
   function currentStep(): TourStep | null {
@@ -86,26 +82,10 @@ export const useTourStore = defineStore('tour', () => {
 
   async function completeTour() {
     completed.value = true
-    if (CURRENT_VERSION) lastSeenVersion.value = CURRENT_VERSION
     try {
-      await patchPreferences({
-        onboarding_completed: true,
-        ...(CURRENT_VERSION ? { last_seen_version: CURRENT_VERSION } : {}),
-      })
+      await patchPreferences({ onboarding_completed: true })
     } catch (err) {
       console.warn('tour: failed to persist completion', err)
-    }
-  }
-
-  async function dismissWhatsNew() {
-    whatsNewVisible.value = false
-    if (CURRENT_VERSION) {
-      lastSeenVersion.value = CURRENT_VERSION
-      try {
-        await patchPreferences({ last_seen_version: CURRENT_VERSION })
-      } catch (err) {
-        console.warn('tour: failed to persist last_seen_version', err)
-      }
     }
   }
 
@@ -222,8 +202,6 @@ export const useTourStore = defineStore('tour', () => {
     stepIndex,
     waiting,
     completed,
-    lastSeenVersion,
-    whatsNewVisible,
     setServerState,
     currentStep,
     start,
@@ -232,7 +210,6 @@ export const useTourStore = defineStore('tour', () => {
     skip,
     finish,
     completeTour,
-    dismissWhatsNew,
     stop,
   }
 })

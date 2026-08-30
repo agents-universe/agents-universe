@@ -48,13 +48,12 @@ class UserApiKey(Base):
 
 
 class UserPreference(Base):
-    """Per-user onboarding tour / what's-new read state — one row per user."""
+    """Per-user onboarding tour state — one row per user."""
     __tablename__ = "user_preferences"
 
     user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
-    last_seen_version: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

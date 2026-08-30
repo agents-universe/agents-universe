@@ -13,9 +13,6 @@
       <button class="settings-btn" :title="t('sidebar.footer.takeTour')" @click="startTour">
         <Compass :size="12" />
       </button>
-      <button class="settings-btn" :title="t('sidebar.footer.whatsNew')" @click="openWhatsNew">
-        <Bell :size="12" />
-      </button>
       <button class="settings-btn" :title="t('sidebar.footer.tokenSettings')" @click="goSettings">
         <Settings :size="12" />
       </button>
@@ -36,7 +33,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Settings, LogOut, Languages, Compass, Bell, Rocket } from 'lucide-vue-next'
+import { Settings, LogOut, Languages, Compass, Rocket } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
 import { withApi } from '@/utils/basePath'
@@ -68,10 +65,6 @@ function goPublishes() {
 
 function startTour() {
   void tourStore.start(0, router)
-}
-
-function openWhatsNew() {
-  tourStore.whatsNewVisible = true
 }
 
 function handleLogout() {

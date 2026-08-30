@@ -44,7 +44,6 @@ export default {
       switchLanguage: '切换语言',
       activeUsers: '{count} 人在线',
       takeTour: '功能引导',
-      whatsNew: '版本更新',
     },
     projects: {
       title: '项目',
@@ -565,14 +564,7 @@ export default {
     },
     done: {
       title: '全部搞定',
-      body: '核心功能就介绍到这里。随时可以从侧栏重播本引导；之后每次发布新功能，你都会看到「版本更新」弹窗。',
+      body: '核心功能就介绍到这里。随时可以从侧栏重播本引导。',
     },
-  },
-  whatsNew: {
-    title: '版本更新',
-    version: '版本 {version}',
-    releasedOn: '发布于 {date}',
-    close: '知道了',
-    empty: '已是最新版本',
   },
 }

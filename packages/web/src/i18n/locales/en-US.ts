@@ -406,7 +406,10 @@ export default {
     running: 'Running…',
     runHint: 'Click "Run" to execute the script in the project sandbox — output streams here live.',
     runFailed: 'Failed to start run',
+    runFinished: 'Run finished: {status}',
     connectionLost: 'Connection lost, final script status unknown (it may still be running in the background)',
+    baseUrlPlaceholder: 'System under test (optional, e.g. http://demo.example.com)',
+    baseUrlHint: 'Injected as APP_BASE_URL into the test run; the spec default applies when empty',
     scriptsGroup: 'Scripts',
   },
   scriptExecutor: {

@@ -59,6 +59,15 @@
             {{ scriptSelection.name }}
           </h3>
           <div class="workspace-content-actions">
+            <input
+              v-if="scriptSelection.kind === 'playwright'"
+              v-model="baseUrl"
+              class="input executor-base-url"
+              type="url"
+              spellcheck="false"
+              :placeholder="t('workspace.baseUrlPlaceholder')"
+              :title="t('workspace.baseUrlHint')"
+            />
             <button class="btn-primary" :disabled="running" @click="runSelection">
               <Play :size="13" /> {{ running ? t('workspace.running') : t('workspace.run') }}
             </button>
@@ -96,6 +105,7 @@ import { Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide
 import { apiFetch } from '@/api/client'
 import { apiBase } from '@/utils/basePath'
 import { workspaceApi } from '@/api/workspace'
+import { knowledgeApi } from '@/api/knowledge'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
 import type { WorkspaceTreeNode, WorkspaceNodeKind } from '@/types/workspace'
 import FileTree from '@/components/workspace/FileTree.vue'
@@ -121,6 +131,10 @@ interface Selection {
   scriptId?: string
   specSlug?: string
   file?: string
+  // Set when the file was opened through a [[slug]] knowledge cross-reference
+  // (possibly a global knowledge file, not present under knowledge/ on disk):
+  // content loads and saves go through the knowledge API for that slug.
+  knowledgeSlug?: string
 }
 const selection = ref<Selection | null>(null)
 
@@ -153,6 +167,18 @@ const runError = ref<string | null>(null)
 const logPanel = ref<HTMLElement | null>(null)
 let ws: WebSocket | null = null
 const mounted = ref(true)
+// Set when the server's authoritative "done" frame arrives; suppresses the
+// "connection lost" warning on the close that follows it (the server closes
+// the socket right after sending done).
+let wsFinished = false
+
+// Target-system URL for Playwright runs (APP_BASE_URL). Remembered per
+// project so repeated runs do not re-enter it; empty = spec default.
+const baseUrl = ref('')
+const baseUrlKey = (pid: string) => `pw-base-url:${pid}`
+function persistBaseUrl(pid: string) {
+  localStorage.setItem(baseUrlKey(pid), baseUrl.value)
+}
 
 // ── Tree building ────────────────────────────────────────────────
 function makeDirNode(entry: { name: string; path: string }): WorkspaceTreeNode {
@@ -340,17 +366,29 @@ function onSelect(node: WorkspaceTreeNode) {
 // a newer selection (rapid switching between files in the tree).
 let fileLoadSeq = 0
 
-async function loadFile(path: string) {
+// Knowledge files opened via [[slug]] cross-reference load from the knowledge
+// API (covers project files, global framework files, and un-indexed files on
+// disk). Regular tree files load straight from the workspace router.
+const knowledgeSelection = computed(() =>
+  selection.value?.kind === 'file' && selection.value.knowledgeSlug
+    ? selection.value
+    : null,
+)
+
+async function loadFile(path: string, knowledgeSlug?: string) {
   const pid = projectId.value
   const seq = ++fileLoadSeq
   fileLoading.value = true
   fileError.value = null
   editing.value = false
   try {
-    const data = await workspaceApi.readFile(pid, path)
+    const data = knowledgeSlug
+      ? await knowledgeApi.getFile(pid, knowledgeSlug)
+      : await workspaceApi.readFile(pid, path)
     if (seq !== fileLoadSeq || projectId.value !== pid) return
-    fileContent.value = data.content
-    editContent.value = data.content
+    const content = typeof data.content === 'string' ? data.content : ''
+    fileContent.value = content
+    editContent.value = content
   } catch (e) {
     if (seq !== fileLoadSeq || projectId.value !== pid) return
     fileError.value = e instanceof Error ? e.message : t('workspace.loadFileFailed')
@@ -373,10 +411,14 @@ function handleLink(e: MouseEvent) {
     e.preventDefault()
     const slug = target.getAttribute('data-slug')
     if (slug && selection.value) {
+      // Load through the knowledge API: the slug may resolve to a global
+      // framework file (project_id NULL) that has no knowledge/{slug}.md on
+      // disk, or to an un-indexed file — both invisible to the workspace
+      // file router.
       const path = `knowledge/${slug}.md`
       deselectAll()
-      selection.value = { kind: 'file', path, name: slug }
-      void loadFile(path)
+      selection.value = { kind: 'file', path, name: slug, knowledgeSlug: slug }
+      void loadFile(path, slug)
     }
   }
 }
@@ -398,7 +440,15 @@ async function saveEdit() {
   saving.value = true
   fileError.value = null
   try {
-    await workspaceApi.saveFile(pid, path, editContent.value)
+    // Files under knowledge/ are edited through the knowledge API so the
+    // save snapshots a version, re-indexes, and — for a file opened from a
+    // [[slug]] cross-reference — lands on the right (possibly global) file.
+    const knowledgeSlug = knowledgeSelection.value?.knowledgeSlug
+    if (knowledgeSlug) {
+      await knowledgeApi.saveFile(pid, knowledgeSlug, editContent.value)
+    } else {
+      await workspaceApi.saveFile(pid, path, editContent.value)
+    }
     if (selection.value?.path === path && projectId.value === pid) {
       fileContent.value = editContent.value
       editing.value = false
@@ -447,10 +497,16 @@ async function runSpec(slug: string | undefined) {
   running.value = true
   runError.value = null
   const pidAtStart = projectId.value
+  persistBaseUrl(pidAtStart)
   try {
     const result = await apiFetch<{ run_id: string; status: string }>(
       `/api/projects/${encodeURIComponent(pidAtStart)}/playwright/specs/${encodeURIComponent(slug)}/run`,
-      { method: 'POST', body: JSON.stringify({}) },
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          env: baseUrl.value.trim() ? { APP_BASE_URL: baseUrl.value.trim() } : {},
+        }),
+      },
     )
     if (projectId.value !== pidAtStart) return
     const sp = specs.value.find((s) => s.slug === slug)
@@ -476,6 +532,7 @@ function pushLog(line: LogLine) {
 
 function connectToRun(runId: string) {
   if (ws) { ws.close(); ws = null }
+  wsFinished = false
   activeRunId.value = runId
   logs.value = []
   runError.value = null
@@ -484,7 +541,7 @@ function connectToRun(runId: string) {
   ws = new WebSocket(`${proto}://${location.host}${apiBase}/ws/script-runs/${runId}`)
   ws.onmessage = (e) => {
     if (!mounted.value || activeRunId.value !== runId) return
-    let msg: { type?: string; level?: string; text?: string; log?: string; status?: string }
+    let msg: { type?: string; level?: string; text?: string; log?: string; status?: string; exit_code?: number | null }
     try {
       msg = JSON.parse(e.data as string) as typeof msg
     } catch {
@@ -492,22 +549,37 @@ function connectToRun(runId: string) {
       return
     }
     if (msg.type === 'done') {
+      // Authoritative final state — the server closes the socket right after
+      // this frame, so mark the run as finished to suppress the spurious
+      // "connection lost" warning on close.
+      wsFinished = true
+      const ok = msg.status === 'completed'
+      const statusText = ok
+        ? (msg.status ?? 'completed')
+        : `${msg.status ?? 'failed'} (exit ${msg.exit_code ?? '?'})`
+      pushLog({ text: t('workspace.runFinished', { status: statusText }), level: ok ? 'info' : 'error' })
       return
     }
     pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
   }
   ws.onclose = () => {
     if (!mounted.value || activeRunId.value !== runId) return
-    pushLog({ text: t('workspace.connectionLost'), level: 'error' })
+    // Close after the done frame is the normal end of a run. Only a close
+    // WITHOUT done means the connection dropped before the server reported
+    // the outcome — the run may still be executing server-side.
+    if (!wsFinished) {
+      pushLog({ text: t('workspace.connectionLost'), level: 'error' })
+    }
   }
 }
 
 // ── Lifecycle & project switching ───────────────────────────────
 onMounted(() => {
+  baseUrl.value = projectId.value ? localStorage.getItem(baseUrlKey(projectId.value)) ?? '' : ''
   loadTree()
 })
 
-watch(projectId, () => {
+watch(projectId, (pid) => {
   // Project switched while this page stays mounted: drop the socket tied to
   // the previous project's run and reset the selection. mounted stays true —
   // it guards only the component's own lifetime (see onBeforeUnmount).
@@ -524,6 +596,7 @@ watch(projectId, () => {
   logs.value = []
   runError.value = null
   running.value = false
+  baseUrl.value = pid ? localStorage.getItem(baseUrlKey(pid)) ?? '' : ''
   loadTree()
 })
 

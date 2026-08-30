@@ -1,4 +1,4 @@
-"""Per-user onboarding / what's-new read state."""
+"""Per-user onboarding state."""
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,5 +25,4 @@ def serialize_preferences(row: UserPreference) -> dict:
     return {
         "onboarding_completed": row.onboarding_completed,
         "onboarding_completed_at": row.onboarding_completed_at,
-        "last_seen_version": row.last_seen_version,
     }

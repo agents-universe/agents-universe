@@ -1,7 +1,6 @@
 <template>
   <RouterView />
   <TourSpotlight />
-  <WhatsNewDialog />
 </template>
 
 <script setup lang="ts">
@@ -11,10 +10,7 @@ import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
 import { withApi } from '@/utils/basePath'
-import { RELEASES } from '@/tour/releases'
-import { entriesToShow } from '@/tour/whatsNew'
 import TourSpotlight from '@/components/tour/TourSpotlight.vue'
-import WhatsNewDialog from '@/components/tour/WhatsNewDialog.vue'
 import type { UserPreferences } from '@/api/preferences'
 
 const authStore = useAuthStore()
@@ -37,16 +33,10 @@ onMounted(async () => {
       const prefs = data.preferences
       if (prefs) {
         tourStore.setServerState(prefs)
-        // Sequencing: a brand-new user gets the tour first — and finishing
-        // the tour also marks last_seen_version, so the what's-new dialog
-        // never fires on first login. Returning users only see the dialog
-        // after a version bump.
-        if (!tourStore.completed) {
-          if (!document.querySelector('.modal-overlay')) {
-            await tourStore.start(0, router)
-          }
-        } else if (entriesToShow(tourStore.lastSeenVersion, RELEASES).length > 0) {
-          tourStore.whatsNewVisible = true
+        // A brand-new user gets the tour first; returning users who already
+        // completed it see nothing on login.
+        if (!tourStore.completed && !document.querySelector('.modal-overlay')) {
+          await tourStore.start(0, router)
         }
       }
     }

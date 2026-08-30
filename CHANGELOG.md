@@ -2,6 +2,26 @@
 
 本项目的所有重要变更都会记录在此文件，格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-08-31
+
+### 新增
+
+- **发布管理成为项目布局顶层页签** - 发布管理从独立的 `/settings/publishes` 页面提升为项目布局第三个顶层页签「发布」（与会话、工作区并列）：页签按当前项目过滤发布列表，创建弹窗锁定当前项目（不再有项目选择器），API 密钥仅按当前发布拉取，切换项目自动重载；新建发布按钮仅项目经理可见（API 仍强制 403）；`/settings/publishes` 重定向到当前项目的发布页签（无项目时回 `/app`）
+- **会话 / 工作区双页签** - 顶部导航「知识」「脚本」页签合并为「工作区」：左侧展示 `PROJECTS_ROOT/{slug}/` 下全部文件与脚本（懒加载树，`.git`/`.tmp` 跳过），Markdown 可查看与编辑保存（`knowledge/*.md` 保存后自动重索引），自定义脚本与 Playwright 测试可一键运行并实时流式查看日志。新增 `GET/PUT /api/projects/{pid}/workspace/{files,file}`（`resolve_within` 防路径逃逸）；旧 `/knowledge`、`/scripts` 路由重定向到 `/workspace`
+- **仓库知识图谱构建脚本** - 新增 `scripts/build_kg.py` 命令行入口，可在应用外对任意仓库独立构建代码知识图谱
+
+### 移除
+
+- **「版本更新」功能** - 删除侧栏「版本更新」按钮与发布说明弹窗（`WhatsNewDialog`）、`whatsNew` i18n 文案与样式、以及 `tour` store 的 `lastSeenVersion` / `dismissWhatsNew` 状态；后端 `user_preferences.last_seen_version` 字段与 PATCH 入参一并移除（迁移 `c5d7e9f1a234`）。引导导览与 `onboarding_completed` 状态保留
+
+### 修复
+
+- **知识编辑保留 frontmatter** - 工作区编辑知识条目保存时，将正文修改合并回文件原有 frontmatter（DB 索引与 primary-file 两个写路径），无 frontmatter 的文件保持原样直写，不再丢 YAML 头
+- **工作区脚本运行与知识交叉链接修复** - 脚本运行结束终态在重新挂载 / 导航后正确恢复；Playwright 规格运行重新提供每项目 `APP_BASE_URL` 输入（localStorage 记忆）并注入运行环境，不再恒为空 body；知识 `[[slug]]` 交叉引用改经知识 API 解析，全局框架文件与未索引文件可正常加载与保存（此前 404）
+- **仓库知识图谱静默输出全 0** - 构建只索引已提交（tracked）文件；仓库里存在未提交源码（如未 `git commit` 的 `.java`）时 `files=0 sym=0 edges=0` 且无任何告警，与空仓库无法区分。现默认在 summary 上报 `warning`（未跟踪文件计数 + 样例 + hint），并新增 `include_untracked`（`build_kg.py --include-untracked` / `repo_graph build` 参数）按需将未提交文件并入图谱；缓存记录构建模式，两种模式切换不会复用陈旧 manifest
+- **GitHub Actions 四项失败** - Anthropic SDK 1.x 的 HTTP 传输迁移到 httpx2，传入 `httpx.AsyncClient` 抛 `TypeError`；按已安装 SDK 版本探测选择匹配传输（httpx2，回退 httpx）。`paths.resolve_within` 在所有主机拒绝盘符 / UNC 前缀（POSIX 上 `C:\evil` 只是相对目录，逃逸请求此前回 404 而非 400）。publish 迁移 Boolean 列默认值改用 `sa.true()`（Postgres 拒绝 `DEFAULT 1`，sqlite / mysql / mssql 仍为 1）。token_tests bearer 模式也解析 Atlassian 邮箱以擦除错误回显，缺邮箱仍返回 `""` 而非误报未配置
+- **PostgreSQL CI 挂起（死锁与 IPv6 超时）** - 知识 PUT 在响应前未提交事务，随后 reindex 对同一行 `knowledge_metadata` 的 UPDATE 被行锁阻塞而等待响应 → 死锁，api-postgres job 挂 40 分钟；改为先提交再响应。publish key 哈希用例插入假 `publish_id`（FK 指向 `agent_publishes`），SQLite 未启用 FK 检查放行、PostgreSQL 拒绝；改为创建父发布并用其真实 id。CI 的 PostgreSQL 服务 URL 改用 `127.0.0.1`：asyncpg 优先把 localhost 解析为 IPv6 `::1`，容器只监听 IPv4，每次连接都等完 IPv6 超时才回退
+
 ## [1.3.0] - 2026-08-29
 
 ### 新增
@@ -12,11 +32,6 @@
 - **中断任务续跑而非重跑** - 中断的运行不再提供 rerun 按钮：启动清扫把硬杀运行的 streaming_snapshot 物化为 interrupted 辅助消息（历史 + 下一轮智能体上下文），将陈旧 running agent_tasks 落为 failed；活跃计划上下文携带逐任务结果摘要，续跑轮可区分已完成与待重做的工作；`stream_end` 在部分输出落库后不再保留快照
 - **超限请求降级而非硬失败** - 把字节量跟踪接入压缩决策并新增最小破坏降级链：超过网关字节上限的请求（CJK JSON 转义、base64 图片）自行收缩而非以不透明 413 失败
 - **工作流驱动智能体恢复可见计划** - pentest-expert 的系统提示令其走固定工作流阶段而非调用 `plan_task`，整项目请求从不发出 `task_plan_created`，UI 无计划卡片；现将工作流阶段物化为显式任务计划后再按工作流文件执行
-- **会话 / 工作区双页签** - 顶部导航「知识」「脚本」页签合并为「工作区」：左侧展示 `PROJECTS_ROOT/{slug}/` 下全部文件与脚本（懒加载树，`.git`/`.tmp` 跳过），Markdown 可查看与编辑保存（`knowledge/*.md` 保存后自动重索引），自定义脚本与 Playwright 测试可一键运行并实时流式查看日志。新增 `GET/PUT /api/projects/{pid}/workspace/{files,file}`（`resolve_within` 防路径逃逸）；旧 `/knowledge`、`/scripts` 路由重定向到 `/workspace`
-
-### 移除
-
-- **「版本更新」功能** - 删除侧栏「版本更新」按钮与发布说明弹窗（`WhatsNewDialog`）、`whatsNew` i18n 文案与样式、以及 `tour` store 的 `lastSeenVersion` / `dismissWhatsNew` 状态；后端 `user_preferences.last_seen_version` 字段与 PATCH 入参一并移除（迁移 `c5d7e9f1a234`）。引导导览与 `onboarding_completed` 状态保留
 
 ### 修复
 
@@ -30,8 +45,6 @@
 - **对话框在拖拽中误关** - 浏览器在按下 / 释放目标的共同最深祖先派发 click，对话框内按下、外部释放仍产生目标在外部的 click，拖拽中误关弹窗；改用共享 `useClickOutside` composable（mousedown 记录 + mouseup 判定），弹层用 contains()、全屏背板用直接命中检查
 - **reindex_one 深度走查双范围歧义** - 全局知识与项目知识可共享 slug（项目遮蔽），父级深度走查双范围过滤命中两行导致 `MultipleResultsFound`；项目行优先取一，与 `loader._fetch_all_entries` 遮蔽语义一致
 - **审计清扫验证缺陷加固** - 全部提供商 / 令牌端点（api_keys、model_configs、tokens、integrations、token_tests、github、jira、confluence）从错误体与 `str(exc)` 中擦除已解析密钥 / 邮箱；LLM 字符串化参数强制转换、工具循环耗尽告警等一并修复
-- **仓库知识图谱静默输出全 0** - 构建只索引已提交（tracked）文件；仓库里存在未提交源码（如未 `git commit` 的 `.java`）时 `files=0 sym=0 edges=0` 且无任何告警，与空仓库无法区分。现默认在 summary 上报 `warning`（未跟踪文件计数 + 样例 + hint），并新增 `include_untracked`（`build_kg.py --include-untracked` / `repo_graph build` 参数）按需将未提交文件并入图谱；缓存记录构建模式，两种模式切换不会复用陈旧 manifest
-
 ## [1.2.0] - 2026-08-25
 
 ### 新增

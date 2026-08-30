@@ -38,8 +38,8 @@
 
     <!-- Center panel -->
     <main class="center-panel">
-      <!-- Page-level navigation. The only way between chat / knowledge /
-           scripts - hidden on non-project routes (/app, /settings). -->
+      <!-- Page-level navigation. The only way between chat / workspace /
+           publishes - hidden on non-project routes (/app, /settings). -->
       <nav v-if="pageSegment" class="center-topnav">
         <button
           v-for="nav in navTabs"
@@ -103,7 +103,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, FolderTree, Shrink } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, FolderTree, Rocket, Shrink } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useAgentStore } from '@/stores/agent'
 import { useConversationStore } from '@/stores/conversation'
@@ -221,19 +221,21 @@ const convStore = useConversationStore()
 const router = useRouter()
 
 /* ── Center top navigation ─────────────────────────────────────── */
-// /projects/{pid}/(chat|workspace) page segment; non-project routes
+// /projects/{pid}/(chat|workspace|publishes) page segment; non-project routes
 // (/app, /settings) have no page nav. Knowledge and scripts were merged into
 // the unified workspace tab, so their old segments also count as workspace
 // (they redirect to it).
 const pageSegment = computed(() => {
-  const m = route.path.match(/^\/projects\/[^/]+\/(chat|workspace|knowledge|scripts)(?:\/|$)/)
+  const m = route.path.match(/^\/projects\/[^/]+\/(chat|workspace|knowledge|scripts|publishes)(?:\/|$)/)
   if (!m) return null
-  return m[1] === 'chat' ? 'chat' : 'workspace'
+  if (m[1] === 'chat' || m[1] === 'publishes') return m[1]
+  return 'workspace'
 })
 
 const navTabs = computed(() => [
   { id: 'chat' as const, label: t('layout.tabConversations'), icon: MessageSquare },
   { id: 'workspace' as const, label: t('layout.tabWorkspace'), icon: FolderTree },
+  { id: 'publishes' as const, label: t('layout.tabPublishes'), icon: Rocket },
 ])
 
 // Compress lives on the top nav row (right-aligned) rather than on its own
@@ -258,7 +260,7 @@ async function handleCompress() {
   }
 }
 
-function goToPage(segment: 'chat' | 'workspace') {
+function goToPage(segment: 'chat' | 'workspace' | 'publishes') {
   const pid = route.params.projectId
   if (!pid) return
   // No query forwarding: ?new=1 belongs to a specific entry flow

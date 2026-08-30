@@ -1,154 +1,152 @@
 <template>
   <div class="publishes-page">
-    <header class="publishes-header">
-      <div class="publishes-header-left">
-        <span class="publishes-header-icon"><Rocket :size="20" /></span>
-        <div>
-          <h1 class="publishes-title">{{ t('publishesPage.title') }}</h1>
-          <p class="publishes-sub">{{ t('publishesPage.subtitle') }}</p>
+    <div class="publishes-page-inner">
+      <header class="publishes-header">
+        <div class="publishes-header-left">
+          <span class="publishes-header-icon"><Rocket :size="20" /></span>
+          <div>
+            <h1 class="publishes-title">{{ t('publishesPage.title') }}</h1>
+            <p class="publishes-sub">{{ t('publishesPage.subtitle') }}</p>
+          </div>
         </div>
+        <button v-if="canManage" class="btn-primary publishes-new" @click="showCreate = true">
+          <Plus :size="15" />
+          {{ t('publishesPage.newPublish') }}
+        </button>
+      </header>
+
+      <p v-if="message.text" class="publishes-message" :class="message.ok ? 'success' : 'error'">
+        {{ message.ok ? '✓' : '✗' }} {{ message.text }}
+      </p>
+
+      <div v-if="loading" class="publishes-state">
+        <Loader2 :size="18" class="publishes-spin" />
+        <span>{{ t('common.loading') }}</span>
       </div>
-      <button class="btn-primary publishes-new" @click="showCreate = true">
-        <Plus :size="15" />
-        {{ t('publishesPage.newPublish') }}
-      </button>
-    </header>
 
-    <p v-if="message.text" class="publishes-message" :class="message.ok ? 'success' : 'error'">
-      {{ message.ok ? '✓' : '✗' }} {{ message.text }}
-    </p>
+      <div v-else-if="!projectPublishes.length" class="publishes-empty">
+        <span class="publishes-empty-icon"><Rocket :size="28" /></span>
+        <p class="publishes-empty-title">{{ t('publishesPage.empty') }}</p>
+        <button v-if="canManage" class="btn-primary" @click="showCreate = true">{{ t('publishesPage.newPublish') }}</button>
+      </div>
 
-    <div v-if="loading" class="publishes-state">
-      <Loader2 :size="18" class="publishes-spin" />
-      <span>{{ t('common.loading') }}</span>
-    </div>
-
-    <div v-else-if="!publishes.length" class="publishes-empty">
-      <span class="publishes-empty-icon"><Rocket :size="28" /></span>
-      <p class="publishes-empty-title">{{ t('publishesPage.empty') }}</p>
-      <button class="btn-primary" @click="showCreate = true">{{ t('publishesPage.newPublish') }}</button>
-    </div>
-
-    <div v-else class="publishes-list">
-      <div v-for="p in publishes" :key="p.publish_id" class="publish-card">
-        <div class="publish-card-main">
-          <div class="publish-card-head">
-            <div class="publish-card-heading">
-              <span class="publish-card-title">{{ p.title || p.agent_slug }}</span>
-              <code class="publish-card-slug">/p/{{ p.publish_id }}</code>
+      <div v-else class="publishes-list">
+        <div v-for="p in projectPublishes" :key="p.publish_id" class="publish-card">
+          <div class="publish-card-main">
+            <div class="publish-card-head">
+              <div class="publish-card-heading">
+                <span class="publish-card-title">{{ p.title || p.agent_slug }}</span>
+                <code class="publish-card-slug">/p/{{ p.publish_id }}</code>
+              </div>
+              <div class="publish-card-status">
+                <span :class="['publish-status-chip', p.page_enabled ? 'on' : 'off']">
+                  <span class="publish-status-dot" />
+                  {{ t('publishesPage.pageToggle') }}
+                </span>
+                <span :class="['publish-status-chip', p.api_enabled ? 'on' : 'off']">
+                  <span class="publish-status-dot" />
+                  {{ t('publishesPage.apiToggle') }}
+                </span>
+              </div>
             </div>
-            <div class="publish-card-status">
-              <span :class="['publish-status-chip', p.page_enabled ? 'on' : 'off']">
-                <span class="publish-status-dot" />
-                {{ t('publishesPage.pageToggle') }}
+
+            <p v-if="p.description" class="publish-card-desc">{{ p.description }}</p>
+
+            <div class="publish-card-meta">
+              <span class="publish-meta-chip">
+                <Bot :size="12" />
+                {{ agentLabel(p.agent_slug) }}
               </span>
-              <span :class="['publish-status-chip', p.api_enabled ? 'on' : 'off']">
-                <span class="publish-status-dot" />
-                {{ t('publishesPage.apiToggle') }}
+              <span class="publish-meta-chip">
+                <Cpu :size="12" />
+                {{ modelLabel(p.model_config_id) }}
+              </span>
+              <span class="publish-meta-chip">
+                <Clock :size="12" />
+                {{ fmtDate(p.created_at) }}
               </span>
             </div>
-          </div>
 
-          <p v-if="p.description" class="publish-card-desc">{{ p.description }}</p>
-
-          <div class="publish-card-meta">
-            <span class="publish-meta-chip">
-              <Bot :size="12" />
-              {{ agentLabel(p.agent_slug) }}
-            </span>
-            <span class="publish-meta-chip">
-              <Folder :size="12" />
-              {{ projectLabel(p.project_id) }}
-            </span>
-            <span class="publish-meta-chip">
-              <Cpu :size="12" />
-              {{ modelLabel(p.model_config_id) }}
-            </span>
-            <span class="publish-meta-chip">
-              <Clock :size="12" />
-              {{ fmtDate(p.created_at) }}
-            </span>
-          </div>
-
-          <!-- Keys -->
-          <div class="publish-keys">
-            <div v-if="!keysByPublish[p.publish_id]?.length" class="publish-keys-empty">
-              <KeyRound :size="12" />
-              {{ t('publishesPage.noKeys') }}
+            <!-- Keys -->
+            <div class="publish-keys">
+              <div v-if="!keysByPublish[p.publish_id]?.length" class="publish-keys-empty">
+                <KeyRound :size="12" />
+                {{ t('publishesPage.noKeys') }}
+              </div>
+              <div v-for="k in keysByPublish[p.publish_id]" :key="k.key_id" class="publish-key-row">
+                <span class="publish-key-icon"><KeyRound :size="12" /></span>
+                <code class="publish-key-hint">{{ k.key_hint }}</code>
+                <span v-if="k.name" class="publish-key-name">{{ k.name }}</span>
+                <span :class="['publish-key-status', k.is_active ? 'on' : 'off']">
+                  {{ k.is_active ? t('publishesPage.active') : t('publishesPage.revoked') }}
+                </span>
+                <button
+                  v-if="k.is_active"
+                  class="btn-sm danger"
+                  @click="revokeKey(p, k)"
+                  :disabled="busy"
+                >{{ t('publishesPage.revoke') }}</button>
+              </div>
+              <div class="publish-key-add">
+                <input
+                  v-model="newKeyNames[p.publish_id]"
+                  class="input publish-key-name-input"
+                  :placeholder="t('publishesPage.keyNamePlaceholder')"
+                  @keydown.enter.prevent="createKey(p)"
+                />
+                <button class="btn-sm" @click="createKey(p)" :disabled="busy">
+                  <Plus :size="12" />
+                  {{ t('publishesPage.newKey') }}
+                </button>
+                <span v-if="freshKeys[p.publish_id]" class="publish-fresh-key">
+                  {{ t('publishesPage.keyCopied') }}
+                </span>
+              </div>
             </div>
-            <div v-for="k in keysByPublish[p.publish_id]" :key="k.key_id" class="publish-key-row">
-              <span class="publish-key-icon"><KeyRound :size="12" /></span>
-              <code class="publish-key-hint">{{ k.key_hint }}</code>
-              <span v-if="k.name" class="publish-key-name">{{ k.name }}</span>
-              <span :class="['publish-key-status', k.is_active ? 'on' : 'off']">
-                {{ k.is_active ? t('publishesPage.active') : t('publishesPage.revoked') }}
-              </span>
-              <button
-                v-if="k.is_active"
-                class="btn-sm danger"
-                @click="revokeKey(p, k)"
-                :disabled="busy"
-              >{{ t('publishesPage.revoke') }}</button>
-            </div>
-            <div class="publish-key-add">
-              <input
-                v-model="newKeyNames[p.publish_id]"
-                class="input publish-key-name-input"
-                :placeholder="t('publishesPage.keyNamePlaceholder')"
-                @keydown.enter.prevent="createKey(p)"
-              />
-              <button class="btn-sm" @click="createKey(p)" :disabled="busy">
-                <Plus :size="12" />
-                {{ t('publishesPage.newKey') }}
+
+            <!-- Copy once -->
+            <div v-if="pendingKeys[p.publish_id]" class="publish-copy-once">
+              <AlertTriangle :size="13" />
+              <code class="publish-raw-key">{{ pendingKeys[p.publish_id] }}</code>
+              <button class="btn-sm publish-copy-btn" @click="copyKey(p.publish_id)">
+                <Copy :size="12" />
+                {{ t('publishesPage.copyKey') }}
               </button>
-              <span v-if="freshKeys[p.publish_id]" class="publish-fresh-key">
-                {{ t('publishesPage.keyCopied') }}
-              </span>
             </div>
           </div>
 
-          <!-- Copy once -->
-          <div v-if="pendingKeys[p.publish_id]" class="publish-copy-once">
-            <AlertTriangle :size="13" />
-            <code class="publish-raw-key">{{ pendingKeys[p.publish_id] }}</code>
-            <button class="btn-sm publish-copy-btn" @click="copyKey(p.publish_id)">
-              <Copy :size="12" />
-              {{ t('publishesPage.copyKey') }}
-            </button>
-          </div>
-        </div>
+          <div class="publish-card-actions">
+            <div class="publish-card-actions-left">
+              <button class="btn-sm" @click="openPage(p)" :disabled="!p.page_enabled">
+                <ExternalLink :size="12" />
+                {{ t('publishesPage.openPage') }}
+              </button>
+              <button class="btn-sm secondary" @click="copyPageLink(p)" :disabled="!p.page_enabled">
+                <Link :size="12" />
+                {{ t('publishesPage.copyLink') }}
+              </button>
+            </div>
 
-        <div class="publish-card-actions">
-          <div class="publish-card-actions-left">
-            <button class="btn-sm" @click="openPage(p)" :disabled="!p.page_enabled">
-              <ExternalLink :size="12" />
-              {{ t('publishesPage.openPage') }}
-            </button>
-            <button class="btn-sm secondary" @click="copyPageLink(p)" :disabled="!p.page_enabled">
-              <Link :size="12" />
-              {{ t('publishesPage.copyLink') }}
-            </button>
-          </div>
-
-          <div class="publish-card-actions-right">
-            <label class="publish-toggle" :title="t('publishesPage.pageToggle')">
-              <span class="publish-toggle-label">{{ t('publishesPage.pageToggle') }}</span>
-              <span class="publish-switch" :class="{ on: p.page_enabled }">
-                <input type="checkbox" :checked="p.page_enabled" @change="togglePage(p, $event)" :disabled="busy" />
-                <span class="publish-switch-knob" />
-              </span>
-            </label>
-            <label class="publish-toggle" :title="t('publishesPage.apiToggle')">
-              <span class="publish-toggle-label">{{ t('publishesPage.apiToggle') }}</span>
-              <span class="publish-switch" :class="{ on: p.api_enabled }">
-                <input type="checkbox" :checked="p.api_enabled" @change="toggleApi(p, $event)" :disabled="busy" />
-                <span class="publish-switch-knob" />
-              </span>
-            </label>
-            <button class="btn-sm danger" @click="remove(p)" :disabled="busy">
-              <Trash2 :size="12" />
-              {{ t('common.delete') }}
-            </button>
+            <div class="publish-card-actions-right">
+              <label class="publish-toggle" :title="t('publishesPage.pageToggle')">
+                <span class="publish-toggle-label">{{ t('publishesPage.pageToggle') }}</span>
+                <span class="publish-switch" :class="{ on: p.page_enabled }">
+                  <input type="checkbox" :checked="p.page_enabled" @change="togglePage(p, $event)" :disabled="busy" />
+                  <span class="publish-switch-knob" />
+                </span>
+              </label>
+              <label class="publish-toggle" :title="t('publishesPage.apiToggle')">
+                <span class="publish-toggle-label">{{ t('publishesPage.apiToggle') }}</span>
+                <span class="publish-switch" :class="{ on: p.api_enabled }">
+                  <input type="checkbox" :checked="p.api_enabled" @change="toggleApi(p, $event)" :disabled="busy" />
+                  <span class="publish-switch-knob" />
+                </span>
+              </label>
+              <button class="btn-sm danger" @click="remove(p)" :disabled="busy">
+                <Trash2 :size="12" />
+                {{ t('common.delete') }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -170,18 +168,8 @@
 
           <div class="publish-form">
             <label class="publish-field">
-              <span class="publish-field-label">{{ t('publishesPage.project') }}</span>
-              <select v-model="form.project_id" class="input" @change="onProjectChange">
-                <option value="" disabled>{{ t('publishesPage.chooseProject') }}</option>
-                <option v-for="proj in manageableProjects" :key="proj.project_id" :value="proj.project_id">
-                  {{ proj.display_name }}
-                </option>
-              </select>
-            </label>
-
-            <label class="publish-field">
               <span class="publish-field-label">{{ t('publishesPage.agent') }}</span>
-              <select v-model="form.agent_slug" class="input" :disabled="!form.project_id">
+              <select v-model="form.agent_slug" class="input">
                 <option value="" disabled>{{ t('publishesPage.chooseAgent') }}</option>
                 <option v-for="a in scopedAgents" :key="a.slug" :value="a.slug">
                   {{ a.label || a.slug }}
@@ -214,7 +202,7 @@
             </p>
 
             <div class="publish-form-actions">
-              <button class="btn-primary" @click="create" :disabled="creating || !form.agent_slug || !form.project_id || !form.model_config_id">
+              <button class="btn-primary" @click="create" :disabled="creating || !form.agent_slug || !form.model_config_id">
                 {{ creating ? t('common.creating') : t('common.create') }}
               </button>
               <button class="btn-sm secondary" @click="showCreate = false">{{ t('common.cancel') }}</button>
@@ -227,24 +215,31 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
-  Rocket, X, Plus, Bot, Folder, Cpu, Clock, KeyRound, Copy, Link,
+  Rocket, X, Plus, Bot, Cpu, Clock, KeyRound, Copy, Link,
   ExternalLink, Trash2, Loader2, AlertTriangle,
 } from 'lucide-vue-next'
 import { publishApi } from '@/api/publish'
-import { projectsApi } from '@/api/projects'
 import { agentsApi } from '@/api/agents'
 import { useAgentStore } from '@/stores/agent'
+import { useProjectStore } from '@/stores/project'
 import { withBase } from '@/utils/basePath'
 import type { PublishItem, PublishKeyItem, PublishKeyCreateResult } from '@/api/publish'
-import type { Project } from '@/types'
 
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const agentStore = useAgentStore()
+const projectStore = useProjectStore()
+
+// The page lives at /projects/:projectId/publishes; read the param directly
+// (not the store) so back/forward between projects always shows the right one.
+const projectId = computed(() => route.params.projectId as string)
+// Only project managers may publish; the API enforces this too (403).
+const canManage = computed(() => projectStore.currentProject?.can_manage ?? false)
 
 const loading = ref(true)
 const busy = ref(false)
@@ -261,25 +256,29 @@ const message = reactive({ ok: true, text: '' })
 const showCreate = ref(false)
 const creating = ref(false)
 const formMessage = reactive({ ok: true, text: '' })
-const form = reactive({ project_id: '', agent_slug: '', model_config_id: '', title: '', description: '' })
+const form = reactive({ agent_slug: '', model_config_id: '', title: '', description: '' })
 
-const projects = ref<Project[]>([])
-// Only projects the current user can publish (manager).
-const manageableProjects = computed(() => projects.value.filter(p => p.can_manage))
 const scopedAgents = ref<Array<{ slug: string; label: string; project_id: string | null }>>([])
 const userModelConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
 
+const projectPublishes = computed(() =>
+  publishes.value.filter(p => p.project_id === projectId.value),
+)
+
 async function load() {
   loading.value = true
+  for (const id of Object.keys(keysByPublish)) delete keysByPublish[id]
   try {
-    const [pubs, projs, cfg] = await Promise.all([
+    const [pubs, cfg] = await Promise.all([
       publishApi.list(),
-      projectsApi.getProjects(),
       agentStore.fetchModelConfigs(),
     ])
     publishes.value = pubs
-    projects.value = projs
+    void loadAgents()
+    // Keys belong to the cards being shown — only fetch the current
+    // project's publishes.
     for (const p of pubs) {
+      if (p.project_id !== projectId.value) continue
       try {
         keysByPublish[p.publish_id] = await publishApi.listKeys(p.publish_id)
       } catch {
@@ -295,18 +294,17 @@ async function load() {
   }
 }
 
-async function loadAgents(projectId: string) {
+async function loadAgents() {
+  const pid = projectId.value
   try {
-    const agents = await agentsApi.getAgents(projectId)
+    const agents = await agentsApi.getAgents(pid)
+    // A project switch mid-flight must not label the new project's cards
+    // with the old project's agent list.
+    if (projectId.value !== pid) return
     scopedAgents.value = agents.map(a => ({ slug: a.slug, label: a.label, project_id: a.project_id ?? null }))
   } catch {
     scopedAgents.value = []
   }
-}
-
-function onProjectChange() {
-  form.agent_slug = ''
-  void loadAgents(form.project_id)
 }
 
 async function create() {
@@ -315,7 +313,7 @@ async function create() {
   try {
     const created = await publishApi.create({
       agent_slug: form.agent_slug,
-      project_id: form.project_id,
+      project_id: projectId.value,
       model_config_id: form.model_config_id,
       title: form.title || null,
       description: form.description || null,
@@ -323,7 +321,6 @@ async function create() {
     publishes.value = [created, ...publishes.value]
     keysByPublish[created.publish_id] = []
     showCreate.value = false
-    form.project_id = ''
     form.agent_slug = ''
     form.model_config_id = ''
     form.title = ''
@@ -462,10 +459,6 @@ function agentLabel(slug: string): string {
   return a ? a.label || slug : slug
 }
 
-function projectLabel(id: string): string {
-  return projects.value.find(p => p.project_id === id)?.display_name ?? id
-}
-
 function modelLabel(id: string): string {
   return agentStore.modelConfigs.find(c => c.config_id === id)?.model_id ?? id
 }
@@ -484,17 +477,34 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString()
 }
 
+// AppLayout's RouterView is not keyed by project, so back/forward between
+// projects reuses this component. Reload on param change — and close the
+// create modal so it can't submit into the previous project.
+watch(projectId, () => {
+  showCreate.value = false
+  form.agent_slug = ''
+  form.model_config_id = ''
+  void load()
+})
+
 onMounted(() => {
   void load()
-  // Watch the create modal: preload agents once a project is picked.
 })
 </script>
 
 <style scoped>
+/* Fills the AppLayout center panel (.center-content is a flex column with
+   overflow hidden), keeping the card list at a readable width inside it. */
 .publishes-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 22px 48px;
+}
+
+.publishes-page-inner {
   max-width: 900px;
   margin: 0 auto;
-  padding: 32px 16px 48px;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────── */
@@ -912,7 +922,7 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
-  .publishes-page { padding: 20px 10px 32px; }
+  .publishes-page { padding: 16px 10px 32px; }
   .publish-card-actions { flex-direction: column; align-items: stretch; }
   .publish-card-actions-left,
   .publish-card-actions-right { justify-content: space-between; }

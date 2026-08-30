@@ -39,7 +39,6 @@ export default {
     },
     footer: {
       tokenSettings: '密钥配置',
-      publishSettings: '服务发布',
       logout: '退出登录',
       switchLanguage: '切换语言',
       activeUsers: '{count} 人在线',
@@ -374,6 +373,7 @@ export default {
     tabKnowledge: '知识',
     tabMemory: '记忆',
     tabWorkspace: '工作区',
+    tabPublishes: '发布',
   },
   emptyProject: {
     tagline: '企业级 AI Agent 框架',
@@ -461,8 +461,6 @@ export default {
     empty: '还没有发布。点击右上角「新建发布」开始。',
     created: '发布已创建',
     createTitle: '新建发布',
-    project: '项目',
-    chooseProject: '选择项目',
     agent: '智能体',
     chooseAgent: '选择智能体',
     model: '模型配置',

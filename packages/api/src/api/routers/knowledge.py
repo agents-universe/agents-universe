@@ -421,6 +421,13 @@ async def update_knowledge(
             change_summary=body.change_summary,
             db=db,
         )
+        # Commit the version snapshot NOW, before the reindex background task
+        # runs: Starlette runs background tasks during response send, which
+        # precedes get_db's dependency-teardown commit. If this tx stayed open,
+        # the reindex's UPDATE on the same knowledge_metadata row would block
+        # on our row locks while we wait for the response (deadlock). Same
+        # contract as workspace_files' version write.
+        await db.commit()
 
         # Process-level knowledge cache must be evicted after the reindex
         # lands, or the next conversation keeps serving stale entries.

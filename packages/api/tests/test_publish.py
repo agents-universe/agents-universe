@@ -64,19 +64,22 @@ def _mk_key(publish_id: str):
 # ── key hashing / auth helpers ─────────────────────────────────────────────
 
 
-async def test_generate_hash_roundtrip(db):
+async def test_generate_hash_roundtrip(db, make_project):
     """The stored hash authenticates the plaintext, and never the other way."""
-    pubid = "p1"
-    plain, digest = _mk_key(pubid)
-    assert plain.startswith("pua_p1_")
+    # publish_keys.publish_id is an FK to agent_publishes — create the parent
+    # row or PostgreSQL rejects the insert (SQLite, with FK enforcement off by
+    # default, would not). The key embeds the real publish id as its prefix.
+    publish, _ = await _make_publish(db, make_project)
+    plain, digest = _mk_key(publish.publish_id)
+    assert plain.startswith(f"pua_{publish.publish_id}_")
     assert hash_publish_key(plain) == digest
     # Store a row so authenticate resolves it.
-    key = PublishKey(publish_id=pubid, name="k", key_hash=digest, key_hint="..." + plain[-4:])
+    key = PublishKey(publish_id=publish.publish_id, name="k", key_hash=digest, key_hint="..." + plain[-4:])
     db.add(key)
     await db.commit()
 
     found = await authenticate_publish_key(db, plain)
-    assert found is not None and found[0] == pubid
+    assert found is not None and found[0] == publish.publish_id
     # A wrong key must not authenticate (compare_digest, constant time).
     assert await authenticate_publish_key(db, "pua_p1_" + "x" * 43) is None
     # Non-prefixed / malformed keys never reach the DB scan.
@@ -84,12 +87,12 @@ async def test_generate_hash_roundtrip(db):
     assert await authenticate_publish_key(db, "not-a-key") is None
 
 
-async def test_key_hash_not_plaintext_in_db(db):
+async def test_key_hash_not_plaintext_in_db(db, make_project):
     """The DB row stores only the SHA-256, never the raw key."""
-    pubid = "p2"
-    plain = generate_publish_key(pubid)
+    publish, _ = await _make_publish(db, make_project)
+    plain = generate_publish_key(publish.publish_id)
     digest = hash_publish_key(plain)
-    row = PublishKey(publish_id=pubid, key_hash=digest, key_hint="..." + plain[-4:])
+    row = PublishKey(publish_id=publish.publish_id, key_hash=digest, key_hint="..." + plain[-4:])
     db.add(row)
     await db.commit()
     await db.refresh(row)

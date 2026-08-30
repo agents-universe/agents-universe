@@ -82,9 +82,24 @@ class AnthropicClaudeProvider(LLMProvider):
             )
         else:
             import os
-            http_client = httpx.AsyncClient(
+            # The Anthropic SDK swapped its HTTP transport from httpx to httpx2
+            # in 1.0: a 1.x AsyncAnthropic passed an httpx.AsyncClient raises
+            # TypeError("Expected an instance of httpx2.AsyncClient ..."). Pick
+            # the transport that matches the installed SDK so a current SDK
+            # (CI installs anthropic 1.2) and an older 0.x both keep working.
+            try:
+                import httpx2
+            except ImportError:  # pre-mcp2 environments have no httpx2 package
+                httpx2 = None
+            try:
+                _pairs = (getattr(anthropic, "__version__", "0") or "0").split(".")[:2]
+                _uses_httpx2 = tuple(int(p) for p in _pairs) >= (1, 0)
+            except (ValueError, TypeError):
+                _uses_httpx2 = httpx2 is not None
+            _http_lib = httpx2 if _uses_httpx2 and httpx2 is not None else httpx
+            http_client = _http_lib.AsyncClient(
                 verify=ssl_verify,
-                timeout=httpx.Timeout(300.0, connect=10.0, write=120.0, pool=60.0),
+                timeout=_http_lib.Timeout(300.0, connect=10.0, write=120.0, pool=60.0),
             )
             # Keep a reference so close() can release it even if SDK init fails
             self._http = http_client

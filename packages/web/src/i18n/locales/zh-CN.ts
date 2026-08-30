@@ -406,7 +406,10 @@ export default {
     running: '运行中…',
     runHint: '点击「运行」在项目沙箱中执行脚本，输出会实时显示在这里。',
     runFailed: '启动运行失败',
+    runFinished: '运行结束：{status}',
     connectionLost: '连接中断，脚本最终状态未知（运行可能仍在后台执行）',
+    baseUrlPlaceholder: '被测系统地址（可选，如 http://demo.example.com）',
+    baseUrlHint: '作为 APP_BASE_URL 注入测试运行；留空时使用测试脚本内的默认值',
     scriptsGroup: '脚本',
   },
   scriptExecutor: {

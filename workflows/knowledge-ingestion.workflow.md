@@ -24,13 +24,17 @@ Fetch content from a given URL, structure it as a knowledge Markdown file, and i
 Use `web_fetch` to retrieve the URL content.
 If the content-type is not text/html or text/plain, inform the user and stop.
 
-### Step 2 — Determine category and slug
-Based on the content, decide:
+### Step 2 — Map content to an existing knowledge file (do this FIRST)
+Based on the content, decide its category:
 - Business/process documentation → `domain/`
 - API/technical documentation → `technical/`
 - How-to or procedure → `skills/`
 
-Generate a descriptive kebab-case slug.
+Then check whether an EXISTING project knowledge file covers this content:
+1. `knowledge_rw(operation="list", root_only=true)` to see the project's current knowledge files (also visible in your context under "## Project Knowledge").
+2. Cross-check the reference table in `agents/skills/knowledge/knowledge-manager.md` ("Knowledge File Reference") for the file that owns this content type.
+3. If an existing file covers the topic — including an empty template instance still holding `(to be filled …)` placeholders — UPDATE it: merge the content into its sections, keep its frontmatter, append an entry to `history.md`, then go directly to Step 5.
+4. Only if NO existing file covers the content, proceed to Step 3 to create a new slug.
 
 ### Step 2.5 — Hierarchy placement (MANDATORY for API content)
 
@@ -50,9 +54,11 @@ This is NOT optional. Follow `agents/skills/knowledge/knowledge-manager.md` "API
    - Split into an index file + detail files following the index format in `knowledge-manager.md` "Hierarchy Management" section
 4. Otherwise, create a flat file with `knowledge_level: auto` (default behavior).
 
-### Step 3 — Check for duplicates
-Use `knowledge_rw` list to check for a similar existing file.
+### Step 3 — Create a new slug only when no existing file covers the content
+Generate a descriptive kebab-case slug under the category determined in Step 2.
+Use `knowledge_rw(operation="list")` / `search_by_slug` to check for a similar existing file.
 If yes, ask the user: "A similar file `{slug}` already exists. Update it or create new?"
+(If no user answer arrives in an autonomous flow, update the existing file.)
 
 ### Step 4 — Structure the content
 Apply the `knowledge/knowledge-manager` skill conventions to format the raw content into a proper Markdown knowledge file with:

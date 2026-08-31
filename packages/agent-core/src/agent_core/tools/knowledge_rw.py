@@ -69,8 +69,10 @@ class KnowledgeRWTool(Tool):
     prompt_hint = (
         "Read/write/delete project knowledge Markdown and manage what is loaded into context; "
         "writes and deletes through this tool keep the knowledge index in sync, so prefer it over "
-        "filesystem for knowledge files. Use 'load' for files needed across turns, "
-        "'read' for one-off lookups."
+        "filesystem for knowledge files. Before 'write', use 'list' to see the project's existing "
+        "files and prefer updating an existing file — especially an empty template file with "
+        "'(to be filled …)' placeholders — over creating a new slug. Use 'load' for files needed "
+        "across turns, 'read' for one-off lookups."
     )
     description = (
         "Read, write, delete, load, unload, refresh, or list Markdown knowledge files. "
@@ -81,7 +83,9 @@ class KnowledgeRWTool(Tool):
         "Use 'delete' to remove a knowledge file and its database index row together. "
         "Use 'purge' to clean up database index rows whose files no longer exist "
         "(optional slug purges a single row; without slug purges all residue for the project). "
-        "Slug format: '{category}/{filename-without-extension}'."
+        "Slug format: '{category}/{filename-without-extension}'. "
+        "Before 'write', check 'list' for an existing file that covers the content and update "
+        "it instead of creating a new slug."
     )
     parameters = {
         "type": "object",
@@ -291,6 +295,11 @@ class KnowledgeRWTool(Tool):
             # realpaths) — writing there would overwrite an external file.
             return {"error": f"Invalid or escaping slug: {slug!r}"}
 
+        # A slug is "new" if its file does not exist on disk yet — the DB index
+        # row is only created by reindex_one after this write, so the disk is
+        # the authoritative check for "did the project already have this file".
+        is_new_file = not await asyncio.to_thread(file_path.exists)
+
         def _do_write() -> dict:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -341,6 +350,11 @@ class KnowledgeRWTool(Tool):
 
             # Warn if a primary API file is too large without detail children
             result = self._check_split_warning(slug, content, knowledge_dir, result)
+
+            # Soft-nudge "fill existing files first" when the write created a
+            # brand-new slug. Advisory only — the file stays written and indexed.
+            if is_new_file:
+                result = self._check_placement_note(slug, content, knowledge_dir, result, context)
 
         return result
 
@@ -635,6 +649,61 @@ class KnowledgeRWTool(Tool):
             f"See knowledge-manager skill 'API Documentation: Mandatory Two-Level Structure' for format."
         )
         return result
+
+    _PLACEMENT_NOTE_EXEMPT_PREFIXES = ("technical/api/", "technical/kong/")
+    _NOTE_SLUG_LIMIT = 30
+
+    def _check_placement_note(
+        self, slug: str, content: str, knowledge_dir: Path, result: dict, context: ToolContext
+    ) -> dict:
+        """Append an advisory note when the write created a brand-new slug.
+
+        Soft-nudges "fill existing files first" without blocking legitimate new
+        files: the mandatory two-level API/Kong detail files and hierarchy
+        children (frontmatter `parent`) are exempt.
+        """
+        if slug.startswith(self._PLACEMENT_NOTE_EXEMPT_PREFIXES):
+            return result
+        try:
+            meta = frontmatter.loads(content).metadata
+        except Exception:
+            meta = {}
+        if meta.get("parent"):  # legitimate hierarchy child of an existing index
+            return result
+        existing = self._existing_slugs(slug, knowledge_dir, context)
+        if not existing:
+            return result
+        result["note"] = (
+            f"Created NEW knowledge file '{slug}'. The project already has these knowledge files: "
+            + ", ".join(f"'{s}'" for s in existing)
+            + ". If this content fits one of them (including empty template files with "
+            "'(to be filled …)' placeholders), merge it into that file and delete this new one "
+            'with knowledge_rw(operation="delete", slug="' + slug + '"). Create a new file only '
+            "when no existing file covers the content."
+        )
+        return result
+
+    def _existing_slugs(self, written_slug: str, knowledge_dir: Path, context: ToolContext) -> list[str]:
+        """Slugs the agent should have considered before creating a new file.
+
+        Prefers in-context entries (exactly what the prompt shows under
+        '## Project Knowledge'/'Additional Knowledge'), falls back to a disk
+        scan. Excludes the file just written.
+        """
+        ctx = context.project_context
+        if ctx is not None:
+            slugs = set(ctx.loaded_content) | set(ctx.overflow_slugs) | set(ctx.deferred_entries)
+            slugs.discard(written_slug)
+            if slugs:
+                return sorted(slugs)[: self._NOTE_SLUG_LIMIT]
+        if not knowledge_dir.exists():
+            return []
+        return sorted(
+            str(p.relative_to(knowledge_dir).with_suffix("")).replace("\\", "/")
+            for p in knowledge_dir.rglob("*.md")
+            if not any(part.startswith("_") for part in p.relative_to(knowledge_dir).parts)
+            and str(p.relative_to(knowledge_dir).with_suffix("")).replace("\\", "/") != written_slug
+        )[: self._NOTE_SLUG_LIMIT]
 
     def _get_slug_status(self, slug: str, context: ToolContext) -> str:
         ctx = context.project_context

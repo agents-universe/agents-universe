@@ -699,6 +699,16 @@ class Agent:
         )
 
         parts.append(
+            "\nKnowledge write priority (知识写入优先级): when learning or back-writing knowledge, "
+            "prefer updating an existing project knowledge file — the files listed under "
+            "'## Project Knowledge' below, including template files still holding '(to be filled …)' "
+            "placeholders; an empty template file means the project expects that file to be maintained. "
+            "创建新文件仅在内容不归入任何已有文件、且通过 knowledge-manager 技能的资格判断时才允许。"
+            "合法例外：每个服务一个的明细文件 technical/api/{service-slug}.md。"
+            "Never create a parallel file for content an existing file already covers."
+        )
+
+        parts.append(
             "\n## Interaction Style\n"
             "Before calling any tool, first briefly state what you are about to do and why "
             "(one sentence is enough). After a tool returns, summarize the result and state "

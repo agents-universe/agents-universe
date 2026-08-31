@@ -1,6 +1,7 @@
 # 项目分类注册表 —— 前后端共用(api 加载;web 通过 GET /api/projects/categories 读取)。
 # templates 列表项为 knowledge/_template/ 下知识条目的 frontmatter slug。
-# software 未列出知识条目时为"全量拷贝 _template/"语义,此处写全便于核对。
+# software 显式列出软件向全部条目(空列表才是"全量拷贝 _template/"语义,勿删);
+# 客服等分类专用条目只进入各自分类,不进 software 与其他分类。
 categories:
   - slug: software
     label: 软件项目
@@ -38,6 +39,18 @@ categories:
       - domain/analysis-scenarios
       - skills/sql-patterns
       - skills/analysis-patterns
+  - slug: customer-service
+    label: 智能客服
+    description: 知识问答型客服项目：FAQ、服务政策、转人工规则与话术库；智能体严格依据项目知识作答，经自定义 API 与 MCP 接入业务系统查询
+    templates:
+      - domain/context
+      - system/history
+      - domain/faq
+      - domain/service-policies
+      - domain/escalation-rules
+      - skills/support-scripts
+      - integrations/custom-api
+      - integrations/mcp-servers
   - slug: docs
     label: 文档知识库
     description: 以文档沉淀、规范、知识整理为主的非工程类项目

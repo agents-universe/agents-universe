@@ -276,9 +276,9 @@ async def _get_or_create_playwright_anchor(
         # but only extras that never anchored a run (ScriptRun.script_id is a
         # NOT NULL FK; an anchor with runs stays load-bearing forever).
         row = rows[0]
-        runnable = {r.script_id for r in (await db.execute(
+        runnable = set((await db.execute(
             select(ScriptRun.script_id).where(ScriptRun.script_id.in_([a.script_id for a in rows]))
-        )).scalars().all()}
+        )).scalars().all())
         stale = [a for a in rows[1:] if a.script_id not in runnable]
         if stale:
             for extra in stale:

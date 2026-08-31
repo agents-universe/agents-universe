@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **智能客服项目分类与智能体** - 新增 `customer-service` 项目分类（8 个知识条目模板：`domain/faq` FAQ、`domain/service-policies` 服务政策、`domain/escalation-rules` 转人工规则、`skills/support-scripts` 话术库 + 背景/历史/第三方 API 与 MCP 集成），新建项目即获客服知识骨架；新增全局智能体「智能客服」（严格依据项目知识作答、答不出明确转人工、经自定义 API 与 MCP 只读查询业务系统）与 2 个客服技能（`support/customer-reply` 应答规范、`support/escalation` 转人工判断）；智能体选择器新增「智能客服」分组
+
 ### 修复
 
 - **API 容器 nginx 自愈** - 组合镜像以 nginx（8000）作为公开入口反代 uvicorn（8001）；此前 entrypoint 用 `exec uvicorn` 独占 PID 1，nginx 进程被杀死后容器保持 Up 而整个站点不可用（健康检查、cloudflared 隧道、18001 端口映射均指向 8000），公网持续 502 直至人工重启。entrypoint 改为监督循环：nginx 以 `daemon off` 作为脚本直接子进程运行，死亡时先清理被 reparent 的孤儿 worker（它们仍占着 8000/8003 监听）再自动重启；uvicorn 死亡则退出容器，交由 compose `restart: unless-stopped` 重建；`wait -n` 同时回收退出子进程，不再堆积僵尸

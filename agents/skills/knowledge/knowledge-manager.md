@@ -12,7 +12,7 @@ tools:
 
 Maintain the knowledge files under `knowledge/` so the agent keeps getting smarter across repeated runs.
 
-Use `knowledge/_template/` as the baseline file set. Projects are initialized with a per-category subset of the templates (see `knowledge/categories.yaml` — `software` gets all files, `docs`/`other` get fewer); a project may add or remove files freely afterwards, but removals must go through `knowledge_rw(operation="delete", slug="...")` so the knowledge index stays in sync. If a project knowledge directory contains additional established files, keep this reference table in sync rather than treating them as ad hoc notes.
+Use `knowledge/_template/` as the baseline file set. Projects are initialized with a per-category subset of the templates (see `knowledge/categories.yaml` — every category lists its own subset, e.g. `software` lists all software-relevant files, `customer-service` adds the 客服 files); a project may add or remove files freely afterwards, but removals must go through `knowledge_rw(operation="delete", slug="...")` so the knowledge index stays in sync. If a project knowledge directory contains additional established files, keep this reference table in sync rather than treating them as ad hoc notes.
 
 To initialize a project knowledge directory, use `filesystem(operation="create_dir", path="knowledge")` then create the template files via `knowledge_rw(operation="write", ...)`. For routine updates, read/write Markdown files directly with `knowledge_rw` and append to `history.md`.
 
@@ -38,6 +38,10 @@ To initialize a project knowledge directory, use `filesystem(operation="create_d
 | `analysis-scenarios.md` | Recurring reports/dashboards inventory and ad-hoc analysis log | When reports change; append after each thematic analysis |
 | `sql-patterns.md` | SQL dialect/engine, conventions, reusable snippets (retention/funnel/sessionization), performance notes | Extract after recurring query patterns are verified |
 | `analysis-patterns.md` | Analysis method selection, chart selection rules, report structure | When methodology conventions are established or corrected |
+| `faq.md` | Customer-service FAQ: one Q&A per topic, question-formatted headings, negative examples ("we do not provide X"); answers must trace to service policies | After each new/corrected Q&A or answer correction |
+| `service-policies.md` | Service policies and the "not provided" list — the authoritative anti-hallucination fact source | When policies, scope, or rules change |
+| `escalation-rules.md` | Escalation triggers, human channels/contacts, handoff requirements, service metric targets | When channels, SLA, or targets change |
+| `support-scripts.md` | Customer-service reply templates: openers, answer structure, closers, sensitive scenarios | When scripts are optimized |
 | `history.md` | Knowledge update log | Append on every change |
 
 ## Knowledge Sources

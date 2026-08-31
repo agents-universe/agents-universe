@@ -70,6 +70,7 @@ export default {
     categoryAgile: 'Agile development',
     categoryPlatform: 'Platform assistant',
     categorySecurity: 'Security',
+    categoryCustomerService: 'Customer Service',
     categoryUnknown: 'Uncategorized / unknown',
     groupProject: 'This project',
   },

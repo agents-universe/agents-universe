@@ -70,6 +70,7 @@ export default {
     categoryAgile: '敏捷开发',
     categoryPlatform: '平台助手',
     categorySecurity: '安全',
+    categoryCustomerService: '智能客服',
     categoryUnknown: '未分类/未知',
     groupProject: '本项目专属',
   },

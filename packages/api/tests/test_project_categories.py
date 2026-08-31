@@ -37,8 +37,8 @@ async def test_create_software_default_all_templates(client):
 
     files = set(_knowledge_files(body["slug"]))
     assert len(files) == EXPECTED_COUNTS["software"]
-    # software 在 categories.yaml 中显式列出全部知识条目,按注册表断言;
-    # 其他分类的专用知识条目(如 data-analysis 的数据条目)不应混入
+    # software 在 categories.yaml 中显式列出软件向全部知识条目,按注册表断言;
+    # 其他分类的专用知识条目(如 data-analysis 的数据条目、customer-service 的客服条目)不应混入
     expected = {f"{s}.md" for s in (get_template_slugs("software") or set())}
     assert files == expected
 
@@ -100,12 +100,38 @@ async def test_create_data_analysis_subset(client):
     assert "environment/environment.md" not in files
 
 
+async def test_create_customer_service_subset(client):
+    resp = await _create(client, "cs-subset", "customer-service")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["category"] == "customer-service"
+    assert body["category_label"] == "智能客服"
+
+    files = _knowledge_files(body["slug"])
+    assert len(files) == EXPECTED_COUNTS["customer-service"]
+    for f in (
+        "domain/context.md",
+        "system/history.md",
+        "domain/faq.md",
+        "domain/service-policies.md",
+        "domain/escalation-rules.md",
+        "skills/support-scripts.md",
+        "integrations/custom-api.md",
+        "integrations/mcp-servers.md",
+    ):
+        assert f in files
+    # 其他分类的专用知识条目不应混入
+    assert "technical/api-map.md" not in files
+    assert "domain/metric-catalog.md" not in files
+    assert "environment/environment.md" not in files
+
+
 async def test_create_unknown_category_400(client):
     resp = await _create(client, "unknown-cat", "foo")
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert detail["code"] == "unknown_category"
-    assert detail["valid_categories"] == ["software", "data-analysis", "docs", "other"]
+    assert detail["valid_categories"] == ["software", "data-analysis", "customer-service", "docs", "other"]
     # 校验先于任何写盘:没有遗留目录
     assert not (PROJECTS_ROOT / "unknown-cat").exists()
 
@@ -114,11 +140,12 @@ async def test_categories_endpoint(client):
     resp = await client.get("/api/projects/categories")
     assert resp.status_code == 200
     cats = resp.json()
-    assert [c["slug"] for c in cats] == ["software", "data-analysis", "docs", "other"]
-    assert [c["label"] for c in cats] == ["软件项目", "数据分析", "文档知识库", "自定义项目"]
+    assert [c["slug"] for c in cats] == ["software", "data-analysis", "customer-service", "docs", "other"]
+    assert [c["label"] for c in cats] == ["软件项目", "数据分析", "智能客服", "文档知识库", "自定义项目"]
     assert [c["template_count"] for c in cats] == [
         EXPECTED_COUNTS["software"],
         EXPECTED_COUNTS["data-analysis"],
+        EXPECTED_COUNTS["customer-service"],
         EXPECTED_COUNTS["docs"],
         EXPECTED_COUNTS["other"],
     ]

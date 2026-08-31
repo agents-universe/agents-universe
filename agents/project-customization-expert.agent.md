@@ -58,10 +58,11 @@ token_budget: 100000
 
 ### 第 2.5 步：项目分类识别
 
-项目创建时选择了分类（注册表 `knowledge/categories.yaml`，`software` 软件项目 / `data-analysis` 数据分析 / `docs` 文档知识库 / `other` 其他），知识条目按分类复制子集：
+项目创建时选择了分类（注册表 `knowledge/categories.yaml`，`software` 软件项目 / `data-analysis` 数据分析 / `customer-service` 智能客服 / `docs` 文档知识库 / `other` 其他），知识条目按分类复制子集：
 
-- **software**：全部 15 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
-- **data-analysis**：11 个知识条目（背景、词汇表、历史、第三方 API 集成 + 7 个数据专用知识条目：`technical/data-source-map`、`technical/data-model`、`technical/data-pipelines`、`domain/metric-catalog`、`domain/analysis-scenarios`、`skills/sql-patterns`、`skills/analysis-patterns`）
+- **software**：全部 16 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
+- **data-analysis**：12 个知识条目（背景、词汇表、历史、第三方 API + MCP 集成 + 7 个数据专用知识条目：`technical/data-source-map`、`technical/data-model`、`technical/data-pipelines`、`domain/metric-catalog`、`domain/analysis-scenarios`、`skills/sql-patterns`、`skills/analysis-patterns`）
+- **customer-service**：8 个知识条目（背景、历史、第三方 API + MCP 集成 + 4 个客服专用知识条目：`domain/faq`、`domain/service-policies`、`domain/escalation-rules`、`skills/support-scripts`）
 - **docs**：精简 5 个知识条目（背景、词汇表、历史、环境、系统架构）
 - **other**：仅 `domain/context` + `system/history` 两个基础知识条目
 
@@ -72,6 +73,8 @@ token_budget: 100000
 **软件/测试项目**：使用现有知识条目矩阵，按优先级深入：`domain/context`、`technical/technical-stack`、`environment/environment`、`technical/system-architecture`、`technical/api-map` / `technical/page-map` / `technical/kong-map`、`technical/permission-matrix` / `domain/role-matrix`、`skills/test-patterns` / `skills/ui-patterns`、`domain/glossary`。
 
 **数据分析项目**：使用数据分析知识条目矩阵，按优先级深入：`domain/metric-catalog`（指标口径是核心，优先确认）、`technical/data-source-map`（数据源与凭据 secret_ref）、`technical/data-model`（表模型与分层）、`domain/context`、`technical/data-pipelines`（加工链路与调度）、`domain/analysis-scenarios`（固定报表与专题）、`skills/sql-patterns` / `skills/analysis-patterns`、`domain/glossary`。连接凭据一律走 project_secrets，禁止明文写入知识。
+
+**客服问答项目**：使用客服知识条目矩阵，按优先级深入：`domain/faq`（问答是核心，优先确认高频问题与标准答案，问题写成用户原话式标题）、`domain/service-policies`（政策与「不提供服务清单」——防幻觉权威事实源）、`domain/escalation-rules`（转人工触发条件与人工通道配置）、`skills/support-scripts`（话术）、`domain/context`。业务系统查询经 `integrations/custom-api` + `integrations/mcp-servers` 接入，凭据一律 secret_ref 走 project_secrets，禁止明文写入知识。
 
 **非软件项目**：识别所需知识类别，创建自定义知识文件。例如：
 - 法律：`domain/legal-framework`、`domain/case-index`、`domain/compliance-checklist`

@@ -101,11 +101,12 @@ const filteredAgents = computed(() => {
   )
 })
 
-const categoryOrder = ['agile-development', 'platform-assistant', 'security', '']
+const categoryOrder = ['agile-development', 'platform-assistant', 'security', 'customer-service', '']
 const categoryLabels: Record<string, string> = {
   'agile-development': t('agentPicker.categoryAgile'),
   'platform-assistant': t('agentPicker.categoryPlatform'),
   'security': t('agentPicker.categorySecurity'),
+  'customer-service': t('agentPicker.categoryCustomerService'),
   '': t('agentPicker.categoryUnknown'),
 }
 const groupedAgents = computed(() => {

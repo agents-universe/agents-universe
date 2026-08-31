@@ -33,10 +33,6 @@ function mount(convId: string) {
   return { ws: instances[instances.length - 1], status: api.status }
 }
 
-function statusFor(convId: string) {
-  return mount(convId).status.value
-}
-
 describe('useWebSocket image/file output payload guards', () => {
   beforeEach(() => {
     vi.useFakeTimers()

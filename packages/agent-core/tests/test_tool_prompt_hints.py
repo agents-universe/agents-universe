@@ -113,3 +113,19 @@ def test_every_declared_tool_class_loads_with_hint():
         classes.append(cls)
     for cls in classes:
         assert cls.prompt_hint.strip(), f"Tool class {cls.__name__} has an empty prompt_hint"
+
+
+def test_workspace_convention_includes_knowledge_write_priority():
+    agent = _make_agent(["filesystem", "knowledge_rw"])
+    prompt = agent._get_static_prompt()
+    section = prompt.split("## Workspace Convention", 1)[1].split("## Interaction Style", 1)[0]
+    assert "知识写入优先级" in section
+    assert "prefer updating" in section
+    assert "technical/api/{service-slug}" in section
+
+
+def test_knowledge_rw_hint_promotes_filling_existing_files():
+    agent = _make_agent(["knowledge_rw"])
+    hint = agent._tools["knowledge_rw"].prompt_hint
+    assert "prefer updating an existing file" in hint
+    assert "list" in hint

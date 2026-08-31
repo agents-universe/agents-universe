@@ -215,10 +215,10 @@ Do not load `agents/skills/integration/git-pr-manager.md` in this agent. PR queu
 
 ## Knowledge Structure
 
-Knowledge templates live at `knowledge/_template/` (framework read-only); per-project files live in the project workspace root:
+Knowledge templates live at `knowledge/_template/` (framework read-only). At project creation, the project's category subset is instantiated into the workspace `knowledge/` directory:
 
 ```
-knowledge/_template/      ← Framework templates (read-only); copy to create new project files
+knowledge/_template/      ← Framework templates (read-only); instantiated once at project creation — never copied again
   context.md
   glossary.md
   login-and-user-switch.md

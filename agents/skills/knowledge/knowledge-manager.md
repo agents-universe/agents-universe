@@ -16,6 +16,14 @@ Use `knowledge/_template/` as the baseline file set. Projects are initialized wi
 
 To initialize a project knowledge directory, use `filesystem(operation="create_dir", path="knowledge")` then create the template files via `knowledge_rw(operation="write", ...)`. For routine updates, read/write Markdown files directly with `knowledge_rw` and append to `history.md`.
 
+## 知识写入优先级（第一原则）
+
+每次「学习/沉淀」知识时，按以下顺序决定写入位置：
+
+1. **优先更新已有文件**：内容能归入项目 `knowledge/` 中任一已有文件时（对照下方参考表；用 `knowledge_rw(operation="list")` 查看项目实际文件清单），直接更新该文件 —— 包括内容仍是占位符（如 `(to be filled …)`）的模板实例文件。占位符文件的存在本身就表示该项目预期维护这份知识；把它填上，不要新建平行文件。
+2. **仅当无文件可归入时才创建新文件**：通过下方「Knowledge Write Eligibility」严格判断；新文件必须属于一个明确类别，且预期会在未来不同需求中被引用。既定合法例外：`technical/api/{service-slug}.md` 明细文件（每个服务一个，见「API Documentation: Mandatory Two-Level Structure」）。
+3. 不得仅为「主题更具体」而绕过已有文件新建平行文件 —— 先扩展现有文件的 section；只有当主文件超过 500 词或触发层级拆分条件时，才拆出 detail 文件。
+
 ## Knowledge File Reference
 
 | File | Contents | Update Frequency |
@@ -84,6 +92,8 @@ If yes — write it. If no — keep it in the current task context only; do not 
 - Information that is likely to change before it would be reused
 
 ### Updating existing files vs. creating new files
+
+**默认更新。** 先 `knowledge_rw(operation="list")` 确认项目已有文件；有可归入的文件就直接更新（含占位符空模板），确认无文件可归入后才进入下面的新建判断。
 
 - **Updating an established file** (adding a selector to `ui-patterns.md`, correcting a route in `page-map.md`, appending a new API endpoint to `api-map.md`): lightweight check — if the update fits the file's declared category above, proceed.
 - **Creating a new knowledge file**: apply the eligibility question strictly. A new file must clearly serve a named category above and be expected to be referenced in future sessions for different requirements.
@@ -314,6 +324,7 @@ If `knowledge/environment/environment.md` already holds non-secret config from a
 
 ## Triggers
 
-- `--learn-only` mode: perform only knowledge acquisition and do not generate tests
-- the `learn` stage of each normal workflow
-- when the user explicitly asks to update the knowledge base
+- 用户明确要求学习/沉淀/回写知识（如「知识沉淀」「写回知识」「更新知识库」）
+- 各 agent 工作流中的知识回写步骤（如 QA 流程 Step 9、pentest Phase 6）
+- `knowledge-ingestion` workflow（URL / Confluence 内容入库）
+- 执行反馈提炼：用户纠正生成代码后，从 diff 提取可复用知识（见 Knowledge Sources 第 2 条）

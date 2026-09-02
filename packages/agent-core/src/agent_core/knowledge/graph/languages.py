@@ -181,6 +181,7 @@ _SPECS: dict[str, LanguageSpec] = {
             "class_declaration": "class",
             "interface_declaration": "class",
             "enum_declaration": "class",
+            "record_declaration": "class",
             "method_declaration": "function",
             "constructor_declaration": "function",
         },

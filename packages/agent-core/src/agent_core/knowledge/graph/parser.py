@@ -124,7 +124,8 @@ def _parse_lang(data: bytes, lang: str, result: FileParseResult) -> None:
 
 
 class _Ctx:
-    __slots__ = ("spec", "lang", "result", "class_stack", "current_qname")
+    __slots__ = ("spec", "lang", "result", "class_stack", "current_qname",
+                 "inherits_seen")
 
     def __init__(self, spec: LanguageSpec, lang: str, result: FileParseResult) -> None:
         self.spec = spec
@@ -132,6 +133,11 @@ class _Ctx:
         self.result = result
         self.class_stack: list[str] = []
         self.current_qname: str | None = None
+        # (from, target) pairs already emitted as inherits edges. Sealed
+        # permits and the subtype's own extends/implements clause can both
+        # state the same parent relation from different class nodes, so
+        # dedup must live at file level, not per declaration.
+        self.inherits_seen: set[tuple[str, str]] = set()
 
 
 def _node_text(node) -> str:
@@ -204,12 +210,45 @@ def _record_inherits(ctx: _Ctx, chain: str, class_qname: str) -> None:
     cleaned = _strip_self_chain(chain)
     if not cleaned:
         return
+    # File-level dedup: sealed permits and the subtype's own
+    # extends/implements clause can both state the same parent relation from
+    # different class nodes (sealed interface X permits A {} + A implements
+    # X). Also protects against duplicate targets within one declaration.
+    key = (class_qname, cleaned)
+    if key in ctx.inherits_seen:
+        return
+    ctx.inherits_seen.add(key)
     ctx.result.edges.append({
         "type": "inherits",
         "target": cleaned,
         "target_kind": "inherits",
         "from": class_qname,
     })
+
+
+def _java_type_targets(node) -> list[str]:
+    """Simple type names under a Java type-list-ish node, recursively.
+
+    Catches both shapes seen in the grammar: a field holding a bare
+    ``type_identifier`` (superclass) and a ``type_list`` wrapper whose
+    children are comma-separated ``type_identifier`` / ``nested_type_identifier``
+    nodes (implements, interface extends, sealed permits). Nested generics
+    (``List<Foo>``) resolve to the outermost type name.
+    """
+    if node is None:
+        return []
+    typ = node.type
+    if typ in ("type_identifier", "nested_type_identifier"):
+        return [_node_text(node)]
+    if typ == "generic_type":
+        child = node.child_by_field_name("name") or next(
+            (c for c in node.children if c.type == "type_identifier"), None
+        )
+        return [child.text.decode("utf-8", "replace")] if child is not None else []
+    out: list[str] = []
+    for child in node.children:
+        out.extend(_java_type_targets(child))
+    return out
 
 
 def _extract_inheritance(ctx: _Ctx, class_node, class_qname: str) -> None:
@@ -223,25 +262,59 @@ def _extract_inheritance(ctx: _Ctx, class_node, class_qname: str) -> None:
                     _record_inherits(ctx, chain, class_qname)
         return
     if spec.is_java():
-        # java: `superclass` field wraps a type_identifier; the implements
-        # clause lives in the `interfaces` field as a type_list.
+        # java: collect every inheritance target — superclass (extends),
+        # implements clause, interface extends clause, and sealed permits —
+        # then emit deduplicated inherits edges (same (from, target) pair can
+        # legitimately appear twice, e.g. `sealed interface X permits A {}`
+        # where A also `implements X`).
+        pairs: list[tuple[str, str]] = []
+
+        def _add(from_qname: str, target: str | None) -> None:
+            cleaned = _strip_self_chain(target) if target else None
+            if cleaned:
+                pairs.append((from_qname, cleaned))
+
+        # class/record `extends Base` — superclass field wraps a type node.
         superclass = class_node.child_by_field_name("superclass")
-        if superclass is not None:
-            # the `superclass` field wraps a type_identifier (the base class)
-            type_node = next(
-                (c for c in superclass.children if c.type == "type_identifier"), None
-            )
-            chain = _chain_text(type_node) if type_node is not None else None
-            if chain:
-                _record_inherits(ctx, chain, class_qname)
+        for target in _java_type_targets(superclass):
+            _add(class_qname, target)
+        # class/record `implements A, B` — interfaces field (its value node
+        # is a `super_interfaces` node) wraps a type_list.
         interfaces = class_node.child_by_field_name("interfaces")
-        if interfaces is not None:
-            for child in interfaces.children:
-                if child.type == "type_list":
-                    for type_node in child.children:
-                        chain = _chain_text(type_node)
-                        if chain:
-                            _record_inherits(ctx, chain, class_qname)
+        for target in _java_type_targets(interfaces):
+            _add(class_qname, target)
+        # interface `extends P, Q` — grammar keeps this as a plain child
+        # (``extends_interfaces``), not a named field.
+        for child in class_node.children:
+            if child.type == "extends_interfaces":
+                for target in _java_type_targets(child):
+                    _add(class_qname, target)
+        # sealed `permits A, B` — the sealed parent declares its permitted
+        # subtypes; edges point from each subtype to the sealed parent
+        # (same direction as extends/implements: from=subtype, target=parent).
+        # Only subtypes declared in this same file qualify: a permitted
+        # subtype in another file establishes the relation through its own
+        # extends/implements clause (Java requires it), and emitting the edge
+        # here would attach it to the wrong node (this file).
+        program = class_node.parent
+        local_types: set[str] = set()
+        if program is not None:
+            for decl in program.children:
+                if decl.type in (
+                    "class_declaration", "interface_declaration",
+                    "enum_declaration", "record_declaration",
+                ):
+                    name_node = decl.child_by_field_name("name")
+                    if name_node is not None:
+                        local_types.add(_node_text(name_node))
+        for child in class_node.children:
+            if child.type != "permits":
+                continue
+            for target in _java_type_targets(child):
+                if target in local_types:
+                    _add(target, class_qname)
+        for from_qname, target in pairs:
+            _record_inherits(ctx, target, from_qname)
         return
     # ts/js: class_heritage -> extends_clause / implements_clause -> expressions
     for child in class_node.children:

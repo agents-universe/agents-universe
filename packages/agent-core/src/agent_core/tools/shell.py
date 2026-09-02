@@ -519,7 +519,26 @@ async def ensure_node_deps(
 
     missing = _required_node_bins(pkg_dir, command)
     if missing:
-        return "npm dependency install completed but required local binaries are missing: " + ", ".join(missing)
+        # npm install may skip re-linking .bin shims when the modules are
+        # already present but the links are dangling or were never created
+        # (interrupted installs, unwritable node_modules, bin-links off).
+        # `npm rebuild` regenerates those links without reinstalling - try it
+        # once before declaring the setup broken.
+        _log.info("Rebuilding npm bin links in %s (missing: %s)", pkg_dir, ", ".join(missing))
+        rebuild_returncode, rebuild_stderr = await _run_install(f"{prefix}npm rebuild")
+        if rebuild_returncode not in (None, 0, -1):
+            _log.warning(
+                "npm rebuild failed (exit=%d) in %s: %s",
+                rebuild_returncode, pkg_dir, rebuild_stderr[:500],
+            )
+        missing = _required_node_bins(pkg_dir, command)
+        if missing:
+            return (
+                "npm dependency install completed but required local binaries are still missing "
+                "after `npm rebuild`: " + ", ".join(missing)
+                + ". Check that npm bin-links are enabled (`npm config get bin-links`) and that "
+                "node_modules is writable."
+            )
     return None
 
 

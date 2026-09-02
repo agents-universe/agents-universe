@@ -1144,6 +1144,87 @@ async def test_ensure_node_deps_install_uses_resolved_cache(tmp_path, monkeypatc
     assert "/definitely/not/writable" not in installs[0]
 
 
+@_skip_win32
+@pytest.mark.asyncio
+async def test_ensure_node_deps_rebuild_repairs_missing_bin_links(tmp_path, monkeypatch):
+    """QA blocker: npm install completes but the .bin shims are missing
+    (dangling links / bin-links never created). ensure_node_deps must run
+    `npm rebuild` to regenerate them instead of failing outright."""
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    ctx = make_context(project_fs_path=str(tmp_path))
+
+    # _required_node_bins sequence: before install -> missing (triggers
+    # install); after install -> still missing (triggers rebuild); after
+    # rebuild -> repaired (empty).
+    bin_results = iter([["typescript"], [".bin/tsc"], []])
+    monkeypatch.setattr(
+        shell_module, "_required_node_bins",
+        lambda pkg_dir, command: next(bin_results),
+    )
+
+    calls: list[str] = []
+
+    def fake_install(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_install),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_install),
+    ):
+        result = await tool._ensure_node_deps("npm run test:sys-101", str(tmp_path), ctx)
+
+    assert result is None
+    assert len(calls) == 2, f"expected install + rebuild, got {calls}"
+    assert "npm install" in calls[0] or "npm ci" in calls[0]
+    assert "npm rebuild" in calls[1]
+
+
+@_skip_win32
+@pytest.mark.asyncio
+async def test_ensure_node_deps_rebuild_still_missing_reports_actionable_error(tmp_path, monkeypatch):
+    """When even `npm rebuild` cannot restore the shims, the error must name
+    the missing bins and the likely cause (bin-links off / unwritable
+    node_modules) instead of the terse original message."""
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    ctx = make_context(project_fs_path=str(tmp_path))
+
+    bin_results = iter([
+        ["@playwright/test"],
+        [".bin/playwright", ".bin/tsc"],
+        [".bin/playwright", ".bin/tsc"],
+    ])
+    monkeypatch.setattr(
+        shell_module, "_required_node_bins",
+        lambda pkg_dir, command: next(bin_results),
+    )
+
+    calls: list[str] = []
+
+    def fake_install(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_install),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_install),
+    ):
+        result = await tool._ensure_node_deps("npm run test:sys-101", str(tmp_path), ctx)
+
+    assert result is not None
+    assert "npm rebuild" in result
+    assert ".bin/playwright" in result and ".bin/tsc" in result
+    assert "bin-links" in result
+    assert len(calls) == 2
+    assert "npm rebuild" in calls[1]
+
+
 
 def test_description_commands_all_in_allowlist():
     """description/prompt_hint 宣称可用的命令必须真的被 _ALLOWED_CMDS 接受——

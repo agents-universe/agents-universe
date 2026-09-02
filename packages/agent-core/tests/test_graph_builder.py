@@ -17,6 +17,7 @@ import pytest
 from agent_core.knowledge.graph.builder import build_repo_graph
 from agent_core.knowledge.graph import queries
 from agent_core.knowledge.graph.languages import get_grammar
+from agent_core.knowledge.graph.parser import parse_file
 from agent_core.knowledge.graph.report import compact_map, render_report
 from agent_core.knowledge.graph.store import load_cached
 
@@ -107,6 +108,68 @@ FILES = {
     ),
 }
 
+# Java 21 modern-syntax fixture: records, sealed hierarchy, interface extends,
+# arrow switch with null case. Exercises the parser improvements that turn a
+# file-only graph into symbol-level nodes + inheritance edges for these forms.
+JAVA21_FILES = {
+    "src/main/java/com/example/modern/OrderService.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "import com.example.modern.model.OrderRecord;\n"
+        "import lombok.extern.slf4j.Slf4j;\n"
+        "import org.springframework.stereotype.Service;\n"
+        "\n"
+        "@Slf4j\n"
+        "@Service\n"
+        "public class OrderService extends BaseService implements OrderPort {\n"
+        "    private final OrderRepository repo;\n"
+        "\n"
+        "    public OrderService(OrderRepository repo) {\n"
+        "        this.repo = repo;\n"
+        "    }\n"
+        "\n"
+        "    public OrderRecord placeOrder(OrderRequest req) {\n"
+        "        return switch (req.kind()) {\n"
+        "            case STANDARD -> repo.save(OrderRecord.of(req.name()));\n"
+        "            case EXPRESS -> repo.save(OrderRecord.express(req.name()));\n"
+        "            case null -> throw new IllegalStateException(\"kind null\");\n"
+        "        };\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "class BaseService {}\n"
+        "interface OrderPort {}\n"
+    ),
+    "src/main/java/com/example/modern/OrderRequest.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "public record OrderRequest(String name, OrderKind kind) {\n"
+        "    public String upper() { return name.toUpperCase(); }\n"
+        "}\n"
+    ),
+    "src/main/java/com/example/modern/OrderKind.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "public enum OrderKind { STANDARD, EXPRESS }\n"
+    ),
+    "src/main/java/com/example/modern/Shape.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "public sealed interface Shape permits Circle, Square {}\n"
+        "interface Drawable extends Shape {}\n"
+    ),
+    "src/main/java/com/example/modern/Circle.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "public record Circle(double radius) implements Shape {}\n"
+    ),
+    "src/main/java/com/example/modern/Square.java": (
+        "package com.example.modern;\n"
+        "\n"
+        "public final class Square implements Shape {}\n"
+    ),
+}
+
 
 def _run(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
@@ -130,9 +193,33 @@ def repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def java21_repo(tmp_path: Path) -> Path:
+    """A local git repo seeded only with the Java 21 fixture files."""
+    repo = tmp_path / "java21"
+    repo.mkdir()
+    for rel, text in JAVA21_FILES.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _run("init", "-b", "main", cwd=repo)
+    _run("config", "user.email", "t@t.t", cwd=repo)
+    _run("config", "user.name", "t", cwd=repo)
+    _run("add", ".", cwd=repo)
+    _run("commit", "-m", "seed java21", cwd=repo)
+    return repo
+
+
+@pytest.fixture
 def grammars():
     if get_grammar("python") is None or get_grammar("typescript") is None:
         pytest.skip("tree-sitter grammars unavailable (offline?)")
+    return True
+
+
+@pytest.fixture
+def java_grammar():
+    if get_grammar("java") is None:
+        pytest.skip("tree-sitter java grammar unavailable (offline?)")
     return True
 
 
@@ -204,6 +291,105 @@ async def test_build_content(repo: Path, tmp_path: Path, grammars):
 
     assert len(compact_map(graph)) <= 1200
     assert "hint:" in compact_map(graph)
+
+
+# ---------------------------------------------------------------------------
+# Java 21 modern syntax: records, sealed, interface extends, arrow switch
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_java21_parse_records_and_sealed(java21_repo: Path, java_grammar):
+    """Parse layer: records become class symbols, sealed/extends edges exist,
+    and permits + implements do not double-emit the same inherits edge."""
+    result = parse_file(
+        java21_repo / "src/main/java/com/example/modern/Shape.java",
+        "src/main/java/com/example/modern/Shape.java",
+    )
+    assert result is not None
+    assert result.stats.get("error") is None
+    names = {s["name"] for s in result.symbols}
+    assert "Shape" in names and "Drawable" in names
+    inherits = {(e["from"], e["target"]) for e in result.edges if e["type"] == "inherits"}
+    # permits: Circle/Square live in other files, so no edge is emitted from
+    # this file (their own implements clauses create it); same-file Drawable
+    # extends Shape does
+    assert ("Drawable", "Shape") in inherits
+    assert len(inherits) == 1
+
+    rec = parse_file(
+        java21_repo / "src/main/java/com/example/modern/OrderRequest.java",
+        "src/main/java/com/example/modern/OrderRequest.java",
+    )
+    assert rec is not None
+    assert rec.stats.get("error") is None
+    rec_names = {s["name"] for s in rec.symbols}
+    assert "OrderRequest" in rec_names
+    assert "OrderRequest.upper" in rec_names
+    # arrow switch inside OrderService produces calls from the method
+    svc = parse_file(
+        java21_repo / "src/main/java/com/example/modern/OrderService.java",
+        "src/main/java/com/example/modern/OrderService.java",
+    )
+    assert svc is not None
+    svc_names = {s["name"] for s in svc.symbols}
+    assert "OrderService" in svc_names
+    assert "OrderService.placeOrder" in svc_names
+    calls = {e["target"] for e in svc.edges if e["type"] == "calls"}
+    assert "repo.save" in calls
+    assert "OrderRecord.of" in calls
+    assert "OrderRecord.express" in calls
+    svc_inherits = {(e["from"], e["target"]) for e in svc.edges if e["type"] == "inherits"}
+    assert ("OrderService", "BaseService") in svc_inherits
+    assert ("OrderService", "OrderPort") in svc_inherits
+
+
+@pytest.mark.asyncio
+async def test_java21_build_symbols_and_edges(java21_repo: Path, tmp_path: Path, java_grammar):
+    """End-to-end build: records/sealed produce class+method symbol nodes and
+    inherits edges resolve between files (sealed parent in Shape.java)."""
+    summary = await _build(java21_repo, tmp_path)
+    assert summary["status"] == "built"
+    assert summary["stats"]["files"] == 6
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    nodes = {n.id: n for n in graph.nodes}
+
+    order_req = "s:src/main/java/com/example/modern/OrderRequest.java"
+    assert nodes[f"{order_req}:OrderRequest"].type == "class"
+    assert nodes[f"{order_req}:OrderRequest.upper"].type == "function"
+
+    svc = "s:src/main/java/com/example/modern/OrderService.java"
+    assert nodes[f"{svc}:OrderService"].type == "class"
+    assert nodes[f"{svc}:OrderService.placeOrder"].type == "function"
+
+    shape = "s:src/main/java/com/example/modern/Shape.java"
+    assert nodes[f"{shape}:Shape"].type == "class"
+    circle = "s:src/main/java/com/example/modern/Circle.java"
+    assert nodes[f"{circle}:Circle"].type == "class"
+    square = "s:src/main/java/com/example/modern/Square.java"
+    assert nodes[f"{square}:Square"].type == "class"
+
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    # cross-file sealed inheritance: permitted subtype -> sealed parent file
+    assert (f"{circle}:Circle", f"{shape}:Shape", "inherits") in edges
+    assert (f"{square}:Square", f"{shape}:Shape", "inherits") in edges
+    # same-file inheritance inside OrderService.java
+    assert (f"{svc}:OrderService", f"{svc}:BaseService", "inherits") in edges
+    assert (f"{svc}:OrderService", f"{svc}:OrderPort", "inherits") in edges
+    # the arrow switch's method calls (repo.save / OrderRecord.of / ...) were
+    # extracted by the parser (see test_java21_parse_records_and_sealed) and
+    # land in the unresolved bucket at build time because their targets are
+    # not defined inside this fixture's symbol set — expected, no fabricated
+    # call edges may appear
+    assert summary["stats"]["unresolved_calls"] >= 9
+    assert not any(
+        e.type == "calls" and e.src == f"{svc}:OrderService.placeOrder"
+        for e in graph.edges
+    )
+
+    # class node count sanity: 6 classes/records + their methods
+    class_nodes = [n for n in graph.nodes if n.type == "class"]
+    assert len(class_nodes) >= 6
 
 
 @pytest.mark.asyncio

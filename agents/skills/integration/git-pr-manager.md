@@ -22,6 +22,7 @@ description: "Discover, inspect, approve, and merge GitHub Enterprise pull reque
 - For Jira-linked historical commits, historically affected modules, and regression patterns across time, use `agents/skills/integration/git-repo-reader.md`.
 - `pr-review-manager` still owns the review conclusion itself. This skill supplies the PR evidence and executes approve / merge only when the user explicitly asks.
 - This skill is intended for `tech-lead` workflows. Do not attach it to `quality-assurance`; that agent should continue using only `git-repo-reader` for Git read-only history and Jira-linked scope discovery.
+- **Context-only, read-only governance**: PR inspection and evidence gathering never execute the PR's own test suite, build, or lint (pytest, vitest/jest, `npm test`, etc.). All PR judgments come from remote context (`get_pr_detail`/`get_commit_checks`) and local read-only inspection (`git_repo` show/search/log, `repo_graph`). The remote check results are the only valid execution evidence for a PR.
 
 ## Required Configuration
 
@@ -78,6 +79,7 @@ Tool behavior:
 2. **`git_repo` tool for local repository state (supplement, only when needed)**
   - Use the local checkout only: (a) to discover a repository anchor from the workspace when the repo is not derivable from the PR URL / owner+repo; (b) for implementation tasks needing the dirty-tree gate; (c) for historical evidence the remote cannot provide (`show`/`search`/`log`).
   - Any uncommitted, staged, or untracked change in a target repo is relevant scope context that must not be overwritten.
+  - Local inspection is read-only for PR work: `show`/`search`/`log`/`blame` and `repo_graph` only. Never run the repository's own test suite to validate a PR.
 
 3. **Enterprise Git platform as a supplement**
   - When the local repository does not match the target repository, use the enterprise Git API with explicit repository anchors.
@@ -235,6 +237,7 @@ If the PR alone does not show enough historical scope, then call `git-repo-reade
 - Do not merge by default after approval; merge still requires an explicit user request.
 - Never echo tokens, passwords, or authentication headers.
 - All remote calls must keep explicit timeouts.
+- PR evidence is context-only: never execute the repository's test suite, build, or lint to validate a PR. Check status (`get_commit_checks`) is the only execution evidence used.
 
 ## Error Handling
 

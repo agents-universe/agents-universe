@@ -111,7 +111,7 @@ Scoping reminder:
 - Append new entries at the end of the file; use `##` headings for categorization; add a source marker to each entry: `<!-- source: {confluence-page-id | issue-key | manual} -->`
 
 ### Merges
-- Keep only one entry per term or concept, retaining the latest explanation; preserve the old version as a comment: `<!-- deprecated: ... -->`
+- Keep only one entry per term or concept, retaining the latest explanation; when the new knowledge conflicts with the old one, **delete the old entry entirely** -- do NOT preserve it as a `<!-- deprecated: ... -->` comment, because a stale conflicting entry can still mislead later runs.
 
 ### Retirement
 - Mark entries not referenced for more than 90 days as `[stale]`; delete only after user confirmation.

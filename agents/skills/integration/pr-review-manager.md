@@ -29,6 +29,7 @@ Produce an actionable review conclusion for a PR. The required parts — CI/chec
 4. All external calls must have a timeout.
 5. Do not leak tokens, passwords, or sensitive request headers.
 6. Use `repo_graph` (query/neighbors/impact/path) on local checkouts to trace call chains and change impact before reading whole files.
+7. **PR review is context-only.** Base every conclusion on the context already available: the remote PR diff, commits, reviews, comments, check status, the Jira card, and local code reading (`git_repo` read-only ops or `repo_graph`). Never attempt to execute the PR's own test suite, build, or lint (pytest, vitest/jest, `npm test`, etc.) to validate the PR — runnable proof of behavior comes from the remote checks (`github(operation="get_commit_checks", ...)`); the local repo's unit-test results are never review evidence, and running them wastes time and may alter the working tree.
 
 ## Prerequisite Reading
 
@@ -120,7 +121,7 @@ The output must list at least:
 
 ### Step 3: Perform the Code Implementation Review
 
-Prefer static review using the local repository and the PR diff. Focus on:
+Static review only — base the review on the PR diff, the local codebase, and the remote checks. **Do not execute the repository's test suite, build, or lint to validate the PR.** Focus on:
 
 1. Control flow truly covers the main requirement path.
 2. Missing exceptions, null handling, boundary conditions, or permission checks.
@@ -131,7 +132,7 @@ Prefer static review using the local repository and the PR diff. Focus on:
 7. Obvious errors in logging, error handling, return values, or branch conditions.
 8. Necessary tests missing, or existing tests unable to cover the new behavior.
 
-If a problem cannot be determined from the diff alone, prefer one hop to the code that directly controls that behavior rather than doing a broad search.
+If a problem cannot be determined from the diff alone, prefer one hop to the code that directly controls that behavior rather than doing a broad search or running the code.
 
 ### Step 4: Fetch the Jira Requirement and Align the Implementation
 
@@ -251,3 +252,4 @@ If this is a review queue, it is recommended to wrap the results as:
 
 - Checks all green only means automated validation passed; it does not mean the implementation satisfies Jira — report check status and requirement satisfaction separately.
 - After extracting the Jira key from the commit / branch / PR title and then aligning the requirement, it is easier to discover that the implementation is off-target or only half-finished than by looking only at the PR diff.
+- PR review never needs to execute the repository's tests. The review judgment comes from the context: diff + code reading + remote checks + Jira requirements. If the checks are green, CI already validated behavior; if they are not, report the failing checks instead of trying to reproduce them locally.

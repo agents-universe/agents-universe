@@ -127,6 +127,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Bot, Send, Square, Sparkles, Loader2, Zap, AlertTriangle, X } from 'lucide-vue-next'
 import { publishApi } from '@/api/publish'
+import { ApiError } from '@/api/client'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
@@ -162,6 +163,16 @@ function close() {
   }
 }
 
+// The backend's PROJECT_PRIVATE denial maps to a dedicated hint; anything
+// else falls back to the error's own message.
+function errorText(e: unknown, fallback: string): string {
+  if (e instanceof ApiError && e.code === 'PROJECT_PRIVATE') {
+    return t('publishPage.projectPrivate')
+  }
+  if (e instanceof Error && e.message) return e.message
+  return fallback
+}
+
 function fmtTime(iso: string): string {
   if (!iso) return ''
   const d = new Date(iso)
@@ -187,9 +198,7 @@ async function load() {
     const msgs = await publishApi.getSessionMessages(publishId.value, s.token)
     messages.value = msgs
   } catch (e) {
-    error.value = e instanceof Error
-      ? (e.message || t('publishPage.loadFailed'))
-      : t('publishPage.loadFailed')
+    error.value = errorText(e, t('publishPage.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -247,7 +256,7 @@ async function submit() {
     messages.value.push({
       message_id: `err-${Date.now()}`,
       role: 'assistant',
-      content: e instanceof Error ? e.message : t('publishPage.runFailed'),
+      content: errorText(e, t('publishPage.runFailed')),
       agent_slug: null,
       model_name: null,
       tool_calls: [],

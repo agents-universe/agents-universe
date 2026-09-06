@@ -26,6 +26,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 _log = logging.getLogger("agents_universe.publish")
@@ -229,6 +230,29 @@ def publish_viewer_token(publish_id: str, viewer_id: str) -> str:
     return hmac.new(secret, msg, hashlib.sha256).hexdigest()[:32]
 
 
+async def require_publish_project_open(db, publish, viewer_id: str | None) -> None:
+    """403 PROJECT_PRIVATE when the publish's project has gone private.
+
+    A private project exposes its resources only to its creator and whitelisted
+    members: the embed-page paths pass the logged-in viewer and let members
+    through, while the API-key stream has no identity at all and is cut off
+    outright (``viewer_id=None``). A missing project row (project hard-deleted
+    after publishing) keeps today's degraded behavior — this gate covers the
+    visibility flip only.
+    """
+    from api.models.project import Project
+
+    project = (await db.execute(
+        select(Project).where(Project.project_id == publish.project_id)
+    )).scalar_one_or_none()
+    if project is None or project.visibility != "private":
+        return
+    from api.dependencies.auth import PROJECT_PRIVATE_DENIED, has_project_access
+
+    if viewer_id is None or not await has_project_access(db, project, viewer_id):
+        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
+
+
 async def authorize_publish_viewer(
     db, publish_id: str, viewer_id: str, token: str
 ):
@@ -248,6 +272,9 @@ async def authorize_publish_viewer(
         return None
     if not hmac.compare_digest(publish_viewer_token(publish_id, viewer_id), token):
         return None
+    # A token minted before the project flipped private must not keep opening
+    # the publish — re-check visibility on every /session call.
+    await require_publish_project_open(db, publish, viewer_id)
     return publish
 
 

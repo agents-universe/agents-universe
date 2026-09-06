@@ -38,6 +38,7 @@ from api.services.publish import (
     get_or_create_publish_conversation,
     hash_publish_key,
     publish_key_hint,
+    require_publish_project_open,
     sse_format,
 )
 
@@ -124,6 +125,9 @@ async def _authorize_publish_key(request: Request, db: AsyncSession, publish_id:
         raise HTTPException(status_code=404, detail="Publish not found")
     if not publish.api_enabled:
         raise HTTPException(status_code=403, detail="Publish API is disabled")
+    # A key has no identity to check against a whitelist: a private project
+    # cuts off every API caller.
+    await require_publish_project_open(db, publish, None)
     return publish
 
 
@@ -511,7 +515,9 @@ async def get_publish_page(
     Cookie-authenticated (no token required yet) — the page issues its own
     viewer-scoped HMAC token for the /session calls that follow. 404 when the
     publish is disabled or missing, so a disabled page is indistinguishable
-    from a nonexistent one.
+    from a nonexistent one. When the publish's project has gone private, a
+    viewer without access gets 403 PROJECT_PRIVATE (the creator and whitelisted
+    members still load the page).
     """
     from api.services.publish import (
         get_or_create_publish_conversation,
@@ -532,6 +538,7 @@ async def get_publish_page(
     publish = result.scalar_one_or_none()
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
+    await require_publish_project_open(db, publish, current_user.user_id)
     conversation_id = await get_or_create_publish_conversation(db, publish)
     payload = await get_publish_viewer_payload(db, publish, current_user.user_id)
     return {"conversation_id": conversation_id, **payload}

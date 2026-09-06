@@ -596,3 +596,85 @@ async def test_session_abort(client, db, make_project, as_user, monkeypatch):
         )
     assert r2.status_code == 404
     assert signalled == [conv_id]
+
+
+# ── private-project gate ────────────────────────────────────────────────────
+#
+# A project flipping private cuts off every publish surface for outsiders:
+# the API-key stream (no identity to check), the embed page (creator and
+# whitelisted members still load it), and /session calls carrying a viewer
+# token minted before the flip.
+
+
+async def _set_project_visibility(db, publish, visibility: str):
+    from api.models.project import Project
+    project = (await db.execute(
+        select(Project).where(Project.project_id == publish.project_id)
+    )).scalar_one()
+    project.visibility = visibility
+    await db.commit()
+
+
+async def test_stream_cut_off_when_project_private(client, db, make_project):
+    """A valid API key loses access the moment the project goes private."""
+    publish, _ = await _make_publish(db, make_project)
+    plain, _ = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...z"))
+    await db.commit()
+    await _set_project_visibility(db, publish, "private")
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hi"},
+    )
+    assert r.status_code == 403
+    detail = r.json()["detail"]
+    assert detail["code"] == "PROJECT_PRIVATE"
+    assert "私有" in detail["message"]
+
+
+async def test_page_private_project_blocks_outsiders_not_members(
+    client, db, make_project, as_user
+):
+    """The embed page loads for creator/member, 403 PROJECT_PRIVATE for others."""
+    publish, _ = await _make_publish(db, make_project)
+    await _set_project_visibility(db, publish, "private")
+
+    # The creator keeps access.
+    async with as_user("test-user"):
+        r = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert r.status_code == 200
+
+    # A logged-in outsider gets the private-project hint.
+    async with as_user("other-user"):
+        r2 = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert r2.status_code == 403
+    detail = r2.json()["detail"]
+    assert detail["code"] == "PROJECT_PRIVATE"
+
+    # A whitelisted member loads the page like the creator.
+    from api.models.project_member import ProjectMember
+    db.add(ProjectMember(
+        project_id=publish.project_id, user_id="other-user", added_by="test-user",
+    ))
+    await db.commit()
+    async with as_user("other-user"):
+        r3 = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert r3.status_code == 200
+
+
+async def test_session_viewer_token_rejected_when_project_private(
+    client, db, make_project, as_user
+):
+    """A viewer token minted before the flip stops working after it."""
+    publish, _ = await _make_publish(db, make_project)
+    await _set_project_visibility(db, publish, "private")
+
+    async with as_user("other-user"):
+        r = await client.get(
+            f"/api/p/{publish.publish_id}/session",
+            params={"token": _make_viewer_token(str(publish.publish_id), "other-user")},
+        )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "PROJECT_PRIVATE"

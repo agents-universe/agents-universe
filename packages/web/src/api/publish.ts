@@ -170,11 +170,19 @@ export const publishApi = {
     )
     if (!res.ok || !res.body) {
       let detail = `${res.status} ${res.statusText}`
+      let code: string | undefined
       try {
-        const body = await res.json() as { detail?: string }
-        if (typeof body.detail === 'string') detail = body.detail
+        // detail is a plain string or the {code, message} object FastAPI
+        // errors carry — the code lets callers map PROJECT_PRIVATE to i18n.
+        const body = await res.json() as { detail?: string | { message?: string; code?: string } }
+        const d = body.detail
+        if (typeof d === 'string') detail = d
+        else if (d && typeof d.message === 'string') {
+          detail = d.message
+          code = d.code
+        }
       } catch { /* non-JSON error body */ }
-      throw new ApiError(res.status, detail)
+      throw new ApiError(res.status, detail, code)
     }
     const reader = res.body.getReader()
     const decoder = new TextDecoder()

@@ -81,7 +81,7 @@ async def get_current_user(
     return UserInfo(user_id=data["user_id"], display_name=data.get("display_name"))
 
 
-_PRIVATE_DENIED = {
+PROJECT_PRIVATE_DENIED = {
     "code": "PROJECT_PRIVATE",
     "message": "该项目为私有项目，您没有访问权限",
 }
@@ -135,7 +135,7 @@ async def authorize_project(
             "authorize_project DENIED: project_id=%s private for user=%s",
             project_id, current_user.user_id,
         )
-        raise HTTPException(status_code=403, detail=_PRIVATE_DENIED)
+        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
     _log.info(
         "authorize_project OK: project_id=%s, slug=%s, created_by=%s",
         project_id, project.slug, project.created_by,
@@ -164,5 +164,5 @@ async def authorize_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     conversation, project = row
     if not await has_project_access(db, project, current_user.user_id):
-        raise HTTPException(status_code=403, detail=_PRIVATE_DENIED)
+        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
     return conversation

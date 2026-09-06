@@ -450,6 +450,7 @@ export default {
     abort: '停止',
     loadFailed: '页面加载失败',
     runFailed: '运行失败，请重试',
+    projectPrivate: '该项目为私有项目，您没有访问权限。',
     assistant: '助手',
     typing: '输入中…',
     welcomeTitle: '开始对话吧',

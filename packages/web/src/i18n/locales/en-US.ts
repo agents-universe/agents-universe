@@ -450,6 +450,7 @@ export default {
     abort: 'Stop',
     loadFailed: 'Failed to load the page',
     runFailed: 'Run failed, please retry',
+    projectPrivate: "This project is private; you don't have access.",
     assistant: 'Assistant',
     typing: 'typing…',
     welcomeTitle: 'Start a conversation',

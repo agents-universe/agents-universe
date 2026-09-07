@@ -136,4 +136,25 @@ describe('PublishesPage', () => {
     expect(wrapper.find('.publishes-new').exists()).toBe(false)
     expect(wrapper.find('.publishes-empty .btn-primary').exists()).toBe(false)
   })
+
+  it('copies an absolute (origin-prefixed) page link', async () => {
+    // The copied link must open when pasted anywhere — not a root-relative
+    // path that only works in the current tab.
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      publishApi.list.mockResolvedValue([makePublish()])
+      const wrapper = mount(PublishesPage)
+      await flushPromises()
+
+      await wrapper.find('.publish-card .btn-sm.secondary').trigger('click')
+
+      expect(writeText).toHaveBeenCalledTimes(1)
+      expect(writeText.mock.calls[0][0]).toMatch(/^https?:\/\/.+\/p\/pub-1$/)
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor)
+      else delete (navigator as { clipboard?: unknown }).clipboard
+    }
+  })
 })

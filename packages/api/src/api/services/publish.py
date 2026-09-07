@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 _log = logging.getLogger("agents_universe.publish")
 
@@ -159,6 +159,19 @@ async def get_or_create_publish_conversation(
     return str(conv.conversation_id)
 
 
+def _publish_agent_scope_order():
+    """Scope ordering for same-slug agent rows: the project-scoped row wins.
+
+    ``ORDER BY CASE WHEN project_id IS NULL THEN 1 ELSE 0 END`` sorts the
+    global row (NULL) last. CASE instead of a bare ``project_id IS NULL``
+    predicate: T-SQL rejects ORDER BY on a boolean expression (the same
+    pattern and reasoning as routers/knowledge.py's metadata ordering).
+    """
+    from api.models.agent import Agent
+
+    return case((Agent.project_id.is_(None), 1), else_=0)
+
+
 async def _get_publish_agent(db, publish) -> dict | None:
     """Agent display row for a publish, or None when the definition vanished."""
     from api.models.agent import Agent
@@ -166,7 +179,7 @@ async def _get_publish_agent(db, publish) -> dict | None:
     result = await db.execute(
         select(Agent)
         .where(Agent.slug == publish.agent_slug)
-        .order_by(Agent.project_id.is_(None))  # global wins for same slug
+        .order_by(_publish_agent_scope_order())
     )
     agent = result.scalars().first()
     if agent is None:

@@ -678,3 +678,65 @@ async def test_session_viewer_token_rejected_when_project_private(
         )
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "PROJECT_PRIVATE"
+
+
+# ── agent scope ordering (T-SQL compile guard) ──────────────────────────────
+#
+# _get_publish_agent orders by scope so a project-scoped row wins over a
+# global row of the same slug if the schema ever allows duplicates. agents.slug
+# is globally unique today, so the predicate is defensive — but a bare
+# ``ORDER BY project_id IS NULL`` is a boolean predicate that SQL Server
+# rejects at parse time (error 156, "Incorrect syntax near the keyword 'IS'")
+# while SQLite/PG/MySQL accept it — which is why the regression only shows up
+# on the MSSQL deployment. These tests pin the compiled SQL instead.
+
+
+def test_publish_agent_scope_order_compiles_on_mssql():
+    """The scope order must compile to CASE WHEN — never a bare IS NULL."""
+    from sqlalchemy.dialects import mssql
+
+    from api.models.agent import Agent
+    from api.services.publish import _publish_agent_scope_order
+
+    stmt = (
+        select(Agent)
+        .where(Agent.slug == "some-agent")
+        .order_by(_publish_agent_scope_order())
+    )
+    sql = str(stmt.compile(dialect=mssql.dialect()))
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert order_clause.lstrip().startswith("CASE WHEN"), sql
+    assert "IS NULL" in order_clause  # NULL (global) rows sort last
+
+
+def test_publish_agent_scope_order_compiles_everywhere_else():
+    """No dialect-locked syntax leaks into the other three drivers."""
+    from sqlalchemy.dialects import mysql, postgresql, sqlite
+
+    from api.models.agent import Agent
+    from api.services.publish import _publish_agent_scope_order
+
+    stmt = (
+        select(Agent)
+        .where(Agent.slug == "some-agent")
+        .order_by(_publish_agent_scope_order())
+    )
+    for dialect in (postgresql.dialect(), mysql.dialect(), sqlite.dialect()):
+        str(stmt.compile(dialect=dialect))  # must not raise
+
+
+async def test_page_payload_resolves_agent(client, db, make_project, as_user):
+    """The page payload carries the publish agent's display row.
+
+    Runs the same lookup the broken query fed (WHERE slug + scope order),
+    so the endpoint keeps resolving the agent after the CASE rewrite.
+    """
+    publish, _ = await _make_publish(db, make_project)
+
+    async with as_user("test-user"):
+        r = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert r.status_code == 200
+    agent = r.json()["agent"]
+    assert agent["slug"] == publish.agent_slug
+    assert agent["display_name"] == publish.agent_slug
+    assert agent["project_id"] is None  # the _make_publish global row

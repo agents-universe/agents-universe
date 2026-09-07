@@ -387,7 +387,9 @@ async function copyKey(publishId: string) {
 // ── Page link ────────────────────────────────────────────────────────
 
 function pageUrl(p: PublishItem): string {
-  return withBase(`/p/${p.publish_id}`)
+  // Absolute URL: the copied link must work when pasted anywhere (chat, email),
+  // not just as a root-relative path within the current tab's origin.
+  return `${window.location.origin}${withBase(`/p/${p.publish_id}`)}`
 }
 
 function openPage(p: PublishItem) {

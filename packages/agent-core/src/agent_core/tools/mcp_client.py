@@ -45,6 +45,7 @@ _MIME_EXT = {
     "image/svg+xml": "svg",
 }
 
+from ._media import media_url
 from .base import Tool, ToolContext
 from ._mcp_catalog import load_mcp_servers, sanitize_slug
 
@@ -751,7 +752,7 @@ class McpProxyTool(Tool):
                 return None
             output_path.write_bytes(raw)
 
-            url = f"/api/media/{context.project_id}/{context.conversation_id}/{filename}"
+            url = media_url(context, filename)
             return {
                 "id": filename,
                 "url": url,

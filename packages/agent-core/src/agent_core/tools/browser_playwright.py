@@ -9,7 +9,7 @@ from typing import Any
 
 from .base import Tool, ToolContext
 from ._http import _is_ssrf_enabled, validate_outbound_url
-from ._media import media_type_for, sanitize_suffix
+from ._media import media_type_for, media_url, sanitize_suffix
 from ._ssrf import SSRFError, validate_url
 
 _log = logging.getLogger(__name__)
@@ -264,7 +264,7 @@ class BrowserPlaywrightTool(Tool):
                 screenshot_path = str(media_path / filename)
                 full_page = params.get("full_page", True)
                 await page.screenshot(path=screenshot_path, full_page=full_page)
-                rel_path = f"/api/media/{context.project_id}/{context.conversation_id}/{filename}"
+                rel_path = media_url(context, filename)
                 return {
                     "screenshot_path": screenshot_path,
                     "url": rel_path,
@@ -319,7 +319,7 @@ class BrowserPlaywrightTool(Tool):
                     await download.save_as(str(dest))
                 except Exception as e:
                     return {"error": f"Failed to save downloaded file: {e}"}
-                rel = f"/api/media/{context.project_id}/{context.conversation_id}/{dest.name}"
+                rel = media_url(context, dest.name)
                 file_size = dest.stat().st_size
                 return {
                     "success": True,

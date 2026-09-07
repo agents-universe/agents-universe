@@ -30,7 +30,7 @@ from ..sandbox import (
     terminate_process_tree,
     validate_command,
 )
-from ._media import _IMAGE_SUFFIXES, media_type_for, sanitize_suffix
+from ._media import _IMAGE_SUFFIXES, media_type_for, media_url, sanitize_suffix
 from .base import Tool, ToolContext
 
 _log = logging.getLogger(__name__)
@@ -498,7 +498,7 @@ class CodeExecutorTool(Tool):
                     shutil.move(str(out_file), str(dest))
                 except OSError:
                     continue
-                rel = f"/api/media/{context.project_id}/{context.conversation_id}/{dest.name}"
+                rel = media_url(context, dest.name)
                 if suffix in _IMAGE_SUFFIXES:
                     images.append({"id": dest.stem, "url": rel, "alt": f"Code output: {out_file.name}", "path": str(dest)})
                 else:

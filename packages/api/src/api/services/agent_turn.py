@@ -366,6 +366,8 @@ async def run_turn(
                 framework_root=str(PACKAGE_ROOT),
                 secret_key=_s.secret_key,
                 session_memories=manager.get_session_memories(conversation_id),
+                app_base_url=_s.app_base_url,
+                app_root_path=_s.app_root_path,
             )
             tool_context.interactive = interactive
             tool_context.ssl_verify = _ssl_verify

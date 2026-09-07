@@ -170,6 +170,41 @@ JAVA21_FILES = {
     ),
 }
 
+# Java constructs that used to yield zero symbols or wrong edges: @interface
+# annotation types, module-info, scoped implements targets, chained calls.
+JAVA_EDGE_FILES = {
+    "src/main/java/com/example/edge/Marker.java": (
+        "package com.example.edge;\n"
+        "\n"
+        "public @interface Marker { String value() default \"\"; }\n"
+    ),
+    "module-info.java": (
+        "module com.example.edge { requires java.sql; }\n"
+    ),
+    "src/main/java/com/example/edge/Impl.java": (
+        "package com.example.edge;\n"
+        "\n"
+        "public class Impl implements Outer.Inner {}\n"
+        "class Outer { static class Inner {} }\n"
+    ),
+    "src/main/java/com/example/edge/Chain.java": (
+        "package com.example.edge;\n"
+        "\n"
+        "public class Chain {\n"
+        "    Service getService() { return new Service(); }\n"
+        "    Foo a() { return new Foo(); }\n"
+        "    void helper(String s) {}\n"
+        "    void f() {\n"
+        "        getService().fetch().run();\n"
+        "        new Foo().bar();\n"
+        "        helper(a().b());\n"
+        "    }\n"
+        "}\n"
+        "class Service { Service fetch() { return this; } void run() {} }\n"
+        "class Foo { void bar() {} }\n"
+    ),
+}
+
 
 def _run(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
@@ -210,16 +245,34 @@ def java21_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def java_edge_repo(tmp_path: Path) -> Path:
+    """A local git repo seeded only with the Java edge-case fixture files."""
+    repo = tmp_path / "java_edge"
+    repo.mkdir()
+    for rel, text in JAVA_EDGE_FILES.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _run("init", "-b", "main", cwd=repo)
+    _run("config", "user.email", "t@t.t", cwd=repo)
+    _run("config", "user.name", "t", cwd=repo)
+    _run("add", ".", cwd=repo)
+    _run("commit", "-m", "seed java edge", cwd=repo)
+    return repo
+
+
+@pytest.fixture
 def grammars():
+    # get_grammar already attempts a prefetch download before giving up.
     if get_grammar("python") is None or get_grammar("typescript") is None:
-        pytest.skip("tree-sitter grammars unavailable (offline?)")
+        pytest.skip("tree-sitter grammars unavailable even after prefetch attempt (offline?)")
     return True
 
 
 @pytest.fixture
 def java_grammar():
     if get_grammar("java") is None:
-        pytest.skip("tree-sitter java grammar unavailable (offline?)")
+        pytest.skip("tree-sitter java grammar unavailable even after prefetch attempt (offline?)")
     return True
 
 
@@ -392,6 +445,75 @@ async def test_java21_build_symbols_and_edges(java21_repo: Path, tmp_path: Path,
     assert len(class_nodes) >= 6
 
 
+# ---------------------------------------------------------------------------
+# Java edge constructs: @interface, module-info, scoped implements, chains
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_java_edge_parse_constructs(java_edge_repo: Path, java_grammar):
+    """Parse layer: constructs that used to yield zero symbols or wrong edges."""
+    marker = parse_file(
+        java_edge_repo / "src/main/java/com/example/edge/Marker.java",
+        "src/main/java/com/example/edge/Marker.java",
+    )
+    assert marker is not None and marker.stats.get("error") is None
+    assert "Marker" in {s["name"] for s in marker.symbols}
+
+    module = parse_file(
+        java_edge_repo / "module-info.java", "module-info.java"
+    )
+    assert module is not None and module.stats.get("error") is None
+    assert any(
+        s["type"] == "symbol" and s["name"] == "com.example.edge"
+        for s in module.symbols
+    )
+
+    impl = parse_file(
+        java_edge_repo / "src/main/java/com/example/edge/Impl.java",
+        "src/main/java/com/example/edge/Impl.java",
+    )
+    assert impl is not None and impl.stats.get("error") is None
+    inherits = {(e["from"], e["target"]) for e in impl.edges if e["type"] == "inherits"}
+    assert ("Impl", "Outer.Inner") in inherits
+    # the scoped target stays one edge — never split into Outer/Inner
+    assert not any(t in ("Outer", "Inner") for _, t in inherits)
+
+    chain = parse_file(
+        java_edge_repo / "src/main/java/com/example/edge/Chain.java",
+        "src/main/java/com/example/edge/Chain.java",
+    )
+    assert chain is not None and chain.stats.get("error") is None
+    calls = {e["target"] for e in chain.edges if e["type"] == "calls"}
+    assert "getService.fetch.run" in calls  # full chain, no lost object prefix
+    assert "Foo.bar" in calls              # new Foo().bar()
+    assert "helper" in calls               # argument calls don't leak into the chain
+    assert "a.b" in calls
+
+
+@pytest.mark.asyncio
+async def test_java_edge_build_coverage(java_edge_repo: Path, tmp_path: Path, java_grammar):
+    """End-to-end build: every java edge fixture file yields symbols and the
+    parse-rate numbers land in stats + report."""
+    summary = await _build(java_edge_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["files"] == 4
+    assert stats["failed"] == 0
+    assert stats["with_symbols"] == 4
+    assert stats["lang_coverage"]["java"] == {"files": 4, "with_symbols": 4}
+
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    nodes = {n.id: n for n in graph.nodes}
+    assert nodes["s:module-info.java:com.example.edge"].type == "symbol"
+    marker = "s:src/main/java/com/example/edge/Marker.java"
+    assert nodes[f"{marker}:Marker"].type == "class"
+
+    report = render_report(graph)
+    assert "parse rate: 4/4 files with symbols (100%)" in report
+    assert "by language: java 4/4" in report
+
+
 @pytest.mark.asyncio
 async def test_up_to_date_fast_path(repo: Path, tmp_path: Path):
     first = await _build(repo, tmp_path)
@@ -415,12 +537,34 @@ async def test_incremental_reparse_only_changed(repo: Path, tmp_path: Path):
                wraps=_parser_mod.parse_file) as counted:
         summary = await _build(repo, tmp_path, force=True)
         assert summary["status"] == "built"
-        assert summary["stats"]["parsed"] == 1
-        assert summary["stats"]["reused"] == 9
-        assert counted.call_count == 1  # only the edited file is re-parsed
+        # helper.py changed + broken.py re-parses (error entries are never
+        # reused, they heal on every build) — everything else is a cache hit.
+        assert summary["stats"]["parsed"] == 2
+        assert summary["stats"]["reused"] == 8
+        assert summary["stats"]["failed"] == 1
+        assert counted.call_count == 2
 
     graph = load_cached(tmp_path / "kg")
     assert graph.node("s:util/helper.py:extra") is not None
+
+
+@pytest.mark.asyncio
+async def test_error_entries_reparsed_on_force(repo: Path, tmp_path: Path):
+    """Error entries are not served from the SHA cache: a forced rebuild with
+    no file changes re-parses exactly the failed file so parser fixes heal
+    the graph without touching the cache directory."""
+    await _build(repo, tmp_path)
+    from agent_core.knowledge.graph import parser as _parser_mod
+    with patch("agent_core.knowledge.graph.builder.parse_file",
+               wraps=_parser_mod.parse_file) as counted:
+        summary = await _build(repo, tmp_path, force=True)
+    assert summary["status"] == "built"
+    assert summary["stats"]["parsed"] == 1
+    assert summary["stats"]["reused"] == 9
+    assert summary["stats"]["failed"] == 1
+    assert summary["stats"]["failed_reasons"] == {"syntax": 1}
+    assert counted.call_count == 1  # only broken.py is re-parsed
+    assert counted.call_args[0][1] == "broken.py"
 
 
 @pytest.mark.asyncio
@@ -445,6 +589,7 @@ async def test_untracked_files_warn_but_not_indexed(repo: Path, tmp_path: Path, 
     summary = await _build(repo, tmp_path, force=True)
     # committed files only — wip.py is not in the graph
     assert summary["stats"]["files"] == 10
+    assert summary["stats"]["untracked_sources"] == 1
     assert "wip.py" in summary["warning"]
     graph = load_cached(tmp_path / "kg")
     assert graph.node("s:wip.py:wip") is None
@@ -502,6 +647,47 @@ async def test_report_renders(repo: Path, tmp_path: Path, grammars):
     assert "# Repository Graph Report" in report
     assert "God nodes" in report
     assert "repo_graph" in report  # usage section
+
+
+@pytest.mark.asyncio
+async def test_stats_visibility(repo: Path, tmp_path: Path, grammars):
+    """Parse-rate stats reach both the report and the compact map."""
+    await _build(repo, tmp_path)
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    stats = graph.stats
+    assert stats["with_symbols"] == 9  # 10 files, broken.py has none
+    assert stats["failed_reasons"] == {"syntax": 1}
+    assert "cov:" in compact_map(graph)
+    report = render_report(graph)
+    assert "parse rate: 9/10 files with symbols (90%)" in report
+    assert "by language:" in report
+    assert "python 3/4 (75%)" in report  # worst coverage surfaces first
+    assert "syntax: 1" in report
+
+
+@pytest.mark.asyncio
+async def test_grammar_unavailable_warning(repo: Path, tmp_path: Path):
+    """A missing grammar is reported loudly with remediation, not silently:
+    the summary warning names the language and failed_reasons keeps counts."""
+    from agent_core.knowledge.graph.parser import FileParseResult
+
+    def fake_parse_file(path: Path, rel: str):
+        if rel.endswith(".java"):
+            return FileParseResult(sha256="0" * 64, lang="java",
+                                   stats={"error": "grammar unavailable: java"})
+        return parse_file(path, rel)
+
+    with patch("agent_core.knowledge.graph.builder.parse_file",
+               side_effect=fake_parse_file):
+        summary = await _build(repo, tmp_path, force=True)
+    assert summary["status"] == "built"
+    assert "unavailable" in summary["warning"]
+    assert "java" in summary["warning"]
+    assert "prefetch" in summary["warning"]
+    reasons = summary["stats"]["failed_reasons"]
+    assert reasons["grammar unavailable: java"] == 3
+    assert reasons["syntax"] == 1  # broken.py still parses for real
 
 
 # ---------------------------------------------------------------------------

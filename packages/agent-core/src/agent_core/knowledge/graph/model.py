@@ -23,6 +23,10 @@ STAT_FAILED = "failed"          # files that could not be parsed
 STAT_SKIPPED = "skipped"        # files skipped (too big / excluded)
 STAT_UNRESOLVED = "unresolved_calls"
 STAT_BUILD_MS = "build_ms"
+STAT_WITH_SYMBOLS = "with_symbols"    # files that produced >= 1 symbol
+STAT_LANG_COVERAGE = "lang_coverage"  # per-language {files, with_symbols}
+STAT_FAILED_REASONS = "failed_reasons"  # error string -> file count
+STAT_UNTRACKED = "untracked_sources"  # untracked source files not indexed
 
 NODE_FILE = "file"
 NODE_CLASS = "class"
@@ -92,7 +96,7 @@ class RepoMeta:
 @dataclass
 class RepoGraph:
     repo: RepoMeta
-    stats: dict[str, int] = field(default_factory=dict)
+    stats: dict[str, Any] = field(default_factory=dict)
     nodes: list[GraphNode] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION

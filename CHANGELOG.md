@@ -10,6 +10,8 @@
 
 ### 修复
 
+- **知识图谱 Java 解析率修复** - 缓存版本升至 2，全量作废旧图强制重解析（此前解析器修复不会重跑未变更文件，稀疏结果永久残留）；失败条目不再复用 SHA 缓存、重建即自动愈合。Java 符号覆盖补齐注解（`@interface`）、模块声明（`module-info.java`）、嵌套类型 `implements Outer.Inner`（此前拆成两个错误目标）与链式调用（`a().b()` 此前丢失对象前缀）。构建统计新增失败原因明细、按语言覆盖率与解析率（含未跟踪源文件计数），写入 graph_report.md 与 compact map。语法文件改为随镜像烘焙：运行沙箱无网络而语言包按需下载，容器内解析此前全部静默失败；现由 `docker/ts-grammars/` 提供（`scripts/fetch_ts_grammars.py` 经镜像链拉取官方包并 sha256 校验刷新），构建期零网络依赖，缺失语法时给出可操作警告与 prefetch 补救指引；`get_grammar` 不再永久缓存失败（grammar 迟到后进程内自愈）。依赖锁定 tree-sitter-language-pack==1.14.3 与 tree-sitter>=0.26,<0.27（ABI 配对），测试补全 Java 语法覆盖且 CI 联网时不再静默跳过
+
 - **API 容器 nginx 自愈** - 组合镜像以 nginx（8000）作为公开入口反代 uvicorn（8001）；此前 entrypoint 用 `exec uvicorn` 独占 PID 1，nginx 进程被杀死后容器保持 Up 而整个站点不可用（健康检查、cloudflared 隧道、18001 端口映射均指向 8000），公网持续 502 直至人工重启。entrypoint 改为监督循环：nginx 以 `daemon off` 作为脚本直接子进程运行，死亡时先清理被 reparent 的孤儿 worker（它们仍占着 8000/8003 监听）再自动重启；uvicorn 死亡则退出容器，交由 compose `restart: unless-stopped` 重建；`wait -n` 同时回收退出子进程，不再堆积僵尸
 
 ## [1.4.0] - 2026-08-31

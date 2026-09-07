@@ -10,9 +10,11 @@ comes into play.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -182,6 +184,8 @@ _SPECS: dict[str, LanguageSpec] = {
             "interface_declaration": "class",
             "enum_declaration": "class",
             "record_declaration": "class",
+            "annotation_type_declaration": "class",
+            "module_declaration": "symbol",
             "method_declaration": "function",
             "constructor_declaration": "function",
         },
@@ -212,8 +216,7 @@ def _load_grammar(key: str):
     try:
         from tree_sitter_language_pack import get_language
         return get_language(key)
-    except Exception as exc:  # grammar not in pack / import broken
-        _log.warning("tree-sitter grammar %r unavailable: %s", key, exc)
+    except Exception:  # grammar not in pack / not downloaded / import broken
         return None
 
 
@@ -222,13 +225,73 @@ _GRAMMAR_FALLBACK = {
     "tsx": "typescript",  # pack ships no separate jsx grammar.
 }
 
+# Grammar objects are cached per process, but only successes: the pack
+# downloads grammars on first use, so a missing grammar must be retried on
+# later calls (the download may have landed meanwhile — e.g. a dev machine
+# that was offline at first build). get_grammar runs inside asyncio.to_thread
+# workers (concurrency 8), hence the lock; prefetch and the failure warning
+# fire at most once per key per process.
+_GRAMMAR_CACHE: dict[str, Any] = {}
+_GRAMMAR_LOCK = threading.Lock()
+_PREFETCH_TRIED: set[str] = set()
+_WARNED: set[str] = set()
 
-@lru_cache(maxsize=None)
+# Env var pointing at a pre-baked grammar cache dir (set in the container
+# image; the runtime sandbox has no network). configure() is process-global
+# and sticky, so it is applied at most once and only when the var is set —
+# local dev keeps the pack's default cache location.
+_GRAMMAR_CACHE_ENV = "TREE_SITTER_GRAMMAR_CACHE"
+_PACK_CONFIGURED = False
+
+
+def _ensure_pack_config() -> None:
+    global _PACK_CONFIGURED
+    if _PACK_CONFIGURED:
+        return
+    _PACK_CONFIGURED = True
+    cache_dir = os.environ.get(_GRAMMAR_CACHE_ENV)
+    if not cache_dir:
+        return
+    try:
+        from tree_sitter_language_pack import PackConfig, configure
+        configure(PackConfig(cache_dir=cache_dir))
+    except Exception as exc:  # never block graph builds on config failure
+        _log.warning("tree-sitter pack configure failed (ignored): %s", exc)
+
+
 def get_grammar(key: str):
-    """Cached grammar lookup — the pack import happens once per key."""
+    """Cached grammar lookup with a one-shot prefetch retry on failure."""
+    _ensure_pack_config()
+    with _GRAMMAR_LOCK:
+        cached = _GRAMMAR_CACHE.get(key)
+    if cached is not None:
+        return cached
     grammar = _load_grammar(key)
     if grammar is None:
         fallback = _GRAMMAR_FALLBACK.get(key)
         if fallback:
             grammar = _load_grammar(fallback)
-    return grammar
+    if grammar is None and key not in _PREFETCH_TRIED:
+        _PREFETCH_TRIED.add(key)
+        # Prefetch the key and (when one exists) its fallback key — e.g. jsx
+        # resolves through the javascript grammar.
+        targets = [t for t in (key, _GRAMMAR_FALLBACK.get(key)) if t]
+        try:
+            from tree_sitter_language_pack import prefetch
+            prefetch(targets)
+        except Exception as exc:
+            _log.warning("tree-sitter grammar prefetch failed for %s: %s", targets, exc)
+        grammar = _load_grammar(key)
+        if grammar is None:
+            fallback = _GRAMMAR_FALLBACK.get(key)
+            if fallback:
+                grammar = _load_grammar(fallback)
+    if grammar is not None:
+        with _GRAMMAR_LOCK:
+            _GRAMMAR_CACHE[key] = grammar
+        return grammar
+    if key not in _WARNED:
+        _WARNED.add(key)
+        _log.warning("tree-sitter grammar %r unavailable: parse results for "
+                     "this language will be empty", key)
+    return None

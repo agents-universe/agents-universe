@@ -38,8 +38,13 @@ dependencies = [
     "pyarrow>=17.0.0",
     # Utils
     "tenacity>=8.5.0",
-    # Repo code graphs (tree-sitter grammars bundled; loaded lazily on build)
-    "tree-sitter-language-pack>=1.14,<2",
+    # Repo code graphs (tree-sitter grammars; pack downloads them on first
+    # use, so the exact version also fixes the baked cache dir name).
+    # The pair below is ABI-coupled: pack 1.14.3 ships grammars compiled for
+    # tree-sitter 0.26 (ABI 14) — pin both so a resolver can never drift them
+    # apart on dev vs container.
+    "tree-sitter-language-pack==1.14.3",
+    "tree-sitter>=0.26,<0.27",
 ]
 
 [project.optional-dependencies]

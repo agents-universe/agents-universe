@@ -16,7 +16,7 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 _MANIFEST = "index.json"
 
 

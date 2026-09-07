@@ -169,6 +169,17 @@ def _chain_text(node) -> str | None:
     if typ in ("scoped_identifier", "dotted_name"):  # python/java dotted paths
         parts = [_node_text(child) for child in node.children if child.type == "identifier"]
         return ".".join(parts) if parts else None
+    if typ == "method_invocation":
+        # java: chained calls (getService().fetch()) — only the name and
+        # object fields; arguments must not leak into the chain.
+        name = _node_text(node.child_by_field_name("name"))
+        if not name:
+            return None
+        obj = _chain_text(node.child_by_field_name("object"))
+        return f"{obj}.{name}" if obj else name
+    if typ == "object_creation_expression":  # java: `new Foo()` in a chain
+        type_node = node.child_by_field_name("type")
+        return _node_text(type_node) if type_node is not None else None
     return None
 
 
@@ -238,13 +249,14 @@ def _java_type_targets(node) -> list[str]:
     if node is None:
         return []
     typ = node.type
-    if typ in ("type_identifier", "nested_type_identifier"):
+    if typ in ("type_identifier", "nested_type_identifier", "scoped_type_identifier"):
         return [_node_text(node)]
     if typ == "generic_type":
         child = node.child_by_field_name("name") or next(
-            (c for c in node.children if c.type == "type_identifier"), None
+            (c for c in node.children if c.type in ("type_identifier", "scoped_type_identifier")),
+            None,
         )
-        return [child.text.decode("utf-8", "replace")] if child is not None else []
+        return [_node_text(child)] if child is not None else []
     out: list[str] = []
     for child in node.children:
         out.extend(_java_type_targets(child))
@@ -461,7 +473,7 @@ def _walk(node, ctx: _Ctx) -> None:
     spec = ctx.spec
     typ = node.type
 
-    if typ in spec.symbol_nodes and spec.symbol_nodes[typ] in ("class", "function"):
+    if typ in spec.symbol_nodes and spec.symbol_nodes[typ] in ("class", "function", "symbol"):
         name_node = node.child_by_field_name(spec.name_field)
         # Name nodes differ per language (identifier / type_identifier /
         # property_identifier); only the text matters. When the name is

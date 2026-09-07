@@ -8,6 +8,7 @@ disk and is only pointed to.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from .model import RepoGraph, parse_node_id
 
@@ -68,6 +69,11 @@ def compact_map(graph: RepoGraph, max_chars: int = COMPACT_MAP_MAX_CHARS) -> str
         "hint: consult the repo_graph tool (query/neighbors/impact/path) before "
         "reading files; full report: .tmp/repo_graph/<repo>/graph_report.md",
     ]
+    cov_line = _coverage_line(stats)
+    # Inserted right after the header so the 1200-char cap truncates `mods`
+    # first and the hint line always survives.
+    if cov_line:
+        lines.insert(1, cov_line)
     text = "\n".join(lines)
     return text[:max_chars]
 
@@ -86,12 +92,17 @@ def render_report(graph: RepoGraph) -> str:
         f"| edges: {stats.get('edges', 0)}",
         f"- parsed: {stats.get('parsed', 0)} (reused from cache: {stats.get('reused', 0)})"
         f" | failed: {stats.get('failed', 0)} | skipped: {stats.get('skipped', 0)}",
+        *_coverage_lines(stats),
         f"- unresolved calls: {stats.get('unresolved_calls', 0)} | build: {stats.get('build_ms', 0)} ms",
         f"- built at: {built}",
         "",
-        "## God nodes (most connected)",
-        "",
     ]
+    failed_reasons = stats.get("failed_reasons") or {}
+    if failed_reasons:
+        lines += ["## Failed files", ""]
+        for reason, count in sorted(failed_reasons.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- {reason}: {count}")
+    lines += ["", "## God nodes (most connected)", ""]
     for node_id, degree in god_nodes(graph):
         kind, rel, qname = parse_node_id(node_id)
         label = qname if qname else rel
@@ -128,4 +139,50 @@ def _module_section(graph: RepoGraph) -> list[str]:
         lines.append(f"- `{rel}` — {len(symbol_counts[rel])} symbols: {names}")
     if not lines:
         lines.append("- (no symbols)")
+    return lines
+
+
+def _lang_cov_sorted(stats: dict[str, Any]) -> list[tuple[str, dict[str, int]]]:
+    """Per-language coverage, worst ratio first (problem languages surface)."""
+    lang_cov = stats.get("lang_coverage") or {}
+    return sorted(
+        lang_cov.items(),
+        key=lambda kv: kv[1].get("with_symbols", 0) / max(kv[1].get("files", 1), 1),
+    )
+
+
+def _coverage_line(stats: dict[str, Any]) -> str | None:
+    """One-line per-language coverage for the compact map (worst 6 langs)."""
+    parts = []
+    for lang, cov in _lang_cov_sorted(stats)[:6]:
+        n = cov.get("files", 0)
+        if not n:
+            continue
+        s = cov.get("with_symbols", 0)
+        pct = round(100 * s / n)
+        parts.append(f"{lang} {s}/{n}" + (f" ({pct}%)" if s < n else ""))
+    return f"cov: {' '.join(parts)}" if parts else None
+
+
+def _coverage_lines(stats: dict[str, Any]) -> list[str]:
+    """Parse-rate lines for graph_report.md: overall + per language + untracked."""
+    files = stats.get("files", 0)
+    with_symbols = stats.get("with_symbols", 0)
+    lines = []
+    if files:
+        pct = round(100 * with_symbols / files)
+        lines.append(f"- parse rate: {with_symbols}/{files} files with symbols ({pct}%)")
+    parts = []
+    for lang, cov in _lang_cov_sorted(stats):
+        n = cov.get("files", 0)
+        if not n:
+            continue
+        s = cov.get("with_symbols", 0)
+        pct = round(100 * s / n)
+        parts.append(f"{lang} {s}/{n}" + (f" ({pct}%)" if s < n else ""))
+    if parts:
+        lines.append(f"- by language: {', '.join(parts)}")
+    untracked = stats.get("untracked_sources", 0)
+    if untracked:
+        lines.append(f"- untracked source files (not indexed): {untracked}")
     return lines

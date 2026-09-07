@@ -222,6 +222,18 @@ def _untracked_hint(untracked_candidates: list[str]) -> str | None:
     )
 
 
+def _missing_grammar_langs(results: dict[str, dict[str, Any]]) -> tuple[list[str], int]:
+    """Languages whose parse results carry 'grammar unavailable' errors."""
+    missing: set[str] = set()
+    count = 0
+    for entry in results.values():
+        error = str(entry.get("stats", {}).get("error") or "")
+        if error.startswith("grammar unavailable: "):
+            missing.add(error.split(": ", 1)[1])
+            count += 1
+    return sorted(missing), count
+
+
 async def build_repo_graph(
     repo: Path, kg_dir: Path, force: bool = False, include_untracked: bool = False
 ) -> dict[str, Any]:
@@ -277,7 +289,8 @@ async def build_repo_graph(
             summary["warning"] = _untracked_hint(untracked_candidates)
         return summary
 
-    counters = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
+    counters: dict[str, Any] = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
+    failed_reasons: dict[str, int] = {}
 
     async def _handle(rel: str) -> None:
         path = (repo / rel).resolve()
@@ -288,11 +301,16 @@ async def build_repo_graph(
             state.files.pop(rel, None)
             return
         entry = cache.get(state, rel)
-        if entry is not None and entry.get("sha") == sha:
+        if (
+            entry is not None
+            and entry.get("sha") == sha
+            and not entry.get("stats", {}).get("error")
+        ):
             counters["reused"] += 1
-            if entry.get("stats", {}).get("error"):
-                counters["failed"] += 1  # broken files stay "failed" in reports
             return
+        # Entries with a parse error are never reused: they re-parse below so
+        # a fixed parser (or a grammar that arrived later) heals the graph on
+        # the next build instead of serving the stale failure forever.
         result = await asyncio.to_thread(parse_file, path, rel)
         if result is None:  # too big / unreadable
             counters["skipped"] += 1
@@ -300,6 +318,8 @@ async def build_repo_graph(
             return
         if result.stats.get("error"):
             counters["failed"] += 1
+            reason = str(result.stats["error"])
+            failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
         cache.set_file(state, rel, result)
         counters["parsed"] += 1
 
@@ -317,8 +337,22 @@ async def build_repo_graph(
             state.files.pop(rel, None)
 
     results = {rel: state.files[rel] for rel in candidates if rel in state.files}
+    counters["failed_reasons"] = failed_reasons
     graph = _assemble_graph(repo.name, head, results, counters)
     graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
+    graph.stats["untracked_sources"] = 0 if include_untracked else len(untracked_candidates)
+
+    missing, grammar_failed = _missing_grammar_langs(results)
+    grammar_warning = None
+    if missing:
+        grammar_warning = (
+            f"tree-sitter grammars unavailable: {', '.join(missing)} — "
+            f"{grammar_failed} source file(s) produced no symbols. Remediation: "
+            f"run python -c \"from tree_sitter_language_pack import prefetch; "
+            f"prefetch({missing!r})\" with network access, or rebuild the image "
+            "(grammars are baked at build time)."
+        )
+        _log.warning("repo graph %s: %s", repo.name, grammar_warning)
 
     # Record the build mode so a later build in the other mode cannot reuse
     # this manifest through the fast path.
@@ -337,8 +371,13 @@ async def build_repo_graph(
         "repo_map": compact_map(graph),
         "graph_path": str(kg_dir / GRAPH_FILE),
     }
+    warnings = []
+    if grammar_warning:
+        warnings.append(grammar_warning)
     if untracked_candidates and not include_untracked:
-        summary["warning"] = _untracked_hint(untracked_candidates)
+        warnings.append(_untracked_hint(untracked_candidates))
+    if warnings:
+        summary["warning"] = " ".join(warnings)
     return summary
 
 
@@ -381,7 +420,7 @@ def _assemble_graph(
     repo_name: str,
     head_sha: str,
     results: dict[str, dict[str, Any]],
-    counters: dict[str, int] | None = None,
+    counters: dict[str, Any] | None = None,
 ) -> RepoGraph:
     """Derive a RepoGraph from per-file parse results (manifest entries)."""
     counters = counters or {}
@@ -485,7 +524,20 @@ def _assemble_graph(
             else:
                 add_edge(src_id, dst, etype)
 
-    stats: dict[str, int] = {
+    # Parse-rate coverage: how many files per language yielded at least one
+    # symbol. Surfaced in the report so a sparse graph is visible as a number
+    # instead of a silent gap.
+    lang_coverage: dict[str, dict[str, int]] = {}
+    with_symbols = 0
+    for entry in results.values():
+        lang = entry.get("lang", "")
+        cov = lang_coverage.setdefault(lang, {"files": 0, "with_symbols": 0})
+        cov["files"] += 1
+        if entry.get("symbols"):
+            cov["with_symbols"] += 1
+            with_symbols += 1
+
+    stats: dict[str, Any] = {
         "files": len(results),
         "nodes": len(nodes),
         "edges": len(edges),
@@ -495,6 +547,9 @@ def _assemble_graph(
         "skipped": counters.get("skipped", 0),
         "unresolved_calls": unresolved,
         "external_imports": external_imports,
+        "with_symbols": with_symbols,
+        "lang_coverage": lang_coverage,
+        "failed_reasons": counters.get("failed_reasons", {}),
     }
     return RepoGraph(
         repo=RepoMeta(name=repo_name, head_sha=head_sha, langs=langs, built_at=now_epoch()),

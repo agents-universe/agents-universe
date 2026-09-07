@@ -232,7 +232,11 @@ async def test_stream_disabled_publish(client, db, make_project, as_user):
 async def test_stream_creates_publish_conversation_and_runs(
     client, db, make_project, monkeypatch
 ):
-    """A turn runs against a source='publish' conversation owned by the publisher."""
+    """A turn runs against a source='publish' conversation owned by the publisher.
+
+    The API stream's conversation is scoped to (publish, "default" thread) —
+    no viewer, since an API caller has no identity.
+    """
     publish, _ = await _make_publish(db, make_project)
     plain, _ = _mk_key(publish.publish_id)
     db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...z"))
@@ -274,16 +278,20 @@ async def test_stream_creates_publish_conversation_and_runs(
     assert captured["interactive"] is False
     assert captured["fixed_config_id"] == publish.model_config_id
 
-    # The conversation is marked publish-owned.
+    # The conversation is marked publish-owned and scoped to (publish, default).
     result = await db.execute(
         select(Conversation).where(Conversation.conversation_id == captured["conversation_id"])
     )
     conv = result.scalar_one()
     assert conv.source == "publish"
     assert conv.user_id == publish.owner_id
+    assert conv.publish_id == str(publish.publish_id)
+    assert conv.thread_id == "default"
+    assert conv.viewer_id is None
 
 
 async def test_abort_endpoint(client, db, make_project):
+    """A body-less abort stays compatible and never creates a conversation row."""
     publish, _ = await _make_publish(db, make_project)
     plain, _ = _mk_key(publish.publish_id)
     db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...q"))
@@ -294,12 +302,23 @@ async def test_abort_endpoint(client, db, make_project):
     )
     assert r.status_code == 200
 
+    # Aborting a thread that never ran must not fabricate a conversation row.
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.source == "publish",
+            Conversation.publish_id == str(publish.publish_id),
+        )
+    )
+    assert result.scalars().all() == []
+
 
 async def test_publish_conversations_hidden_from_sidebar(client, db, make_project, as_user):
     """source='publish' conversations never appear in the ordinary lists."""
     publish, _ = await _make_publish(db, make_project)
     from api.services.publish import get_or_create_publish_conversation
-    conv_id = await get_or_create_publish_conversation(db, publish)
+    conv_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
 
     async with as_user("test-user"):
         r = await client.get(f"/api/projects/{publish.project_id}/conversations")
@@ -383,7 +402,7 @@ async def test_session_requires_valid_token(client, db, make_project, as_user):
 
 
 async def test_session_gets_or_creates_conversation(client, db, make_project, as_user):
-    """A page load creates the shared publish conversation (owner-owned)."""
+    """A page load creates the viewer's own publish conversation (owner-owned)."""
     publish, _ = await _make_publish(db, make_project)
 
     async with as_user("test-user"):
@@ -403,6 +422,9 @@ async def test_session_gets_or_creates_conversation(client, db, make_project, as
     conv = result.scalar_one()
     assert conv.source == "publish"
     assert conv.user_id == publish.owner_id
+    assert conv.publish_id == str(publish.publish_id)
+    assert conv.viewer_id == "test-user"
+    assert conv.thread_id is None
 
     # Idempotent: a second load reuses the same conversation.
     async with as_user("test-user"):
@@ -428,10 +450,12 @@ async def test_session_page_disabled_publish(client, db, make_project, as_user):
 
 
 async def test_session_messages_and_latest_run(client, db, make_project, as_user):
-    """History + run status read back for a viewer of the shared conversation."""
+    """History + run status read back for a viewer of their own conversation."""
     publish, _ = await _make_publish(db, make_project)
     from api.services.publish import get_or_create_publish_conversation
-    conv_id = await get_or_create_publish_conversation(db, publish)
+    conv_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
 
     # Seed one message + run row directly (the turn kernel persists these).
     from api.models.conversation import Message as DbMessage
@@ -545,7 +569,11 @@ async def test_session_run_creates_abort_event(
     from api.services.publish import get_or_create_publish_conversation
     from api.websocket.manager import manager
 
-    conv_id = await get_or_create_publish_conversation(db, publish)
+    # Seed the viewer's own conversation; the /session/run below must resolve
+    # to this exact row (same publish + viewer), not a fresh one.
+    conv_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
     # No WS was ever connected, so no event exists yet.
     assert manager.get_abort_event(conv_id) is None
 
@@ -567,10 +595,12 @@ async def test_session_run_creates_abort_event(
 
 
 async def test_session_abort(client, db, make_project, as_user, monkeypatch):
-    """A viewer can abort the running turn of the shared publish conversation."""
+    """A viewer can abort the running turn of their own publish conversation."""
     publish, _ = await _make_publish(db, make_project)
     from api.services.publish import get_or_create_publish_conversation
-    conv_id = await get_or_create_publish_conversation(db, publish)
+    conv_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
 
     signalled = []
     import api.websocket.manager as wm
@@ -596,6 +626,251 @@ async def test_session_abort(client, db, make_project, as_user, monkeypatch):
         )
     assert r2.status_code == 404
     assert signalled == [conv_id]
+
+
+# ── per-publish / per-viewer / per-thread isolation ──────────────────────────
+
+
+async def test_two_publishes_same_project_get_distinct_conversations(
+    db, make_project
+):
+    """Two publishes of one owner in one project never share a conversation.
+
+    Regression for the bug where every publish of an owner+project resolved
+    to the same conversation row (mixed history, cross-publish turn claims
+    and aborts).
+    """
+    from api.models.publish import AgentPublish as PublishModel
+    from api.services.publish import get_or_create_publish_conversation
+
+    p1, cfg = await _make_publish(db, make_project, agent_slug="iso-a")
+    p2 = PublishModel(
+        owner_id=p1.owner_id,
+        agent_slug="iso-b",
+        project_id=p1.project_id,  # same project as p1
+        model_config_id=cfg.config_id,
+        title="Test publish 2",
+    )
+    db.add(p2)
+    await db.commit()
+    await db.refresh(p2)
+
+    c1 = await get_or_create_publish_conversation(db, p1, viewer_id="v1")
+    c2 = await get_or_create_publish_conversation(db, p2, viewer_id="v1")
+    assert c1 != c2
+
+    # Each publish is idempotent for the same viewer.
+    assert await get_or_create_publish_conversation(db, p1, viewer_id="v1") == c1
+    assert await get_or_create_publish_conversation(db, p2, viewer_id="v1") == c2
+
+    # viewer and thread are disjoint namespaces: a thread named like a viewer
+    # never collides with the viewer's row.
+    assert await get_or_create_publish_conversation(db, p1, thread_id="v1") != c1
+
+
+async def test_two_viewers_get_distinct_conversations_and_histories(
+    client, db, make_project, as_user
+):
+    """A second viewer of a publish never sees the first viewer's history."""
+    publish, _ = await _make_publish(db, make_project)
+
+    async with as_user("test-user"):
+        ra = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert ra.status_code == 200
+    conv_a = ra.json()["conversation_id"]
+
+    # Viewer A leaves a message in their own conversation.
+    from api.models.conversation import Message as DbMessage
+    from api.models._compat import new_uuid
+    db.add(DbMessage(
+        message_id=new_uuid(),
+        conversation_id=conv_a,
+        role="user",
+        content="secret-of-a",
+        sequence_num=0,
+    ))
+    await db.commit()
+
+    async with as_user("other-user"):
+        rb = await client.get(f"/api/p/{publish.publish_id}/page")
+    assert rb.status_code == 200
+    conv_b = rb.json()["conversation_id"]
+    assert conv_a != conv_b
+
+    # Viewer B's history endpoint returns none of A's messages.
+    async with as_user("other-user"):
+        rm = await client.get(
+            f"/api/p/{publish.publish_id}/session/messages",
+            params={"token": _make_viewer_token(str(publish.publish_id), "other-user")},
+        )
+    assert rm.status_code == 200
+    assert all(m["content"] != "secret-of-a" for m in rm.json())
+
+
+async def test_viewer_conversation_idempotent_across_session_endpoints(
+    client, db, make_project, as_user
+):
+    """/page and every /session endpoint resolve to one conversation per viewer."""
+    publish, _ = await _make_publish(db, make_project)
+
+    async with as_user("test-user"):
+        page = await client.get(f"/api/p/{publish.publish_id}/page")
+        assert page.status_code == 200
+        data = page.json()
+        token = data["token"]
+        conv = data["conversation_id"]
+
+        s = await client.get(
+            f"/api/p/{publish.publish_id}/session", params={"token": token}
+        )
+        m = await client.get(
+            f"/api/p/{publish.publish_id}/session/messages", params={"token": token}
+        )
+        r = await client.get(
+            f"/api/p/{publish.publish_id}/session/runs/latest", params={"token": token}
+        )
+    assert s.status_code == 200
+    assert s.json()["conversation_id"] == conv
+    assert m.status_code == 200
+    assert r.status_code == 200  # no run yet -> null body, still 200
+
+
+async def test_stream_thread_partitions(client, db, make_project, monkeypatch):
+    """Each (publish, thread_id) pair gets its own conversation; omitted → default."""
+    publish, _ = await _make_publish(db, make_project)
+    plain, _ = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...t"))
+    await db.commit()
+
+    seen = []
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        seen.append(conversation_id)
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "hi"})
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    async def _stream(thread_id=None):
+        body = {"message": "hi"}
+        if thread_id is not None:
+            body["thread_id"] = thread_id
+        async with client.stream(
+            "POST", f"/api/p/{publish.publish_id}/stream",
+            headers={"Authorization": f"Bearer {plain}"},
+            json=body,
+        ) as resp:
+            assert resp.status_code == 200
+            async for _ in resp.aiter_lines():
+                pass
+
+    await _stream("t1")
+    await _stream("t2")
+    await _stream("t1")
+    await _stream()
+    assert seen[0] != seen[1]           # t1 and t2 are isolated
+    assert seen[2] == seen[0]           # repeat t1 reuses the same conversation
+    assert seen[3] not in (seen[0], seen[1])  # omitted thread is its own scope
+
+    result = await db.execute(
+        select(Conversation).where(Conversation.conversation_id == seen[3])
+    )
+    conv = result.scalar_one()
+    assert conv.thread_id == "default"
+    assert conv.viewer_id is None
+
+
+async def test_abort_targets_correct_thread(client, db, make_project, monkeypatch):
+    """Abort with a thread_id stops only that thread; a body-less abort stops default."""
+    publish, _ = await _make_publish(db, make_project)
+    plain, _ = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...u"))
+    await db.commit()
+    from api.services.publish import get_or_create_publish_conversation
+    default_conv = await get_or_create_publish_conversation(db, publish, thread_id="default")
+    alpha_conv = await get_or_create_publish_conversation(db, publish, thread_id="alpha")
+
+    signalled = []
+    import api.websocket.manager as wm
+    monkeypatch.setattr(
+        wm.manager, "signal_abort",
+        lambda conversation_id: signalled.append(conversation_id),
+    )
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/abort",
+        headers={"X-API-Key": plain},
+        json={"thread_id": "alpha"},
+    )
+    assert r.status_code == 200
+    assert signalled == [alpha_conv]
+
+    r2 = await client.post(
+        f"/api/p/{publish.publish_id}/abort",
+        headers={"X-API-Key": plain},
+    )
+    assert r2.status_code == 200
+    assert signalled == [alpha_conv, default_conv]
+
+    # An unknown thread is a no-op success — and creates no row.
+    r3 = await client.post(
+        f"/api/p/{publish.publish_id}/abort",
+        headers={"X-API-Key": plain},
+        json={"thread_id": "nope"},
+    )
+    assert r3.status_code == 200
+    assert signalled == [alpha_conv, default_conv]
+
+
+async def test_legacy_shared_publish_rows_unreachable(db, make_project):
+    """Pre-isolation rows (NULL scope columns) never match the new lookup."""
+    from api.models._compat import new_uuid
+    from api.services.publish import get_or_create_publish_conversation
+
+    publish, _ = await _make_publish(db, make_project)
+    legacy = Conversation(
+        conversation_id=new_uuid(),
+        project_id=publish.project_id,
+        user_id=publish.owner_id,
+        source="publish",
+        status="active",
+        title="legacy shared row",
+    )
+    db.add(legacy)
+    await db.commit()
+
+    fresh = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
+    assert fresh != str(legacy.conversation_id)
+    # The legacy row stays untouched in the DB.
+    result = await db.execute(
+        select(Conversation).where(Conversation.conversation_id == legacy.conversation_id)
+    )
+    assert result.scalar_one().publish_id is None
+
+
+async def test_page_payload_with_multiple_publishes_no_500(
+    client, db, make_project, as_user
+):
+    """Two publishes of one owner+project each load their own page — regression
+    for the unscoped viewer-payload lookup that 500'd on multiple rows."""
+    publish, cfg = await _make_publish(db, make_project, agent_slug="mp-a")
+    publish2 = AgentPublish(
+        owner_id=publish.owner_id,
+        agent_slug="mp-b",
+        project_id=publish.project_id,
+        model_config_id=cfg.config_id,
+    )
+    db.add(publish2)
+    await db.commit()
+
+    async with as_user("test-user"):
+        r1 = await client.get(f"/api/p/{publish.publish_id}/page")
+        r2 = await client.get(f"/api/p/{publish2.publish_id}/page")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["conversation_id"] != r2.json()["conversation_id"]
 
 
 # ── private-project gate ────────────────────────────────────────────────────

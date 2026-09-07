@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -34,6 +34,7 @@ from api.models.publish import AgentPublish, PublishKey
 from api.models.user import UserModelConfig
 from api.services.publish import (
     SSEStream,
+    _find_publish_conversation_id,
     generate_publish_key,
     get_or_create_publish_conversation,
     hash_publish_key,
@@ -76,9 +77,17 @@ class PublishKeyCreate(BaseModel):
 
 class RunRequest(BaseModel):
     message: str = Field(min_length=1, max_length=200_000)
-    # Optional client-supplied thread id — pins a caller's runs to one
-    # conversation so multi-turn agents keep their history. Collision-safe:
-    # scoped to the publish.
+    # Optional client-supplied thread id — the partition key of the API
+    # stream: every (publish, thread_id) pair gets its own conversation, so
+    # multi-turn agents keep their history without sharing it with other
+    # threads of the same publish. Omitted → "default".
+    thread_id: str | None = Field(None, max_length=100)
+
+
+class AbortRequest(BaseModel):
+    # Thread id of the run to stop — must match the thread that started it,
+    # so one caller's abort never kills another caller's thread on the same
+    # publish. Omitted → "default".
     thread_id: str | None = Field(None, max_length=100)
 
 
@@ -392,10 +401,12 @@ async def publish_stream(
         raise HTTPException(status_code=429, detail="Too many concurrent runs")
 
     # Pin the caller's thread to a dedicated conversation so multi-turn
-    # agents keep their history across calls.
+    # agents keep their history across calls — one conversation per
+    # (publish, thread_id), never shared across threads or publishes.
     thread_suffix = body.thread_id or "default"
     conversation = await get_or_create_publish_conversation(
         db, publish,
+        thread_id=thread_suffix,
         title=f"发布会话: {publish.agent_slug}/{thread_suffix}",
     )
 
@@ -473,11 +484,23 @@ async def publish_stream(
 async def publish_abort(
     publish_id: str,
     request: Request,
+    body: AbortRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Abort the running turn for this publish's default conversation."""
+    """Abort the running turn of one thread of this publish.
+
+    The thread is identified by the body's thread_id (omitted → "default"),
+    so an abort never touches another thread's conversation. A missing
+    conversation — the thread never ran — is a no-op success, and no
+    conversation row is created by an abort.
+    """
     publish = await _authorize_publish_key(request, db, publish_id)
-    conversation = await get_or_create_publish_conversation(db, publish)
+    thread_id = (body.thread_id if body else None) or "default"
+    conversation = await _find_publish_conversation_id(
+        db, publish, viewer_id=None, thread_id=thread_id
+    )
+    if conversation is None:
+        return {"aborted": True}
     from api.websocket.manager import manager
     manager.signal_abort(conversation)
     return {"aborted": True}
@@ -486,13 +509,15 @@ async def publish_abort(
 # ── SSO embedded page (viewer-session) ────────────────────────────────────
 #
 # The embedded page is a link WITHIN the system: the viewer is an
-# authenticated user (their session cookie) who opens /p/<id>. Because every
-# run executes as the publisher, the shared publish conversation is owned by
-# the publisher — the viewer's own cookie alone must not unlock it (the
-# conversation belongs to someone else). The page loads via a cookie-authenticated
-# GET that issues a short HMAC viewer token (publish, viewer) derived from the
-# server secret; the /session paths re-verify it server-side so the conversation
-# stays gated on the cookie too.
+# authenticated user (their session cookie) who opens /p/<id>. Every viewer
+# of a publish gets their OWN conversation row — keyed by (publish_id,
+# viewer_id) — so no two viewers ever share history. The row still runs and
+# bills as the publisher (user_id = owner_id) and stays out of the
+# publisher's sidebar (source='publish'). Because the conversation belongs
+# to someone else, the viewer's cookie alone must not unlock it: the page
+# loads via a cookie-authenticated GET that issues a short HMAC viewer token
+# (publish, viewer) derived from the server secret; the /session paths
+# re-verify it server-side so each viewer stays gated to their own row.
 
 
 class SessionLookup(BaseModel):
@@ -539,8 +564,12 @@ async def get_publish_page(
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
     await require_publish_project_open(db, publish, current_user.user_id)
-    conversation_id = await get_or_create_publish_conversation(db, publish)
-    payload = await get_publish_viewer_payload(db, publish, current_user.user_id)
+    conversation_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id=current_user.user_id
+    )
+    payload = await get_publish_viewer_payload(
+        db, publish, current_user.user_id, conversation_id
+    )
     return {"conversation_id": conversation_id, **payload}
 
 
@@ -554,8 +583,9 @@ async def get_publish_session(
     """Page payload + resolved conversation for an embedded publish.
 
     The conversation is created on first page load (like the API path) so the
-    viewer's first message finds an active conversation. The ``token`` from
-    the page payload is bound to (publish, viewer); only that combination may
+    viewer's first message finds an active conversation. It is scoped to
+    (publish, viewer): each viewer gets their own row. The ``token`` from the
+    page payload is bound to (publish, viewer); only that combination may
     open it.
     """
     from api.services.publish import (
@@ -567,8 +597,12 @@ async def get_publish_session(
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
-    conversation_id = await get_or_create_publish_conversation(db, publish)
-    payload = await get_publish_viewer_payload(db, publish, current_user.user_id)
+    conversation_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id=current_user.user_id
+    )
+    payload = await get_publish_viewer_payload(
+        db, publish, current_user.user_id, conversation_id
+    )
     return {"conversation_id": conversation_id, **payload}
 
 
@@ -579,16 +613,19 @@ async def get_publish_session_messages(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Message history for an embedded publish conversation."""
+    """Message history of the viewer's own publish conversation."""
     from api.services.publish import (
         _serialize_publish_messages,
         authorize_publish_viewer,
+        get_or_create_publish_conversation,
     )
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
-    conversation_id = await get_or_create_publish_conversation(db, publish)
+    conversation_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id=current_user.user_id
+    )
     return await _serialize_publish_messages(db, publish, conversation_id)
 
 
@@ -599,7 +636,7 @@ async def get_publish_session_latest_run(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Latest run status for an embedded publish conversation."""
+    """Latest run status of the viewer's own publish conversation."""
     from api.services.publish import (
         authorize_publish_viewer,
         get_or_create_publish_conversation,
@@ -608,7 +645,9 @@ async def get_publish_session_latest_run(
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
-    conversation_id = await get_or_create_publish_conversation(db, publish)
+    conversation_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id=current_user.user_id
+    )
     from api.services.conversation_runs import latest_run
 
     run = await latest_run(db, conversation_id)
@@ -633,16 +672,24 @@ async def post_publish_session_abort(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Abort the running turn of an embedded publish conversation."""
+    """Abort the running turn of the viewer's own publish conversation.
+
+    No conversation row is created by an abort — a viewer who never ran a
+    turn gets a no-op success.
+    """
     from api.services.publish import (
+        _find_publish_conversation_id,
         authorize_publish_viewer,
-        get_or_create_publish_conversation,
     )
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, body.token)
     if publish is None:
         raise HTTPException(status_code=404, detail="Publish not found")
-    conversation_id = await get_or_create_publish_conversation(db, publish)
+    conversation_id = await _find_publish_conversation_id(
+        db, publish, viewer_id=current_user.user_id, thread_id=None
+    )
+    if conversation_id is None:
+        return {"aborted": True}
     from api.websocket.manager import manager
 
     manager.signal_abort(conversation_id)
@@ -681,7 +728,9 @@ async def post_publish_session_run(
     except asyncio.TimeoutError:
         raise HTTPException(status_code=429, detail="Too many concurrent runs")
 
-    conversation = await get_or_create_publish_conversation(db, publish)
+    conversation = await get_or_create_publish_conversation(
+        db, publish, viewer_id=current_user.user_id
+    )
     from api.websocket.manager import manager
 
     if not await manager.claim_turn(conversation):

@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (
+        # Publish lookups always predicate publish_id first (then one of
+        # viewer_id / thread_id) — see services/publish.py.
+        Index("ix_conversations_publish_id", "publish_id"),
+    )
 
     conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), nullable=False)
@@ -26,6 +31,15 @@ class Conversation(Base):
     # "publish" = public-initiated (embedded page or external API), filtered
     # from the user's sidebar.
     source: Mapped[str | None] = mapped_column(String(20))
+    # Isolation scoping for source='publish' rows: which publish owns the
+    # conversation and which viewer (embedded page) or client thread (API
+    # stream) it belongs to. NULL = legacy shared rows, unreachable by the
+    # publish lookups. No FK: delete_publish hard-deletes the publish row
+    # and its conversations must survive (same rationale as
+    # AgentPublish.model_config_id).
+    publish_id: Mapped[str | None] = mapped_column(String(36))
+    viewer_id: Mapped[str | None] = mapped_column(String(100))
+    thread_id: Mapped[str | None] = mapped_column(String(100))
     title: Mapped[str | None] = mapped_column(Unicode(255))
     status: Mapped[str] = mapped_column(String(50), default="active")
     token_budget: Mapped[int] = mapped_column(Integer, default=128000)

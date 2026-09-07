@@ -6,6 +6,11 @@ owner_id``) so every run — regardless of who calls — is attributed to and
 billed against the publisher's model config, and is marked
 ``source='publish'`` so it never appears in the publisher's sidebar.
 
+Isolation: one conversation per ``(publish, viewer)`` on the embedded SSO
+page and per ``(publish, thread_id)`` on the API-key stream — never shared
+across publishes. The scope is stored in ``publish_id`` plus one of
+``viewer_id`` / ``thread_id`` on the conversation row.
+
 Security invariants (see credential-leak-redaction memory):
 
 - API keys are stored as SHA-256 hashes + a 4-char hint; the plaintext is
@@ -111,40 +116,85 @@ def sse_format(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _find_publish_conversation_id(
+    db, publish, *, viewer_id: str | None, thread_id: str | None
+) -> str | None:
+    """Latest active publish conversation for (publish, viewer) / (publish, thread).
+
+    Exactly one of viewer_id / thread_id must be given — the two surfaces
+    never mix, and the two namespaces stay structurally disjoint (a client
+    thread id can never collide with a viewer id because each lookup
+    predicates on exactly one column). Legacy rows whose scope columns are
+    NULL (created before the columns existed) never match. ORDER BY includes
+    conversation_id as a deterministic tiebreak so duplicates — see the race
+    note in get_or_create_publish_conversation — resolve stably.
+    """
+    from sqlalchemy import select
+
+    from api.models.conversation import Conversation
+
+    if (viewer_id is None) == (thread_id is None):
+        raise ValueError("provide exactly one of viewer_id / thread_id")
+    discriminator = (
+        Conversation.viewer_id == viewer_id
+        if viewer_id is not None
+        else Conversation.thread_id == thread_id
+    )
+    result = await db.execute(
+        select(Conversation.conversation_id)
+        .where(
+            Conversation.project_id == publish.project_id,
+            Conversation.user_id == publish.owner_id,
+            Conversation.source == "publish",
+            Conversation.status == "active",
+            Conversation.publish_id == str(publish.publish_id),
+            discriminator,
+        )
+        .order_by(Conversation.created_at.desc(), Conversation.conversation_id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_or_create_publish_conversation(
-    db, publish, *, title: str | None = None
+    db, publish, *, viewer_id: str | None = None, thread_id: str | None = None,
+    title: str | None = None,
 ) -> str:
     """Return the conversation id for a published agent, creating it on first use.
 
-    One durable conversation per publish. ``source='publish'`` keeps it out of
-    the publisher's sidebar; user_id = owner so the turn kernel's ownership
-    checks pass and history is attributed to the publisher.
+    Isolation is per (publish, viewer) on the embedded page and per (publish,
+    thread) on the API stream — one of viewer_id / thread_id must identify
+    the scope. ``source='publish'`` keeps the row out of the publisher's
+    sidebar; user_id = owner so the turn kernel's ownership checks pass and
+    history is attributed to the publisher.
+
+    Race note: the find-then-insert is not atomic (no unique constraint —
+    legacy NULL-scope rows make one dialect-infeasible). Concurrent first
+    loads for the same scope can insert duplicates; the lookup's
+    ORDER BY created_at DESC makes later calls converge on the newest row,
+    so an orphan self-heals and is never returned again.
     """
     from sqlalchemy import select
 
     from api.models.agent import Agent
     from api.models.conversation import Conversation
 
-    # Resolve the agent's DB row (project-scoped agents resolve within the
-    # publish's project).
-    result = await db.execute(
-        select(Agent).where(Agent.slug == publish.agent_slug)
+    existing = await _find_publish_conversation_id(
+        db, publish, viewer_id=viewer_id, thread_id=thread_id
     )
-    agent = result.scalar_one_or_none()
-    agent_id = agent.agent_id if agent else None
+    if existing:
+        return existing
 
-    # Reuse the existing publish conversation when present.
-    existing = await db.execute(
-        select(Conversation).where(
-            Conversation.project_id == publish.project_id,
-            Conversation.user_id == publish.owner_id,
-            Conversation.source == "publish",
-            Conversation.status == "active",
-        ).order_by(Conversation.created_at.desc()).limit(1)
+    # Resolve the agent's DB row; a project-scoped agent shadows the global
+    # row of the same slug (order via _publish_agent_scope_order — a bare
+    # scalar_one_or_none would raise MultipleResultsFound on such pairs).
+    result = await db.execute(
+        select(Agent)
+        .where(Agent.slug == publish.agent_slug)
+        .order_by(_publish_agent_scope_order())
     )
-    conv = existing.scalar_one_or_none()
-    if conv:
-        return str(conv.conversation_id)
+    agent = result.scalars().first()
+    agent_id = agent.agent_id if agent else None
 
     conv = Conversation(
         conversation_id=str(uuid.uuid4()),
@@ -152,6 +202,9 @@ async def get_or_create_publish_conversation(
         agent_id=agent_id,
         user_id=publish.owner_id,
         source="publish",
+        publish_id=str(publish.publish_id),
+        viewer_id=viewer_id,
+        thread_id=thread_id,
         title=title or publish.title or f"发布: {publish.agent_slug}",
     )
     db.add(conv)
@@ -192,36 +245,30 @@ async def _get_publish_agent(db, publish) -> dict | None:
     }
 
 
-async def get_publish_viewer_payload(db, publish, viewer_id: str) -> dict:
+async def get_publish_viewer_payload(
+    db, publish, viewer_id: str, conversation_id: str | None
+) -> dict:
     """Public page payload for a publish, scoped to the logged-in viewer.
 
-    Every run on the shared publish conversation executes as the publisher,
-    so the conversation row (and its history) is attributed to the publisher.
-    The viewer NEVER owns it — instead they get a *viewer token* that lets
-    the /session endpoints resolve and run that conversation. The token is
-    derived from a server secret (not stored), so there is nothing to leak
-    or revoke.
+    Every run on the viewer's own publish conversation executes as the
+    publisher, so the conversation row (and its history) is attributed to
+    the publisher. The viewer NEVER owns it — instead they get a *viewer
+    token* that lets the /session endpoints resolve and run that
+    conversation. The token is derived from a server secret (not stored),
+    so there is nothing to leak or revoke. The conversation_id comes from
+    the caller (it already resolved the row); this function never re-queries
+    conversations, keeping the unscoped shared-row lookup out.
     """
-    from api.models.conversation import Conversation
-
     agent = await _get_publish_agent(db, publish)
-    conv_result = await db.execute(
-        select(Conversation.conversation_id).where(
-            Conversation.project_id == publish.project_id,
-            Conversation.user_id == publish.owner_id,
-            Conversation.source == "publish",
-            Conversation.status == "active",
-        )
-    )
-    conversation_id = conv_result.scalar_one_or_none()
     return {
         "publish_id": str(publish.publish_id),
         "agent": agent,
         "project_id": str(publish.project_id),
         "title": publish.title,
         "description": publish.description,
+        # Unused by the frontend; kept for payload-shape stability.
         "has_conversation": bool(conversation_id),
-        # Token binding this viewer to the shared publish conversation. The
+        # Token binding this viewer to their own publish conversation. The
         # WS /session paths exchange it for run rights under the publisher.
         "token": publish_viewer_token(str(publish.publish_id), viewer_id),
     }

@@ -15,12 +15,19 @@ covers deployments behind a sub-path (e.g. ``/agent``) where the browser must
 hit ``https://host/agent/api/media/...``. Without a configured base URL the
 historical relative path is returned, which keeps local/dev/test behavior
 unchanged.
+
+LLMs occasionally still prepend a base URL even when told the tool URL is
+already absolute (the model mistakes ``https://host/agent/api/media/...`` for
+a relative path and writes ``https://host/agenthttps://host/agent/api/media/
+...``). :func:`normalize_media_urls` is a rendering/persistence safety net that
+collapses that duplicated base so the quoted link stays usable.
 """
 from __future__ import annotations
 
 import mimetypes
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Matches the API whitelist: alphanumerics/dash/underscore/dots, no leading dot.
 # The suffix (after sanitization) must be purely alphanumeric like upload_media.
@@ -42,6 +49,20 @@ _MIME_OVERRIDES = {
     ".pdf": "application/pdf",
     ".zip": "application/zip",
 }
+
+_MEDIA_MARKER = "/api/media/"
+
+# A duplicated absolute base directly before the media marker:
+# ``<base><base>/api/media/...`` (the corruption) vs ``<base>/api/media/...``
+# (correct). Group 1 captures ONE base copy; the backreference requires an
+# identical second copy immediately after, and the lookahead guarantees the
+# collapsed form only ever applies to media URLs (never to arbitrary text
+# that happens to repeat a host). ``re.sub(..., r"\\1", text)`` keeps the
+# first copy and drops the duplicate.
+_DUPLICATED_BASE_RE = re.compile(
+    r"(https?://[A-Za-z0-9._~-]+(?::\d+)?(?:/[A-Za-z0-9._~-]+)*)"
+    r"\1(?=/api/media/)"
+)
 
 
 def sanitize_suffix(filename: str) -> str:
@@ -74,7 +95,7 @@ def media_url(context, filename: str) -> str:
     the relative ``/api/media/...`` path when no base URL is configured
     (local/dev/tests).
     """
-    rel = f"/api/media/{context.project_id}/{context.conversation_id}/{filename}"
+    rel = f"{_MEDIA_MARKER}{context.project_id}/{context.conversation_id}/{filename}"
     base = getattr(context, "app_base_url", "") or ""
     base = base.rstrip("/")
     if not base.startswith(("http://", "https://")):
@@ -84,3 +105,22 @@ def media_url(context, filename: str) -> str:
     if root and not base.endswith(f"/{root}"):
         base = f"{base}/{root}"
     return f"{base}{rel}"
+
+
+def normalize_media_urls(text: str) -> str:
+    """Collapse duplicated base URLs in *text* around /api/media/ links.
+
+    The tool layer emits complete absolute URLs (``media_url``), but an LLM
+    may still treat one as a relative path and prepend a base again, producing
+    ``https://host/agenthttps://host/agent/api/media/...``. This rewrites any
+    media URL whose base is duplicated directly before the ``/api/media/``
+    marker to the single canonical form. Non-media URLs and already-correct
+    URLs pass through untouched.
+
+    Applied at the API persistence layer (keeps conversation history clean so
+    later turns never see the corrupted form) and at the frontend render layer
+    (fixes already-persisted messages live).
+    """
+    if not text or _MEDIA_MARKER not in text:
+        return text
+    return _DUPLICATED_BASE_RE.sub(r"\1", text)

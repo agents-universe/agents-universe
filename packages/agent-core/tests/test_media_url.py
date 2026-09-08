@@ -1,7 +1,7 @@
 """Tests for the shared media URL helper (_media.media_url)."""
 from __future__ import annotations
 
-from agent_core.tools._media import media_url, media_type_for, sanitize_suffix
+from agent_core.tools._media import media_url, media_type_for, normalize_media_urls, sanitize_suffix
 from agent_core.tools.base import ToolContext
 
 
@@ -80,3 +80,60 @@ def test_media_url_ignores_non_http_base():
     ctx = make_context(app_base_url="localhost:8000")
     url = media_url(ctx, "f.txt")
     assert url == "/api/media/proj/conv/f.txt"
+
+
+# --- normalize_media_urls --------------------------------------------------
+
+
+def test_normalize_no_media_url_passthrough():
+    assert normalize_media_urls("plain text with no links") == "plain text with no links"
+
+
+def test_normalize_correct_url_passthrough():
+    url = "https://app.example.com/agent/api/media/p/c/code_123.pptx"
+    assert normalize_media_urls(f"Download: {url}") == f"Download: {url}"
+
+
+def test_normalize_duplicated_base_collapses():
+    bad = "https://app.example.com/agenthttps://app.example.com/agent/api/media/p/c/code_123.pptx"
+    good = "https://app.example.com/agent/api/media/p/c/code_123.pptx"
+    assert normalize_media_urls(f"here: {bad}") == f"here: {good}"
+
+
+def test_normalize_duplicated_base_no_subpath_collapses():
+    bad = "https://example.comhttps://example.com/api/media/p/c/f.txt"
+    good = "https://example.com/api/media/p/c/f.txt"
+    assert normalize_media_urls(bad) == good
+
+
+def test_normalize_duplicated_base_in_sentence():
+    text = (
+        "PPT 下载：https://app.example.com/agent"
+        "https://app.example.com/agent/api/media/p/c/code_123.pptx"
+        "（也可在右侧下载）"
+    )
+    out = normalize_media_urls(text)
+    assert "https://app.example.com/agent/api/media/p/c/code_123.pptx" in out
+    assert out.count("https://app.example.com/agent") == 1
+
+
+def test_normalize_multiple_urls():
+    bad1 = "https://h.comhttps://h.com/api/media/p/c/a.pptx"
+    bad2 = "https://h.comhttps://h.com/api/media/p/c/b.xlsx"
+    out = normalize_media_urls(f"{bad1} and {bad2}")
+    assert out == (
+        "https://h.com/api/media/p/c/a.pptx and https://h.com/api/media/p/c/b.xlsx"
+    )
+
+
+def test_normalize_does_not_touch_nonmedia_duplicate():
+    # A normal duplicated-looking prefix (e.g. a copied host) that does not
+    # lead into /api/media/ is left alone — only media URLs are canonicalized.
+    text = "see https://example.comhttps://example.com for details"
+    assert normalize_media_urls(text) == text
+
+
+def test_normalize_different_host_not_touched():
+    # The second URL has a different host; no duplication to collapse.
+    text = "https://a.example/api/media/p/c/f.txt and https://b.example/api/media/p/c/g.txt"
+    assert normalize_media_urls(text) == text

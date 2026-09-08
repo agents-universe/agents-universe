@@ -102,7 +102,7 @@ doc = SimpleDocTemplate(path, pagesize=A4, onFirstPage=footer, onLaterPages=foot
 
 ## Rule 7 — Output & Verify
 
-- Save to `os.path.join(os.environ["OUTPUT_DIR"], "document.pdf")` — auto-delivered as a `/api/media/` download link.
+- Save to `os.path.join(os.environ["OUTPUT_DIR"], "document.pdf")` — auto-delivered as a complete absolute `/api/media/` download URL (host + deployment sub-path already included; quote it verbatim, never prepend a base URL).
 - **Verify before delivering**: reopen with `pypdf` and assert the file is a valid PDF, non-empty, and has the expected page count; print the page count and first-page text snippet to stdout:
 
 ```python
@@ -118,4 +118,4 @@ print("first page head:", (r.pages[0].extract_text() or "")[:120])
 
 ## Output Requirements
 
-Deliver the `/api/media/` link, a section outline, data sources used, and assumptions flagged `[inferred]`. State the CID-font no-bold limitation in the reply only when the runtime lacks a CJK TTF and the design relies on weight contrast.
+Deliver the download link — copy the complete absolute URL from the tool result verbatim (never prepend a host, base URL, or `/agent` sub-path, never rewrite it as a relative path) — plus a section outline, data sources used, and assumptions flagged `[inferred]`. State the CID-font no-bold limitation in the reply only when the runtime lacks a CJK TTF and the design relies on weight contrast.

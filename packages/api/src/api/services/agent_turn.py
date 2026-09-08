@@ -1707,6 +1707,7 @@ async def _persist_assistant_message(
     import uuid as _uuid
     from sqlalchemy import func, select, update
     from api.models.conversation import Conversation, Message as DbMessage
+    from agent_core.tools._media import normalize_media_urls
 
     await db.execute(
         select(Conversation.conversation_id)
@@ -1734,6 +1735,11 @@ async def _persist_assistant_message(
         # survives reloads — the live error bubble is client-only.
         refs["error"] = True
     knowledge_refs_json = _json.dumps(refs) if refs else None
+    # Collapse any duplicated base URL the LLM may have prepended to a media
+    # link (tool URLs are already absolute). Keeps conversation history clean
+    # so later turns never see the corrupted form.
+    content = normalize_media_urls(content or "")
+
     msg = DbMessage(
         message_id=message_id or str(_uuid.uuid4()),
         conversation_id=conversation_id,

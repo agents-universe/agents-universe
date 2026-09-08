@@ -54,7 +54,7 @@ ax.plot(x, y)
 plt.savefig(os.path.join(out, "output_0.png"), dpi=150, bbox_inches="tight")
 ```
 
-Multiple figures → `output_0.png`, `output_1.png`, … The tool result returns the `/api/media/` URLs — include them in your reply.
+Multiple figures → `output_0.png`, `output_1.png`, … The tool result returns the complete absolute download URLs — quote them **verbatim** in your reply; never prepend a host, base URL, or `/agent` sub-path, and never rewrite them as relative paths.
 
 ## Rule 3 — CJK Font Handling
 
@@ -82,4 +82,4 @@ ER diagrams, pipeline DAGs, flowcharts → `chart_renderer(code="<mermaid source
 
 ## Output Requirements
 
-Every chart ships with: title, labeled axes with units, legend (if multi-series), source/window footnote, and a one-line "how to read this" takeaway. Chart images are displayed to the user automatically - never embed `![](/api/media/...)` markdown or repeat Mermaid source in the reply.
+Every chart ships with: title, labeled axes with units, legend (if multi-series), source/window footnote, and a one-line "how to read this" takeaway. Chart images are displayed to the user automatically - never embed image markdown in the reply, never repeat Mermaid source, and never write `/api/media/...` URLs into your reply unless they are the complete absolute URLs quoted verbatim from the tool result.

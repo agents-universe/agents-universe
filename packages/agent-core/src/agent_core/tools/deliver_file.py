@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ._media import media_type_for, sanitize_suffix
+from ._media import media_type_for, media_url, sanitize_suffix
 from .base import Tool, ToolContext
 
 
@@ -66,7 +66,7 @@ class DeliverFileTool(Tool):
 
         record = {
             "id": uuid.uuid4().hex[:8],
-            "url": f"/api/media/{context.project_id}/{context.conversation_id}/{dest.name}",
+            "url": media_url(context, dest.name),
             "name": src.name[:255],
             "media_type": media_type_for(src.name),
             "size": dest.stat().st_size,

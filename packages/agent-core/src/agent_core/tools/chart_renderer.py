@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ._media import media_url
 from .base import Tool, ToolContext
 
 _log = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ class ChartRendererTool(Tool):
             filename = f"mermaid_{uuid.uuid4().hex[:8]}.png"
             output_path = media_dir / filename
             await page.screenshot(path=str(output_path), full_page=True)
-            url = f"/api/media/{context.project_id}/{context.conversation_id}/{filename}"
+            url = media_url(context, filename)
             return {
                 "success": True,
                 "width": rendered["width"],

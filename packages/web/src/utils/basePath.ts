@@ -16,5 +16,9 @@ export function withBase(path: string): string {
 }
 
 export function withApi(path: string): string {
+  // Tool-produced media URLs may already be absolute (APP_BASE_URL injected
+  // server-side so the agent can quote a working download address). Prefixing
+  // again would produce apiBase + 'https://...' and break the link.
+  if (/^https?:\/\//.test(path)) return path
   return `${apiBase}${path}`
 }

@@ -72,6 +72,8 @@ class ToolContext:
         upload_file_lookup: Callable[[str], bytes | None] | None = None,
         upload_file_names: Callable[[], list[str]] | None = None,
         db_session_factory: Callable[[], Any] | None = None,
+        app_base_url: str = "",
+        app_root_path: str = "",
     ) -> None:
         self.project_id = project_id
         self.project_fs_path = project_fs_path
@@ -89,6 +91,14 @@ class ToolContext:
         self.framework_root = framework_root
         self.secret_key = secret_key
         self.session_memories: list[dict] = session_memories if session_memories is not None else []
+        # Public app base URL (e.g. https://agent.agents-universe.com). Injected
+        # by the API layer from APP_BASE_URL so tools can emit fully-qualified
+        # media URLs the LLM can quote as working download addresses. Empty in
+        # local/dev/tests → tools fall back to relative /api/media paths.
+        self.app_base_url = app_base_url or ""
+        # Deployment sub-path (e.g. /agent) from APP_ROOT_PATH, appended to
+        # app_base_url when the browser must hit https://host/agent/api/....
+        self.app_root_path = app_root_path or ""
         # Whether this run may pause for human interaction. False for headless
         # runs (published agents) — confirmation prompts must degrade to a
         # readable error instead of blocking on an answer nobody can give.

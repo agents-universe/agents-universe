@@ -180,8 +180,12 @@ async def test_dependent_task_waits_for_dependency():
 
     await session.stop_drainer()
 
-    assert start_times["Task a"] < 0.05, f"A should start immediately, got {start_times['Task a']:.3f}"
-    assert start_times["Task b"] >= 0.09, f"B should start after A completes, got {start_times['Task b']:.3f}"
+    # B must not start until A's 0.1s execute returns. The bound is relative to
+    # A: measuring either start against `start` also counts dispatch overhead
+    # (0.16s on a loaded CI runner), which is not what this test is about.
+    assert start_times["Task b"] - start_times["Task a"] >= 0.09, (
+        f"B should start after A completes: a={start_times['Task a']:.3f}, b={start_times['Task b']:.3f}"
+    )
 
 
 @pytest.mark.asyncio

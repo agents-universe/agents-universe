@@ -1,6 +1,9 @@
 """Tests for the shared media URL helper (_media.media_url)."""
 from __future__ import annotations
 
+import mimetypes
+from unittest.mock import patch
+
 from agent_core.tools._media import media_url, media_type_for, normalize_media_urls, sanitize_suffix
 from agent_core.tools.base import ToolContext
 
@@ -27,7 +30,14 @@ def test_sanitize_suffix():
 def test_media_type_for():
     assert media_type_for("report.csv") == "text/csv"
     assert media_type_for("doc.pdf") == "application/pdf"
-    assert media_type_for("unknown.xyz") == "application/octet-stream"
+    assert media_type_for("photo.png") == "image/png"
+    # The octet-stream fallback fires only when mimetypes knows nothing about
+    # the suffix. Hosts disagree on what "unknown" means — Linux mime.types
+    # registers .xyz as chemical/x-xyz while Python's builtin table does not —
+    # so stub the lookup rather than pick a suffix that is merely unregistered
+    # on this machine.
+    with patch.object(mimetypes, "guess_type", return_value=(None, None)):
+        assert media_type_for("unknown.xyz") == "application/octet-stream"
 
 
 def test_media_url_relative_fallback_when_no_base():

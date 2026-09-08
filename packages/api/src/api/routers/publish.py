@@ -229,6 +229,10 @@ async def create_publish(
         "description": publish.description,
         "page_enabled": publish.page_enabled,
         "api_enabled": publish.api_enabled,
+        # Same shape as GET/list — the UI prepends this row and renders its
+        # date chip straight away, without a reload.
+        "created_at": publish.created_at.isoformat(),
+        "updated_at": publish.updated_at.isoformat() if publish.updated_at else None,
     }
 
 
@@ -317,11 +321,16 @@ async def create_publish_key(
     db.add(key)
     await db.commit()
     # The ONLY time the plaintext is returned — shown once, then discarded.
+    # The rest mirrors the list shape so the UI can render the new row
+    # (active badge, date) without a reload.
     return {
         "key_id": str(key.key_id),
         "name": key.name,
         "key": plaintext,
         "key_hint": key.key_hint,
+        "is_active": key.is_active,
+        "created_at": key.created_at.isoformat(),
+        "revoked_at": key.revoked_at.isoformat() if key.revoked_at else None,
     }
 
 
@@ -403,19 +412,26 @@ async def publish_stream(
     # Pin the caller's thread to a dedicated conversation so multi-turn
     # agents keep their history across calls — one conversation per
     # (publish, thread_id), never shared across threads or publishes.
-    thread_suffix = body.thread_id or "default"
-    conversation = await get_or_create_publish_conversation(
-        db, publish,
-        thread_id=thread_suffix,
-        title=f"发布会话: {publish.agent_slug}/{thread_suffix}",
-    )
+    #
+    # The slot acquired above is handed to the run task only once this block
+    # succeeds, so any failure or client disconnect in it must release the
+    # slot — otherwise a leaked permit permanently shrinks the global cap.
+    try:
+        thread_suffix = body.thread_id or "default"
+        conversation = await get_or_create_publish_conversation(
+            db, publish,
+            thread_id=thread_suffix,
+            title=f"发布会话: {publish.agent_slug}/{thread_suffix}",
+        )
 
-    # Claim the turn so a second concurrent stream on the same conversation
-    # fails fast instead of interleaving two runs.
-    from api.websocket.manager import manager
-    if not await manager.claim_turn(conversation):
+        # Claim the turn so a second concurrent stream on the same conversation
+        # fails fast instead of interleaving two runs.
+        from api.websocket.manager import manager
+        if not await manager.claim_turn(conversation):
+            raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+    except BaseException:
         _publish_semaphore.release()
-        raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+        raise
 
     # SSE paths never open a WS, so no abort event exists (WS turns get one
     # from connect()). Without it, run_turn's abort watcher is never created
@@ -728,14 +744,19 @@ async def post_publish_session_run(
     except asyncio.TimeoutError:
         raise HTTPException(status_code=429, detail="Too many concurrent runs")
 
-    conversation = await get_or_create_publish_conversation(
-        db, publish, viewer_id=current_user.user_id
-    )
-    from api.websocket.manager import manager
+    # Same slot-ownership rule as publish_stream: release on any failure or
+    # cancellation before the run task takes over the permit.
+    try:
+        conversation = await get_or_create_publish_conversation(
+            db, publish, viewer_id=current_user.user_id
+        )
+        from api.websocket.manager import manager
 
-    if not await manager.claim_turn(conversation):
+        if not await manager.claim_turn(conversation):
+            raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+    except BaseException:
         _publish_semaphore.release()
-        raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+        raise
 
     # Same abort-event guarantee as the API-key stream: SSE never connects a
     # WS, so the event (and with it run_turn's abort watcher) must exist

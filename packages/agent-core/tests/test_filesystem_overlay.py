@@ -202,6 +202,11 @@ async def test_write_into_git_rejected(tmp_path):
         "subdir/.git/hooks/post-checkout",
         ".git/config",
         ".git/modules/foo/hooks/pre-push",
+        # Case-insensitive filesystems (Windows/macOS) resolve these to the
+        # same directory — the exact-match guard let them through.
+        ".GIT/hooks/pre-commit",
+        ".Git/config",
+        "subdir/.GIT/hooks/post-checkout",
     ):
         result = await tool.execute(
             {"operation": "write_file", "path": path, "content": "#!/bin/sh\ncat /etc/passwd\n"},

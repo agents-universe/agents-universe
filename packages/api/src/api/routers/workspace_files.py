@@ -20,7 +20,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from agent_core.paths import PathEscapeError, resolve_within
+from agent_core.paths import PathEscapeError, canonical, resolve_within
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
 from api.models.project import Project
@@ -59,6 +59,10 @@ def _list_entries(base: Path, target: Path) -> list[dict]:
     shows only user-facing project content.
     """
     entries = []
+    # target is canonical (resolve_within realpaths it), so the base must be
+    # too — otherwise relative_to() raises when PROJECTS_ROOT is a symlink
+    # (common with container/bind mounts) and every listing 500s.
+    base = Path(canonical(base))
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
         if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
             continue
@@ -154,7 +158,8 @@ async def write_workspace_file(
     if await asyncio.to_thread(target.is_dir):
         raise HTTPException(status_code=400, detail="Path is a directory")
 
-    rel = target.relative_to(Path(project_fs))
+    # Same canonicalization as _list_entries: target is realpath'd.
+    rel = target.relative_to(Path(canonical(project_fs)))
     # Writes into .git (hooks, config) are refused — same rule as the
     # agent-side filesystem tool: git executes those files unvalidated later.
     if ".git" in rel.parts:

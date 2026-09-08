@@ -90,13 +90,20 @@ class ConnectionManager:
         Session, abort event and session memories are **kept** when an agent
         is still running, so that a reconnected WS can resume receiving
         events and the user can still abort.  They are cleaned up only when
-        no session is active.
+        no turn is in flight.
         """
         async with self._lock:
             if ws is not None and self._connections.get(conversation_id) is not ws:
                 return  # a newer socket has already replaced this one
             self._connections.pop(conversation_id, None)
-            if conversation_id not in self._sessions:
+            # A claimed turn has not registered its session yet (history-load
+            # window), but it IS running: run_turn wires its abort watcher to
+            # this very event. Popping it here would leave Stop setting a
+            # fresh event nobody waits on.
+            if (
+                conversation_id not in self._sessions
+                and conversation_id not in self._claimed_turns
+            ):
                 self._abort_events.pop(conversation_id, None)
                 self._session_memories.pop(conversation_id, None)
 

@@ -276,7 +276,11 @@ function handleSubmit(payload: { content: string; config_id?: string; attachment
     convStore.registerInjectedMessage(optimisticId, payload.content)
   }
 
-  convStore.setTurnAgent(turnAgentSlug, props.conversationId)
+  // An injection cannot switch agents — the running agent owns the turn — so
+  // it must not re-stamp the attribution either: doing so dropped the
+  // @-mention label from the status line and stamped the turn's final
+  // assistant message with the default agent instead of the mentioned one.
+  if (!isInjection) convStore.setTurnAgent(turnAgentSlug, props.conversationId)
 
   const sent = send({
     type: 'message',

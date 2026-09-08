@@ -97,7 +97,7 @@
               v-if="running"
               type="button"
               class="publish-abort"
-              :disabled="sending"
+              :disabled="aborting"
               @click="abort"
               :title="t('publishPage.abort')"
             >
@@ -143,6 +143,7 @@ const messages = ref<Awaited<ReturnType<typeof publishApi.getSessionMessages>>>(
 const draft = ref('')
 const sending = ref(false)
 const running = ref(false)
+const aborting = ref(false)
 const streamingText = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
 const composerEl = ref<HTMLTextAreaElement | null>(null)
@@ -276,11 +277,20 @@ async function submit() {
   }
 }
 
-function abort() {
+async function abort() {
   // The run call is a single fetch that resolves when the SSE closes; a
   // signal-based abort needs an AbortController. Fire the dedicated abort
   // endpoint, which stops the server turn; the stream then unwinds.
-  void publishApi.abortSession(publishId.value, token.value).catch(() => undefined)
+  if (aborting.value) return
+  aborting.value = true
+  try {
+    await publishApi.abortSession(publishId.value, token.value)
+  } catch {
+    // The run still unwinds when the stream closes; a failed abort call must
+    // not wedge the button in its disabled state.
+  } finally {
+    aborting.value = false
+  }
 }
 
 function scrollToBottom() {

@@ -14,6 +14,7 @@ from agent_core.sandbox import (
     GUARD_DIR,
     python_guard_env,
     spawn_in_new_session,
+    split_logical_lines,
     terminate_process_tree,
     validate_command,
 )
@@ -210,6 +211,13 @@ ALLOWED = [
     # s///w with a bare-letter filename (we) — `e` is the filename, not the
     # e flag; only `ew` (e flag + w flag) executes the shell:
     "sed 's/foo/bar/we' f.txt",
+    # Newlines separate commands; these are all in-project and must still pass:
+    "git status\nls",
+    "npm run build\nnpm test",
+    "ls \\\n  -la",                       # backslash-newline continuation
+    'git commit -m "line1\nline2"',       # quoted string spanning lines
+    "cat <<EOF\nhello world\nEOF",        # heredoc body is stdin data
+    "python3 - <<'PY'\nprint(1)\nPY",
 ]
 
 DENIED = [
@@ -330,6 +338,13 @@ DENIED = [
     # previous segment's data-argument list):
     "(echo hi); cat ../proj-b/secret.txt",
     "(echo hi);cat ../proj-b/secret.txt",
+    # A newline separates commands in the shell but not for shlex: the second
+    # line used to be read as arguments of the first line's command, so
+    # `echo ok` / `ls` data-argument rules skipped every check on it.
+    "echo ok\ncat /etc/passwd",
+    "echo ok\ncat ../proj-b/secret.txt",
+    "echo ok\ncat ~/x",
+    "ls\ncat sub/../../proj-b/secret.txt",
 ]
 
 
@@ -341,6 +356,26 @@ def test_validate_command_allows(command, tmp_path):
 @pytest.mark.parametrize("command", DENIED)
 def test_validate_command_denies(command, tmp_path):
     assert validate_command(command, cwd=tmp_path, project_root=tmp_path) is not None
+
+
+def test_split_logical_lines_newline_is_a_separator():
+    assert split_logical_lines("ls\nrm -rf x") == [("ls", False), ("rm -rf x", False)]
+
+
+def test_split_logical_lines_joins_open_quotes_and_continuations():
+    # A quoted string may span lines; a trailing backslash joins the next line.
+    assert split_logical_lines('echo "a\nb"') == [('echo "a\nb"', False)]
+    assert split_logical_lines("ls \\\n  -la") == [("ls \\\n  -la", False)]
+
+
+def test_split_logical_lines_flags_heredoc_body():
+    lines = split_logical_lines("cat <<EOF\nbody $(x)\nEOF\nls")
+    assert lines == [
+        ("cat <<EOF", False),
+        ("body $(x)", True),
+        ("EOF", True),
+        ("ls", False),
+    ]
 
 
 def test_validate_command_denies_absolute_path_to_sibling(tmp_path):

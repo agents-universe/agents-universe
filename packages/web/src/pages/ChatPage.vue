@@ -201,6 +201,11 @@ function handleNewConversation() {
   closeAllConnections()
   convStore.reset()
   invalidateLatestConversation()
+  // The in-flight load is now abandoned: its `finally` skips the reset on the
+  // seq mismatch, so clear the flag here. Otherwise startChat() below bails
+  // on `loading` and the empty state spins forever with no conversation.
+  loading.value = false
+  loadError.value = null
   pendingNew = true
   pendingNewPid = projectId.value
   maybeAutoStartChat()

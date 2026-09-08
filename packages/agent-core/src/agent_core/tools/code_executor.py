@@ -23,6 +23,7 @@ from ..sandbox import (
     _check_all_substitutions,
     _check_assignment,
     _dollar_vars,
+    _find_heredoc_start,
     _skip_subst_parens,
     has_unclosed_quote,
     python_guard_env,
@@ -52,215 +53,6 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # to an unvalidated absolute path. Optional single-letter flags are consumed
 # (`declare -p`, `readonly -a`).
 _ASSIGN_PREFIX_RE = re.compile(r"^(?:export|local|declare|typeset|readonly)(?:\s+-[A-Za-z]+)*\s+")
-# Arithmetic expansion regions ($((...)), $[...], and a leading ((...))
-# use << as the bit-shift operator — the scanner must skip them or
-# `echo $((1 << 2))` would open a bogus heredoc whose "body" swallows the
-# following lines un-validated. Parens nest inside arithmetic, so the region
-# closes at the first `))` that empties the depth.
-def _skip_arith_parens(line: str, start: int) -> int | None:
-    depth = 2
-    n = len(line)
-    j = start
-    while j < n:
-        if line[j] == "(":
-            depth += 1
-        elif line[j] == ")":
-            depth -= 1
-            if depth == 0:
-                return j
-        j += 1
-    return None
-
-
-def _at_command_start(line: str, i: int) -> bool:
-    """True when *i* starts a command: line start, after ; & | ( {, or after
-    a control keyword (if/while/...)."""
-    j = i - 1
-    while j >= 0 and line[j] in " \t":
-        j -= 1
-    if j < 0 or line[j] in ";&|({!":
-        return True
-    # `if (( 1 << 2 )); then` — the arithmetic follows a control keyword,
-    # not a separator. Any other word glued to `((` is a bash syntax error,
-    # so the keyword whitelist only narrows the skip.
-    if line[j].isalnum() or line[j] == "_":
-        start = j
-        while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
-            start -= 1
-        return line[start : j + 1] in _CMD_KEYWORDS
-    return False
-
-
-# Control keywords that introduce a command (see _at_command_start).
-_CMD_KEYWORDS = frozenset({"if", "elif", "then", "else", "while", "until", "for", "do"})
-
-
-def _skip_braced(line: str, start: int) -> int | None:
-    """Index of the `}` closing a ${...} region opened at *start* (points
-    past the `${`). Nested braces (`${x:-${y}}`) count depth; a `}` inside a
-    quoted string does not close the region. `$(...)`, `$((...))` and
-    backticks inside the region are skipped whole — bash's parameter parser
-    does not treat a `}` inside them as the closing brace (`${x:-$(echo a})}`
-    closes at the FINAL `}`). Returns None when never closed — the line is a
-    bash syntax error and opens no heredoc.
-    """
-    depth = 1
-    n = len(line)
-    j = start
-    while j < n:
-        c = line[j]
-        if c == "\\" and j + 1 < n:
-            j += 2
-            continue
-        if c == "$" and j + 1 < n:
-            if j + 2 < n and line[j + 1] == "(" and line[j + 2] == "(":
-                end = _skip_arith_parens(line, j + 3)
-                if end is None:
-                    return None
-                j = end + 1
-                continue
-            if line[j + 1] == "(":
-                end = _skip_subst_parens(line, j + 2)
-                if end is None:
-                    return None
-                j = end + 1
-                continue
-        if c == "`":
-            end = line.find("`", j + 1)
-            if end == -1:
-                return None
-            j = end + 1
-            continue
-        if c in ("'", '"'):
-            q = c
-            j += 1
-            while j < n:
-                if q == '"' and line[j] == "\\" and j + 1 < n and line[j + 1] in ('"', "\\"):
-                    j += 2
-                    continue
-                if line[j] == q:
-                    break
-                j += 1
-            j += 1
-            continue
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return j
-        j += 1
-    return None
-
-
-# Heredoc opener: `<<EOF` (unquoted → bash performs command substitution in
-# the body) vs `<<'EOF'` / `<<"EOF"` (quoted → literal body). Group 1 captures
-# the quote character, group 2 the delimiter.
-def _find_heredoc_start(line: str) -> tuple[str, bool] | None:
-    """Return (delimiter, quoted) when *line* opens a heredoc outside quotes.
-
-    Scans the raw line tracking quote state, so a `<<EOF` inside a quoted
-    string (`echo "x <<EOF"`) is not detected and the following lines are
-    still validated as commands. Handles `<< EOF`, `<<EOF`, `<<"EOF"`,
-    `<<'EOF'` and the `<<-` tab-stripping form; `<<<` herestrings are not
-    heredocs. Returns None when the line opens no heredoc.
-    """
-    i, n = 0, len(line)
-    while i < n:
-        ch = line[i]
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
-            while i < n:
-                c = line[i]
-                # \" does not close a double-quoted string
-                if quote == '"' and c == "\\" and i + 1 < n and line[i + 1] in ('"', "\\"):
-                    i += 2
-                    continue
-                if c == quote:
-                    i += 1
-                    break
-                i += 1
-            continue
-        if ch == "\\" and i + 1 < n:
-            i += 2  # an escaped char cannot start a heredoc
-            continue
-        if ch == "$" and i + 1 < n:
-            if line[i + 1] == "{":
-                # ${...} may hold arithmetic in array subscripts
-                # (`${arr[1 << 2]}`) — a << inside must not open a heredoc.
-                end = _skip_braced(line, i + 2)
-                if end is None:
-                    return None  # unclosed ${ — syntax error, no heredoc
-                i = end + 1
-                continue
-            if line[i + 1] == "[":
-                end = line.find("]", i + 2)
-                if end == -1:
-                    return None  # unclosed $[ — syntax error, no heredoc here
-                i = end + 1
-                continue
-            if line[i + 1] == "(" and i + 2 < n and line[i + 2] == "(":
-                end = _skip_arith_parens(line, i + 3)
-                if end is None:
-                    return None  # unclosed $(( — syntax error, no heredoc here
-                i = end + 1
-                continue
-        if ch == "(" and i + 1 < n and line[i + 1] == "(" and _at_command_start(line, i):
-            end = _skip_arith_parens(line, i + 2)
-            if end is None:
-                return None  # unclosed (( — syntax error, no heredoc here
-            i = end + 1
-            continue
-        if ch == "<" and i + 1 < n and line[i + 1] == "<":
-            j = i + 2
-            if j < n and line[j] == "<":
-                i = j + 1  # <<< herestring — not a heredoc
-                continue
-            if j < n and line[j] == "-":
-                j += 1
-            while j < n and line[j] in " \t":
-                j += 1
-            if j >= n:
-                return None
-            if line[j] in ("'", '"'):
-                q = line[j]
-                end = line.find(q, j + 1)
-                if end == -1:
-                    return None
-                # Fail closed: bash performs quote removal on the delimiter,
-                # so anything after the closing quote (`<<"EO"F`) makes the
-                # real delimiter ambiguous. Treat it as not-a-heredoc and
-                # validate the following lines as ordinary commands.
-                rest = line[end + 1:].lstrip(" \t")
-                if rest and rest[0] not in ";|&<>":
-                    return None
-                return line[j + 1:end], True
-            if line[j] == "\\":
-                # \EOF is a quoted delimiter (bash treats the body literally,
-                # same as <<'EOF') — return quoted=True so substitution
-                # payloads in the body are NOT treated as live commands.
-                # Fail closed: bash also performs quote removal on this form
-                # (`<<\EO\F` is delimiter EOF), so a delimiter still holding
-                # backslashes/quotes after the first one cannot be matched
-                # reliably — return None and validate every following line
-                # as an ordinary command.
-                j += 1
-                start = j
-                while j < n and line[j] not in " \t;|&<>":
-                    j += 1
-                delim = line[start:j]
-                if j == start or "\\" in delim or "'" in delim or '"' in delim:
-                    return None
-                return delim, True
-            start = j
-            while j < n and line[j] not in " \t;|&<>":
-                j += 1
-            if j == start:
-                return None
-            return line[start:j], False
-        i += 1
-    return None
 # Command substitution payloads: $(...) or backticks. These execute when bash
 # runs the line — they must never appear un-validated in skipped regions
 # (unquoted heredoc bodies, assignment values).
@@ -350,6 +142,14 @@ class CodeExecutorTool(Tool):
         code = params["code"]
         language = params.get("language", "python")
 
+        # The JSON-schema enum is advisory — a hand-built tool call can pass
+        # anything. Every guard below is keyed on the exact string, so an
+        # unknown value ("sh", "shell", "Bash") skipped them all and fell
+        # through to the bash branch: arbitrary shell with no blocklist, no
+        # path validation. Reject unknown values instead.
+        if language not in ("python", "python-playwright", "bash"):
+            return {"error": f"Unsupported language {language!r}. Use python, python-playwright or bash."}
+
         if language == "python" and self._BLOCKED_IMPORTS.search(code):
             return {"error": "Code uses a blocked module (subprocess, os.system, etc.). Use the shell tool for commands."}
         if language == "python-playwright" and self._BLOCKED_IMPORTS_PW.search(code):
@@ -404,7 +204,7 @@ class CodeExecutorTool(Tool):
                 # names and file paths.
                 code_file.write_text(code, encoding="utf-8", newline="\n")
                 cmd = [sys.executable, str(code_file)]
-            else:
+            else:  # bash — the only remaining value after the guard above
                 # Bash runs from a script FILE (not `bash -s` via stdin) so the
                 # script's own stdin stays free: a bare `cat`/`read` gets EOF
                 # instead of swallowing the remaining script lines.  The path
@@ -442,7 +242,20 @@ class CodeExecutorTool(Tool):
                 extra.update(python_guard_env(project_cwd, strict=False))
                 if network_mode in ("localhost", "none"):
                     extra["_AGENT_NETWORK_MODE"] = network_mode
+            else:  # bash
+                # Inheriting the real HOME hands the sandbox the host's dotfiles
+                # (.aws/.azure/.ssh), and bash's $HOME is on the
+                # project-internal path whitelist (_SAFE_ENV_PATH_VARS) — that
+                # whitelist is only sound when HOME actually points inside the
+                # project. Point it at the scratch dir, like python does.
+                extra["HOME"] = str(work_dir)
 
+            # Bound before the await: a cancellation delivered while
+            # create_subprocess_exec is still awaiting would otherwise hit the
+            # except handlers with `proc` unbound, replacing the
+            # CancelledError with an UnboundLocalError (the run then could not
+            # be cancelled cleanly).
+            proc: asyncio.subprocess.Process | None = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -460,15 +273,17 @@ class CodeExecutorTool(Tool):
                 timeout = _PW_TIMEOUT if language == "python-playwright" else _TIMEOUT
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
-                terminate_process_tree(proc)
-                await proc.wait()
+                if proc is not None:
+                    terminate_process_tree(proc)
+                    await proc.wait()
                 _log.warning("code_executor timed out after %ds (language=%s)", timeout, language)
                 return {"error": f"Execution timed out after {timeout}s", "exit_code": -1}
             except asyncio.CancelledError:
                 # Task cancelled: kill the child before its finally-rmtree of
                 # work_dir (a live child would hold the script file open).
-                terminate_process_tree(proc)
-                await proc.wait()
+                if proc is not None:
+                    terminate_process_tree(proc)
+                    await proc.wait()
                 raise
             except OSError as exc:
                 _log.warning("code_executor failed to start subprocess: %s", exc)

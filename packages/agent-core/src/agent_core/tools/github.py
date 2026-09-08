@@ -94,12 +94,13 @@ class GitHubTool(Tool):
         except httpx.HTTPStatusError as e:
             body = e.response.text[:500] if e.response else ""
             status = e.response.status_code
-            _log.warning("github %s HTTP %d: %s", operation, status, body[:200])
             # Gateways echo the submitted credential back in error bodies
             # ("Bad credentials: <token>") — the same pattern kong.py
             # redacts. Scrub the resolved token before the body reaches the
-            # LLM/history, then truncate so a masked value is never cut off.
+            # LOG as well as the LLM/history, then truncate so a masked value
+            # is never cut off.
             body = redact_secrets(body, {"git": token})[:500]
+            _log.warning("github %s HTTP %d: %s", operation, status, body[:200])
             hint = ""
             if status == 403:
                 hint = (
@@ -299,15 +300,21 @@ class GitHubTool(Tool):
         # queued/waiting/pending check-runs have conclusion=None
         # and were previously counted as passing — the agent would merge a PR
         # whose CI hadn't even started. A check passes only when it has
-        # COMPLETED with a success/skipped conclusion; a failed statuses API
-        # call (combined_state None) must not read as passing either.
-        all_passing = (
-            combined_state == "success"
-            and all(
-                c["status"] == "completed" and c["conclusion"] in ("success", "skipped")
-                for c in check_runs
-            )
+        # COMPLETED with a success/skipped conclusion.
+        checks_passing = all(
+            c["status"] == "completed" and c["conclusion"] in ("success", "skipped")
+            for c in check_runs
         )
+        # The legacy Commit Status API reports "pending" for a commit with zero
+        # statuses — the shape of every repo that only uses GitHub Actions. Requiring
+        # combined_state == "success" therefore pinned all_passing to False even with
+        # every check-run green. "No legacy statuses" is neutral; a failed statuses
+        # API call (combined_state None) and a repo with no CI at all still fail
+        # closed.
+        legacy_ok = combined_state == "success" or (
+            combined_state == "pending" and not statuses
+        )
+        all_passing = bool(check_runs or statuses) and checks_passing and legacy_ok
 
         return {
             "repository": repo,

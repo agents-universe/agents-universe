@@ -493,6 +493,32 @@ async def test_commit_clean_exact_paths_succeeds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_commit_accepts_leading_dot_slash_paths(tmp_path):
+    """`./target.py` is a valid git pathspec but never appears in
+    `git diff --name-only` output — the selection check compared the raw form
+    against "target.py" and blocked the commit as "staged changes exceed
+    selected paths"."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+
+    (checkout / "target.py").write_text("print('hello')")
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    result = await tool.execute(
+        {
+            "operation": "commit",
+            "repository_path": "repos/repo",
+            "paths": ["./target.py"],
+            "message": "add target",
+        },
+        ctx,
+    )
+    assert result.get("status") == "committed", result
+    assert result["files"] == ["target.py"]
+
+
+@pytest.mark.asyncio
 async def test_commit_requires_paths(tmp_path):
     bare = _make_bare_remote(tmp_path)
     checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")

@@ -354,11 +354,30 @@ def _dotted(node) -> str:
     return _chain_text(node) or _node_text(node).replace(" ", "")
 
 
+def _import_items(node) -> list:
+    """Name nodes of a Python import statement.
+
+    tree-sitter fields only the FIRST name, so `import os, sys` must be read
+    from the child list — child_by_field_name("name") returned just `os`.
+    In a from-import the module sits before the `import` keyword, which
+    separates it from the imported names.
+    """
+    children = node.children
+    start = 0
+    for i, child in enumerate(children):
+        if child.type == "import":
+            start = i + 1
+            break
+    return [
+        child for child in children[start:]
+        if child.type in ("dotted_name", "aliased_import")
+    ]
+
+
 def _parse_imports_python(ctx: _Ctx, node) -> None:
     imports = ctx.result.imports
     if node.type == "import_statement":
-        name_field = node.child_by_field_name("name")
-        for item in _flatten_items(name_field):
+        for item in _import_items(node):
             if item.type == "aliased_import":
                 module = _dotted(item.child_by_field_name("name"))
                 alias_node = item.child_by_field_name("alias")
@@ -369,8 +388,7 @@ def _parse_imports_python(ctx: _Ctx, node) -> None:
     # import_from_statement
     module_node = node.child_by_field_name("module_name")
     module = _dotted(module_node) if module_node is not None else ""
-    name_field = node.child_by_field_name("name")
-    for item in _flatten_items(name_field):
+    for item in _import_items(node):
         if item.type == "aliased_import":
             name = _dotted(item.child_by_field_name("name"))
             alias_node = item.child_by_field_name("alias")

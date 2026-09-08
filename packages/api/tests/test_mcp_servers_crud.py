@@ -151,6 +151,56 @@ async def test_create_stores_options_and_has_secret_flag(client, db):
     assert entry["tool_denylist"] == ["delete_*"]
 
 
+async def test_update_preserves_fields_the_client_omits(client, db):
+    """The settings form sends a subset — an edit must not wipe the rest.
+
+    Regression: _apply_body assigned every column unconditionally, so saving
+    the form cleared the tool allowlist/denylist (options), custom headers and
+    the auth header name.
+    """
+    secret_ref = f"mcp:{_slug()}"
+    resp = await _create(
+        client,
+        auth_type="header",
+        secret_ref=secret_ref,
+        auth_header_name="X-Api-Token",
+        headers={"X-Team": "platform"},
+        options={"tools": {"denylist": ["delete_*"]}},
+    )
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    assert created["auth_header_name"] == "X-Api-Token"
+
+    # Edit the way the UI does: no options / headers / auth_value_template.
+    resp = await client.put(
+        f"/api/mcp/servers/{created['server_id']}",
+        json={
+            "slug": created["slug"],
+            "name": "Renamed",
+            "url": "https://mcp.example.com/mcp",
+            "transport": "auto",
+            "auth_type": "header",
+            "secret_ref": secret_ref,
+            "auth_header_name": "X-Api-Token",
+            "enabled": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert updated["name"] == "Renamed"
+    assert updated["tool_denylist"] == ["delete_*"]
+
+    from sqlalchemy import select
+
+    from api.models.mcp_server import MCPServer
+
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.server_id == updated["server_id"])
+    )
+    row = result.scalar_one()
+    assert row.headers is not None and "X-Team" in row.headers
+
+
 async def test_update_missing_404(client):
     resp = await client.put(
         "/api/mcp/servers/nope",

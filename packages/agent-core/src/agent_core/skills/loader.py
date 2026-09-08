@@ -108,8 +108,15 @@ def load_skills_from_dir(
     pattern = "**/*.md" if recursive else "*.md"
     skills = []
     for md_file in sorted(root.glob(pattern)):
-        if md_file.name.startswith("_"):
-            continue  # skip mixins and private files
+        # Check every path part, not just the file name: mixin fragments live
+        # in a `_mixins/` directory, so a name-only check registered them as
+        # standalone skills.
+        try:
+            rel_parts = md_file.relative_to(root).parts
+        except ValueError:
+            continue
+        if any(part.startswith("_") for part in rel_parts):
+            continue  # skip mixins and private files/dirs
         try:
             skill = load_skill(md_file, mixin_dir=mixin_dir)
             skills.append(skill)

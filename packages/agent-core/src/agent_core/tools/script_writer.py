@@ -290,7 +290,17 @@ class ScriptWriterTool(Tool):
             # expires the ORM instance and reading run_id afterwards raises
             # MissingGreenlet under the async driver.
             run_id = str(run_row.run_id)
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            # Cancellation is not a run failure. Clean up the slot and let it
+            # propagate: returning a result dict here would let a cancelled
+            # turn keep going.
+            try:
+                await context.db_session.rollback()
+            except Exception:
+                pass
+            sem.release()
+            raise
+        except Exception as exc:
             try:
                 await context.db_session.rollback()
             except Exception:

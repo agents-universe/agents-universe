@@ -703,6 +703,8 @@ interface McpServerInfo {
   enabled: boolean
   auth_type: string
   secret_ref: string | null
+  /** Header name for auth_type 'header' (metadata, never the value). */
+  auth_header_name: string | null
   has_secret: boolean
   tool_allowlist: string[]
   tool_denylist: string[]
@@ -736,7 +738,7 @@ function openMcpForm(server?: McpServerInfo) {
   mcpForm.transport = server?.transport ?? 'auto'
   mcpForm.auth_type = server?.auth_type ?? 'none'
   mcpForm.secret_ref = server?.secret_ref ?? ''
-  mcpForm.auth_header_name = ''
+  mcpForm.auth_header_name = server?.auth_header_name ?? ''
   mcpForm.enabled = server?.enabled ?? true
   mcpMessage.text = ''
   showMcpForm.value = true
@@ -1174,6 +1176,10 @@ onMounted(async () => {
   await agentStore.fetchModelConfigs()
   initEditForms()
   loadIntegrationDefaults()
+  // This modal also renders on the standalone /settings/tokens route, where
+  // AppLayout never ran — without an active project the MCP list and the
+  // project-scoped secrets load as empty on a cold visit.
+  await projectStore.ensureCurrentProject()
   loadIntegrationTokens()
   loadMcpServers()
   document.addEventListener('keydown', onKeydown)

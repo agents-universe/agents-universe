@@ -194,6 +194,12 @@ class McpServerSession:
         except TimeoutError:
             await self._cancel()
             raise McpConnectError(f"MCP server {self.slug!r}: connect timeout ({timeout}s)")
+        except BaseException:
+            # Cancelled (turn stopped, discovery gather cancelled): nobody
+            # awaits self._task any more, so it would hold the transport open
+            # for the life of the process. Close it before propagating.
+            await self._cancel()
+            raise
         if self._connect_error:
             raise McpConnectError(f"MCP server {self.slug!r}: {self._connect_error}") from self._connect_error
 
@@ -469,6 +475,11 @@ class McpConnectionManager:
                 # bad server must not abort discovery for the others.
                 _log.warning("MCP server %r: connection failed: %s", slug, exc)
                 return slug, None
+            # Register the moment the connection is live, not after gather():
+            # a cancelled gather throws away every result, and close_all()
+            # only sees what is in _sessions — an unregistered live session
+            # would keep its transport open with nothing left to close it.
+            self._sessions[slug] = session
             return slug, session
 
         results = await asyncio.gather(
@@ -484,7 +495,7 @@ class McpConnectionManager:
             slug, session = entry
             if session is None:
                 continue
-            self._sessions[slug] = session
+            # already registered by _connect_one
 
             # Build proxy tools from discovered tools.
             server_cfg = servers[slug]
@@ -820,6 +831,15 @@ async def attach_mcp_tools(
     # Discover and return tools.
     try:
         return await context.mcp_manager.discover_tools(servers, target_slugs)
+    except asyncio.CancelledError:
+        # The turn was stopped while connecting. agent.run() — whose finally
+        # calls ToolContext.cleanup() — has not started yet, so nothing else
+        # will close the sessions that already connected.
+        try:
+            await context.mcp_manager.close_all()
+        except Exception:
+            _log.debug("MCP close_all during cancellation failed", exc_info=True)
+        raise
     except Exception as exc:
         _log.warning("MCP tool discovery failed: %s", exc)
         return {}

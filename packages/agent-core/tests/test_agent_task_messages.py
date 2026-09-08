@@ -349,6 +349,47 @@ async def test_degrade_request_demotes_knowledge_then_images(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_degrade_demotes_only_enough_knowledge(monkeypatch):
+    """Stage 2 stops as soon as the rebuilt prompt fits.
+
+    Regression: the loop measured messages[0] but rebuilt the system prompt
+    only after the loop, so the measurement never shrank and every loaded
+    file was demoted — one byte over the limit stripped all project knowledge.
+    """
+    import agent_core.agent as agent_module
+    from agent_core.compressor import estimate_request_bytes
+    from agent_core.knowledge.loader import KnowledgeContextResult, KnowledgeEntry
+
+    agent = _make_agent()
+    ctx = KnowledgeContextResult()
+    for slug in ("a/one", "b/two", "c/three"):
+        ctx.loaded_content[slug] = "k" * 9000
+        ctx.loaded_entries.append(KnowledgeEntry(
+            knowledge_id=f"disk:{slug}", slug=slug, title=slug, fs_path="",
+            category="a", cross_references=[], word_count=0,
+        ))
+    agent._project_context = ctx
+
+    messages = [
+        Message(role="system", content=agent._build_system_prompt()),
+        Message(role="user", content="hi"),
+    ]
+    full = estimate_request_bytes(messages, [])
+    # Half a file over: demoting the largest file once is enough to fit.
+    monkeypatch.setattr(agent_module, "MAX_REQUEST_BYTES", full - 4500)
+
+    class _NoStreamProvider:
+        model_name = "test-model"
+        context_window = 128_000
+
+    outcome = await agent._degrade_request(messages, [], _NoStreamProvider())
+
+    assert outcome == "ok"
+    assert len(ctx.loaded_content) == 2, ctx.loaded_content
+    assert len(ctx.overflow_slugs) == 1
+
+
+@pytest.mark.asyncio
 async def test_task_loop_raises_on_over_limit_payload(monkeypatch):
     """An over-limit payload must stop the task with a RuntimeError (never
     reaching the provider) so _run_task's except path emits task_failed and

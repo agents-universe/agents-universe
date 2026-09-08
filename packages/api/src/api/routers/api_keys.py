@@ -22,6 +22,26 @@ router = APIRouter()
 VALID_PROVIDERS = {"anthropic", "openai", "azure_openai", "google_gemini"}
 
 
+def _redact_key(text: str, key: str) -> str:
+    """Scrub the submitted key out of provider error text.
+
+    SDKs echo the credential they rejected ("Incorrect API key provided:
+    sk-..."), and httpx/h11 render an illegal header value as a bytes repr,
+    where a key with a control character appears escaped (\\n, \\xe4). Both
+    forms must be masked before the text is logged.
+    """
+    if not key:
+        return text
+    text = text.replace(key, "[REDACTED]")
+    try:
+        escaped = repr(key.encode("utf-8"))[2:-1]
+    except Exception:
+        escaped = ""
+    if escaped and escaped != key:
+        text = text.replace(escaped, "[REDACTED]")
+    return text
+
+
 class ApiKeyUpsert(BaseModel):
     # None ⇒ keep the existing key ("__keep__" accepted as deprecated alias)
     # bounded to the encrypted_value column (String(4000)): AES-GCM ciphertext
@@ -171,7 +191,11 @@ async def test_api_key(
         else:
             return {"ok": True, "provider": provider, "note": "connectivity test not implemented for this provider"}
     except Exception as exc:
-        logger.error("API key test failed for %s: %s", provider, traceback.format_exc())
+        # The traceback carries the SDK message, which echoes the key.
+        logger.error(
+            "API key test failed for %s: %s",
+            provider, _redact_key(traceback.format_exc(), plain),
+        )
         # The SDK's error message can embed the submitted key value (e.g.
         # OpenAI's "Incorrect API key provided: sk-...") — returning it raw
         # would print the credential back to the client. Never include the

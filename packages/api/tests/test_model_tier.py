@@ -81,6 +81,11 @@ def test_domestic_brand_defaults():
     assert infer_complexity_tier("openai", "glm-5.3-air") == "low"
     assert infer_complexity_tier("openai", "glm-5.2") == "mid"
     assert infer_complexity_tier("openai", "glm-4-air") == "low"
+    # Multi-segment ids must not crash the version parse, and 5.10 ranks
+    # above 5.3 (a float parse would read it as 5.1 and demote the flagship).
+    assert infer_complexity_tier("openai", "glm-5.3.1") == "high"
+    assert infer_complexity_tier("openai", "glm-4.5.2") == "mid"
+    assert infer_complexity_tier("openai", "glm-5.10") == "high"
     assert infer_complexity_tier("openai", "doubao-seed-2.1-pro") == "high"
     assert infer_complexity_tier("openai", "doubao-seed-2.1-turbo") == "low"
     assert infer_complexity_tier("openai", "hunyuan-hy3") == "mid"

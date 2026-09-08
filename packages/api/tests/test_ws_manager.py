@@ -281,6 +281,41 @@ async def test_abort_works_after_reconnect(mgr):
     assert abort_event.is_set()
 
 
+async def test_disconnect_during_claim_window_keeps_abort_event(mgr):
+    """A socket drop between claim_turn() and register_session() must not
+    drop the abort event: the turn is already in flight and run_turn wires
+    its abort watcher to that event, so popping it made Stop a no-op."""
+    ws = _make_ws()
+    await mgr.connect("c1", ws)
+    assert await mgr.claim_turn("c1") is True
+    assert mgr.get_session("c1") is None  # still in the history-load window
+
+    await mgr.disconnect("c1", ws)
+
+    assert "c1" not in mgr._connections
+    event = mgr.get_abort_event("c1")
+    assert event is not None  # watcher can still be wired to it
+    mgr.signal_abort("c1")
+    assert event.is_set()
+
+    # The turn ends with no socket connected -> cleanup resumes as before.
+    mgr.release_turn("c1")
+    mgr.deregister_session("c1")
+    assert "c1" not in mgr._abort_events
+
+
+async def test_disconnect_after_release_turn_cleans_up(mgr):
+    """The claim guard must not keep abort events alive after the turn ends."""
+    ws = _make_ws()
+    await mgr.connect("c1", ws)
+    await mgr.claim_turn("c1")
+    mgr.release_turn("c1")
+
+    await mgr.disconnect("c1", ws)
+
+    assert "c1" not in mgr._abort_events
+
+
 # ── Session memory survives disconnect ─────────────────────────────
 
 async def test_session_memory_survives_disconnect(mgr):

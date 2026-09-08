@@ -940,16 +940,18 @@ async def run_turn(
             # (LLM stream or tool HTTP call) is interrupted immediately.
             # Must be created after agent_task so the closure captures it.
             abort_task: asyncio.Task | None = None
-            abort_event = manager.get_abort_event(conversation_id)
-            if abort_event:
-                async def _watch_abort(_at: asyncio.Task = agent_task) -> None:
-                    try:
-                        await abort_event.wait()
-                        session.abort()
-                        _at.cancel()
-                    except Exception:
-                        _log.debug("Abort watcher exception for %s", conversation_id, exc_info=True)
-                abort_task = asyncio.create_task(_watch_abort())
+            # ensure_ (not get_): if the WS dropped between claim_turn and
+            # register_session, the event was cleaned up and a Stop would
+            # silently do nothing. Every running turn must own a watcher.
+            abort_event = manager.ensure_abort_event(conversation_id)
+            async def _watch_abort(_at: asyncio.Task = agent_task) -> None:
+                try:
+                    await abort_event.wait()
+                    session.abort()
+                    _at.cancel()
+                except Exception:
+                    _log.debug("Abort watcher exception for %s", conversation_id, exc_info=True)
+            abort_task = asyncio.create_task(_watch_abort())
 
             # Wait for agent to finish; CancelledError means user hit Stop.
             _aborted = False
@@ -1302,6 +1304,10 @@ async def _load_history(
             refs = _json.loads(m.knowledge_refs)
         except (ValueError, TypeError):
             continue
+        # A non-dict payload (list/scalar) is as malformed as invalid JSON —
+        # skip it instead of raising AttributeError out of the whole turn.
+        if not isinstance(refs, dict):
+            continue
         if refs.get("images"):
             total_image_turns += 1
     rehydrated_image_turns = 0
@@ -1340,8 +1346,9 @@ async def _load_history(
         if m.role == "tool" and m.knowledge_refs:
             try:
                 refs = _json.loads(m.knowledge_refs)
-                tool_call_id = refs.get("tool_call_id")
-                name = refs.get("tool_name")
+                if isinstance(refs, dict):
+                    tool_call_id = refs.get("tool_call_id")
+                    name = refs.get("tool_name")
             except (ValueError, TypeError):
                 pass
 

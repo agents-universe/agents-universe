@@ -4,6 +4,8 @@ import json
 
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
+
 import pytest
 
 from agent_core.tools.api_request import ApiRequestTool
@@ -267,25 +269,30 @@ async def test_custom_header_with_multi_secret_template():
 async def test_body_field_auth_injects_json_body():
     http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
 
+    params = {
+        "integration_key": "svc",
+        "method": "POST",
+        "path": "/submit",
+        "base_url": "https://api.example.com",
+        "auth_type": "body_field",
+        "auth_field_name": "apiKey",
+        "secret_ref": "svc:key",
+        "secret_scope": "user",
+        "json_body": {"q": 1},
+    }
     with patch("agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value="k-9")):
         result = await _run(
-            {
-                "integration_key": "svc",
-                "method": "POST",
-                "path": "/submit",
-                "base_url": "https://api.example.com",
-                "auth_type": "body_field",
-                "auth_field_name": "apiKey",
-                "secret_ref": "svc:key",
-                "secret_scope": "user",
-                "json_body": {"q": 1},
-            },
+            params,
             http,
             FakeSession(),  # POST → confirmation gate; auto-allow it
         )
 
     assert result["status"] == 200
     assert http.stream.call_args.kwargs["json"] == {"q": 1, "apiKey": "k-9"}
+    # The caller's params dict is the tool_call args: persisted to the DB,
+    # streamed to the UI and replayed into history. Injecting the secret by
+    # aliasing it leaked the plaintext there.
+    assert params["json_body"] == {"q": 1}
 
 
 @pytest.mark.asyncio
@@ -460,3 +467,38 @@ async def test_stringified_secret_refs_coerce_to_dict():
     assert result["status"] == 200
     expected = "Basic " + base64.b64encode(b"svc-user:svc-pass").decode()
     assert _sent_headers(http)["Authorization"] == expected
+
+
+@pytest.mark.asyncio
+async def test_illegal_header_error_does_not_echo_secret():
+    """h11 puts the offending header value in LocalProtocolError, and a stored
+    secret with a control character is rejected as an illegal header value —
+    the tool returned and logged that message verbatim, printing the secret
+    into the LLM context, the message history and the server log."""
+    secret = "sk-live-SUPERSECRET123\n"
+    http = AsyncMock()
+    http.stream = Mock(
+        side_effect=httpx.LocalProtocolError(
+            f"Illegal header value {('Bearer ' + secret).encode()!r}"
+        )
+    )
+
+    with patch(
+        "agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value=secret)
+    ):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/health",
+                "base_url": "https://api.example.com",
+                "auth_type": "bearer",
+                "secret_ref": "svc:token",
+                "secret_scope": "user",
+            },
+            http,
+        )
+
+    blob = json.dumps(result)
+    assert "SUPERSECRET" not in blob, blob
+    assert "[REDACTED" in blob  # the rest of the message is still reported

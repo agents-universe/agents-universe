@@ -111,6 +111,23 @@ def _mask_string_literals(query: str) -> str:
             in_literal = True
             out.append(ch)
             i += 1
+        elif ch == "[":
+            # SQL Server quoted identifier ([weird--name]) — keep it VERBATIM:
+            # the blocklists must still see the identifier, and an apostrophe
+            # inside it must not open a literal that blanks the rest of the
+            # query (that hid `FROM user_tokens` from every check).
+            out.append(ch)
+            i += 1
+            while i < n:
+                out.append(query[i])
+                if query[i] == "]":
+                    if i + 1 < n and query[i + 1] == "]":
+                        out.append(query[i + 1])  # escaped ]] inside the name
+                        i += 1
+                    else:
+                        i += 1
+                        break
+                i += 1
         else:
             out.append(ch)
             i += 1

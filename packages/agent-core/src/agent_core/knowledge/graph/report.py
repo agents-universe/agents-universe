@@ -59,23 +59,41 @@ def compact_map(graph: RepoGraph, max_chars: int = COMPACT_MAP_MAX_CHARS) -> str
         mod_lines.append(f"{rel}({shown})")
 
     failed = stats.get("failed", 0)
-    lines = [
+    header = (
         f"repo={graph.repo.name} | langs={langs} | "
         f"files={stats.get('files', 0)} sym={stats.get('nodes', 0)} "
         f"edges={stats.get('edges', 0)} parsed={stats.get('parsed', 0)}"
-        + (f" failed={failed}" if failed else "") + " ok",
-        f"mods: {', '.join(mod_lines) if mod_lines else '(no symbols)'}",
-        f"hubs: {hub_text or '(none)'}",
+        + (f" failed={failed}" if failed else "") + " ok"
+    )
+    hubs_line = f"hubs: {hub_text or '(none)'}"
+    hint_line = (
         "hint: consult the repo_graph tool (query/neighbors/impact/path) before "
-        "reading files; full report: .tmp/repo_graph/<repo>/graph_report.md",
-    ]
+        "reading files; full report: .tmp/repo_graph/<repo>/graph_report.md"
+    )
     cov_line = _coverage_line(stats)
-    # Inserted right after the header so the 1200-char cap truncates `mods`
-    # first and the hint line always survives.
-    if cov_line:
-        lines.insert(1, cov_line)
+    # Only `mods` varies in length. A plain text[:max_chars] cut dropped the
+    # hubs and hint lines on a large repo — the hint is the whole reason the
+    # map is embedded — so trim the module list to whatever budget is left.
+    fixed = [header] + ([cov_line] if cov_line else []) + [hubs_line, hint_line]
+    budget = max_chars - sum(len(line) + 1 for line in fixed)
+    mods_line = _fit_mods_line(mod_lines, budget)
+    lines = [header] + ([cov_line] if cov_line else []) + [mods_line, hubs_line, hint_line]
     text = "\n".join(lines)
-    return text[:max_chars]
+    # Last resort only: the fixed lines alone can exceed a tiny max_chars.
+    return text if len(text) <= max_chars else text[:max_chars]
+
+
+def _fit_mods_line(mods: list[str], budget: int) -> str:
+    """Render the `mods:` line within *budget* chars, dropping whole entries."""
+    if not mods:
+        return "mods: (no symbols)"
+    shown = list(mods)
+    while shown:
+        line = "mods: " + ", ".join(shown)
+        if len(line) <= budget:
+            return line
+        shown.pop()
+    return "mods: ..."
 
 
 def render_report(graph: RepoGraph) -> str:

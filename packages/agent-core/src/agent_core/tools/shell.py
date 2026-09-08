@@ -14,6 +14,7 @@ from typing import Any
 from ..sandbox import (
     python_guard_env,
     spawn_in_new_session,
+    split_logical_lines,
     terminate_process_tree,
     validate_command,
 )
@@ -213,42 +214,51 @@ def _check_allowlist_per_segment(command: str) -> str | None:
     backslash, making them indistinguishable from shell subshell parens.
     Splitting on them would break every ``find \\( ... \\)`` command.
 
+    A newline is also a separator in the shell but plain whitespace to shlex,
+    so the command is first cut into logical lines: ``ls\\nrm -rf x`` tokenizes
+    as a single ``ls`` segment whose arguments include ``rm``, and the rm would
+    run un-checked.  Heredoc bodies are data, not commands, and are skipped.
+
     Leading VAR=value assignments are skipped to reach the actual command
     token.  Returns None if all segments pass, else the first offending token.
     """
     # Only chain operators, NOT ( ) — see docstring.
     _chain_seps = frozenset({"&&", "||", ";;", ";", "|", "&"})
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return None  # malformed - let validate_command report the parse error
 
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for tok in tokens:
-        if tok in _chain_seps:
-            if current:
-                segments.append(current)
-            current = []
-        else:
-            current.append(tok)
-    if current:
-        segments.append(current)
-
-    for seg in segments:
-        idx = 0
-        # Skip leading VAR=value assignments (e.g. FOO=bar cmd ...)
-        while idx < len(seg) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[idx]):
-            idx += 1
-        if idx >= len(seg):
+    for line, is_heredoc_body in split_logical_lines(command):
+        if is_heredoc_body:
             continue
-        cmd_token = seg[idx]
-        # Strip leading ./ for wrapper commands
-        check = _ALLOWED_CMDS.match(cmd_token) or _WRAPPER_COMMAND.match(cmd_token)
-        if not check:
-            return cmd_token
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return None  # malformed - let validate_command report the parse error
+
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for tok in tokens:
+            if tok in _chain_seps:
+                if current:
+                    segments.append(current)
+                current = []
+            else:
+                current.append(tok)
+        if current:
+            segments.append(current)
+
+        for seg in segments:
+            idx = 0
+            # Skip leading VAR=value assignments (e.g. FOO=bar cmd ...)
+            while idx < len(seg) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[idx]):
+                idx += 1
+            if idx >= len(seg):
+                continue
+            cmd_token = seg[idx]
+            # Strip leading ./ for wrapper commands
+            check = _ALLOWED_CMDS.match(cmd_token) or _WRAPPER_COMMAND.match(cmd_token)
+            if not check:
+                return cmd_token
     return None
 
 

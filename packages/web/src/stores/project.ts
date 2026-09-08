@@ -114,6 +114,30 @@ export const useProjectStore = defineStore('project', () => {
     } catch { return null }
   }
 
+  /** Resolve the active project on a route that never ran useProjectData().
+   *
+   * Settings pages render outside AppLayout, so on a cold load (refresh or
+   * deep link) the store is empty and every project-scoped panel — MCP
+   * servers, project secrets — would look unconfigured. Falls back to the
+   * saved id, then the first project.
+   */
+  async function ensureCurrentProject(): Promise<Project | null> {
+    if (currentProject.value) return currentProject.value
+    if (projects.value.length === 0) {
+      try {
+        projects.value = await projectsApi.getProjects()
+      } catch (e) {
+        console.error('Failed to load projects', e)
+        return null
+      }
+    }
+    if (projects.value.length === 0) return null
+    const savedId = getSavedProjectId()
+    const target = projects.value.find(p => p.project_id === savedId) ?? projects.value[0]
+    setCurrentProject(target)
+    return target
+  }
+
   return {
     currentProject,
     projects,
@@ -126,5 +150,6 @@ export const useProjectStore = defineStore('project', () => {
     clearProject,
     clearDeletedProject,
     getSavedProjectId,
+    ensureCurrentProject,
   }
 })

@@ -196,7 +196,10 @@ const callsBeforePlan = computed<ToolCallRecord[]>(() => {
 const callsAfterPlan = computed<ToolCallRecord[]>(() => {
   const calls = props.message.toolCalls ?? []
   const i = firstPlanIndex.value
-  return i === -1 ? [] : calls.slice(i + 1)
+  // Task-scoped calls already render inside TaskPlanCard (fed by
+  // nonPlanToolCalls); without this filter they appear a second time here.
+  // The live path filters the same way in ChatPanel.
+  return i === -1 ? [] : calls.slice(i + 1).filter((tc) => !tc.taskId)
 })
 
 const nonPlanToolCalls = computed<ToolCallRecord[]>(() =>

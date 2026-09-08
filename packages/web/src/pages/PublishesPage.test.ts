@@ -137,6 +137,30 @@ describe('PublishesPage', () => {
     expect(wrapper.find('.publishes-empty .btn-primary').exists()).toBe(false)
   })
 
+  it('renders a freshly created key as active without a reload', async () => {
+    publishApi.list.mockResolvedValue([makePublish()])
+    publishApi.createKey.mockResolvedValue({
+      key_id: 'k-1',
+      name: 'prod',
+      key: 'pua_plaintext',
+      key_hint: '…text',
+      is_active: true,
+      created_at: '2026-09-08T00:00:00Z',
+      revoked_at: null,
+    })
+    const wrapper = mount(PublishesPage)
+    await flushPromises()
+
+    const input = wrapper.find('.publish-key-name-input')
+    await input.setValue('prod')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+
+    const row = wrapper.find('.publish-key-row')
+    expect(row.find('.publish-key-status').classes()).toContain('on')
+    expect(row.find('button.danger').exists()).toBe(true)
+  })
+
   it('copies an absolute (origin-prefixed) page link', async () => {
     // The copied link must open when pasted anywhere — not a root-relative
     // path that only works in the current tab.

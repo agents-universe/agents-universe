@@ -10,7 +10,8 @@ from typing import AsyncIterator
 class StopReason(str, Enum):
     """Normalized stop reasons across all providers.
 
-    Anthropic: end_turn, tool_use, max_tokens, pause_turn, refusal
+    Anthropic: end_turn, tool_use, max_tokens, pause_turn, refusal,
+    stop_sequence, model_context_window_exceeded
     OpenAI: stop, tool_calls, length, content_filter
     """
     END_TURN = "end_turn"
@@ -28,10 +29,16 @@ class StopReason(str, Enum):
             return cls.UNKNOWN
         mapping = {
             "end_turn": cls.END_TURN,
+            "stop_sequence": cls.END_TURN,
             "tool_use": cls.TOOL_USE,
             "max_tokens": cls.MAX_TOKENS,
             "pause_turn": cls.PAUSE_TURN,
             "refusal": cls.REFUSAL,
+            # Anthropic's stop reason when the REQUEST exceeds the model's
+            # context window. Unmapped it became UNKNOWN, which the agent
+            # treats as a normal end_turn — the context_exceeded event (and
+            # the UI's compress-and-retry affordance) never fired.
+            "model_context_window_exceeded": cls.CONTEXT_EXCEEDED,
         }
         return mapping.get(raw, cls.UNKNOWN)
 

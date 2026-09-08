@@ -162,8 +162,10 @@ async def get_secret(context: ToolContext, service_key: str, *, environment: str
                 # Legacy duplicates can linger (NULL + "" rows for the same
                 # key) — prefer the "" row. NULL sort order in DESC differs
                 # per dialect (PostgreSQL puts NULL first), so order by the
-                # NULL-ness predicate explicitly — portable everywhere.
-                "ORDER BY (environment IS NULL) ASC, environment DESC"
+                # NULL-ness explicitly — CASE, not a bare predicate: T-SQL
+                # rejects ORDER BY on a boolean expression.
+                "ORDER BY CASE WHEN environment IS NULL THEN 1 ELSE 0 END ASC, "
+                "environment DESC"
             ),
             params,
         )

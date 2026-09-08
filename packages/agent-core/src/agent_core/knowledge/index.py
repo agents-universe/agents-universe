@@ -448,7 +448,10 @@ async def reindex_one(
     from sqlalchemy import case, select
     from sqlalchemy.exc import IntegrityError
 
-    content = path.read_text(encoding="utf-8")
+    # Strip the UTF-8 BOM like every other read site: otherwise it sticks to
+    # the first frontmatter key (\ufefftitle) and skews the content hash away
+    # from what the full indexer stored for the same file.
+    content = path.read_text(encoding="utf-8").lstrip("\ufeff")
     post = frontmatter.loads(content)
     meta = post.metadata
     body = post.content

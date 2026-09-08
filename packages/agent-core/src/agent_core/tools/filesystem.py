@@ -170,7 +170,10 @@ class FilesystemTool(Tool):
         # .git/modules/<name>/hooks). Reads from .git stay allowed.
         if operation in ("write_file", "delete_file", "create_dir"):
             _git_rel = rel_path.replace("\\", "/")
-            if ".git" in _git_rel.split("/"):
+            # Case-insensitive: on Windows/macOS `.GIT/hooks/x` IS the same
+            # directory as `.git/hooks/x`, so an exact-match check let the
+            # guard be bypassed by casing.
+            if any(part.lower() == ".git" for part in _git_rel.split("/")):
                 return {"error": ".git 目录为只读：hooks/config 会被 git 在后续命令中执行，请写到项目其他位置"}
 
         # Framework dirs (agents/, workflows/, knowledge/_template/) are read

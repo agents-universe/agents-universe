@@ -29,6 +29,13 @@ def _clamp_timeout(value: Any) -> int:
         return 30_000
 
 
+def _forget_page(owner: Any, page: Any) -> None:
+    """Drop a closed page from the owner's cleanup registry."""
+    pages = getattr(owner, "_browser_pages", None)
+    if pages and page in pages:
+        pages.remove(page)
+
+
 def _check_browser_url(url: str) -> None:
     """SSRF-validate a URL for the browser tool.
 
@@ -75,9 +82,12 @@ class BrowserPlaywrightTool(Tool):
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         operation = params["operation"]
 
-        # The page is a session-scoped resource (like the browser): read and
-        # write it through the shared context so a task clone reuses the
-        # session's page and cleanup() can close it.
+        # The page is per-TASK state, not per session: it carries the
+        # navigation position, so sharing one page between the parallel plan
+        # tasks (up to 3) made task A's goto silently replace task B's page and
+        # every later get_text/screenshot read the wrong document. The clone
+        # keeps its own page; the owner (session context) just records every
+        # page so cleanup() can close them all.
         owner = getattr(context, "_shared", None) or context
 
         # Initialize browser lazily, sharing the session lifecycle with other tools.
@@ -88,7 +98,7 @@ class BrowserPlaywrightTool(Tool):
             return {"error": f"Failed to start browser ({type(e).__name__}): {msg}. Run: playwright install chromium"}
 
         # Get or create a page; recreate if previous page was closed or crashed
-        page = getattr(owner, "_browser_page", None)
+        page = getattr(context, "_browser_page", None)
         if page is not None:
             try:
                 await page.title()
@@ -98,12 +108,16 @@ class BrowserPlaywrightTool(Tool):
                 except Exception:
                     pass
                 page = None
-                owner._browser_page = None
+                context._browser_page = None
 
         if page is None:
             ignore_https = not getattr(context, "browser_ssl_verify", True)
             page = await browser.new_page(ignore_https_errors=ignore_https)
-            owner._browser_page = page
+            context._browser_page = page
+            pages = getattr(owner, "_browser_pages", None)
+            if pages is None:
+                pages = owner._browser_pages = []
+            pages.append(page)
             # SSRF interception is registered ONCE and stays for the
             # page's lifetime. It was first registered inside `goto` and unrouted
             # in finally — a later click (link navigation), form submit, or
@@ -163,27 +177,44 @@ class BrowserPlaywrightTool(Tool):
                     _log.info("browser goto: %s (timeout=%s, ignore_https=%s)",
                               url, timeout,
                               not getattr(context, "browser_ssl_verify", True))
+                    goto_error: str | None = None
                     try:
                         response = await page.goto(url, timeout=timeout)
                         await page.wait_for_load_state("domcontentloaded")
-                    except Exception:
+                    except Exception as exc:
                         # An aborted SSRF redirect surfaces here; the post-hoc
                         # check below still decides the outcome.
                         response = None
+                        goto_error = str(exc)
+                    try:
+                        final_url = page.url
+                    except Exception:
+                        final_url = ""  # page closed/crashed during navigation
                     # Redirects can land on a host the caller's URL check never
                     # saw (e.g. 302 → http://169.254.169.254). Re-run the
-                    # literal check against the FINAL URL.
-                    try:
-                        _check_browser_url(page.url)
-                    except SSRFError as e:
-                        # Close the page so no later operation (get_text,
-                        # evaluate, click) can read the internal address.
+                    # literal check against the FINAL URL — only when the
+                    # navigation actually landed on an http(s) page: a failed
+                    # goto leaves page.url at about:blank, whose scheme check
+                    # raised SSRFError and reported every DNS/connection
+                    # failure as "blocked by SSRF protection".
+                    if final_url.startswith(("http://", "https://")):
                         try:
-                            await page.close()
-                        except Exception:
-                            pass
-                        owner._browser_page = None
-                        return {"error": f"URL blocked by SSRF protection: {e}"}
+                            _check_browser_url(final_url)
+                        except SSRFError as e:
+                            # Close the page so no later operation (get_text,
+                            # evaluate, click) can read the internal address.
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
+                            context._browser_page = None
+                            _forget_page(owner, page)
+                            return {"error": f"URL blocked by SSRF protection: {e}"}
+                    elif goto_error:
+                        result: dict[str, Any] = {"error": f"Navigation failed: {goto_error}"}
+                        if failed_requests:
+                            result["failed_requests"] = failed_requests
+                        return result
                 finally:
                     page.remove_listener("requestfailed", _on_request_failed)
 
@@ -338,7 +369,8 @@ class BrowserPlaywrightTool(Tool):
         except Exception as e:
             # If page crashed, clear reference so next call creates a fresh one
             if "Target closed" in str(e) or "crashed" in str(e).lower():
-                owner._browser_page = None
+                context._browser_page = None
+                _forget_page(owner, page)
             return {"error": str(e)}
 
         return {"error": f"Unknown operation: {operation}"}

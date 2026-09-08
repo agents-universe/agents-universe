@@ -322,3 +322,30 @@ async def test_run_blocks_on_full_slot(script_env, monkeypatch):
     result = await tool.execute({"operation": "run", "script_id": created["script_id"]}, context)
     assert result["status"] == "completed"
     assert gate.locked() is False  # slot released by the run's done_callback
+
+
+@pytest.mark.asyncio
+async def test_run_cancellation_propagates_and_releases_slot(script_env, monkeypatch):
+    """Cancelling while the run row is committed must propagate the
+    CancelledError (a stopped turn cannot keep going) and still free the slot."""
+    import agent_core.tools.script_writer as sw
+
+    tool, context, _, _ = script_env
+    created = await _create(tool, context)
+    gate = asyncio.Semaphore(1)
+    monkeypatch.setattr(sw, "script_slot_guard", lambda: gate)
+
+    class _CancelOnCommit:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def commit(self):
+            raise asyncio.CancelledError()
+
+    context.db_session = _CancelOnCommit(context.db_session)
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute({"operation": "run", "script_id": created["script_id"]}, context)
+    assert gate.locked() is False

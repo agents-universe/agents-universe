@@ -38,11 +38,19 @@ def _redact_key(text: str, key: str) -> str:
 
     Providers echo the credential back in 401 bodies ("Incorrect API key
     provided: sk-...", "401 bearer <token>") — returning that verbatim to
-    the client prints the key it just submitted. Same rule as
+    the client prints the key it just submitted. httpx/h11 render an illegal
+    header value as a bytes repr, where a key with a control character
+    appears escaped (\\n, \\xe4), so that form is masked too. Same rule as
     api_keys.py's test endpoint.
     """
     if key:
         text = text.replace(key, "[REDACTED]")
+        try:
+            escaped = repr(key.encode("utf-8"))[2:-1]
+        except Exception:
+            escaped = ""
+        if escaped and escaped != key:
+            text = text.replace(escaped, "[REDACTED]")
     return text
 
 
@@ -317,7 +325,11 @@ async def test_token(
     except SSRFError as e:
         return {"ok": False, "provider": provider, "error": f"Blocked URL: {e}"}
     except Exception as exc:
-        logger.error("Token test failed for %s: %s", service_key, traceback.format_exc())
+        # The traceback carries the SDK/httpx message, which echoes the key.
+        logger.error(
+            "Token test failed for %s: %s",
+            service_key, _redact_key(traceback.format_exc(), plain),
+        )
         # str(exc) from SDKs/httpx can embed the submitted key ("Incorrect API
         # key provided: sk-...") — never return it raw.
         return {"ok": False, "provider": provider, "error": _redact_key(str(exc) or "Token test failed", plain) or "Token test failed"}

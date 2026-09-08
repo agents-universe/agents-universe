@@ -58,7 +58,12 @@ def resolve_repo_path(
                 "error": "Exactly one of 'repository' or 'repository_path' is required"
             }
         if available is not None and len(available) == 1:
-            return repos_dir(project_fs_path) / available[0], None
+            # Route through the guarded branch: the lone clone still has to
+            # pass the name and containment checks (a symlinked entry in
+            # repos/ lists as a clone but resolves outside the workspace).
+            return resolve_repo_path(
+                {"repository": available[0]}, project_fs_path, available=None
+            )
         error: dict[str, Any] = {
             "error": "Exactly one of 'repository' or 'repository_path' is required"
         }
@@ -91,4 +96,11 @@ def resolve_repo_path(
     # every operation would silently target it instead of a cloned repo.
     if name in (".", "..") or not _REPO_NAME_RE.fullmatch(name):
         return None, {"error": f"Invalid repository name: {name!r}"}
-    return (base / "repos" / name).resolve(), None
+    resolved = (base / "repos" / name).resolve()
+    # Same containment rule as repository_path above and git_repo._op_clone:
+    # a symlink at repos/<name> resolves outside the workspace, and every
+    # git operation (pull/commit/push) would then read and write that
+    # foreign checkout.
+    if not resolved.is_relative_to(base):
+        return None, {"error": "Path traversal blocked"}
+    return resolved, None

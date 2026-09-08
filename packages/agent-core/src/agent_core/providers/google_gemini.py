@@ -304,6 +304,12 @@ class GoogleGeminiProvider(LLMProvider):
         # recent call - parallel calls interleave their continuation chunks.
         seen_arg_keys: dict[int, set[str]] = {}
         async for chunk in chunk_stream:
+            # Capture usage BEFORE the content short-circuits below: Gemini
+            # reports usage_metadata on the terminal chunk, which carries
+            # finish_reason but no parts — the old placement (after the
+            # `continue`) dropped the token counts of every such stream.
+            if chunk.usage_metadata:
+                last_usage = chunk.usage_metadata
             if not chunk.candidates:
                 continue
             candidate = chunk.candidates[0]
@@ -356,8 +362,6 @@ class GoogleGeminiProvider(LLMProvider):
                 text = _part_text(part)
                 if text:
                     yield StreamChunk(delta=text)
-            if chunk.usage_metadata:
-                last_usage = chunk.usage_metadata
         usage_dict = None
         if last_usage:
             usage_dict = {

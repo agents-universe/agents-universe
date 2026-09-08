@@ -231,7 +231,7 @@ def _escape_ts(s: str) -> str:
 
 
 def _escape_ts_regex(s: str) -> str:
-    """Escape for use inside a TS regex literal.
+    r"""Escape for use inside a TS regex literal.
 
     A raw '/' inside a /.../ literal would terminate the regex and let
     agent-supplied text inject syntax; plain string escaping doesn't cover
@@ -250,7 +250,12 @@ def _step_to_action(step: str) -> str:
         url_part = step.split(" ", 2)[-1].strip()
         return f"await page.goto('{_escape_ts(url_part)}');"
     if "click" in s:
-        target = step.split("click", 1)[-1].strip().strip('"').strip("'")
+        # Split the ORIGINAL step, not the lowercased copy: `step.split("click")`
+        # found nothing in "Click the login button" and returned the whole step
+        # as the locator name. Match case-insensitively but keep the original
+        # text after the keyword.
+        match = re.search(r"click", step, re.IGNORECASE)
+        target = step[match.end():].strip().strip('"').strip("'") if match else ""
         if not target:
             # A bare "click" step must not emit `name: //i` — the empty regex
             # becomes a line comment and breaks the generated .spec.ts syntax.
@@ -261,16 +266,25 @@ def _step_to_action(step: str) -> str:
     if "wait" in s:
         return f"await page.waitForTimeout(2000); // {_escape_ts(step)}"
     if "download" in s:
-        target = step.split("download", 1)[-1].strip().strip('"').strip("'").strip(".")
+        # Same case-insensitive split as the click branch — "Download the
+        # report" must yield "the report", not the whole step.
+        match = re.search(r"download", step, re.IGNORECASE)
+        target = (
+            step[match.end():].strip().strip('"').strip("'").strip(".")
+            if match else ""
+        )
         if target:
             return (
                 f"const [download] = await Promise.all([\n"
-                f"      page.waitForDownload(),\n"
+                # Playwright has no page.waitForDownload() — the download
+                # event is awaited through waitForEvent. The generated spec
+                # otherwise threw "page.waitForDownload is not a function".
+                f"      page.waitForEvent('download'),\n"
                 f"      page.getByRole('link', {{ name: /{_escape_ts_regex(target)}/i }}).click(),\n"
                 f"    ]);\n"
                 f"    await download.saveAs('test-results/{_escape_ts(step.split()[0])}-download' + download.suggested_filename());"
             )
-        return f"// TODO: Download - use page.waitForDownload() before clicking the download trigger. // {_escape_ts(step)}"
+        return f"// TODO: Download - await page.waitForEvent('download') around the click that triggers it. // {_escape_ts(step)}"
     if "select" in s:
         return f"await page.getByRole('combobox').selectOption({{ index: 0 }}); // {_escape_ts(step)}"
     return f"await page.waitForTimeout(1000); // TODO: {_escape_ts(step)}"
@@ -280,7 +294,13 @@ def _expected_to_assertion(expected: str) -> str:
     """Convert an expected result into a best-effort Playwright assertion."""
     e = expected.lower().strip()
     if "visible" in e or "displayed" in e or "shown" in e or "appear" in e:
-        text = expected.split("visible")[-1].strip().strip(":").strip()
+        # Case-insensitive split (same defect as _step_to_action): "Visible:
+        # Welcome" left the whole string as the expected text.
+        matches = list(re.finditer(r"visible", expected, re.IGNORECASE))
+        text = (
+            expected[matches[-1].end():].strip().strip(":").strip()
+            if matches else expected.strip()
+        )
         if not text:
             text = expected
         return f"await expect(page.getByText(/{_escape_ts_regex(text)}/i)).toBeVisible();"

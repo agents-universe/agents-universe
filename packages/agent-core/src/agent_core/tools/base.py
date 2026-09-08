@@ -112,6 +112,9 @@ class ToolContext:
         self._tool_registry: dict[str, Tool] = {}
         self.http_client_no_proxy = None
         self._browser_lock = asyncio.Lock()
+        # Every page this session opened (its own and each task clone's) so
+        # cleanup() can close them all — see copy_for_task.
+        self._browser_pages: list = []
         self.mcp_manager = None  # McpConnectionManager, lazily set by attach_mcp_tools
 
     def copy_for_task(self, task_id: str, turn: int) -> "ToolContext":
@@ -125,12 +128,15 @@ class ToolContext:
         import copy
 
         clone = copy.copy(self)  # shallow - shared refs for all resources
-        # Lazy resource slots (browser, http_client, _browser_page) are
-        # shared through the owner reference: ensure_* writes back to the
-        # session's context so parallel task clones reuse ONE browser/client
-        # instead of each starting their own — a per-clone resource would
-        # never be closed (cleanup() only sees the shared context's slots).
+        # Lazy resource slots (browser, http_client) are shared through the
+        # owner reference: ensure_* writes back to the session's context so
+        # parallel task clones reuse ONE browser/client instead of each
+        # starting their own — a per-clone resource would never be closed
+        # (cleanup() only sees the shared context's slots). The browser PAGE
+        # is the exception: it is mutable navigation state, so each task owns
+        # its own (registered on the owner for cleanup).
         clone._shared = self
+        clone._browser_page = None
         clone.current_task_id = task_id
         clone.current_turn = turn
         # Concurrent tasks must not share one SQLAlchemy async session:
@@ -292,12 +298,16 @@ class ToolContext:
             except Exception:
                 _log.debug("http_client_no_proxy close failed", exc_info=True)
             self.http_client_no_proxy = None
-        page = getattr(self, "_browser_page", None)
-        if page is not None:
+        pages = list(getattr(self, "_browser_pages", None) or [])
+        own_page = getattr(self, "_browser_page", None)
+        if own_page is not None and own_page not in pages:
+            pages.append(own_page)
+        for page in pages:
             try:
                 await page.close()
             except Exception:
                 _log.debug("browser page close failed", exc_info=True)
+        self._browser_pages = []
         self._browser_page = None
         if self.browser is not None:
             try:

@@ -74,9 +74,10 @@ async def test_get_pages_keeps_list_input():
 
 
 @pytest.mark.asyncio
-async def test_http_error_body_redacts_credential():
+async def test_http_error_body_redacts_credential(caplog):
     """Atlassian can echo the credential in 401 bodies — the resolved token
-    must never reach the LLM/history inside the returned error message."""
+    must never reach the LLM/history inside the returned error message, nor
+    the log, which used to receive the raw body before the redaction pass."""
     import httpx
     from unittest.mock import AsyncMock, patch
     from agent_core.tools.confluence import ConfluenceTool
@@ -110,6 +111,7 @@ async def test_http_error_body_redacts_credential():
     assert result["error"].startswith("Confluence API returned 401")
     assert "ATATT-secret-token-888" not in result["error"]
     assert "REDACTED" in result["error"]
+    assert "ATATT-secret-token-888" not in caplog.text
 
 
 class _MinimalCtx:

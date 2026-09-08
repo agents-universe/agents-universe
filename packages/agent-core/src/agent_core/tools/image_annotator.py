@@ -191,14 +191,21 @@ class ImageAnnotatorTool(Tool):
         subtitle = params.get("subtitle", "")
         # The schema declares arrays but LLMs routinely stringify them —
         # a bare string would iterate character-by-character below and crash
-        # on .get(). Reject it instead of producing an unannotated image.
+        # on .get(). A list of strings crashes the same way. Reject both
+        # instead of producing an unannotated image.
         focus_areas = params.get("focus_areas", []) or []
         annotations = params.get("annotations", []) or []
-        if isinstance(focus_areas, str) or isinstance(annotations, str):
+        if (
+            isinstance(focus_areas, str)
+            or isinstance(annotations, str)
+            or (isinstance(focus_areas, list) and any(not isinstance(fa, dict) for fa in focus_areas))
+            or (isinstance(annotations, list) and any(not isinstance(ann, dict) for ann in annotations))
+        ):
             return {
                 "error": (
-                    "focus_areas/annotations must be arrays of objects, not a "
-                    "string — check the tool's parameter schema and retry."
+                    "focus_areas/annotations must be arrays of objects with "
+                    "x/y/width/height (or xPct/yPct/...), not strings — check "
+                    "the tool's parameter schema and retry."
                 )
             }
 

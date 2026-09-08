@@ -111,14 +111,15 @@ class ConfluenceTool(Tool):
             return {"error": f"Unknown operation: {operation}"}
         except httpx.HTTPStatusError as e:
             body = e.response.text[:500] if e.response else ""
-            _log.warning("confluence %s HTTP %d: %s", operation, e.response.status_code, body[:200])
             # Atlassian can echo the credential in error bodies — scrub the
-            # resolved token and email before the body reaches the LLM/history
-            # (same pattern as kong.py / api_request.py), then truncate.
+            # resolved token and email before the body reaches the LOG as well
+            # as the LLM/history (same pattern as kong.py / api_request.py),
+            # then truncate.
             body = redact_secrets(
                 body,
                 {"confluence": client.api_token, "jira:email": client.email},
             )[:500]
+            _log.warning("confluence %s HTTP %d: %s", operation, e.response.status_code, body[:200])
             return {"error": f"Confluence API returned {e.response.status_code}: {body}"}
         except Exception as e:
             _log.warning("confluence %s failed: %s", operation, e, exc_info=True)

@@ -120,7 +120,11 @@ class KnowledgeRWTool(Tool):
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         operation = params["operation"]
-        knowledge_dir = Path(context.knowledge_dir())
+        # Resolved once: every operation pairs this path with paths produced by
+        # rglob/resolve (which are fully resolved), and a knowledge_dir holding
+        # a symlink or `..` segment made relative_to() raise ValueError — the
+        # whole `list`/`read`/`write` call failed instead of returning files.
+        knowledge_dir = Path(context.knowledge_dir()).resolve()
 
         if operation == "list":
             return await self._op_list(params, knowledge_dir, context)

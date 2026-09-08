@@ -14,7 +14,10 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_core.knowledge.graph.builder import build_repo_graph
+from agent_core.knowledge.graph.builder import (
+    _java_source_roots,
+    build_repo_graph,
+)
 from agent_core.knowledge.graph import queries
 from agent_core.knowledge.graph.languages import get_grammar
 from agent_core.knowledge.graph.parser import parse_file
@@ -344,6 +347,93 @@ async def test_build_content(repo: Path, tmp_path: Path, grammars):
 
     assert len(compact_map(graph)) <= 1200
     assert "hint:" in compact_map(graph)
+
+
+# ---------------------------------------------------------------------------
+# Java source roots
+# ---------------------------------------------------------------------------
+
+
+def test_java_source_roots_keep_repo_root():
+    """The repo-root fallback must survive the sort — a package tree at the
+    repo root (no src/main/java) resolves only through the "" root."""
+    roots = _java_source_roots({
+        "com/example/Greeter.java": {"lang": "java"},
+        "src/main/java/com/example/app/App.java": {"lang": "java"},
+    })
+    assert "" in roots, roots
+    # Most specific first; the root fallback sorts last.
+    assert roots[-1] == ""
+    assert roots.index("src/main/java") < roots.index("src")
+    # No java files → no roots (callers pass [""] as the fallback).
+    assert _java_source_roots({"a.py": {"lang": "python"}}) == []
+
+
+# ---------------------------------------------------------------------------
+# Python import parsing: multi-name statements and relative dot depth
+# ---------------------------------------------------------------------------
+
+MULTI_IMPORT_FILES = {
+    "pkg/__init__.py": "",
+    "pkg/consumer.py": (
+        "import alpha, beta\n"
+        "from sub import one, two\n"
+        "from ..util.helper import helper\n"
+        "\n"
+        "def run():\n"
+        "    alpha.go()\n"
+        "    one()\n"
+        "    two()\n"
+        "    helper()\n"
+    ),
+    "util/__init__.py": "",
+    "util/helper.py": "def helper():\n    return 1\n",
+    "sub/__init__.py": "def one():\n    return 1\n\ndef two():\n    return 2\n",
+    "alpha.py": "def go():\n    return 1\n",
+    "beta.py": "def go():\n    return 1\n",
+}
+
+
+@pytest.fixture
+def multi_import_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "multi_import"
+    repo.mkdir()
+    for rel, text in MULTI_IMPORT_FILES.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _run("init", "-b", "main", cwd=repo)
+    _run("config", "user.email", "t@t.t", cwd=repo)
+    _run("config", "user.name", "t", cwd=repo)
+    _run("add", ".", cwd=repo)
+    _run("commit", "-m", "seed multi import", cwd=repo)
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_multi_name_and_relative_imports(multi_import_repo: Path, tmp_path: Path, grammars):
+    """`import a, b` records every name; `from ..util.helper import x` walks up.
+
+    Regressions: only the first name of a comma list was parsed (the grammar
+    fields just one), and `..` was ignored so a parent-package import
+    resolved to a sibling directory that does not exist.
+    """
+    summary = await _build(multi_import_repo, tmp_path)
+    assert summary["status"] == "built"
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+
+    src = "f:pkg/consumer.py"
+    assert (src, "f:alpha.py", "imports") in edges
+    assert (src, "f:beta.py", "imports") in edges
+    assert (src, "f:sub/__init__.py", "imports") in edges
+    # `..` from pkg/ is the repo root → util/, not pkg/util/.
+    assert (src, "f:util/helper.py", "imports") in edges
+    # Every imported name is callable through its alias map.
+    assert ("s:pkg/consumer.py:run", "s:sub/__init__.py:one", "calls") in edges
+    assert ("s:pkg/consumer.py:run", "s:sub/__init__.py:two", "calls") in edges
+    assert ("s:pkg/consumer.py:run", "s:util/helper.py:helper", "calls") in edges
 
 
 # ---------------------------------------------------------------------------

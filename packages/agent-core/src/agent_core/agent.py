@@ -402,6 +402,17 @@ class Agent:
     @staticmethod
     def _normalize_task_plan(tasks: list[dict]) -> list[dict]:
         """Rewrite planner-local task IDs to globally unique IDs for persistence."""
+        # The schema declares an array of objects, but models also emit a bare
+        # string or a list of strings; .get()/dict() on those raises
+        # AttributeError/ValueError, which surfaces as the opaque "plan_task
+        # failed" instead of a message the model can act on.
+        if not isinstance(tasks, list):
+            raise ValueError("tasks must be a list of objects")
+        for task in tasks:
+            if not isinstance(task, dict):
+                raise ValueError(
+                    f"each task must be an object, got {type(task).__name__}"
+                )
         original_ids = [str(task.get("id") or f"task-{idx}") for idx, task in enumerate(tasks)]
         task_ids = [str(uuid.uuid4()) for _ in tasks]
         id_map: dict[str, str] = {}
@@ -425,6 +436,11 @@ class Agent:
                     id_map.get(str(dep), str(dep))
                     for dep in depends_on.split(",") if dep.strip()
                 ]
+            else:
+                # null / missing / malformed: the schema says array but models
+                # emit null, and the key then survives with a None value —
+                # every consumer iterates it.
+                normalized_task["depends_on"] = []
             normalized.append(normalized_task)
 
         return normalized
@@ -848,8 +864,7 @@ class Agent:
         snapshot, the user messages are persisted by the API handler
         (user_message_injected events), and the loop continues with the new
         instructions appended to the message history. Returns the new message
-        id, or None when nothing was queued (or every message failed
-        validation — the handler already notified the client).
+        id, or None when nothing was queued.
         """
         entries: list[UserInputEntry] = []
         while True:
@@ -905,7 +920,16 @@ class Agent:
             ))
             entry.consumed = True
         if not accepted:
-            return None
+            # Every queued message failed validation — but the interrupted
+            # stream_end above was already emitted for the CURRENT id and the
+            # handler persisted that snapshot row. Continuing under the same
+            # id would insert a second row with the same primary key at the
+            # next stream_end: the insert is swallowed, the turn's output is
+            # lost, and the run row stays "running". Continue under a fresh id.
+            _log.warning(
+                "agent: %d injected message(s) rejected — continuing under a new message id",
+                len(entries),
+            )
         return session.new_message()
 
     def _request_byte_outcome(
@@ -1029,9 +1053,14 @@ class Agent:
                 if not demote_loaded_entry(self._project_context, largest):
                     break
                 demoted += 1
-            if demoted:
+                # Rebuild INSIDE the loop: the loop condition measures
+                # messages[0], and the loaded content lives in the cached
+                # static prompt. Rebuilding only after the loop left the
+                # measured size unchanged, so every loaded file was demoted
+                # instead of just enough to fit.
                 self._invalidate_static_cache()
                 messages[0] = Message(role="system", content=self._build_system_prompt())
+            if demoted:
                 _log.warning("request degrade: demoted %d knowledge files into overflow", demoted)
             if estimate_request_bytes(messages, tool_defs, tools_wire) <= MAX_REQUEST_BYTES:
                 return "ok"
@@ -1450,7 +1479,7 @@ class Agent:
         next_title: str | None = None
         for t in self._task_plan:
             if t["status"] == "pending":
-                dep_ids = set(t.get("depends_on", []))
+                dep_ids = set(t.get("depends_on") or [])
                 if dep_ids <= completed_ids:
                     next_title = t["title"]
                     break
@@ -1523,7 +1552,7 @@ class Agent:
                 "id": t["id"],
                 "title": t["title"],
                 "status": "pending",
-                "depends_on": t.get("depends_on", []),
+                "depends_on": t.get("depends_on") or [],
             }
             for t in tasks
         ]
@@ -2082,7 +2111,9 @@ class Agent:
 
                 if tool_name == "knowledge_rw" and self._project_context:
                     op = args.get("operation")
-                    if op == "write":
+                    # Same guard as the chat loop: a failed write must not put
+                    # content into the context that never reached disk.
+                    if op == "write" and not result.get("error"):
                         from .knowledge.loader import update_context_file, _is_log_role
                         slug = args.get("slug", "")
                         content = args.get("content", "")

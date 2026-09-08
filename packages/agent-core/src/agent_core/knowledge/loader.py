@@ -167,6 +167,12 @@ async def load_project_context(
                 result.overflow_slugs.append(entry.slug)
                 result.overflow_entries[entry.slug] = entry
             continue
+        if entry.slug in result.loaded_content or entry.slug in result.overflow_slugs:
+            # Tier 1 already surfaced this slug from disk (full content, or the
+            # overflow list for oversized files). Listing it again under
+            # "Available Detail Knowledge" duplicates the prompt entry and lets
+            # knowledge_rw load inject the same content a second time.
+            continue
         result.deferred_entries[entry.slug] = entry
 
     result.loaded_entries.sort(key=lambda entry: (_category_sort_key(entry.category), entry.slug))

@@ -71,7 +71,7 @@
            injected at the agent's next step boundary, never interrupting it. -->
       <button
         class="submit-btn"
-        :disabled="isEmpty || hasPending"
+        :disabled="(isEmpty && !hasReadyAttachments) || hasPending"
         @click="submit"
         :title="hasPending ? t('composer.uploadingTitle') : isStreaming ? t('composer.sendInjectionTitle') : t('composer.sendTitle')"
       >
@@ -160,6 +160,11 @@ const fileInput = ref<HTMLInputElement | null>(null)
 // Only in-flight uploads block sending — failed attachments are excluded from
 // the submit payload and must not keep the send button disabled forever.
 const hasPending = computed(() => attachments.value.some(a => a.status === 'uploading'))
+// Mirrors submit()'s payload rule: a pure-attachment message is legal, so the
+// send button must enable on ready attachments even with an empty editor.
+const hasReadyAttachments = computed(() =>
+  attachments.value.some(a => a.status === 'ready' && a.record),
+)
 
 function isImageFile(f: File) {
   return f.type.startsWith('image/')

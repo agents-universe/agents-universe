@@ -74,6 +74,26 @@ describe('Composer attachments', () => {
     // Failed attachment stays visible (removable) but is not sent.
     expect(wrapper.find('.composer-attachment').exists()).toBe(true)
   })
+
+  it('enables send for an attachment-only message', async () => {
+    // A pure-attachment message is legal (Enter sends it, the backend accepts
+    // it) — the button must not be the only path that refuses.
+    mediaMock.upload.mockResolvedValue({ media_id: 'm-1', url: '/api/media/m-1' })
+    const wrapper = mount(Composer, { props: makeProps() })
+    await selectFile(wrapper)
+    await flushPromises()
+
+    const btn = wrapper.find('.submit-btn')
+    expect(btn.attributes('disabled')).toBeUndefined()
+
+    await btn.trigger('click')
+    const payload = wrapper.emitted('submit')![0][0] as {
+      content: string
+      attachments?: unknown[]
+    }
+    expect(payload.content).toBe('')
+    expect(payload.attachments).toHaveLength(1)
+  })
 })
 
 describe('Composer auto model option', () => {

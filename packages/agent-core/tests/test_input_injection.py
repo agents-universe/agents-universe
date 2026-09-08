@@ -291,6 +291,41 @@ async def test_inject_rejected_skips_message():
 
 
 @pytest.mark.asyncio
+async def test_inject_rejected_mid_stream_continues_under_new_id():
+    """A mid-stream injection that fails validation must not leave the loop
+    streaming under the id of the interrupted snapshot.
+
+    The handler persists the interrupted partial under the current id, so the
+    final stream_end reusing that id inserted a second row with the same
+    primary key (swallowed with a rollback) — the turn's output was lost and
+    the run row stayed "running".
+    """
+    agent = _make_agent()
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+    provider = _ScriptedProvider()
+
+    run_task = asyncio.create_task(agent._run_loop(
+        [Message(role="user", content="Initial")], [], provider, session, "cfg1"
+    ))
+    await provider.started.wait()
+
+    entry = _make_entry("inj-bad-mid", "   ")
+    assert session.enqueue_user_input(entry)
+    session.resolve_input_persisted("inj-bad-mid", False)
+
+    provider.release.set()
+    await run_task
+    await session.stop_drainer()
+
+    ends = _events_of(session, "stream_end")
+    interrupted = [d for d in ends if d.get("stop_reason") == "interrupted"]
+    assert len(interrupted) == 1
+    assert ends[-1]["message_id"] != interrupted[0]["message_id"]
+    assert not entry.consumed
+
+
+@pytest.mark.asyncio
 async def test_inject_persist_ack_timeout_falls_back_to_success():
     """If the persistence ack never resolves, the agent degrades to success
     (bounded wait) and keeps going — a stuck handler must not stall the loop."""

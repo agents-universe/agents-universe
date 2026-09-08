@@ -86,19 +86,40 @@ def validate_mcp_server_body(body: MCPServerBody) -> None:
 
 
 def _apply_body(row: MCPServer, body: MCPServerBody) -> None:
+    """Copy the request body onto the row.
+
+    Only fields the client actually sent are written: the settings UI edits a
+    subset of the schema (no ``headers``/``options``/``auth_value_template``),
+    so unconditional assignment silently wiped the tool allowlist/denylist,
+    custom headers and the auth header name on every edit. On create the
+    skipped fields fall back to the column defaults, which match the schema
+    defaults anyway.
+    """
+    provided = body.model_fields_set
     row.slug = body.slug.strip()
     row.name = body.name or row.slug
-    row.description = body.description
-    row.transport = body.transport
-    row.url = body.url
-    row.headers = _json_dump(body.headers)
-    row.auth_type = body.auth_type
-    row.secret_ref = body.secret_ref
-    row.secret_scope = body.secret_scope
-    row.auth_header_name = body.auth_header_name
-    row.auth_value_template = body.auth_value_template
-    row.options = _json_dump(body.options)
-    row.enabled = body.enabled
+    if "description" in provided:
+        row.description = body.description
+    if "transport" in provided:
+        row.transport = body.transport
+    if "url" in provided:
+        row.url = body.url
+    if "headers" in provided:
+        row.headers = _json_dump(body.headers)
+    if "auth_type" in provided:
+        row.auth_type = body.auth_type
+    if "secret_ref" in provided:
+        row.secret_ref = body.secret_ref
+    if "secret_scope" in provided:
+        row.secret_scope = body.secret_scope
+    if "auth_header_name" in provided:
+        row.auth_header_name = body.auth_header_name
+    if "auth_value_template" in provided:
+        row.auth_value_template = body.auth_value_template
+    if "options" in provided:
+        row.options = _json_dump(body.options)
+    if "enabled" in provided:
+        row.enabled = body.enabled
 
 
 def _json_dump(v) -> str | None:
@@ -179,6 +200,9 @@ def serialize_mcp_server(
         "enabled": bool(row.enabled),
         "auth_type": row.auth_type,
         "secret_ref": row.secret_ref,
+        # Header name only (never the value) — the edit form needs it to
+        # round-trip, otherwise saving the form clears it.
+        "auth_header_name": row.auth_header_name,
         "has_secret": has_secret,
         "tool_allowlist": tools.get("allowlist") or [],
         "tool_denylist": tools.get("denylist") or [],

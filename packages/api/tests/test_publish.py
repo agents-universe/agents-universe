@@ -154,6 +154,9 @@ async def test_create_and_list_publish(client, db, make_project, as_user):
     pubid = body["publish_id"]
     assert body["agent_slug"] == slug
     assert body["model_config_id"] == cfg.config_id
+    # Same shape as GET/list — the UI prepends this row and renders its date.
+    assert body["created_at"]
+    assert body["updated_at"] is None
 
     async with as_user("test-user"):
         r = await client.get("/api/publishes")
@@ -169,6 +172,10 @@ async def test_publish_key_plaintext_shown_once(client, db, make_project, as_use
     body = r.json()
     plain = body["key"]
     assert plain.startswith("pua_")
+    # The list shape (active badge + date) must be usable without a reload.
+    assert body["is_active"] is True
+    assert body["created_at"]
+    assert body["revoked_at"] is None
 
     # Listing keys must never include the plaintext.
     async with as_user("test-user"):

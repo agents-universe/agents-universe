@@ -209,3 +209,33 @@ async def test_stringified_focus_areas_rejected_cleanly(setup):
     )
     assert "error" in result
     assert "array" in result["error"].lower()
+
+
+async def test_string_list_focus_areas_rejected_cleanly(setup):
+    """A list of strings (not objects) hits the same .get() crash as the bare
+    string form — reject it with the same actionable message."""
+    project, src, out = setup
+    result = await ImageAnnotatorTool().execute(
+        {
+            "image_path": str(src),
+            "output_path": str(out),
+            "focus_areas": ["login button", "error banner"],
+        },
+        make_context(str(project)),
+    )
+    assert "error" in result
+    assert "array" in result["error"].lower()
+
+
+async def test_string_list_annotations_rejected_cleanly(setup):
+    project, src, out = setup
+    result = await ImageAnnotatorTool().execute(
+        {
+            "image_path": str(src),
+            "output_path": str(out),
+            "annotations": ["box at 100,100"],
+        },
+        make_context(str(project)),
+    )
+    assert "error" in result
+    assert "array" in result["error"].lower()

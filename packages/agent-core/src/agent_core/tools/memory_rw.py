@@ -15,8 +15,15 @@ _log = logging.getLogger(__name__)
 MAX_SESSION_NOTES = 20
 MAX_NOTE_LENGTH = 200
 
+# A keyword must end at a non-letter (or the string): "PASSWORD=x",
+# "api_key: ...", "the password is hunter2" all still match, while the
+# English words that merely CONTAIN a keyword — author, authentication,
+# tokenizer, secretive — no longer do. Plain substring matching rejected
+# those as secrets, so a legitimate fact ("the author of this module is ...")
+# could never be stored.
 _SECRET_PATTERN = re.compile(
-    r"TOKEN|PASSWORD|SECRET|COOKIE|API_KEY|PRIVATE_KEY|CLIENT_SECRET|BEARER|CREDENTIAL|AUTH",
+    r"(?:TOKEN|PASSWORD|SECRET|COOKIE|API_KEY|PRIVATE_KEY|CLIENT_SECRET|BEARER|CREDENTIAL"
+    r"|(?<!O)AUTH)(?:[^A-Za-z]|$)",
     re.IGNORECASE,
 )
 

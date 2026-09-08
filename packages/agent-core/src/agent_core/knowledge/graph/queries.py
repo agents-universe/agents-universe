@@ -185,7 +185,15 @@ def shortest_path(
     while node is not None:
         path.append(node)
         node = parent_r[node]
-    return {"path": path, "hops": len(path) - 1, "from": start_id, "to": end_id}
+    hops = len(path) - 1
+    # Each loop iteration expands ONE level from each side, so the search above
+    # covered up to 2*max_hops hops and could return a path longer than the
+    # caller's limit (while the error message claimed a bound it did not
+    # honor). The shortest path is already in hand — reject it if it exceeds
+    # the limit.
+    if hops > max_hops:
+        return {"error": f"no path between {start_id!r} and {end_id!r} within {max_hops} hops"}
+    return {"path": path, "hops": hops, "from": start_id, "to": end_id}
 
 
 def search(graph: RepoGraph, query: str, limit: int = SEARCH_LIMIT) -> dict[str, Any]:

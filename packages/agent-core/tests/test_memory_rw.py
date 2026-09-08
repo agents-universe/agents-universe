@@ -205,3 +205,35 @@ async def test_recall_episodes_uses_fetch_clause_on_mssql():
     assert "FETCH NEXT :lim ROWS ONLY" in captured["sql"]
     assert "LIMIT" not in captured["sql"]
     assert captured["params"]["lim"] == 7
+
+
+@pytest.mark.asyncio
+async def test_save_allows_words_that_merely_contain_a_keyword(memories_db):
+    """The secret guard used a plain substring match, so "the author of this
+    module is X" was rejected as a secret (AUTH inside author). A keyword must
+    end at a non-letter to count."""
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+
+    for content in (
+        "The author of this module is Jane",
+        "authentication uses OAuth 2.0",
+        "we use the BPE tokenizer",
+    ):
+        result = await tool.execute({"operation": "save", "content": content}, ctx)
+        assert "error" not in result, (content, result)
+
+
+@pytest.mark.asyncio
+async def test_save_still_rejects_actual_secret_shapes(memories_db):
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+
+    for content in (
+        "PASSWORD=hunter2",
+        "api_key: sk-abc123",
+        "the password is hunter2",
+        "authToken=abc",
+    ):
+        result = await tool.execute({"operation": "save", "content": content}, ctx)
+        assert "error" in result, (content, result)

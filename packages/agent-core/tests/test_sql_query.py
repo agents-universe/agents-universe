@@ -67,3 +67,14 @@ def test_validate_comment_split_identifier_cannot_smuggle_blocked_table():
 def test_validate_blocked_table_still_rejected():
     err, _ = _validate_readonly_select("SELECT * FROM user_tokens")
     assert err and "blocked" in err
+
+
+def test_validate_apostrophe_in_bracket_identifier_cannot_hide_blocked_table():
+    """A bracket identifier containing ' desynced the literal masker.
+
+    `[a'b]` opened a string literal that was never closed, so everything after
+    it (including FROM user_tokens) was blanked before the blocklist ran.
+    """
+    err, stripped = _validate_readonly_select("SELECT *, 1 AS [a'b] FROM user_tokens")
+    assert err and "blocked" in err
+    assert "user_tokens" in stripped

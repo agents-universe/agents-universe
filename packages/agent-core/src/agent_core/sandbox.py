@@ -185,6 +185,263 @@ def _skip_subst_parens(text: str, start: int) -> int | None:
     return None
 
 
+
+# Arithmetic expansion regions ($((...)), $[...], and a leading ((...))
+# use << as the bit-shift operator — the scanner must skip them or
+# `echo $((1 << 2))` would open a bogus heredoc whose "body" swallows the
+# following lines un-validated. Parens nest inside arithmetic, so the region
+# closes at the first `))` that empties the depth.
+def _skip_arith_parens(line: str, start: int) -> int | None:
+    depth = 2
+    n = len(line)
+    j = start
+    while j < n:
+        if line[j] == "(":
+            depth += 1
+        elif line[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return None
+
+
+def _at_command_start(line: str, i: int) -> bool:
+    """True when *i* starts a command: line start, after ; & | ( {, or after
+    a control keyword (if/while/...)."""
+    j = i - 1
+    while j >= 0 and line[j] in " \t":
+        j -= 1
+    if j < 0 or line[j] in ";&|({!":
+        return True
+    # `if (( 1 << 2 )); then` — the arithmetic follows a control keyword,
+    # not a separator. Any other word glued to `((` is a bash syntax error,
+    # so the keyword whitelist only narrows the skip.
+    if line[j].isalnum() or line[j] == "_":
+        start = j
+        while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+            start -= 1
+        return line[start : j + 1] in _CMD_KEYWORDS
+    return False
+
+
+# Control keywords that introduce a command (see _at_command_start).
+_CMD_KEYWORDS = frozenset({"if", "elif", "then", "else", "while", "until", "for", "do"})
+
+
+def _skip_braced(line: str, start: int) -> int | None:
+    """Index of the `}` closing a ${...} region opened at *start* (points
+    past the `${`). Nested braces (`${x:-${y}}`) count depth; a `}` inside a
+    quoted string does not close the region. `$(...)`, `$((...))` and
+    backticks inside the region are skipped whole — bash's parameter parser
+    does not treat a `}` inside them as the closing brace (`${x:-$(echo a})}`
+    closes at the FINAL `}`). Returns None when never closed — the line is a
+    bash syntax error and opens no heredoc.
+    """
+    depth = 1
+    n = len(line)
+    j = start
+    while j < n:
+        c = line[j]
+        if c == "\\" and j + 1 < n:
+            j += 2
+            continue
+        if c == "$" and j + 1 < n:
+            if j + 2 < n and line[j + 1] == "(" and line[j + 2] == "(":
+                end = _skip_arith_parens(line, j + 3)
+                if end is None:
+                    return None
+                j = end + 1
+                continue
+            if line[j + 1] == "(":
+                end = _skip_subst_parens(line, j + 2)
+                if end is None:
+                    return None
+                j = end + 1
+                continue
+        if c == "`":
+            end = line.find("`", j + 1)
+            if end == -1:
+                return None
+            j = end + 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            j += 1
+            while j < n:
+                if q == '"' and line[j] == "\\" and j + 1 < n and line[j + 1] in ('"', "\\"):
+                    j += 2
+                    continue
+                if line[j] == q:
+                    break
+                j += 1
+            j += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return None
+
+
+# Heredoc opener: `<<EOF` (unquoted → bash performs command substitution in
+# the body) vs `<<'EOF'` / `<<"EOF"` (quoted → literal body). Group 1 captures
+# the quote character, group 2 the delimiter.
+def _find_heredoc_start(line: str) -> tuple[str, bool] | None:
+    """Return (delimiter, quoted) when *line* opens a heredoc outside quotes.
+
+    Scans the raw line tracking quote state, so a `<<EOF` inside a quoted
+    string (`echo "x <<EOF"`) is not detected and the following lines are
+    still validated as commands. Handles `<< EOF`, `<<EOF`, `<<"EOF"`,
+    `<<'EOF'` and the `<<-` tab-stripping form; `<<<` herestrings are not
+    heredocs. Returns None when the line opens no heredoc.
+    """
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            while i < n:
+                c = line[i]
+                # \" does not close a double-quoted string
+                if quote == '"' and c == "\\" and i + 1 < n and line[i + 1] in ('"', "\\"):
+                    i += 2
+                    continue
+                if c == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2  # an escaped char cannot start a heredoc
+            continue
+        if ch == "$" and i + 1 < n:
+            if line[i + 1] == "{":
+                # ${...} may hold arithmetic in array subscripts
+                # (`${arr[1 << 2]}`) — a << inside must not open a heredoc.
+                end = _skip_braced(line, i + 2)
+                if end is None:
+                    return None  # unclosed ${ — syntax error, no heredoc
+                i = end + 1
+                continue
+            if line[i + 1] == "[":
+                end = line.find("]", i + 2)
+                if end == -1:
+                    return None  # unclosed $[ — syntax error, no heredoc here
+                i = end + 1
+                continue
+            if line[i + 1] == "(" and i + 2 < n and line[i + 2] == "(":
+                end = _skip_arith_parens(line, i + 3)
+                if end is None:
+                    return None  # unclosed $(( — syntax error, no heredoc here
+                i = end + 1
+                continue
+        if ch == "(" and i + 1 < n and line[i + 1] == "(" and _at_command_start(line, i):
+            end = _skip_arith_parens(line, i + 2)
+            if end is None:
+                return None  # unclosed (( — syntax error, no heredoc here
+            i = end + 1
+            continue
+        if ch == "<" and i + 1 < n and line[i + 1] == "<":
+            j = i + 2
+            if j < n and line[j] == "<":
+                i = j + 1  # <<< herestring — not a heredoc
+                continue
+            if j < n and line[j] == "-":
+                j += 1
+            while j < n and line[j] in " \t":
+                j += 1
+            if j >= n:
+                return None
+            if line[j] in ("'", '"'):
+                q = line[j]
+                end = line.find(q, j + 1)
+                if end == -1:
+                    return None
+                # Fail closed: bash performs quote removal on the delimiter,
+                # so anything after the closing quote (`<<"EO"F`) makes the
+                # real delimiter ambiguous. Treat it as not-a-heredoc and
+                # validate the following lines as ordinary commands.
+                rest = line[end + 1:].lstrip(" \t")
+                if rest and rest[0] not in ";|&<>":
+                    return None
+                return line[j + 1:end], True
+            if line[j] == "\\":
+                # \EOF is a quoted delimiter (bash treats the body literally,
+                # same as <<'EOF') — return quoted=True so substitution
+                # payloads in the body are NOT treated as live commands.
+                # Fail closed: bash also performs quote removal on this form
+                # (`<<\EO\F` is delimiter EOF), so a delimiter still holding
+                # backslashes/quotes after the first one cannot be matched
+                # reliably — return None and validate every following line
+                # as an ordinary command.
+                j += 1
+                start = j
+                while j < n and line[j] not in " \t;|&<>":
+                    j += 1
+                delim = line[start:j]
+                if j == start or "\\" in delim or "'" in delim or '"' in delim:
+                    return None
+                return delim, True
+            start = j
+            while j < n and line[j] not in " \t;|&<>":
+                j += 1
+            if j == start:
+                return None
+            return line[start:j], False
+        i += 1
+    return None
+
+
+def split_logical_lines(command: str) -> list[tuple[str, bool]]:
+    """Split *command* into logical lines: ``[(text, is_heredoc_body), ...]``.
+
+    A newline separates commands in the shell, but shlex treats it as plain
+    whitespace — ``ls\\nrm -rf keep`` tokenizes as ONE command whose arguments
+    are ``rm -rf keep``, so the allowlist (first token ``ls``) and the
+    per-argument path checks both passed while bash ran ``rm`` for real.
+    Callers must therefore validate each logical line as its own command.
+
+    Physical lines whose quotes are still open (a quoted string may span
+    lines) and lines ending in an escaped newline (``\\`` continuation, where
+    bash joins the lines into one command) are merged. Heredoc bodies are
+    flagged: bash feeds them to the command's stdin as data, not commands —
+    though an unquoted body still runs command substitution, which callers
+    check on the whole command.
+    """
+    out: list[tuple[str, bool]] = []
+    buffer = ""
+    heredoc_delim: str | None = None
+    for raw in command.split("\n"):
+        if heredoc_delim is not None:
+            out.append((raw, True))
+            if raw.strip() == heredoc_delim:
+                heredoc_delim = None
+            continue
+        candidate = f"{buffer}\n{raw}" if buffer else raw
+        trailing_backslashes = len(candidate) - len(candidate.rstrip("\\"))
+        # has_unclosed_quote only reports quote errors; a line ending in an
+        # odd number of backslashes escapes the newline instead (shlex raises
+        # "No escaped character"), joining the next line into this command.
+        if has_unclosed_quote(candidate) or trailing_backslashes % 2:
+            buffer = candidate
+            continue
+        buffer = ""
+        out.append((candidate, False))
+        heredoc = _find_heredoc_start(candidate)
+        if heredoc is not None:
+            heredoc_delim = heredoc[0]
+    if buffer:
+        # Unclosed quote at end of input — emitted as-is so validation fails
+        # closed rather than silently dropping the tail.
+        out.append((buffer, False))
+    return out
+
+
 def _check_all_substitutions(
     text: str, *, cwd: Path, root: Path, single_quotes_literal: bool = True
 ) -> str | None:
@@ -443,13 +700,6 @@ def validate_command(
     if not allow_substitution and ("$(" in command or "`" in command):
         return "Command substitution ($(...) or backticks) is not allowed"
 
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError as exc:
-        return f"Command could not be parsed safely ({exc}); refusing to run"
-
     cwd = Path(cwd).resolve()
     root = Path(project_root).resolve()
     temp = Path(tempfile.gettempdir()).resolve()
@@ -458,7 +708,8 @@ def validate_command(
     # validation as its own command. _SUBST_RE alone misses the OUTER layers
     # of nested $(...), which bash still executes (echo "$(cat $(echo
     # /etc/passwd))" reads host files if the outer `cat ...` layer is never
-    # checked).
+    # checked). Runs on the whole command so unquoted heredoc bodies (which
+    # execute substitutions) are covered too.
     if allow_substitution and ("$(" in command or "`" in command):
         reason = _check_all_substitutions(command, cwd=cwd, root=root)
         if reason:
@@ -472,14 +723,28 @@ def validate_command(
     # in effect on line 3, and its value was checked when the line passed.
     assigned_vars = set(pre_assigned_vars or ())
 
-    for segment in _split_segments(tokens):
-        reason = _validate_segment(
-            segment, cwd=cwd, root=root, temp=temp,
-            allow_substitution=allow_substitution,
-            assigned_vars=assigned_vars, tainted_vars=tainted_vars,
-        )
-        if reason:
-            return reason
+    # Each logical line is a separate command: tokenizing the whole string at
+    # once let a later line's command word be read as an argument of the first
+    # line's command (echo ok\ncat /etc/passwd passed every check because `cat`
+    # and `/etc/passwd` were echo's data args). Heredoc bodies are stdin data,
+    # not commands — their substitution payloads were checked above.
+    for line, is_heredoc_body in split_logical_lines(command):
+        if is_heredoc_body:
+            continue
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError as exc:
+            return f"Command could not be parsed safely ({exc}); refusing to run"
+        for segment in _split_segments(tokens):
+            reason = _validate_segment(
+                segment, cwd=cwd, root=root, temp=temp,
+                allow_substitution=allow_substitution,
+                assigned_vars=assigned_vars, tainted_vars=tainted_vars,
+            )
+            if reason:
+                return reason
     return None
 
 
@@ -963,7 +1228,10 @@ def _git_internal_path(tok: str) -> str | None:
     rel = tok.replace("\\", "/")
     if rel.startswith("./"):
         rel = rel[2:]
-    if ".git" in rel.split("/"):
+    # Case-insensitive: on Windows/macOS filesystems `.GIT/hooks/x` IS
+    # `.git/hooks/x`, so an exact-match check let the guard be bypassed by
+    # casing (git itself resolves the directory case-insensitively there).
+    if any(part.lower() == ".git" for part in rel.split("/")):
         return (
             f"Path {tok!r} writes inside .git — hooks and config are git "
             "internals that execute unvalidated code or corrupt the repo; "

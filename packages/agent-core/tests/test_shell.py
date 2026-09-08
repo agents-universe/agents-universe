@@ -359,6 +359,15 @@ ESCAPE_COMMANDS = [
     "python -IS x.py",
     'python3 -E -c "print(1)"',
     'cat "unclosed',
+    # Newline-joined commands: shlex reads the newline as whitespace, so the
+    # second line's command word used to be an argument of the first line's
+    # (echo's args are never path-checked; `ls` accepted any argument).
+    "ls\nrm -rf keep",
+    "echo ok\ncat ../proj-b/secret.txt",
+    "echo ok\ncat /abs/path",
+    "echo ok\ncat ~/x",
+    "git status\nrm -rf keep",
+    "ls\nrm -rf ../proj-b",
 ]
 
 
@@ -580,6 +589,23 @@ async def test_ls_and_grep_regression(sibling_projects):
     for command in ("ls", "ls sub", "grep -r local ."):
         result = await tool.execute({"command": command}, ctx)
         assert result.get("exit_code") == 0, f"{command}: {result}"
+
+
+async def test_multiline_command_runs_each_line(sibling_projects):
+    """Legit multi-line commands still execute: both lines run in one shell."""
+    proj_a, _, _ = sibling_projects
+    tool = shell_module.ShellTool()
+    ctx = make_context(project_fs_path=str(proj_a))
+
+    result = await tool.execute({"command": "ls\nls sub"}, ctx)
+    assert result.get("exit_code") == 0, result
+    assert "local.txt" in result["stdout"]
+
+    # Heredoc bodies are stdin data, not commands — they must not be treated
+    # as (or rejected for being) extra command lines.
+    result = await tool.execute({"command": "cat <<EOF\nlocal-data\nEOF"}, ctx)
+    assert result.get("exit_code") == 0, result
+    assert "local-data" in result["stdout"]
 
 
 async def test_python_inline_allowed_and_guarded(sibling_projects, guarded_temp):

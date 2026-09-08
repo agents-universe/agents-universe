@@ -894,6 +894,13 @@ class GitRepoTool(Tool):
         valid: list[str] = []
         for path in paths:
             normalized = path.replace("\\", "/").rstrip("/")
+            # A leading ./ is a valid git pathspec but never appears in
+            # `git diff --name-only` output, so _path_selected compared
+            # "src/a.py" against "./src/a.py" and blocked the commit as
+            # "staged changes exceed selected paths". Normalize it away (the
+            # escape checks below then run on the stripped form).
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
             raw = Path(normalized)
             if (
                 raw.is_absolute()

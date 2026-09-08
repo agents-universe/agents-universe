@@ -51,8 +51,12 @@ def test_default_context_window_name_matching():
     assert default_context_window("openai", "gpt-5.2") == 1_000_000
     assert default_context_window("openai", "o4-mini") == 200_000
     assert default_context_window("openai", "gpt-4o") == 128_000
-    # GLM-5.3 (flagship) → 1M; earlier GLM lines → fallback.
+    # GLM-5.3 (flagship) → 1M; earlier GLM lines → fallback. Three-part
+    # versions parse as tuples — float("5.3.1") raised, float("5.10") = 5.1
+    # ranked a newer release below 5.3.
     assert default_context_window("openai", "glm-5.3") == 1_000_000
+    assert default_context_window("openai", "glm-5.3.1") == 1_000_000
+    assert default_context_window("openai", "glm-5.10") == 1_000_000
     assert default_context_window("openai", "glm-5.2") == 128_000
     # azure_openai shares the OpenAI table (deployment names → 128k fallback).
     assert default_context_window("azure_openai", "my-deployment") == 128_000

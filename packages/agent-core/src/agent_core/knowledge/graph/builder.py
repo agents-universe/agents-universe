@@ -580,7 +580,11 @@ def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
         # (src/main/java, src/main, src, ...) up to the file's parent.
         for i in range(1, len(parts)):
             roots.add("/".join(parts[:i]))
-    return sorted((r for r in roots if r), key=lambda r: -r.count("/"))
+    # "" is kept: it is the repo-root fallback the docstring promises, and a
+    # package tree sitting directly at the repo root only resolves through it.
+    # The second key forces it last: -count("") ties with any single-segment
+    # root ("src", "com"), and set-iteration order would otherwise decide.
+    return sorted(roots, key=lambda r: (-r.count("/"), r == ""))
 
 
 def _resolve_module(
@@ -607,12 +611,22 @@ def _resolve_module(
 
 
 def _py_module_candidates(module: str, rel_dir: str) -> list[str]:
-    stripped = module.lstrip(".")
+    dots = len(module) - len(module.lstrip("."))
+    if dots:
+        # One dot is the importing file's own package; each further dot walks
+        # up one level (`from ..util import x` in a/b/c.py is a/util.py, not
+        # a/b/util.py). Absolute imports stay repo-root relative.
+        base = rel_dir
+        for _ in range(dots - 1):
+            base = posixpath.dirname(base)
+    else:
+        base = ""
+    stripped = module[dots:]
     dotted = stripped.replace(".", "/")
     if not dotted:
-        # `from . import x` — the package itself
-        return [f"{rel_dir}/__init__.py"] if rel_dir else []
-    prefix = f"{rel_dir}/" if module.startswith(".") else ""
+        # `from . import x` / `from .. import y` — the package itself
+        return [f"{base}/__init__.py"] if base else []
+    prefix = f"{base}/" if base else ""
     return [f"{prefix}{dotted}.py", f"{prefix}{dotted}/__init__.py"]
 
 

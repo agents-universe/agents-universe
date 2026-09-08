@@ -420,6 +420,66 @@ async def test_bash_cross_project_redirect_rejected(sibling_projects, guarded_te
     assert "error" in result
 
 
+def _bash_honors_injected_env() -> bool:
+    """Whether the `bash` on PATH reads the environment it is handed.
+
+    WSL's bash.exe starts a fresh Linux session and drops the Windows
+    environment (including an injected HOME), so the check below cannot hold
+    on such a host — skip rather than assert a property the platform breaks.
+    """
+    import os
+    import subprocess
+
+    env = {**os.environ, "AGENT_ENV_PROBE": "probe"}
+    try:
+        out = subprocess.run(
+            ["bash", "-c", "echo $AGENT_ENV_PROBE"],
+            env=env, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "probe" in out.stdout
+
+
+async def test_bash_home_points_inside_project(sibling_projects, guarded_temp):
+    """bash must not inherit the host HOME.
+
+    $HOME is whitelisted as a project-internal path variable, so an inherited
+    host HOME made `cat $HOME/.aws/credentials` pass the path checks and read
+    host dotfiles.
+    """
+    if not _bash_honors_injected_env():
+        pytest.skip("platform bash ignores the injected environment (WSL)")
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {"code": 'echo "$HOME"', "language": "bash"},
+        make_context(str(proj_a)),
+    )
+    assert result.get("exit_code") == 0, result
+    home = result["stdout"].strip()
+    assert home, result
+    assert Path(home).resolve().is_relative_to(proj_a.resolve()), home
+
+
+@pytest.mark.parametrize("language", ["sh", "shell", "Bash", "bash ", "", "python3"])
+async def test_unknown_language_rejected(language, sibling_projects, guarded_temp):
+    """Only the three declared languages run — anything else fails closed.
+
+    Regression: every guard is keyed on the exact language string, so an
+    undeclared value skipped them all and fell through to the bash branch,
+    running arbitrary shell with no blocklist and no path validation.
+    """
+    proj_a, proj_b, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {"code": "cat ../proj-b/secret.txt", "language": language},
+        make_context(str(proj_a)),
+    )
+    assert "error" in result, result
+    assert "secret-data" not in result.get("stdout", "")
+
+
 async def test_bash_command_substitution_allowed(sibling_projects, guarded_temp):
     proj_a, _, _ = sibling_projects
     tool = CodeExecutorTool()
@@ -871,6 +931,9 @@ async def test_bash_git_hooks_redirect_rejected(sibling_projects, guarded_temp):
         "echo 'cat /etc/passwd' > .git/hooks/pre-commit",
         "printf '#!/bin/sh\\ncat /etc/passwd\\n' >> .git/hooks/post-checkout",
         "cat /etc/passwd > ./.git/hooks/post-merge",
+        # Windows/macOS resolve .GIT to the same directory as .git.
+        "echo 'cat /etc/passwd' > .GIT/hooks/pre-commit",
+        "echo x > .Git/config",
     ):
         result = await tool.execute(
             {"code": code, "language": "bash"},
@@ -1176,3 +1239,26 @@ async def test_pw_network_all_by_default(sibling_projects, guarded_temp):
     )
     stderr = result.get("stderr", "")
     assert "agent-guard" not in stderr, stderr
+
+
+async def test_cancel_during_spawn_propagates_cancelled_error(sibling_projects, monkeypatch):
+    """Cancellation delivered while create_subprocess_exec is still awaiting.
+
+    The timeout/cancel handlers referenced `proc` before it was bound, so a
+    cancel at this exact point raised UnboundLocalError instead of propagating
+    the CancelledError (the run could not be aborted cleanly).
+    """
+    import asyncio
+
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+
+    async def _cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute(
+            {"code": "print(1)", "language": "python"}, make_context(str(proj_a))
+        )

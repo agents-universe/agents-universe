@@ -160,7 +160,36 @@ def _redact_sensitive_fields(obj: Any, depth: int = 0, max_depth: int = 10) -> A
     return obj
 
 
-def _redact_secret_values(obj: Any, secrets: list[str], depth: int = 0, max_depth: int = 10) -> Any:
+def _secret_text_variants(value: str) -> list[str]:
+    """The forms a secret can take inside an error message.
+
+    h11 renders an illegal header value as a ``bytes`` repr, so a secret
+    holding a control character or a non-ASCII byte shows up escaped
+    (``\\n``, ``\\xe4``) rather than raw — a plain substring replace would
+    miss it and print the credential.
+    """
+    variants = [value]
+    try:
+        rendered = repr(value.encode("utf-8"))
+        if rendered[:2] in ("b'", 'b"'):
+            variants.append(rendered[2:-1])
+    except Exception:
+        pass
+    return variants
+
+
+def _redact_secret_text(text: str, secrets: dict[str, str]) -> str:
+    """Scrub secret values (and their escaped forms) out of a message."""
+    for name, value in secrets.items():
+        if not value:
+            continue
+        for variant in _secret_text_variants(value):
+            if variant:
+                text = text.replace(variant, f"[REDACTED:{name}]")
+    return text
+
+
+def _redact_secret_values(obj: Any, secrets: dict[str, str], depth: int = 0, max_depth: int = 10) -> Any:
     """Recursively scrub resolved secret VALUES from JSON response data.
 
     Field-name redaction (`_redact_sensitive_fields`) misses upstreams that
@@ -490,7 +519,18 @@ class ApiRequestTool(Tool):
         extra_headers, _err = _coerce_dict_field(params.get("headers"), "headers")
         if _err:
             return {"error": _err}
-        json_body = params.get("json_body")
+        raw_json_body = params.get("json_body")
+        json_body, _err = _coerce_dict_field(raw_json_body, "json_body")
+        if _err:
+            return {"error": _err}
+        if raw_json_body is not None:
+            # Copy: auth_type "body_field" writes the resolved PLAINTEXT secret
+            # into this dict below. Aliasing params leaked it into the
+            # tool_call args — persisted to the DB, streamed to the UI, and
+            # replayed into the LLM history on the next turn.
+            json_body = dict(json_body)
+        else:
+            json_body = None
         auth_header_name: str | None = params.get("auth_header_name")
         auth_prefix: str | None = params.get("auth_prefix")
 
@@ -782,12 +822,24 @@ class ApiRequestTool(Tool):
                 method, parsed_host, integration_key, environment, endpoint_key,
             )
             return {"error": f"Request timed out after {timeout_seconds}s", "integration_key": integration_key}
+        except httpx.LocalProtocolError as exc:
+            # h11 embeds the offending header value in the message, and for a
+            # stored secret with a control character that IS the credential.
+            # This string reaches the LLM, the message history and the log, so
+            # scrub the secret (raw and bytes-repr escaped) before either.
+            detail = _redact_secret_text(str(exc), secrets)
+            _log.warning(
+                "api_request illegal header: %s %s | integration=%r env=%r endpoint=%r | %s",
+                method, parsed_host, integration_key, environment, endpoint_key, detail,
+            )
+            return {"error": f"Network error: {detail}", "integration_key": integration_key}
         except httpx.RequestError as exc:
+            detail = _redact_secret_text(str(exc), secrets)
             _log.warning(
                 "api_request network error: %s %s | integration=%r env=%r endpoint=%r | %s",
-                method, parsed_host, integration_key, environment, endpoint_key, exc,
+                method, parsed_host, integration_key, environment, endpoint_key, detail,
             )
-            return {"error": f"Network error: {exc}", "integration_key": integration_key}
+            return {"error": f"Network error: {detail}", "integration_key": integration_key}
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         response_size = len(response_text)

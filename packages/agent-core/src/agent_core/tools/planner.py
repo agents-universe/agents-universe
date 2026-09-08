@@ -61,8 +61,17 @@ class PlannerTool(Tool):
     }
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        # Assign stable IDs if not provided
         tasks = params.get("tasks", [])
+        # The schema declares an array of objects, but models also emit a bare
+        # string or a list of strings; .get() on those raises AttributeError,
+        # which reaches the model as an opaque crash instead of something it
+        # can correct.
+        if not isinstance(tasks, list):
+            return {"error": "tasks must be an array of task objects"}
+        for task in tasks:
+            if not isinstance(task, dict):
+                return {"error": f"each task must be an object, got {type(task).__name__}"}
+        # Assign stable IDs if not provided
         for task in tasks:
             if not task.get("id"):
                 task["id"] = f"t{uuid.uuid4().hex[:6]}"

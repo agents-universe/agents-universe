@@ -83,8 +83,12 @@ def infer_complexity_tier(provider: str, model_id: str) -> str | None:
         if keyword in tokens:
             return "mid"
     match = _GLM_VERSION.match(model_id.lower())
-    if match and float(match.group(1)) >= 5.3:
-        return "high"
+    if match:
+        # Version-tuple compare, not float(): "5.3.1" is not a float at all,
+        # and float() would rank 5.10 below 5.3.
+        version = tuple(int(part) for part in match.group(1).split("."))
+        if version >= (5, 3):
+            return "high"
     if any(_has_brand(tokens, b) for b in _BRAND_DEFAULT_MID):
         return "mid"
     return None

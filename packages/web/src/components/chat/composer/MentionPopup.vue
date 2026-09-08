@@ -29,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Bot } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
@@ -65,6 +65,12 @@ function moveUp() { if (filtered.value.length) cursor.value = (cursor.value - 1 
 function selectCurrent() {
   if (filtered.value[cursor.value]) emit('select', filtered.value[cursor.value])
 }
+
+// Narrowing the query can shrink the list below the highlighted index; without
+// the clamp no row is active and Enter silently does nothing.
+watch(filtered, (items) => {
+  if (cursor.value >= items.length) cursor.value = 0
+})
 
 // Close only on a complete outside click (press + release both outside);
 // a press inside the popup released outside is a drag, not a dismissal.

@@ -133,6 +133,15 @@ class UserConfirmTool(Tool):
         # would break the dialog rendering. Reject instead of mis-prompting.
         if isinstance(options, str):
             return {"error": "options must be an array of {label, value} objects, not a string"}
+        if not isinstance(options, list):
+            return {"error": "options must be an array of {label, value} objects"}
+        for option in options:
+            # A bare string renders as a blank button (label/value undefined),
+            # so reject rather than prompt with an unusable dialog.
+            if not isinstance(option, dict) or not option.get("label"):
+                return {
+                    "error": "each option must be an object with a 'label' (and 'value')"
+                }
         field_key = params.get("field_key", service_key or "")
         allow_other = params.get("allow_other", True)
 

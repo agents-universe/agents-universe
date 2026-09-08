@@ -53,3 +53,36 @@ async def test_stringified_test_cases_rejected(tmp_path):
     result = await tool.execute(_params(test_cases="just one case"), _context(proj))
     assert "error" in result
     assert "array" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Step/expected conversion (pure helpers)
+# ---------------------------------------------------------------------------
+
+
+def test_click_step_splits_case_insensitively():
+    """`step.split("click")` on the original text found nothing in a
+    capitalized step, so the whole sentence became the locator name."""
+    from agent_core.tools.test_generator import _step_to_action
+
+    action = _step_to_action("Click the login button")
+    assert "name: /the login button/i" in action, action
+
+
+def test_download_step_uses_wait_for_event():
+    """Playwright has no page.waitForDownload() — the generated spec threw
+    "page.waitForDownload is not a function"."""
+    from agent_core.tools.test_generator import _step_to_action
+
+    action = _step_to_action("Download the report")
+    assert "page.waitForEvent('download')" in action, action
+    assert "waitForDownload" not in action
+    assert "name: /the report/i" in action, action
+
+
+def test_expected_visible_splits_case_insensitively():
+    from agent_core.tools.test_generator import _expected_to_assertion
+
+    assertion = _expected_to_assertion("Visible: Welcome back")
+    assert "toContainText" not in assertion  # visible → toBeVisible
+    assert "Welcome back" in assertion, assertion

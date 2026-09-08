@@ -215,10 +215,11 @@ async def _fake_get_token(context, service_key):
 
 
 @pytest.mark.asyncio
-async def test_http_error_body_redacts_token():
+async def test_http_error_body_redacts_token(caplog):
     """GitHub gateways echo the submitted credential back in error bodies
     (same pattern kong.py redacts). The resolved token must never reach the
-    LLM/history inside the returned error message."""
+    LLM/history inside the returned error message — nor the log, which used
+    to receive the raw body before the redaction pass."""
     http = AsyncMock()
 
     async def _boom(*args, **kwargs):
@@ -243,3 +244,82 @@ async def test_http_error_body_redacts_token():
     assert result["error"].startswith("GitHub API returned 401")
     assert "ghp_secret-token-123456" not in result["error"]
     assert "REDACTED" in result["error"]
+    assert "ghp_secret-token-123456" not in caplog.text
+
+
+def _check(name: str, status: str, conclusion) -> dict:
+    return {
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "html_url": f"https://ghe.example/checks/{name}",
+    }
+
+
+async def _get_checks(check_runs: list[dict], status_payload, status_code: int = 200):
+    http = AsyncMock()
+    http.get.side_effect = [
+        FakeResponse(200, {"check_runs": check_runs}),
+        FakeResponse(status_code, status_payload),
+    ]
+    return await GitHubTool()._op_get_commit_checks(
+        {"repository": "team/service", "sha": "abc123"},
+        "https://ghe.example/api/v3",
+        {},
+        http,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_checks_actions_only_repo_is_all_passing():
+    """Zero legacy statuses + green check-runs is the Actions-only shape.
+
+    The Commit Status API reports "pending" for a commit with no statuses,
+    so requiring combined_state == "success" pinned all_passing to False for
+    every repo that never used the legacy statuses API.
+    """
+    result = await _get_checks(
+        [_check("build", "completed", "success")],
+        {"state": "pending", "statuses": []},
+    )
+
+    assert result["all_passing"] is True
+
+
+@pytest.mark.asyncio
+async def test_commit_checks_pending_legacy_status_is_not_all_passing():
+    result = await _get_checks(
+        [_check("build", "completed", "success")],
+        {"state": "pending", "statuses": [{"context": "ci", "state": "pending"}]},
+    )
+
+    assert result["all_passing"] is False
+
+
+@pytest.mark.asyncio
+async def test_commit_checks_status_api_failure_fails_closed():
+    result = await _get_checks(
+        [_check("build", "completed", "success")],
+        {},
+        status_code=500,
+    )
+
+    assert result["combined_state"] is None
+    assert result["all_passing"] is False
+
+
+@pytest.mark.asyncio
+async def test_commit_checks_no_ci_at_all_is_not_passing():
+    result = await _get_checks([], {"state": "pending", "statuses": []})
+
+    assert result["all_passing"] is False
+
+
+@pytest.mark.asyncio
+async def test_commit_checks_failed_check_run_is_not_passing():
+    result = await _get_checks(
+        [_check("build", "completed", "failure")],
+        {"state": "success", "statuses": []},
+    )
+
+    assert result["all_passing"] is False

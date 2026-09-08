@@ -76,7 +76,12 @@ export function inferTier(provider: string, modelId: string): ComplexityTier | n
     if (ts.has(keyword)) return 'mid'
   }
   const glmVer = GLM_VERSION.exec(m)
-  if (glmVer && parseFloat(glmVer[1]) >= 5.3) return 'high'
+  if (glmVer) {
+    // Version-tuple compare, not parseFloat: "5.3.1" is not a number and
+    // parseFloat would rank 5.10 below 5.3.
+    const parts = glmVer[1].split('.').map(Number)
+    if (parts[0] > 5 || (parts[0] === 5 && parts[1] >= 3)) return 'high'
+  }
   if (BRAND_DEFAULT_MID.some((b) => hasBrand(ts, b))) return 'mid'
   return null
 }

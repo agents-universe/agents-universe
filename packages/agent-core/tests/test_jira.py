@@ -118,9 +118,10 @@ class _MinimalCtx:
 
 
 @pytest.mark.asyncio
-async def test_http_error_body_redacts_credential():
+async def test_http_error_body_redacts_credential(caplog):
     """Atlassian can echo the credential in 401 bodies — the resolved token
-    must never reach the LLM/history inside the returned error message."""
+    must never reach the LLM/history inside the returned error message, nor
+    the log, which used to receive the raw body before the redaction pass."""
     import httpx
 
     tool = JiraTool()
@@ -152,3 +153,4 @@ async def test_http_error_body_redacts_credential():
     assert result["error"].startswith("Jira API returned 401")
     assert "ATATT-secret-token-999" not in result["error"]
     assert "REDACTED" in result["error"]
+    assert "ATATT-secret-token-999" not in caplog.text

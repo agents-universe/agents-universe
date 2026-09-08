@@ -92,6 +92,7 @@
                   v-model="newKeyNames[p.publish_id]"
                   class="input publish-key-name-input"
                   :placeholder="t('publishesPage.keyNamePlaceholder')"
+                  :disabled="busy"
                   @keydown.enter.prevent="createKey(p)"
                 />
                 <button class="btn-sm" @click="createKey(p)" :disabled="busy">
@@ -338,6 +339,9 @@ async function create() {
 // ── Keys ─────────────────────────────────────────────────────────────
 
 async function createKey(p: PublishItem) {
+  // The input's Enter handler bypasses the button's disabled state; without
+  // this guard a held Enter key fires one POST per repeat.
+  if (busy.value) return
   busy.value = true
   try {
     const res = await publishApi.createKey(p.publish_id, newKeyNames[p.publish_id] || undefined)

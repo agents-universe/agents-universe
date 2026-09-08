@@ -333,6 +333,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           break
         } else {
           conv.stopStreaming(convId)
+          // Defensive: a main-stream end with no taskId means the turn is
+          // over — any prompt still awaiting user input can never be
+          // answered (the server-side Future already timed out or the turn
+          // errored). Clear them so the next user_confirm starts clean
+          // instead of stacking dialogs on a zombie.
+          conv.clearPendingPrompts(convId)
         }
         break
       }
@@ -489,6 +495,13 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           }
         }
         break
+      case 'user_selection_cancelled':
+        // The server-side prompt Future timed out or the session was aborted
+        // while waiting — the dialog can never be answered. Drop exactly this
+        // prompt so a zombie dialog doesn't linger after a timeout and
+        // confuse the next user_confirm ("弹过一次超时后，再对话弹窗不出现/错乱").
+        conv.removePendingPrompt(msg.prompt_id as string, convId)
+        break
       case 'memory_saved':
         if (isActiveConversation) {
           if (msg.memory) {
@@ -559,6 +572,10 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         // instead of leaving the entry stuck in pendingInjected forever.
         conv.rejectAllPendingInjected('服务器错误，消息未处理', convId)
         conv.clearStreamingState(convId)
+        // Turn-level error: any prompt awaiting user input can never be
+        // answered (the session is gone) — clear them so a zombie dialog
+        // doesn't linger.
+        conv.clearPendingPrompts(convId)
         conv.addMessage({
           id: messageId,
           role: 'assistant',

@@ -1037,6 +1037,18 @@ export const useConversationStore = defineStore('conversation', () => {
     }
   }
 
+  function removePendingPrompt(promptId: string, targetId?: string) {
+    // Server-side timeout/abort signal (user_selection_cancelled): the prompt
+    // can never be answered — drop exactly this dialog. resolvePrompt keeps
+    // its semantics (user answered), but the store must also handle the
+    // server-driven cancel so a zombie dialog doesn't linger after a timeout
+    // and confuse the next user_confirm.
+    const rt = getRuntime(targetId)
+    if (rt) {
+      rt.pendingPrompts = rt.pendingPrompts.filter((p) => p.promptId !== promptId)
+    }
+  }
+
   function clearPendingPrompts(targetId?: string) {
     // Session-death signal (abort_ack): the agent task was cancelled, so any
     // prompt awaiting user input can never be answered — drop them all
@@ -1170,6 +1182,7 @@ export const useConversationStore = defineStore('conversation', () => {
     setModelInfo,
     addPendingPrompt,
     resolvePrompt,
+    removePendingPrompt,
     clearPendingPrompts,
     hasStreamingContent,
     getActiveToolCalls,

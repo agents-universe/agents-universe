@@ -153,7 +153,10 @@ class ConversationSession:
         # user's words from history and the LLM context. image_output/
         # file_output are kept as well: the handler accumulates them into its
         # buffers and persists them at stream_end, so dropping them loses the
-        # reply's attachments. Other event types (progress/tool updates) are
+        # reply's attachments. user_selection_cancelled is kept too: a prompt
+        # that timed out / was aborted must still reach the client so it can
+        # dismiss the dialog — dropping it would leave a zombie prompt pinned
+        # in the UI forever. Other event types (progress/tool updates) are
         # dropped; they are UI-only.
         if self._event_queue.full():
             kept: list[SessionEvent] = []
@@ -171,6 +174,7 @@ class ConversationSession:
                     "user_message_injected",
                     "image_output",
                     "file_output",
+                    "user_selection_cancelled",
                 ):
                     kept.append(ev)
             # Leave one slot for the sentinel below so forward_events() can
@@ -282,10 +286,26 @@ class ConversationSession:
             abort_waiter.cancel()
             self._pending_prompts.pop(prompt_id, None)
         if not done:
+            # The client must dismiss the dialog it is still showing for this
+            # prompt — otherwise the UI keeps a zombie prompt that never
+            # resolves and every later user_confirm stacks another dialog on
+            # top (the "超时后再对话弹窗不出现/错乱" symptom).
+            await self.emit(
+                "user_selection_cancelled",
+                prompt_id=prompt_id,
+                field_key=field_key,
+                reason="timeout",
+            )
             raise RuntimeError(
                 f"User selection timed out after {timeout:.0f} s for field '{field_key}'"
             )
         if abort_waiter in done:
+            await self.emit(
+                "user_selection_cancelled",
+                prompt_id=prompt_id,
+                field_key=field_key,
+                reason="aborted",
+            )
             raise RuntimeError("Session aborted while waiting for user input")
         return fut.result()
 

@@ -1,6 +1,6 @@
 ---
 slug: "office/pptx"
-description: "Generate and edit PowerPoint decks (.pptx) with python-pptx — 16:9 blank-layout slides, content-informed palettes, native charts, speaker notes, CJK-safe fonts; save to code_executor OUTPUT_DIR for auto-delivery as /api/media/ attachments"
+description: "Generate and edit PowerPoint decks (.pptx) with python-pptx — 16:9 blank-layout slides, content-informed palettes, native charts, speaker notes, CJK-safe fonts; save to code_executor OUTPUT_DIR for auto-delivery as authenticated /api/media/ download links"
 type: "guidance"
 triggers:
   - "生成ppt"
@@ -21,7 +21,7 @@ Create and edit `.pptx` decks with `python-pptx` (preinstalled — import direct
 
 ## Trigger Conditions
 
-- User asks for a PowerPoint / slide deck / presentation (生成ppt / 做一份ppt / 幻灯片 / 演示文稿).
+- User asks for a PowerPoint / slide deck / presentation (生成ppt / 做一份ppt / 演示文稿 / 幻灯片).
 - Editing an existing `.pptx` on disk (a file this conversation generated, or a workspace file).
 - NOT for web-based slides — those go through `office/web-slides`.
 
@@ -73,10 +73,10 @@ Fallbacks if YaHei is missing at render time: `Noto Sans CJK SC`. For embedded m
 
 ## Rule 5 — Output & Verify
 
-- Save to `os.path.join(os.environ["OUTPUT_DIR"], "presentation.pptx")` — files there auto-deliver as `/api/media/` download links.
+- Save to `os.path.join(os.environ["OUTPUT_DIR"], "presentation.pptx")` — files there auto-deliver as complete absolute `/api/media/` download URLs (host + deployment sub-path already included; quote them verbatim, never prepend a base URL).
 - **Verify before delivering**: reopen with `Presentation(path)`, assert slide count and that every slide has ≥ 1 shape; print a per-slide summary (slide N: title/speaker-notes) to stdout. Fix and re-run on any mismatch.
 - Name files with ASCII names (`presentation.pptx`), never Chinese filenames.
 
 ## Output Requirements
 
-Deliver the `/api/media/` link, a per-slide outline summary, data sources used, and any assumptions flagged `[inferred]`. State the palette and motif choices in one line so the user can ask for adjustments.
+Deliver the download link — copy the complete absolute URL from the tool result verbatim (never prepend a host, base URL, or `/agent` sub-path, never rewrite it as a relative path) — plus a per-slide outline summary, data sources used, and any assumptions flagged `[inferred]`. State the palette and motif choices in one line so the user can ask for adjustments.

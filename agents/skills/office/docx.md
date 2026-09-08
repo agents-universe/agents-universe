@@ -66,10 +66,10 @@ Body fallback: `SimSun`; headings: `Microsoft YaHei`. If the runtime lacks the f
 
 ## Rule 7 — Output & Verify
 
-- Save to `os.path.join(os.environ["OUTPUT_DIR"], "document.docx")` — auto-delivered as a `/api/media/` download link.
+- Save to `os.path.join(os.environ["OUTPUT_DIR"], "document.docx")` — auto-delivered as a complete absolute `/api/media/` download URL (host + deployment sub-path already included; quote it verbatim, never prepend a base URL).
 - **Verify before delivering**: reopen and assert paragraph count, table count, and that the file is non-empty; print a heading outline (each `Heading 1/2/3` text) to stdout. Fix and re-run on any mismatch.
 - ASCII filenames only (`document.docx`).
 
 ## Output Requirements
 
-Deliver the `/api/media/` link, a section outline, data sources used, and assumptions flagged `[inferred]`. If the user asked for tracked changes, state the v1 limitation in the reply.
+Deliver the download link — copy the complete absolute URL from the tool result verbatim (never prepend a host, base URL, or `/agent` sub-path, never rewrite it as a relative path) — plus a section outline, data sources used, and assumptions flagged `[inferred]`. If the user asked for tracked changes, state the v1 limitation in the reply.

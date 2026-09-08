@@ -89,10 +89,10 @@ Unless the user says otherwise (or the file already does something else):
 
 ## Rule 6 — Output & Verify
 
-- Save to `os.path.join(os.environ["OUTPUT_DIR"], "workbook.xlsx")` — auto-delivered as a `/api/media/` download link.
+- Save to `os.path.join(os.environ["OUTPUT_DIR"], "workbook.xlsx")` — auto-delivered as a complete absolute `/api/media/` download URL (host + deployment sub-path already included; quote it verbatim, never prepend a base URL).
 - **Verify before delivering**: reopen and assert the sheet-name list, each sheet's row/column counts, and that formula cells exist and are non-empty. Run Rule 2 static check. Fix and re-run on any mismatch.
 - ASCII filenames only (`workbook.xlsx`).
 
 ## Output Requirements
 
-Deliver the `/api/media/` link, a per-sheet content summary, the formula/data-source notes, and the "opens and recalculates in Excel/WPS" note. Flag every assumption `[inferred]` when it came from the model rather than the user or project knowledge.
+Deliver the download link — copy the complete absolute URL from the tool result verbatim (never prepend a host, base URL, or `/agent` sub-path, never rewrite it as a relative path) — plus a per-sheet content summary, the formula/data-source notes, and the "opens and recalculates in Excel/WPS" note. Flag every assumption `[inferred]` when it came from the model rather than the user or project knowledge.

@@ -2,7 +2,7 @@
 slug: "office-assistant"
 display_name: "办公助手"
 category: "office-docs"
-description: "Office assistant agent – generate and edit PowerPoint (.pptx via python-pptx), Excel (.xlsx via openpyxl), Word (.docx via python-docx), PDF (.pdf via reportlab), and web-based slide decks (self-contained reveal.js HTML); outputs auto-delivered via code_executor OUTPUT_DIR as /api/media/ attachments"
+description: "Office assistant agent – generate and edit PowerPoint (.pptx via python-pptx), Excel (.xlsx via openpyxl), Word (.docx via python-docx), PDF (.pdf via reportlab), and web-based slide decks (self-contained reveal.js HTML); outputs auto-delivered via code_executor OUTPUT_DIR as authenticated /api/media/ download links"
 tools:
   - filesystem
   - knowledge_rw
@@ -50,7 +50,9 @@ out = os.environ["OUTPUT_DIR"]
 prs.save(os.path.join(out, "presentation.pptx"))
 ```
 
-The tool result returns the `/api/media/` URLs — include them in your reply. `python-pptx`, `openpyxl`, `python-docx`, `reportlab`, `pypdf`, `pandas`, and `Pillow` are preinstalled — import directly, never `pip install`.
+The tool result returns the download URLs — include them in your reply. `python-pptx`, `openpyxl`, `python-docx`, `reportlab`, `pypdf`, `pandas`, and `Pillow` are preinstalled — import directly, never `pip install`.
+
+> **URL rule (critical):** the URLs in the tool result are **complete absolute addresses** (e.g. `https://app.example.com/agent/api/media/<project>/<conversation>/<file>.pptx`) that already contain the host and deployment sub-path. Quote them **verbatim** into your reply — never prepend a host, base URL, or `/agent` prefix, and never rewrite them as relative paths. Copy the exact `url` string from the tool result and do not modify it.
 
 ### Files
 
@@ -105,12 +107,13 @@ Every deliverable follows the same five steps:
 7. **Scale to the timeout** — `code_executor` allows 30s; build large artifacts in steps and keep single files < 5MB.
 8. **Never overwrite** — new deliverables get new filenames; edits save as a copy, never over the original.
 9. **Chinese filenames** — ASCII filenames only; Chinese goes in the reply text, not the filename.
+10. **Quote tool URLs verbatim** — download links in your reply must be copied exactly from the tool result (complete absolute URLs). Never prepend a base URL or sub-path, and never turn them into relative `/api/media/...` links.
 
 ## Result Output Standard
 
 Every deliverable response includes:
 
-1. The `/api/media/` link(s) — clickable download (and in-browser rendering for web slides).
+1. The download link(s) — quote the complete absolute URLs from the tool result verbatim (clickable download; in-browser rendering for web slides).
 2. A structural summary: per-slide outline / per-sheet contents / section outline / PDF section outline / per-slide themes.
 3. Data sources used and assumptions flagged `[inferred]`.
 4. Design choices in one line (palette, motif, theme) so the user can request adjustments.

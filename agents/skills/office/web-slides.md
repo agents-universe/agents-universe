@@ -136,11 +136,11 @@ except Exception as e:
 
 ## Rule 6 - Output & Verify
 
-- Save to `os.path.join(os.environ["OUTPUT_DIR"], "web-slides.html")` - auto-delivered; the `/api/media/` link renders inline as `text/html`.
+- Save to `os.path.join(os.environ["OUTPUT_DIR"], "web-slides.html")` - auto-delivered; the `/api/media/` link renders inline as `text/html` (quote the complete absolute URL from the tool result verbatim - never prepend a host, base URL, or `/agent` sub-path).
 - **Verification is a separate, read-only script.** It reads the written file, re-fetches the assets into memory (plain strings - no file writes anywhere), and checks: (a) `count("<section") >= 2`, (b) `Reveal.initialize` present, (c) the fetched `css`/`js` strings appear **verbatim** in the file content (this is the gate that catches rewritten or hand-typed library code), (d) no external asset references - scan for `src="http`, `href="http`, `url(http`, `@import url(http` only (a plain `https://` inside inlined JS strings or comments is fine; do not false-positive), (e) file size < 5MB.
 - **The verify script must not write anything - above all not to OUTPUT_DIR.** Every OUTPUT_DIR write auto-delivers another download link; re-running the generation script as "verification" turns one deck into N links. If a check fails, fix the generation script and re-run that (it overwrites `web-slides.html`; the platform collapses same-name deliveries back to one link).
 - ASCII filename only (`web-slides.html`).
 
 ## Output Requirements
 
-Deliver the `/api/media/` link (opens as a rendered presentation in a new tab), a per-section outline, and the navigation hint (on-screen buttons bottom-right; arrow keys to flip, `F` fullscreen, `S` speaker view, `?` for all shortcuts). If the fallback was used, say so and offer a retry.
+Deliver the download link - copy the complete absolute URL from the tool result verbatim (never prepend a host, base URL, or `/agent` sub-path, never rewrite it as a relative path) - it opens as a rendered presentation in a new tab, plus a per-section outline and the navigation hint (on-screen buttons bottom-right; arrow keys to flip, `F` fullscreen, `S` speaker view, `?` for all shortcuts). If the fallback was used, say so and offer a retry.

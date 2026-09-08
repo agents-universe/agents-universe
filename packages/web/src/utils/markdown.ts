@@ -7,6 +7,18 @@ const md = new MarkdownIt({ html: false, linkify: true, typographer: true })
 const mdKnowledge = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
   .use(hljs, { auto: true })
 
+// Tool-produced media URLs are complete absolute addresses. An LLM may still
+// treat one as a relative path and prepend the base again, producing
+// `https://host/agenthttps://host/agent/api/media/...`. This collapses the
+// duplicated base so the quoted link stays usable at render time (covers both
+// live streaming deltas and already-persisted history rows).
+const duplicatedMediaBaseRe = /(https?:\/\/[A-Za-z0-9._~-]+(?::\d+)?(?:\/[A-Za-z0-9._~-]+)*)\1(?=\/api\/media\/)/g
+
+function normalizeMediaUrls(src: string): string {
+  if (!src || !src.includes('/api/media/')) return src
+  return src.replace(duplicatedMediaBaseRe, '$1')
+}
+
 // Open external links in a new tab: a plain <a> would navigate the SPA away
 // mid-stream and lose the editor draft and in-flight streaming state.
 // knowledge-link anchors are in-app navigation and keep default behavior.
@@ -74,7 +86,7 @@ mdKnowledge.inline.ruler.push('knowledge_links', (state, silent) => {
 })
 
 export function renderMarkdown(src: string): string {
-  return md.render(src)
+  return md.render(normalizeMediaUrls(src))
 }
 
 // Render [[slug]] cross-links

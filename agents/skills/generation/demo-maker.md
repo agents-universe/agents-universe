@@ -60,6 +60,6 @@ Two layers; both must pass before delivery.
 
 ## Rule 5 - Delivery & Iteration
 
-- Implementer delivers the `/api/media/` link (via the `code_executor` OUTPUT_DIR auto-delivery) plus the canonical file location `demos/demo.html`.
+- Implementer delivers the download link — copy the **complete absolute URL** from the `code_executor` tool result verbatim (host + deployment sub-path already included; never prepend a base URL or rewrite it as a relative path) — plus the canonical file location `demos/demo.html`.
 - PO's final summary: link, page outline, style source (Path A: "reused the existing demo's style"; Path B: "based on the QA style baseline + screenshots"), verification summary (static checks + QA Playwright results), and the demo-data declaration.
 - Iteration is in-place: overwrite `demos/demo.html` and re-deliver; the workspace keeps exactly one canonical demo file, which is what Path A of Rule 2 reads for the next demo.

@@ -406,6 +406,7 @@ async def run_published_turn(
     msg = {
         "content": message,
         "fixed_config_id": publish.model_config_id,
+        "agent_id": publish.agent_slug,
     }
     await run_turn(
         conversation_id,

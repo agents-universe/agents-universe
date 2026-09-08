@@ -433,7 +433,7 @@ async def publish_stream(
             await run_turn(
                 conversation,
                 ws=SimpleNamespace(app=request.app),
-                msg={"content": body.message, "fixed_config_id": publish.model_config_id},
+                msg={"content": body.message, "fixed_config_id": publish.model_config_id, "agent_id": publish.agent_slug},
                 user_id=publish.owner_id,
                 transport=stream,
                 interactive=False,
@@ -752,7 +752,7 @@ async def post_publish_session_run(
             await run_turn(
                 conversation,
                 ws=SimpleNamespace(app=request.app),
-                msg={"content": body.message, "fixed_config_id": publish.model_config_id},
+                msg={"content": body.message, "fixed_config_id": publish.model_config_id, "agent_id": publish.agent_slug},
                 user_id=publish.owner_id,
                 transport=stream,
                 interactive=False,

@@ -251,6 +251,7 @@ async def test_stream_creates_publish_conversation_and_runs(
         captured["actor_user_id"] = actor_user_id
         captured["interactive"] = interactive
         captured["fixed_config_id"] = msg.get("fixed_config_id")
+        captured["agent_id"] = msg.get("agent_id")
         # Emit a terminal event so the SSE stream closes.
         await transport.send(conversation_id, {"type": "stream_delta", "delta": "hi"})
         await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
@@ -277,6 +278,8 @@ async def test_stream_creates_publish_conversation_and_runs(
     assert captured["actor_user_id"] == publish.owner_id
     assert captured["interactive"] is False
     assert captured["fixed_config_id"] == publish.model_config_id
+    # The run must resolve the agent the publisher selected, not a default.
+    assert captured["agent_id"] == publish.agent_slug
 
     # The conversation is marked publish-owned and scoped to (publish, default).
     result = await db.execute(
@@ -506,6 +509,7 @@ async def test_session_run_streams_under_publisher(
         captured["actor_user_id"] = actor_user_id
         captured["interactive"] = interactive
         captured["fixed_config_id"] = msg.get("fixed_config_id")
+        captured["agent_id"] = msg.get("agent_id")
         await transport.send(conversation_id, {"type": "stream_delta", "delta": "pong"})
         await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
 
@@ -527,6 +531,8 @@ async def test_session_run_streams_under_publisher(
     assert captured["actor_user_id"] == publish.owner_id
     assert captured["interactive"] is False
     assert captured["fixed_config_id"] == publish.model_config_id
+    # The run must resolve the agent the publisher selected, not a default.
+    assert captured["agent_id"] == publish.agent_slug
 
 
 async def test_session_run_bad_token(client, db, make_project, as_user):

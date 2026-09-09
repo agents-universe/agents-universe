@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # Uploads
     max_upload_size_mb: int = 10
 
+    # Scheduled tasks. The scheduler is an in-process asyncio loop — one
+    # replica only (see services/scheduler.py). Timezone is the default for
+    # newly created tasks; each task stores its own.
+    scheduler_enabled: bool = True
+    scheduler_timezone: str = "Asia/Shanghai"
+
 
     # Atlassian (base URL is system-level; tokens are per-user in DB)
     # Cloud:  https://your-org.atlassian.net  → basic auth, no sub-paths

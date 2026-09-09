@@ -22,6 +22,7 @@ tools:
   - kong
   - api_request
   - test_generator
+  - scheduler
   - git_repo
   - repo_graph
   - secret_vault
@@ -36,6 +37,7 @@ skills:
   - testing/jira-test-case-manager
   - testing/release-regression-manager
   - generation/playwright-generator
+  - generation/scheduled-task-writer
   - testing/screenshot-annotator
   - knowledge/knowledge-manager
   - integration/github-pages-publisher

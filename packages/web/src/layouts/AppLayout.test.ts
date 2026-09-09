@@ -52,13 +52,21 @@ vi.mock('@/components/knowledge/KnowledgePanel.vue', () => ({ default: { name: '
 vi.mock('@/components/memory/MemoryPanel.vue', () => ({ default: { name: 'ChildStub', template: '<div />' } }))
 
 describe('AppLayout center topnav', () => {
-  it('renders 会话 / 工作区 / 发布 with the publishes tab active', () => {
+  it('renders 会话 / 工作区 / 发布 / 定时任务 with the publishes tab active', () => {
     routeState.path = '/projects/p-1/publishes'
     const wrapper = mount(AppLayout)
     const tabs = wrapper.findAll('.center-tab')
-    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '发布'])
+    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '发布', '定时任务'])
     expect(tabs[2].classes()).toContain('active')
     expect(tabs[0].classes()).not.toContain('active')
+  })
+
+  it('marks the schedules tab active on the schedules segment', () => {
+    routeState.path = '/projects/p-1/schedules'
+    const wrapper = mount(AppLayout)
+    const tabs = wrapper.findAll('.center-tab')
+    expect(tabs[3].classes()).toContain('active')
+    expect(tabs[1].classes()).not.toContain('active')
   })
 
   it('marks the chat tab active on the chat segment', () => {

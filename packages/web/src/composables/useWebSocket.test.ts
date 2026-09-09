@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ref } from 'vue'
+import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
 import { closeAllConnections, closeConnection, useWebSocket, _failedConversations } from './useWebSocket'
+
+const conversationsApi = vi.hoisted(() => ({
+  getMessages: vi.fn(),
+  getTasks: vi.fn(),
+  getLatestRun: vi.fn(),
+}))
+vi.mock('@/api/conversations', () => ({ conversationsApi }))
 
 /**
  * Drive the real onmessage → _dispatch path with a stubbed WebSocket.
@@ -40,6 +48,9 @@ describe('useWebSocket image/file output payload guards', () => {
     localStorage.clear()
     instances = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
   })
 
   afterEach(() => {
@@ -108,6 +119,19 @@ describe('useWebSocket image/file output payload guards', () => {
     // survive across contexts.
     closeAllConnections()
     expect(_failedConversations.size).toBe(0)
+  })
+
+  it('reloads persisted history on conversation_updated', async () => {
+    // Scheduled-task delivery writes a message server-side with no stream
+    // events; the socket only gets this nudge, so history must be re-fetched.
+    const store = useConversationStore()
+    store.startConversation('conv-sched')
+    const { ws } = mount('conv-sched')
+
+    fire(ws, { type: 'conversation_updated' })
+    await flushPromises()
+
+    expect(conversationsApi.getMessages).toHaveBeenCalledWith('conv-sched')
   })
 
   it('well-formed payloads still dispatch into the runtime', () => {

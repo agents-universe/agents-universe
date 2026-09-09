@@ -31,6 +31,7 @@ export const useProjectStore = defineStore('project', () => {
       import('./knowledge').then(({ useKnowledgeStore }) => useKnowledgeStore().reset())
       import('./memory').then(({ useMemoryStore }) => useMemoryStore().reset())
       import('./projectSecrets').then(({ useProjectSecretsStore }) => useProjectSecretsStore().reset())
+      import('./schedules').then(({ useSchedulesStore }) => useSchedulesStore().reset())
     }
   }
 
@@ -89,11 +90,15 @@ export const useProjectStore = defineStore('project', () => {
     // does: an open socket would keep rebuilding the reset runtime from
     // streamed events (messages pile up unseen) and hold a connection slot.
     import('@/composables/useWebSocket').then(({ closeAllConnections }) => closeAllConnections())
-    const [{ useConversationStore }, { useKnowledgeStore }, { useMemoryStore }, { useProjectSecretsStore }] = await Promise.all([
+    const [
+      { useConversationStore }, { useKnowledgeStore }, { useMemoryStore },
+      { useProjectSecretsStore }, { useSchedulesStore },
+    ] = await Promise.all([
       import('./conversation'),
       import('./knowledge'),
       import('./memory'),
       import('./projectSecrets'),
+      import('./schedules'),
     ])
     const conversationStore = useConversationStore()
     conversationStore.clearProjectStorage(projectId)
@@ -101,6 +106,7 @@ export const useProjectStore = defineStore('project', () => {
     useKnowledgeStore().reset()
     useMemoryStore().reset()
     useProjectSecretsStore().reset()
+    useSchedulesStore().reset()
     currentProject.value = null
     return true
   }

@@ -35,6 +35,10 @@ const router = createRouter({
           path: 'publishes',
           component: () => import('@/pages/PublishesPage.vue'),
         },
+        {
+          path: 'schedules',
+          component: () => import('@/pages/SchedulesPage.vue'),
+        },
         // Knowledge and scripts were merged into the unified workspace tab —
         // keep the old URLs working via redirect so bookmarks/links survive.
         {

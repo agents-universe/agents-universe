@@ -19,6 +19,7 @@ Vue 3 + TypeScript + Vite. Codex-style three-panel layout.
 
 ```
 AppLayout.vue
+├── Top nav — 会话 / 工作区 / 发布 / 定时任务（pageSegment 正则解析当前页签）
 ├── Left sidebar (collapsible)
 │   ├── ProjectTree.vue      — 项目列表，点击切换
 │   └── AgentSwitcher.vue    — 智能体列表，点击切换
@@ -44,17 +45,20 @@ Pinia stores in `stores/`. **不要用 Vue provide/inject** 做跨面板状态�
 - `knowledge.ts` — 知识文件、完整度、本轮加载、动态加载
 - `agent.ts` — 智能体列表、当前智能体、模型配置
 - `memory.ts` — 会话笔记、个人记忆、情节记忆
+- `schedules.ts` — 定时任务列表、加载态（`loadSeq` 守卫）；`setEnabled`/`runNow` 复用 `mutate()`
 - `auth.ts` — 用户信息、认证状态
 
-**项目切换**时 `projectStore.setCurrentProject()` 自动 reset conversation/knowledge/memory stores。
+**项目切换**时 `projectStore.setCurrentProject()` 自动 reset conversation/knowledge/memory/schedules stores（`clearProject()` 的 `Promise.all` 链里也要同步加）。
 
 ## WebSocket
 
 `composables/useWebSocket.ts` 接收 `conversationId: Ref<string | null>`：
 - `watch(conversationId)` 管理连接生命周期
 - 指数退避重连（3 次，1s/2s/4s）
-- 分发 ~20 种事件类型到 Pinia stores
+- 分发 ~20 种事件类型到 Pinia stores（含 `conversation_updated` — 定时任务投递结果后触发 `_reloadHistory`）
 - 返回 `{ send, abort, status }`
+
+脚本运行的实时日志走 `/ws/script-runs/{run_id}`，由 `composables/useScriptRunLog.ts` 统一封装（`WorkspacePage.vue` 与 `SchedulesPage.vue` 共用；composable 自带 `onBeforeUnmount` 关连接）。
 
 ## Composer (`components/chat/composer/`)
 

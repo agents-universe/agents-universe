@@ -48,6 +48,7 @@ _OPTIONAL_TOOL_MODULES = {
     "secret_vault":       ("agent_core.tools.secret_vault",       "SecretVaultTool"),
     "test_generator":     ("agent_core.tools.test_generator",     "TestGeneratorTool"),
     "script_writer":      ("agent_core.tools.script_writer",      "ScriptWriterTool"),
+    "scheduler":          ("agent_core.tools.scheduler",          "SchedulerTool"),
     "git_repo":           ("agent_core.tools.git_repo",           "GitRepoTool"),
     "repo_graph":         ("agent_core.tools.repo_graph",         "RepoGraphTool"),
 }

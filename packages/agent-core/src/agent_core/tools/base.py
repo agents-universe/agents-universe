@@ -74,6 +74,7 @@ class ToolContext:
         db_session_factory: Callable[[], Any] | None = None,
         app_base_url: str = "",
         app_root_path: str = "",
+        app: Any = None,
     ) -> None:
         self.project_id = project_id
         self.project_fs_path = project_fs_path
@@ -99,6 +100,10 @@ class ToolContext:
         # Deployment sub-path (e.g. /agent) from APP_ROOT_PATH, appended to
         # app_base_url when the browser must hit https://host/agent/api/....
         self.app_root_path = app_root_path or ""
+        # The FastAPI app, when the run was started from the web service. Only
+        # needed by tools that launch their own headless agent turn (the
+        # scheduler tool's run_now); None in standalone agent-core use.
+        self.app = app
         # Whether this run may pause for human interaction. False for headless
         # runs (published agents) — confirmation prompts must degrade to a
         # readable error instead of blocking on an answer nobody can give.

@@ -98,19 +98,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
-import { apiBase } from '@/utils/basePath'
 import { workspaceApi } from '@/api/workspace'
 import { knowledgeApi } from '@/api/knowledge'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
+import { useScriptRunLog } from '@/composables/useScriptRunLog'
 import type { WorkspaceTreeNode, WorkspaceNodeKind } from '@/types/workspace'
 import FileTree from '@/components/workspace/FileTree.vue'
 
-interface LogLine { text: string; level: string }
 interface ScriptItem { script_id: string; run_id?: string; name: string; status: string; script_type: string }
 interface SpecItem { slug: string; run_id?: string; title: string; file: string; status: string }
 
@@ -160,17 +159,9 @@ const saving = ref(false)
 // Script runner state
 const scripts = ref<ScriptItem[]>([])
 const specs = ref<SpecItem[]>([])
-const activeRunId = ref<string | null>(null)
-const logs = ref<LogLine[]>([])
 const running = ref(false)
-const runError = ref<string | null>(null)
-const logPanel = ref<HTMLElement | null>(null)
-let ws: WebSocket | null = null
-const mounted = ref(true)
-// Set when the server's authoritative "done" frame arrives; suppresses the
-// "connection lost" warning on the close that follows it (the server closes
-// the socket right after sending done).
-let wsFinished = false
+// Live log socket + buffers (shared with the scheduled-tasks page).
+const { activeRunId, logs, runError, logPanel, connectToRun, closeLog } = useScriptRunLog()
 
 // Target-system URL for Playwright runs (APP_BASE_URL). Remembered per
 // project so repeated runs do not re-enter it; empty = spec default.
@@ -519,60 +510,6 @@ async function runSpec(slug: string | undefined) {
   }
 }
 
-function pushLog(line: LogLine) {
-  const el = logPanel.value
-  const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  logs.value.push(line)
-  if (nearBottom) {
-    void nextTick(() => {
-      if (logPanel.value) logPanel.value.scrollTop = logPanel.value.scrollHeight
-    })
-  }
-}
-
-function connectToRun(runId: string) {
-  if (ws) { ws.close(); ws = null }
-  wsFinished = false
-  activeRunId.value = runId
-  logs.value = []
-  runError.value = null
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  ws = new WebSocket(`${proto}://${location.host}${apiBase}/ws/script-runs/${runId}`)
-  ws.onmessage = (e) => {
-    if (!mounted.value || activeRunId.value !== runId) return
-    let msg: { type?: string; level?: string; text?: string; log?: string; status?: string; exit_code?: number | null }
-    try {
-      msg = JSON.parse(e.data as string) as typeof msg
-    } catch {
-      pushLog({ text: String(e.data), level: 'info' })
-      return
-    }
-    if (msg.type === 'done') {
-      // Authoritative final state — the server closes the socket right after
-      // this frame, so mark the run as finished to suppress the spurious
-      // "connection lost" warning on close.
-      wsFinished = true
-      const ok = msg.status === 'completed'
-      const statusText = ok
-        ? (msg.status ?? 'completed')
-        : `${msg.status ?? 'failed'} (exit ${msg.exit_code ?? '?'})`
-      pushLog({ text: t('workspace.runFinished', { status: statusText }), level: ok ? 'info' : 'error' })
-      return
-    }
-    pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
-  }
-  ws.onclose = () => {
-    if (!mounted.value || activeRunId.value !== runId) return
-    // Close after the done frame is the normal end of a run. Only a close
-    // WITHOUT done means the connection dropped before the server reported
-    // the outcome — the run may still be executing server-side.
-    if (!wsFinished) {
-      pushLog({ text: t('workspace.connectionLost'), level: 'error' })
-    }
-  }
-}
-
 // ── Lifecycle & project switching ───────────────────────────────
 onMounted(() => {
   baseUrl.value = projectId.value ? localStorage.getItem(baseUrlKey(projectId.value)) ?? '' : ''
@@ -581,10 +518,8 @@ onMounted(() => {
 
 watch(projectId, (pid) => {
   // Project switched while this page stays mounted: drop the socket tied to
-  // the previous project's run and reset the selection. mounted stays true —
-  // it guards only the component's own lifetime (see onBeforeUnmount).
-  ws?.close()
-  ws = null
+  // the previous project's run and reset the selection.
+  closeLog()
   fileLoadSeq++ // invalidate any in-flight file load from the old project
   nodes.value = []
   scripts.value = []
@@ -592,16 +527,8 @@ watch(projectId, (pid) => {
   selection.value = null
   fileContent.value = null
   editing.value = false
-  activeRunId.value = null
-  logs.value = []
-  runError.value = null
   running.value = false
   baseUrl.value = pid ? localStorage.getItem(baseUrlKey(pid)) ?? '' : ''
   loadTree()
-})
-
-onBeforeUnmount(() => {
-  mounted.value = false
-  ws?.close()
 })
 </script>

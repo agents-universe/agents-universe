@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **定时任务（Scheduled Tasks）** - 项目布局新增第四个顶层页签「定时任务」：按 5 字段 cron（时区可配）定时触发**自动化脚本 / Playwright 测试 / 智能体提示词**三类目标，卡片显示人类可读周期、下次运行、上次状态与启停开关，运行历史逐条可查；脚本类运行点开即接现有实时日志流（`/ws/script-runs/{run_id}`）。每次运行的结果摘要可投递到指定会话（投递后向该会话推送 `conversation_updated`，已打开的页面即时刷新），用户可继续在会话里追问。Tech Lead 与 Quality Assurance 新增 `scheduler` 工具与 `generation/scheduled-task-writer` 技能，对话里一句话即可创建、修改、启停、立即运行任务。调度为进程内 asyncio 循环（单副本假设），以 `next_run_at` 比较交换抢占到期任务；服务停机错过的周期只排下一个未来时间点不补跑，启动清扫把遗留 `running` 运行落为 `failed`。cron 解析器落在 agent-core（`agent_core.scheduling.cron`，无新依赖），脚本 / Playwright 与人工运行共用全局 3 槽，agent 轮次并发上限 2 且以 `interactive=False` 无头执行
 - **智能客服项目分类与智能体** - 新增 `customer-service` 项目分类（8 个知识条目模板：`domain/faq` FAQ、`domain/service-policies` 服务政策、`domain/escalation-rules` 转人工规则、`skills/support-scripts` 话术库 + 背景/历史/第三方 API 与 MCP 集成），新建项目即获客服知识骨架；新增全局智能体「智能客服」（严格依据项目知识作答、答不出明确转人工、经自定义 API 与 MCP 只读查询业务系统）与 2 个客服技能（`support/customer-reply` 应答规范、`support/escalation` 转人工判断）；智能体选择器新增「智能客服」分组
 
 ### 修复

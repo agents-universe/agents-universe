@@ -42,7 +42,7 @@ def _fresh_schema():
     The schema is built by running the real Alembic chain to head (not
     metadata.create_all) — this makes migration portability a tested contract:
     every dialect the suite runs against (SQLite locally, PostgreSQL in CI)
-    must execute the full 25-migration history. Server DBs (PG/MySQL) are
+    must execute the full 26-migration history. Server DBs (PG/MySQL) are
     reset with a full downgrade to base first — a file DB just gets deleted.
     """
     if _DB_FILE.exists():

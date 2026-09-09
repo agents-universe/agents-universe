@@ -176,6 +176,19 @@ async def lifespan(app: FastAPI):
                 )
         except Exception:
             log.exception("Agent task sweep failed")
+        # Scheduled runs left pending/running by the dead process are settled
+        # and every stale fire time is re-anchored to the next future
+        # occurrence — downtime is skipped, never caught up.
+        from .services.scheduler import startup_sweep as _schedule_sweep
+        try:
+            _settled, _advanced = await _schedule_sweep(sweep_db)
+            if _settled or _advanced:
+                log.info(
+                    "Scheduler sweep: settled %d runs, re-anchored %d tasks",
+                    _settled, _advanced,
+                )
+        except Exception:
+            log.exception("Scheduled task sweep failed")
 
     app.state.knowledge_cache = KnowledgeCache()
 
@@ -190,7 +203,13 @@ async def lifespan(app: FastAPI):
     workflow_registry.load_dir(str(WORKFLOWS_DIR))
     app.state.workflow_registry = workflow_registry
 
+    # Started last: the scheduler hands the app object to headless agent turns,
+    # which read the three registries above off ws.app.state.
+    from .services.scheduler import start_scheduler, stop_scheduler
+    scheduler_task = start_scheduler(app)
+
     yield
+    await stop_scheduler(scheduler_task)
     await close_redis()
     await engine.dispose()
 
@@ -231,7 +250,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
 
     # API routers
-    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_members, project_secrets, projects, publish, scripts, tier_models, tokens, workspace_files
+    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_members, project_secrets, projects, publish, schedules, scripts, tier_models, tokens, workspace_files
 
     app.include_router(agents.router, tags=["agents"])
     app.include_router(projects.router, tags=["projects"])
@@ -244,6 +263,7 @@ def create_app() -> FastAPI:
     app.include_router(preferences.router, prefix="/api/preferences", tags=["preferences"])
     app.include_router(media.router, tags=["media"])
     app.include_router(scripts.router, tags=["scripts"])
+    app.include_router(schedules.router, tags=["schedules"])
     app.include_router(workspace_files.router, tags=["workspace-files"])
     app.include_router(memories.router, tags=["memories"])
     app.include_router(integrations.router, tags=["integrations"])

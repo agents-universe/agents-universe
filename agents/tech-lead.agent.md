@@ -12,6 +12,7 @@ tools:
   - plan_task
   - code_executor
   - script_writer
+  - scheduler
   - sql_query
   - knowledge_rw
   - user_confirm
@@ -29,6 +30,7 @@ skills:
   - integration/jira-analyzer
   - integration/jira-implementer
   - generation/custom-script-writer
+  - generation/scheduled-task-writer
   - knowledge/knowledge-manager
   - interaction/user-confirm
 workflows:

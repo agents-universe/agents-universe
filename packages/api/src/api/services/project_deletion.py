@@ -23,6 +23,7 @@ from api.models.project import Project
 from api.models.project_deletion_job import ProjectDeletionJob
 from api.models.project_member import ProjectMember
 from api.models.project_secret import ProjectSecret
+from api.models.schedule import ScheduledTask, ScheduledTaskRun
 from api.models.script import AutomationScript, ScriptRun
 from api.models.task_event import TaskEvent
 from api.paths import PROJECTS_ROOT
@@ -112,7 +113,16 @@ async def _check_delete(db: AsyncSession, project: Project) -> None:
             AutomationScript.project_id == project.project_id, ScriptRun.status.in_(_RUNNING)
         ).limit(1)
     )
-    if task.first() or run.first():
+    # Scheduled runs are the third source of in-flight work: a script or
+    # Playwright fire has a ScriptRun row (already covered above), but an agent
+    # fire's only trace is its ScheduledTaskRun.
+    scheduled = await db.execute(
+        select(ScheduledTaskRun.run_id).where(
+            ScheduledTaskRun.project_id == project.project_id,
+            ScheduledTaskRun.status.in_(_RUNNING),
+        ).limit(1)
+    )
+    if task.first() or run.first() or scheduled.first():
         raise DeletionError(409, "PROJECT_HAS_RUNNING_WORK", "Project has pending or running work")
     # In-flight WebSocket agent sessions are not visible in the DB (no row
     # exists until the turn ends) but they hold the workspace open — deleting
@@ -236,6 +246,11 @@ async def delete_project(db: AsyncSession, project_id: str, owner_id: str, confi
             await db.execute(delete(KnowledgeVersion).where(KnowledgeVersion.knowledge_id.in_(knowledge)))
             await db.execute(delete(KnowledgeMetadata).where(KnowledgeMetadata.project_id == project_id))
             await db.execute(delete(PersonalMemory).where(PersonalMemory.project_id == project_id))
+            # Before the script rows: ScheduledTask.script_id references
+            # automation_scripts and ScheduledTaskRun.script_run_id is a plain
+            # column, so only the task FK constrains the order here.
+            await db.execute(delete(ScheduledTaskRun).where(ScheduledTaskRun.project_id == project_id))
+            await db.execute(delete(ScheduledTask).where(ScheduledTask.project_id == project_id))
             await db.execute(delete(ScriptRun).where(ScriptRun.script_id.in_(scripts)))
             await db.execute(delete(AutomationScript).where(AutomationScript.project_id == project_id))
             await db.execute(delete(ProjectSecret).where(ProjectSecret.project_id == project_id))

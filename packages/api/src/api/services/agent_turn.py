@@ -368,6 +368,7 @@ async def run_turn(
                 session_memories=manager.get_session_memories(conversation_id),
                 app_base_url=_s.app_base_url,
                 app_root_path=_s.app_root_path,
+                app=getattr(ws, "app", None),
             )
             tool_context.interactive = interactive
             tool_context.ssl_verify = _ssl_verify

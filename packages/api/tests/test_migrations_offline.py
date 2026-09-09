@@ -1,6 +1,6 @@
 """Offline-compile the full Alembic chain against each non-SQLite dialect.
 
-SQLite is verified live by conftest (the suite runs the real 25-migration
+SQLite is verified live by conftest (the suite runs the real 26-migration
 chain every session) and PostgreSQL gets a live CI job. Offline mode never
 connects, so this test is how MySQL and the SQL-Server-specific branches get
 automated dialect verification: every migration's DDL must compile for the

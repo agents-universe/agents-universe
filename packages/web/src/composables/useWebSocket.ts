@@ -370,6 +370,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       case 'knowledge_updated':
         if (isActiveConversation) knowledge.triggerRefresh()
         break
+      case 'conversation_updated':
+        // A scheduled task delivered its result into this conversation (or
+        // another out-of-band writer persisted a message) — no stream events
+        // accompany it, so pull the persisted history in.
+        void _reloadHistory(convId)
+        break
       case 'task_plan_created':
         conv.setTasks(msg.tasks, convId)
         break

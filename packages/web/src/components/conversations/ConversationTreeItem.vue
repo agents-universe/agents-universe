@@ -6,8 +6,20 @@
         <ChevronRight v-else :size="12" />
       </button>
       <div class="conv-tree-info">
-        <span class="conv-tree-title">{{ conversation.title || t('conversations.untitled') }}</span>
+        <input
+          v-if="editing"
+          ref="inputEl"
+          v-model="draft"
+          class="conv-tree-rename-input"
+          :maxlength="255"
+          @click.stop
+          @keydown.enter.prevent="commitRename"
+          @keydown.esc.prevent="cancelRename"
+          @blur="commitRename"
+        />
+        <span v-else class="conv-tree-title">{{ conversation.title || t('conversations.untitled') }}</span>
         <div class="conv-tree-meta">
+          <span v-if="agentLabel" class="conv-tree-agent-badge">{{ agentLabel }}</span>
           <span>{{ t('conversations.messageCount', { count: conversation.message_count }) }}</span>
           <span v-if="isStreaming" class="conv-tree-live">{{ t('conversations.isStreaming') }}</span>
           <span v-else-if="isInterrupted" class="conv-tree-warn">{{ interruptedLabel }}</span>
@@ -15,6 +27,9 @@
         </div>
       </div>
       <span v-if="isStreaming" class="conv-tree-pulse" />
+      <button class="conv-tree-rename-btn" :title="t('conversations.renameTitle')" @click.stop="startRename">
+        <Pencil :size="12" />
+      </button>
       <button class="conv-tree-delete-btn" :title="t('conversations.deleteTitle')" @click.stop="emit('delete')">🗑</button>
     </div>
 
@@ -26,8 +41,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { computed, nextTick, ref } from 'vue'
+import { ChevronDown, ChevronRight, Pencil } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { relativeTime } from '@/utils/time'
 import type { ConversationItem, AgentTask } from '@/types'
@@ -41,6 +56,8 @@ const props = defineProps<{
   isExpanded: boolean
   isStreaming?: boolean
   tasks: AgentTask[]
+  /** Owning agent's display name — only passed while searching across agents. */
+  agentLabel?: string
 }>()
 
 // A run that ended in a terminal failure (process restart / agent crash) —
@@ -60,7 +77,40 @@ const emit = defineEmits<{
   select: []
   'toggle-expand': []
   delete: []
+  rename: [title: string]
 }>()
+
+// Inline title editor. `finished` is the once-only latch: Enter both commits
+// and drops focus, and the blur handler would otherwise commit a second time.
+const editing = ref(false)
+const draft = ref('')
+const finished = ref(false)
+const inputEl = ref<HTMLInputElement | null>(null)
+
+function startRename() {
+  draft.value = props.conversation.title ?? ''
+  finished.value = false
+  editing.value = true
+  nextTick(() => {
+    inputEl.value?.focus()
+    inputEl.value?.select()
+  })
+}
+
+function commitRename() {
+  if (finished.value) return
+  finished.value = true
+  editing.value = false
+  const next = draft.value.trim()
+  if (!next || next === (props.conversation.title ?? '')) return
+  emit('rename', next)
+}
+
+function cancelRename() {
+  finished.value = true
+  editing.value = false
+  draft.value = ''
+}
 </script>
 
 <style scoped>

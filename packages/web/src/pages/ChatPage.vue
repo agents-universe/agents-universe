@@ -32,13 +32,10 @@
 </style>
 
 <script lang="ts">
-// Module-level monotonic seq shared with AppLayout's "+ 新建对话" button:
-// an in-flight getLatest response must not resurrect the OLD latest
-// conversation over a freshly reset empty state .
-let latestSeq = 0
-export function invalidateLatestConversation() {
-  latestSeq++
-}
+// The latest-conversation seq lives in a composable (also used by the
+// conversation panel's cross-agent jump); re-exported here because AppLayout
+// imports it from this page for the "+ 新建对话" button.
+export { invalidateLatestConversation } from '@/composables/useLatestConversation'
 // "+ 新建对话" consumed: the empty state is the USER'S intent, so the
 // agentSlug watch (agent re-resolution after an async AgentSwitcher fetch)
 // must not auto-restore the old latest conversation over it. When the agent
@@ -61,6 +58,11 @@ import { useAgentStore } from '@/stores/agent'
 import { conversationsApi } from '@/api/conversations'
 import { ApiError } from '@/api/client'
 import { closeAllConnections } from '@/composables/useWebSocket'
+import {
+  invalidateLatestConversation,
+  isCurrentLatestSeq,
+  nextLatestSeq,
+} from '@/composables/useLatestConversation'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import AgentCapabilitiesCard from '@/components/chat/AgentCapabilitiesCard.vue'
 
@@ -83,14 +85,14 @@ async function loadLatestConversation() {
   if (convStore.conversationId) return
   if (!projectId.value || !agentSlug.value) return
 
-  const seq = ++latestSeq
+  const seq = nextLatestSeq()
   const pid = projectId.value
   const slug = agentSlug.value
   loading.value = true
   loadError.value = null
   try {
     const latest = await conversationsApi.getLatest(pid, slug)
-    if (seq !== latestSeq) return
+    if (!isCurrentLatestSeq(seq)) return
     if (latest?.conversation_id) {
       convStore.startConversation(latest.conversation_id)
       const [msgs, tasks, latestRun] = await Promise.all([
@@ -98,7 +100,7 @@ async function loadLatestConversation() {
         conversationsApi.getTasks(latest.conversation_id),
         conversationsApi.getLatestRun(latest.conversation_id),
       ])
-      if (seq !== latestSeq) return
+      if (!isCurrentLatestSeq(seq)) return
       convStore.loadHistory(msgs, latest.conversation_id)
       convStore.setLastRun(latestRun, latest.conversation_id)
       // Restore the token meter for a resumed (idle) conversation — the WS
@@ -112,13 +114,13 @@ async function loadLatestConversation() {
   } catch (e) {
     // A stale response (superseded by a project/agent switch) must not paint
     // its failure onto the now-active empty state.
-    if (seq !== latestSeq) return
+    if (!isCurrentLatestSeq(seq)) return
     loadError.value = e instanceof ApiError && e.status === 404
       ? t('chatPage.projectNotFound')
       : t('chatPage.loadFailed')
     console.error('Failed to load latest conversation', e)
   } finally {
-    if (seq === latestSeq) loading.value = false
+    if (isCurrentLatestSeq(seq)) loading.value = false
   }
 }
 
@@ -232,13 +234,13 @@ async function startChat() {
   // can land after a project/agent switch reset everything. Without the seq
   // check, project A's new conversation overwrites the (now active) B
   // conversation and every message goes to the wrong project.
-  const seq = ++latestSeq
+  const seq = nextLatestSeq()
   const pid = projectId.value
   loading.value = true
   loadError.value = null
   try {
     const data = await conversationsApi.create(pid, agentSlug.value)
-    if (seq !== latestSeq) return
+    if (!isCurrentLatestSeq(seq)) return
     convStore.startConversation(data.conversation_id)
     // A fresh conversation's budget comes from create() — the previous
     // runtime's budget (or the 128k default) would otherwise stick forever,
@@ -247,13 +249,13 @@ async function startChat() {
   } catch (e) {
     // Same stale-response guard as loadLatestConversation: the failure must
     // only surface on the empty state it belongs to.
-    if (seq !== latestSeq) return
+    if (!isCurrentLatestSeq(seq)) return
     loadError.value = e instanceof ApiError && e.status === 404
       ? t('chatPage.projectNotFound')
       : t('chatPage.createFailed')
     console.error('Failed to start conversation', e)
   } finally {
-    if (seq === latestSeq) loading.value = false
+    if (isCurrentLatestSeq(seq)) loading.value = false
   }
 }
 </script>

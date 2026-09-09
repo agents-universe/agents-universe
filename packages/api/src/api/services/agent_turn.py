@@ -1594,7 +1594,7 @@ async def _prepare_and_persist_user_message(
     # and are dropped when the turn ends — nothing is written to disk.
     from api.routers.media import get_upload
     from api.models.conversation import Conversation, Message as DbMessage
-    from sqlalchemy import func, select, update as _update
+    from sqlalchemy import func, or_ as _or, select, update as _update
     from sqlalchemy.exc import IntegrityError
     import re as _re
 
@@ -1673,9 +1673,17 @@ async def _prepare_and_persist_user_message(
         first_line = content.split('\n', 1)[0].strip()
         sentence_match = _re.split(r'[。.!！?？\n]', first_line, maxsplit=1)
         title_text = (sentence_match[0].strip() if sentence_match else first_line)[:60] or content[:60]
+        # Guarded update: the in-memory `not conv.title` check above cannot
+        # see a rename that committed after this turn read the row (the
+        # rename path takes no row lock), and on SQLite FOR UPDATE is a no-op.
+        # Only an untitled row may be auto-titled; "" counts as untitled
+        # because ConversationCreate accepts an empty title.
         await db.execute(
             _update(Conversation)
-            .where(Conversation.conversation_id == conversation_id)
+            .where(
+                Conversation.conversation_id == conversation_id,
+                _or(Conversation.title.is_(None), Conversation.title == ""),
+            )
             .values(title=title_text)
         )
     try:

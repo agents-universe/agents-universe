@@ -316,6 +316,11 @@ export default {
     loadFailed: 'Failed to load conversation',
     deleteConfirm: 'Delete this conversation?',
     deleteFailed: 'Failed to delete conversation',
+    searchPlaceholder: 'Search conversations…',
+    clearSearch: 'Clear search',
+    noMatches: 'No matching conversations',
+    renameTitle: 'Rename',
+    renameFailed: 'Failed to rename conversation',
   },
   contextMeter: {
     label: 'Context',

@@ -2,11 +2,32 @@
   <div class="conv-tree">
     <div class="conv-tree-header">
       <span class="conv-tree-header-title">{{ t('conversations.historyTitle') }}</span>
-      <button class="conv-tree-new-btn" :title="t('conversations.newConversation')" @click="emit('new-conversation')">+</button>
+      <button class="conv-tree-new-btn" :title="t('conversations.newConversation')" @click="onNewConversation">+</button>
+    </div>
+
+    <div class="conv-tree-search-wrapper">
+      <Search :size="13" class="conv-tree-search-icon" />
+      <input
+        v-model="searchInput"
+        class="conv-tree-search"
+        :placeholder="t('conversations.searchPlaceholder')"
+        maxlength="100"
+        @keydown.esc="clearSearch"
+      />
+      <button
+        v-if="searchInput"
+        class="conv-tree-search-clear"
+        :title="t('conversations.clearSearch')"
+        @click="clearSearch"
+      >
+        <X :size="12" />
+      </button>
     </div>
 
     <div v-if="error" class="conv-tree-error">{{ error }}</div>
-    <div v-if="!conversations.length" class="conv-tree-empty">{{ t('conversations.empty') }}</div>
+    <div v-if="!conversations.length" class="conv-tree-empty">
+      {{ isSearching ? t('conversations.noMatches') : t('conversations.empty') }}
+    </div>
     <div v-else class="conv-tree-list">
       <ConversationTreeItem
         v-for="conv in conversations"
@@ -16,20 +37,25 @@
         :is-expanded="expandedIds.has(conv.conversation_id)"
         :is-streaming="!!convStore.streamingIds[conv.conversation_id] || !!conv.is_running"
         :tasks="tasksFor(conv)"
+        :agent-label="agentLabelFor(conv)"
         @select="selectConversation(conv)"
         @toggle-expand="toggleExpand(conv.conversation_id)"
         @delete="deleteConversation(conv.conversation_id)"
+        @rename="(title) => renameConversation(conv.conversation_id, title)"
       />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Search, X } from 'lucide-vue-next'
 import { useConversationStore } from '@/stores/conversation'
+import { useAgentStore } from '@/stores/agent'
 import { conversationsApi } from '@/api/conversations'
 import { closeConnection } from '@/composables/useWebSocket'
+import { invalidateLatestConversation } from '@/composables/useLatestConversation'
 import { mapDbTasks } from '@/stores/conversation'
 import type { ConversationItem, AgentTask } from '@/types'
 import ConversationTreeItem from './ConversationTreeItem.vue'
@@ -38,6 +64,7 @@ const props = defineProps<{ projectId?: string; agentSlug?: string }>()
 const emit = defineEmits<{ 'new-conversation': [] }>()
 
 const convStore = useConversationStore()
+const agentStore = useAgentStore()
 const { t } = useI18n()
 const conversations = ref<ConversationItem[]>([])
 const expandedIds = reactive(new Set<string>())
@@ -50,11 +77,58 @@ const error = ref<string | null>(null)
 // overwrite the current list (the 5s poll + watch both fire overlapping loads).
 let loadSeq = 0
 
+// Keyword search. `searchInput` is what the user types; `activeQuery` is the
+// debounced term the list is actually filtered by. Search is project-wide
+// (no agent_slug) so a conversation started under another agent is findable.
+const searchInput = ref('')
+const activeQuery = ref('')
+const isSearching = computed(() => activeQuery.value.length > 0)
+const searchPending = computed(() => isSearching.value || !!searchInput.value.trim())
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(searchInput, (value) => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  const next = value.trim()
+  if (!next) {
+    // Clearing is immediate — waiting out the debounce leaves a stale result
+    // list on screen after the box is empty.
+    activeQuery.value = ''
+    return
+  }
+  searchTimer = setTimeout(() => {
+    searchTimer = null
+    if (activeQuery.value !== next) activeQuery.value = next
+  }, 300)
+})
+
+function clearSearch() {
+  searchInput.value = ''
+  activeQuery.value = ''
+}
+
+function onNewConversation() {
+  // Starting a new chat leaves the search context — otherwise the panel keeps
+  // showing results for a query the user has moved on from.
+  clearSearch()
+  emit('new-conversation')
+}
+
 async function load() {
-  if (!props.projectId || !props.agentSlug) return
+  // Bumped before any early return: clearing the search with no agent selected
+  // must still invalidate an in-flight response for the previous state.
   const seq = ++loadSeq
+  const query = activeQuery.value
+  if (!props.projectId || (!query && !props.agentSlug)) {
+    conversations.value = []
+    return
+  }
   try {
-    const list = await conversationsApi.list(props.projectId, props.agentSlug)
+    const list = query
+      ? await conversationsApi.list(props.projectId, undefined, query)
+      : await conversationsApi.list(props.projectId, props.agentSlug)
     if (seq !== loadSeq) return
     conversations.value = list
     error.value = null
@@ -65,8 +139,34 @@ async function load() {
   }
 }
 
+/** Owning agent's display name, only while searching and only for another
+ *  agent's conversation (the current agent's rows need no badge). */
+function agentLabelFor(conv: ConversationItem): string | undefined {
+  if (!isSearching.value || !conv.agent_slug) return undefined
+  if (conv.agent_slug === agentStore.currentAgent?.slug) return undefined
+  return agentStore.agents.find((a) => a.slug === conv.agent_slug)?.label ?? conv.agent_slug
+}
+
 async function selectConversation(conv: ConversationItem) {
   if (convStore.conversationId === conv.conversation_id) return
+  const targetSlug = conv.agent_slug
+  if (targetSlug && targetSlug !== agentStore.currentAgent?.slug) {
+    const target = agentStore.agents.find((a) => a.slug === targetSlug)
+    if (target) {
+      agentStore.setCurrentAgent(target)
+      // ChatPage's watch(agentSlug) resets the store and fires its own
+      // "restore the latest conversation" request. Let it run, then discard
+      // that response — otherwise the agent's latest conversation replaces
+      // the one the user just clicked.
+      await nextTick()
+      invalidateLatestConversation()
+    } else {
+      // Agent row gone (or not loaded): open the conversation anyway — its
+      // messages are keyed by conversation_id. Only the next turn's agent
+      // would fall back to the currently selected one.
+      console.warn('Conversation belongs to an agent not in the current list', targetSlug)
+    }
+  }
   convStore.startConversation(conv.conversation_id)
   // Switch the token meter to this conversation's figures — the list item
   // already carries them and the previous conversation's runtime would
@@ -87,6 +187,19 @@ async function selectConversation(conv: ConversationItem) {
   } catch (e) {
     error.value = e instanceof Error ? e.message : t('conversations.loadFailed')
     console.error('Failed to load conversation', e)
+  }
+}
+
+async function renameConversation(id: string, title: string) {
+  try {
+    const updated = await conversationsApi.rename(id, title)
+    const row = conversations.value.find((c) => c.conversation_id === id)
+    if (row) row.title = updated.title
+    error.value = null
+  } catch (e) {
+    // Leave the old title in place — the list is the source of truth.
+    error.value = e instanceof Error ? e.message : t('conversations.renameFailed')
+    console.error('Failed to rename conversation', e)
   }
 }
 
@@ -141,14 +254,22 @@ async function deleteConversation(id: string) {
   }
 }
 
-watch([() => props.projectId, () => props.agentSlug], load, { immediate: true })
+watch([() => props.projectId, () => props.agentSlug], ([pid], [oldPid]) => {
+  // A search belongs to the project it was typed in.
+  if (pid !== oldPid) clearSearch()
+  load()
+}, { immediate: true })
+
+// The debounced term drives the request; clearing it reloads the
+// agent-scoped list.
+watch(activeQuery, load)
 
 /** Reload the conversation list when a conversation starts streaming,
  *  so that newly-created conversations appear in the sidebar immediately
  *  instead of waiting for the next 5-second poll. */
 const streamingKeyCount = computed(() => Object.keys(convStore.streamingIds).length)
 watch(streamingKeyCount, (n, old) => {
-  if (n > old) load()
+  if (n > old && !searchPending.value) load()
 })
 
 // 当前会话默认展开并预取任务缓存；活动会话切换时展开新的那个。
@@ -178,11 +299,18 @@ watch(
 )
 
 onMounted(() => {
-  pollTimer = setInterval(load, 5_000)
+  pollTimer = setInterval(() => {
+    // A keyword search scans message bodies server-side — don't re-run it
+    // every 5s. searchPending (not just activeQuery) also covers the debounce
+    // window, where a poll would paint the unfiltered list over the results.
+    if (searchPending.value) return
+    load()
+  }, 5_000)
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  if (searchTimer) clearTimeout(searchTimer)
 })
 </script>
 

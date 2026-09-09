@@ -5,8 +5,8 @@ import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
@@ -37,6 +37,20 @@ def _safe_payload(raw: str | None) -> dict:
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, ValueError):
         return {}
+
+
+def _like_needle(term: str, dialect_name: str) -> str:
+    """Lowercased LIKE needle, with T-SQL's character-class bracket escaped.
+
+    SQLAlchemy's ``autoescape`` handles %, _ and the escape char, but T-SQL
+    additionally reads ``[abc]`` as a character class (no ESCAPE equivalent),
+    so a literal ``[`` must become ``[[]`` on MSSQL only. Other dialects treat
+    ``[`` literally.
+    """
+    needle = term.lower()
+    if dialect_name == "mssql":
+        needle = needle.replace("[", "[[]")
+    return needle
 
 
 def serialize_message(m: DbMessage) -> dict:
@@ -79,6 +93,19 @@ class ConversationCreate(BaseModel):
     # SQLite silently accepts .
     title: str | None = Field(default=None, max_length=255)
     token_budget: int = Field(default=128000, gt=0, le=2_000_000)
+
+
+class ConversationUpdate(BaseModel):
+    # Same Unicode(255) bound as ConversationCreate. Stripped before the
+    # length check (mode="before"): a title padded past 255 raw chars must
+    # trim to a valid one instead of 422-ing on the untrimmed length, and a
+    # whitespace-only title must fail min_length rather than blank the title.
+    title: str = Field(min_length=1, max_length=255)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
 
 @router.get("/projects/{project_id}/conversations/latest")
@@ -133,6 +160,7 @@ async def get_latest_conversation(
 async def list_conversations(
     project_id: str,
     agent_slug: str | None = None,
+    q: str | None = Query(None, max_length=100),
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
     project: Project = Depends(authorize_project),
@@ -204,6 +232,33 @@ async def list_conversations(
     # agent-less conversations (create_conversation allows agent_id=None)
     # from listings. Show all active conversations without a slug filter.
 
+    # Keyword filter: title OR any message body. lower() on both sides keeps
+    # matching case-insensitive on PostgreSQL (whose LIKE is case-sensitive)
+    # and identical to the other three dialects; autoescape stops %/_ in the
+    # user's text from acting as wildcards. The body test is a correlated
+    # EXISTS so a conversation with many matching messages still appears once.
+    # No index can serve a leading-wildcard LIKE: this scans the project's
+    # messages. Fine at current scale — full-text search would need per-dialect
+    # support, and the .limit(50) below means "50 most recent matches".
+    term = (q or "").strip()
+    if term:
+        needle = _like_needle(term, db.get_bind().dialect.name)
+        body_match = (
+            select(DbMessage.message_id)
+            .where(
+                DbMessage.conversation_id == Conversation.conversation_id,
+                func.lower(DbMessage.content).contains(needle, autoescape=True),
+            )
+            .correlate(Conversation)
+            .exists()
+        )
+        query = query.where(
+            or_(
+                func.lower(Conversation.title).contains(needle, autoescape=True),
+                body_match,
+            )
+        )
+
     result = await db.execute(query)
     rows = result.all()
     return [
@@ -260,6 +315,25 @@ async def create_conversation(
         "project_id": str(conv.project_id),
         "token_budget": conv.token_budget,
     }
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str,
+    body: ConversationUpdate,
+    db: AsyncSession = Depends(get_db),
+    conversation: Conversation = Depends(authorize_conversation),
+):
+    """Rename a conversation (manual title override).
+
+    Deliberately does not touch updated_at: the sidebar orders by
+    COALESCE(updated_at, created_at), so bumping it would yank a renamed
+    conversation to the top of the list even though nothing was said in it.
+    Allowed while a turn is running — the title is metadata, not history.
+    """
+    conversation.title = body.title
+    await db.commit()
+    return {"conversation_id": conversation_id, "title": conversation.title}
 
 
 @router.delete("/conversations/{conversation_id}")

@@ -316,6 +316,11 @@ export default {
     loadFailed: '加载会话失败',
     deleteConfirm: '确认删除此对话？',
     deleteFailed: '删除会话失败',
+    searchPlaceholder: '搜索对话…',
+    clearSearch: '清除搜索',
+    noMatches: '没有匹配的对话',
+    renameTitle: '重命名',
+    renameFailed: '重命名会话失败',
   },
   contextMeter: {
     label: '上下文',

@@ -253,4 +253,101 @@ describe('ConversationTreeItem', () => {
     expect(wrapper.find('.conv-tree-warn').exists()).toBe(false)
     expect(wrapper.find('.conv-tree-live').exists()).toBe(true)
   })
+
+  it('renders the agent badge only when agentLabel is passed', () => {
+    const base = {
+      conversation: makeConv(),
+      isActive: false,
+      isExpanded: false,
+      isStreaming: false,
+      tasks: [],
+    }
+    const withLabel = mount(ConversationTreeItem, { props: { ...base, agentLabel: '需求分析师' } })
+    expect(withLabel.find('.conv-tree-agent-badge').text()).toBe('需求分析师')
+
+    const without = mount(ConversationTreeItem, { props: base })
+    expect(without.find('.conv-tree-agent-badge').exists()).toBe(false)
+  })
+
+  function mountItem(over: Partial<ConversationItem> = {}) {
+    return mount(ConversationTreeItem, {
+      props: {
+        conversation: makeConv(over),
+        isActive: false,
+        isExpanded: false,
+        isStreaming: false,
+        tasks: [],
+      },
+    })
+  }
+
+  it('opens an inline editor pre-filled with the current title', async () => {
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+
+    const input = wrapper.find('.conv-tree-rename-input')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe('旧标题')
+    expect(wrapper.find('.conv-tree-title').exists()).toBe(false)
+    // Opening the editor is not a selection.
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
+
+  it('emits rename with the trimmed title on Enter', async () => {
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    const input = wrapper.find('.conv-tree-rename-input')
+    await input.setValue('  新标题  ')
+    await input.trigger('keydown.enter')
+
+    expect(wrapper.emitted('rename')).toEqual([['新标题']])
+    // Committed once — the blur that follows Enter must not emit again.
+    await input.trigger('blur')
+    expect(wrapper.emitted('rename')).toHaveLength(1)
+  })
+
+  it('cancels on Esc without emitting and restores the title', async () => {
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    const input = wrapper.find('.conv-tree-rename-input')
+    await input.setValue('改了一半')
+    await input.trigger('keydown.esc')
+
+    expect(wrapper.emitted('rename')).toBeUndefined()
+    expect(wrapper.find('.conv-tree-rename-input').exists()).toBe(false)
+    expect(wrapper.find('.conv-tree-title').text()).toBe('旧标题')
+  })
+
+  it('commits a changed title on blur', async () => {
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    const input = wrapper.find('.conv-tree-rename-input')
+    await input.setValue('新标题')
+    await input.trigger('blur')
+
+    expect(wrapper.emitted('rename')).toEqual([['新标题']])
+  })
+
+  it('does not emit for a blank or unchanged title', async () => {
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    let input = wrapper.find('.conv-tree-rename-input')
+
+    await input.setValue('   ')
+    await input.trigger('blur')
+    expect(wrapper.emitted('rename')).toBeUndefined()
+
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    input = wrapper.find('.conv-tree-rename-input')
+    await input.setValue('旧标题')
+    await input.trigger('blur')
+    expect(wrapper.emitted('rename')).toBeUndefined()
+  })
+
+  it('clicking the rename input does not select the conversation', async () => {
+    const wrapper = mountItem()
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    await wrapper.find('.conv-tree-rename-input').trigger('click')
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
 })

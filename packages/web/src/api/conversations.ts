@@ -4,8 +4,23 @@ import type { CompressResult, ConversationItem, ConversationRun, DbMessage, DbTa
 const enc = encodeURIComponent
 
 export const conversationsApi = {
-  list: (projectId: string, agentSlug: string) =>
-    apiFetch<ConversationItem[]>(`/api/projects/${enc(projectId)}/conversations?agent_slug=${enc(agentSlug)}`),
+  /** Conversations of a project. Omit agentSlug to list every agent's
+   *  (used by search); q filters by title OR message body. */
+  list: (projectId: string, agentSlug?: string | null, q?: string) => {
+    const params = new URLSearchParams()
+    if (agentSlug) params.set('agent_slug', agentSlug)
+    if (q) params.set('q', q)
+    const qs = params.toString()
+    return apiFetch<ConversationItem[]>(
+      `/api/projects/${enc(projectId)}/conversations${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  rename: (conversationId: string, title: string) =>
+    apiFetch<{ conversation_id: string; title: string }>(
+      `/api/conversations/${enc(conversationId)}`,
+      { method: 'PATCH', body: JSON.stringify({ title }) },
+    ),
 
   getMessages: (conversationId: string) =>
     apiFetch<DbMessage[]>(`/api/conversations/${enc(conversationId)}/messages`),

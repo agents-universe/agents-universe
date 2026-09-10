@@ -15,6 +15,28 @@ class SessionEvent:
 
 
 @dataclass
+class PromptOutcome:
+    """How one interactive prompt ended, keyed by its caller-supplied signature.
+
+    ``status`` is ``"answered"`` | ``"timed_out"`` | ``"dismissed"``.
+    """
+    status: str
+    value: str | None = None
+
+
+class UserSelectionTimeoutError(RuntimeError):
+    """A prompt expired unanswered.
+
+    Subclasses RuntimeError so safety gates that catch RuntimeError around
+    request_user_selection keep their behavior unchanged.
+    """
+
+
+class UserSelectionAbortedError(RuntimeError):
+    """The run was aborted while a prompt was pending."""
+
+
+@dataclass
 class UserInputEntry:
     """A user message queued for in-flight injection at the next step boundary.
 
@@ -58,6 +80,13 @@ class ConversationSession:
         self.abort_event = asyncio.Event()
         self._current_message_id: str = str(uuid.uuid4())
         self._pending_prompts: dict[str, asyncio.Future[str]] = {}
+        # Interactive-prompt ledger, keyed by a caller-supplied signature
+        # (field key + question). Tool-level callers use it to hand back a
+        # repeated question's recorded outcome instead of showing the dialog
+        # a second time, and to remember a prompt that already failed.
+        self._prompt_outcomes: dict[tuple[str, str], PromptOutcome] = {}
+        self._prompt_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._prompts_paused = False
         self._user_input_queue: asyncio.Queue[UserInputEntry] = asyncio.Queue(maxsize=20)
         # message_id → entry, kept in sync with the queue for O(1) resolution
         self._pending_input_by_id: dict[str, UserInputEntry] = {}
@@ -190,6 +219,66 @@ class ConversationSession:
         except asyncio.QueueFull:
             pass
 
+    # --- Interactive-prompt ledger -----------------------------------------
+    #
+    # Prompt state lives for one turn (a session object is created per turn),
+    # so the ledger suppresses repeats within a turn. Letting an answer outlive
+    # the turn is the caller's job — persist it as a project setting.
+
+    def get_prompt_outcome(self, signature: tuple[str, str] | None) -> PromptOutcome | None:
+        """Return the recorded outcome for a prompt signature, if any."""
+        if not signature:
+            return None
+        return self._prompt_outcomes.get(signature)
+
+    def record_prompt_outcome(
+        self,
+        signature: tuple[str, str] | None,
+        status: str,
+        value: str | None = None,
+    ) -> None:
+        """Record how an interactive prompt ended.
+
+        An answered entry is never overwritten by a failure: two callers can
+        ask the same question concurrently, and the duplicate that times out
+        must not erase the answer the user actually gave.
+        """
+        if not signature:
+            return
+        existing = self._prompt_outcomes.get(signature)
+        if existing is not None and existing.status == "answered" and status != "answered":
+            return
+        self._prompt_outcomes[signature] = PromptOutcome(status=status, value=value)
+
+    def prompt_lock(self, signature: tuple[str, str]) -> asyncio.Lock:
+        """Lock serializing callers that ask the same question concurrently."""
+        lock = self._prompt_locks.get(signature)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._prompt_locks[signature] = lock
+        return lock
+
+    def note_prompt_timeout(self) -> None:
+        """A prompt expired unanswered — stop prompting for the rest of the turn."""
+        self._prompts_paused = True
+
+    @property
+    def interactive_prompts_paused(self) -> bool:
+        """Whether an unanswered prompt paused further interactive prompts."""
+        return self._prompts_paused
+
+    def _note_user_present(self) -> None:
+        """Record that the user is present again (answered a prompt, or sent a
+        message mid-run): lift the timeout pause and let questions that failed
+        be asked once more. Answers already given stay recorded — re-asking
+        those is exactly the repeat this ledger exists to stop."""
+        self._prompts_paused = False
+        self._prompt_outcomes = {
+            sig: outcome
+            for sig, outcome in self._prompt_outcomes.items()
+            if outcome.status == "answered"
+        }
+
     async def request_user_selection(
         self,
         prompt_id: str,
@@ -238,7 +327,9 @@ class ConversationSession:
         title / message : str | None
             Optional display overrides for the prompt dialog.
 
-        Raises RuntimeError on timeout.
+        Raises UserSelectionTimeoutError on timeout and
+        UserSelectionAbortedError when the run is aborted; both subclass
+        RuntimeError.
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
@@ -296,7 +387,7 @@ class ConversationSession:
                 field_key=field_key,
                 reason="timeout",
             )
-            raise RuntimeError(
+            raise UserSelectionTimeoutError(
                 f"User selection timed out after {timeout:.0f} s for field '{field_key}'"
             )
         if abort_waiter in done:
@@ -306,7 +397,7 @@ class ConversationSession:
                 field_key=field_key,
                 reason="aborted",
             )
-            raise RuntimeError("Session aborted while waiting for user input")
+            raise UserSelectionAbortedError("Session aborted while waiting for user input")
         return fut.result()
 
     def resolve_user_selection(self, prompt_id: str, value: str) -> bool:
@@ -319,6 +410,7 @@ class ConversationSession:
         fut = self._pending_prompts.get(prompt_id)
         if fut is not None and not fut.done():
             fut.set_result(value)
+            self._note_user_present()
             return True
         return False
 
@@ -332,6 +424,7 @@ class ConversationSession:
         if fut is not None and not fut.done():
             status = "secret_saved" if saved else "secret_save_failed"
             fut.set_result(status)
+            self._note_user_present()
             return True
         return False
 
@@ -349,6 +442,9 @@ class ConversationSession:
         try:
             self._user_input_queue.put_nowait(entry)
             self._pending_input_by_id[entry.message_id] = entry
+            # The user is back at the keyboard: unanswered prompts may be asked
+            # again (answers already given stay recorded).
+            self._note_user_present()
             return True
         except asyncio.QueueFull:
             return False

@@ -106,6 +106,26 @@ memory_rw(
 
 **Do NOT write customer/project-specific config into knowledge files or framework templates.** Only shared, durable project facts (API maps, permission matrices, business rules) belong in project knowledge.
 
+## Duplicate and Unanswered Prompts
+
+`field_key` identifies a DECISION, not a dialog: one decision gets one stable key (the environment tier, the issue-tracker project). Never reuse a key for a different question — a repeated question on the same key is taken to be the same decision.
+
+Within one turn the framework answers repeats for you:
+
+| Tool result | Meaning | What to do |
+|---|---|---|
+| `reused: true` + `selected_value` | The user already answered this decision; no dialog was shown | Continue with the recorded value |
+| `timed_out: true` / `dismissed: true` (with `do_not_reask: true`) | The dialog expired unanswered, or the user closed it | Stop asking through the dialog — ask in plain chat text and end the turn |
+| `prompts_paused: true` | An earlier prompt went unanswered; prompts are paused for the rest of this turn | Continue with what the answers you have allow; ask in chat text |
+
+Rules that follow:
+
+- A timeout is not an invitation to ask again — re-prompting is what turns one unanswered question into a loop.
+- Re-asking an answered question on the same key returns the recorded answer instead of a dialog.
+- `force=true` is the only way past a recorded answer; use it only when the user explicitly asks to change their earlier answer.
+- Secret prompts are never replayed — credential collection always opens the dialog, because a replayed status would claim a stored value that may no longer exist.
+- A decision that must hold across turns (answered once per project, not once per turn) has to be persisted — project-scoped memory for non-secrets, per "Collecting Missing Configuration"; the per-turn ledger dies with the turn.
+
 ## Secret Handling
 
 For secrets (tokens, passwords, API keys, cookies, private keys):

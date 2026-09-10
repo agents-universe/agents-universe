@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from agent_core.agent import Agent
+from agent_core.session import ConversationSession
 from agent_core.tools.base import ToolContext
 from agent_core.tools.planner import PlannerTool
 from agent_core.tools.user_confirm import UserConfirmTool
@@ -23,13 +24,23 @@ def _ctx(**kwargs) -> ToolContext:
 
 
 class _FakeSession:
+    """Session double: only the prompt call itself is faked.
+
+    Prompt-ledger and pause state delegate to a real session, so the double
+    cannot drift from the interface UserConfirmTool relies on.
+    """
+
     def __init__(self, value: str = "chosen"):
         self.value = value
         self.calls: list[dict] = []
+        self._state = ConversationSession("c", "p", "u")
 
     async def request_user_selection(self, **kwargs):
         self.calls.append(kwargs)
         return self.value
+
+    def __getattr__(self, name):
+        return getattr(self._state, name)
 
 
 @pytest.mark.asyncio

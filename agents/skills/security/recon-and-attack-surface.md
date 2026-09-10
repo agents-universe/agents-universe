@@ -71,9 +71,11 @@ The literal-IP block is an always-on SSRF guard independent of `SSRF_ENABLED`; t
 
 Practical rule: prefer DNS names from `environment` knowledge over literal IPs so the standard channels stay usable; route literal-IP targets through `code_executor` httpx PoCs.
 
-## Environment Confirmation
+## Environment Recording
 
-Confirm the target tier against the Phase 0 scope declaration - the default is dev/test. Record: target URLs actually used, the tool versions from capability detection, and any environment-specific caveats (shared test data, rate limiters, WAF). This feeds the report's Scope & Methodology sections verbatim.
+Record the target tier from the Phase 0 scope declaration - never by asking again. This section writes down what the phase actually used: target URLs, the tool versions from capability detection, and any environment-specific caveats (shared test data, rate limiters, WAF). It feeds the report's Scope & Methodology sections verbatim.
+
+If no declaration exists yet, stop active work and return to Phase 0: `security/pentest-scope-guard.md` owns the single scope question. After a prompt timeout or dismissal, ask in plain chat text - do not reopen the dialog.
 
 ## Output
 

@@ -24,6 +24,7 @@ import httpx
 
 from .base import Tool, ToolContext
 from ._http import ensure_http_client
+from ._uploads import UploadPayload, UploadSourceError, resolve_upload_specs
 from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
@@ -32,6 +33,12 @@ _log = logging.getLogger(__name__)
 # misbehaving upstream must not be able to make the agent process exhaust
 # memory. JSON responses are parsed in full, so the cap rejects, not truncates.
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# Bounds on the plain text parts of a multipart body: the payloads are capped
+# by the upload resolver, these keep a runaway field list from exploding the
+# request the same way.
+_MAX_FORM_FIELD_BYTES = 100 * 1024
+_MAX_FORM_FIELDS_BYTES = 1024 * 1024
 
 _SENSITIVE_HEADER_RE = re.compile(
     r"authorization|cookie|x-api-key|api-key|token|secret|password|bearer",
@@ -77,6 +84,47 @@ def _coerce_dict_field(value: Any, field: str) -> tuple[dict[str, Any] | None, s
             return parsed, None
         return None, f"{field} must be a JSON object, got a {type(parsed).__name__}: {stripped[:120]!r}"
     return None, f"{field} must be a JSON object, got {type(value).__name__}"
+
+
+def _coerce_form_fields(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Normalize multipart text fields to strings and enforce the size caps.
+
+    Values are stringified because that is what a browser form submits, and a
+    non-string would otherwise reach httpx as-is (an int is fine, a nested dict
+    silently serializes to something the server never sees in a real form).
+    Sequences are kept as sequences — a repeated form key is legitimate — but
+    each element is stringified and counted against the caps.
+    """
+    fields, err = _coerce_dict_field(raw, "form_fields")
+    if err:
+        return None, err
+    total = 0
+    normalized: dict[str, Any] = {}
+    for key, value in fields.items():
+        name = str(key)
+        items = list(value) if isinstance(value, (list, tuple)) else [value]
+        for item in items:
+            if isinstance(item, (dict, list, tuple, set)):
+                return None, (
+                    f"form_fields[{name!r}] must be a string or a list of strings, "
+                    f"got a {type(item).__name__}"
+                )
+        text_items = ["" if item is None else str(item) for item in items]
+        for item in text_items:
+            size = len(item.encode("utf-8"))
+            if size > _MAX_FORM_FIELD_BYTES:
+                return None, (
+                    f"form_fields[{name!r}] is {size} bytes, above the "
+                    f"{_MAX_FORM_FIELD_BYTES // 1024}KB per-field limit"
+                )
+            total += size
+        normalized[name] = text_items if isinstance(value, (list, tuple)) else text_items[0]
+    if total > _MAX_FORM_FIELDS_BYTES:
+        return None, (
+            f"form_fields total {total} bytes is above the "
+            f"{_MAX_FORM_FIELDS_BYTES // (1024 * 1024)}MB limit"
+        )
+    return normalized, None
 
 
 def _is_private_ip(host: str) -> bool:
@@ -241,7 +289,8 @@ class ApiRequestTool(Tool):
         "plaintext secrets never appear in tool results. "
         "When endpoint_key is provided, method default, path, per-environment "
         "base_url, allowed_hosts, response_json_path, and auth defaults are "
-        "resolved server-side from the project's integrations/custom-api catalog."
+        "resolved server-side from the project's integrations/custom-api catalog. "
+        "File uploads use multipart/form-data via files + form_fields."
     )
     parameters = {
         "type": "object",
@@ -280,7 +329,27 @@ class ApiRequestTool(Tool):
                 "description": "Additional headers (auth headers are forbidden)",
             },
             "json_body": {
-                "description": "JSON request body",
+                "description": "JSON request body. Mutually exclusive with files.",
+            },
+            "files": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "multipart/form-data file parts. Each entry: {field (form field "
+                    "name, default 'file'), source ('path' = workspace-relative file, "
+                    "'attachment' = file the user attached to this conversation, "
+                    "'inline' = content you generate now), plus the matching key: "
+                    "path / name / content or content_base64, and optional mime_type}. "
+                    "Mutually exclusive with json_body; POST/PUT/PATCH only; do not "
+                    "set Content-Type yourself (the tool generates the boundary)."
+                ),
+            },
+            "form_fields": {
+                "type": "object",
+                "description": (
+                    "Plain text form fields sent in the same multipart body as files "
+                    "(values are stringified). Requires files."
+                ),
             },
             "auth_type": {
                 "type": "string",
@@ -531,6 +600,55 @@ class ApiRequestTool(Tool):
             json_body = dict(json_body)
         else:
             json_body = None
+
+        # Multipart upload. Every rejection below is explicit: httpx silently
+        # prefers `files` and drops `json`, and a caller-supplied Content-Type
+        # discards the generated boundary — both would send a body the server
+        # cannot parse while looking like a success.
+        files_spec = params.get("files")
+        upload_payloads: list[UploadPayload] = []
+        form_fields: dict[str, Any] | None = None
+        if params.get("form_fields") is not None and files_spec is None:
+            return {
+                "error": (
+                    "form_fields requires files — it only carries the text parts of a "
+                    "multipart body. Use json_body for a JSON request."
+                ),
+                "integration_key": integration_key,
+            }
+        if files_spec is not None:
+            if method in ("GET", "HEAD"):
+                return {
+                    "error": f"method {method} cannot carry a multipart body — use POST, PUT or PATCH",
+                    "integration_key": integration_key,
+                }
+            if json_body is not None:
+                return {
+                    "error": (
+                        "json_body and files are mutually exclusive (httpx ignores json "
+                        "when files is set and the body would arrive without it). Move the "
+                        "JSON fields into form_fields to send them with the upload."
+                    ),
+                    "integration_key": integration_key,
+                }
+            for header_name in extra_headers:
+                if header_name.lower() == "content-type":
+                    return {
+                        "error": (
+                            "Remove the manual Content-Type header — the tool generates the "
+                            "multipart boundary. Drop it and pass the parts via files/form_fields."
+                        ),
+                        "forbidden_header": header_name,
+                    }
+            try:
+                upload_payloads = resolve_upload_specs(context, files_spec)
+            except UploadSourceError as exc:
+                return {"error": str(exc), "integration_key": integration_key}
+            if params.get("form_fields") is not None:
+                form_fields, _err = _coerce_form_fields(params.get("form_fields"))
+                if _err:
+                    return {"error": _err, "integration_key": integration_key}
+
         auth_header_name: str | None = params.get("auth_header_name")
         auth_prefix: str | None = params.get("auth_prefix")
 
@@ -763,8 +881,6 @@ class ApiRequestTool(Tool):
                     return {
                         "error": "auth_field_name is required when auth_type is 'body_field'",
                     }
-                if json_body is None:
-                    json_body = {}
                 if len(secrets) > 1:
                     return {
                         "error": (
@@ -772,7 +888,18 @@ class ApiRequestTool(Tool):
                             "configure one secret_ref for this field"
                         ),
                     }
-                json_body[field_name] = _first_secret()
+                if upload_payloads:
+                    # The body IS the multipart form here, so the credential
+                    # travels as a form field — dropping it into json_body (as
+                    # the JSON path does) would send an empty request with no
+                    # auth at all.
+                    if form_fields is None:
+                        form_fields = {}
+                    form_fields[field_name] = _first_secret()
+                else:
+                    if json_body is None:
+                        json_body = {}
+                    json_body[field_name] = _first_secret()
 
         # 10. Send request
         http = ensure_http_client(context, target_url=full_url)
@@ -792,7 +919,15 @@ class ApiRequestTool(Tool):
             }
             if query_params:
                 request_kwargs["params"] = query_params
-            if json_body is not None and method not in ("GET", "HEAD"):
+            if upload_payloads:
+                # httpx builds the Content-Type (with boundary) from files.
+                request_kwargs["files"] = [
+                    (payload.field or "file", (payload.name, payload.data, payload.mime_type))
+                    for payload in upload_payloads
+                ]
+                if form_fields:
+                    request_kwargs["data"] = form_fields
+            elif json_body is not None and method not in ("GET", "HEAD"):
                 request_kwargs["json"] = json_body
 
             # Stream the body with a hard byte cap — a misbehaving upstream
@@ -861,6 +996,20 @@ class ApiRequestTool(Tool):
             result["catalog"] = catalog_info
         if secret_ref:
             result["secret_ref"] = secret_ref
+        if upload_payloads:
+            # What actually left the process — names and sizes only, never the
+            # bytes. Deliberately NOT named "files": agent.py turns any
+            # result["files"] into user-facing file_output deliverables.
+            result["uploaded"] = [
+                {
+                    "name": payload.name,
+                    "field": payload.field or "file",
+                    "size": len(payload.data),
+                    "mime_type": payload.mime_type,
+                    "source": payload.source,
+                }
+                for payload in upload_payloads
+            ]
 
         if response_mode == "status":
             result["ok"] = 200 <= response_status < 300

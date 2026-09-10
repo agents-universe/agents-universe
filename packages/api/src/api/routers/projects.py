@@ -212,14 +212,19 @@ async def create_project(
         (fs_path / "skills").mkdir(parents=True, exist_ok=True)
         (fs_path / "workflows").mkdir(parents=True, exist_ok=True)
 
-        # Copy test scaffold (package.json, playwright.config.ts, tsconfig.json)
+        # Copy test scaffold (package.json, playwright.config.ts, tsconfig.json,
+        # fixtures/README.md). Recursive so nested scaffold files come along,
+        # and non-overwriting so a re-run never clobbers user edits.
         scaffold_dir = PACKAGE_ROOT / "scaffold" / "tests"
         if scaffold_dir.exists():
-            for f in scaffold_dir.iterdir():
-                if f.is_file():
-                    dest = tests_dir / f.name
-                    if not dest.exists():
-                        shutil.copy2(f, dest)
+            for src in scaffold_dir.rglob("*"):
+                if not src.is_file():
+                    continue
+                dest = tests_dir / src.relative_to(scaffold_dir)
+                if dest.exists():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
 
         if KNOWLEDGE_TEMPLATE_DIR.exists():
             import frontmatter

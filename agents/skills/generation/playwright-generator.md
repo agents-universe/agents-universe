@@ -39,6 +39,48 @@ The tool performs the following automatically:
 4. Set `output_dir` only when the project convention differs from `tests/generated`.
 5. If the product login flow is exercised inside each case instead, pass `include_login=false`.
 
+## Upload Scenarios
+
+Upload steps are generated for real (`setInputFiles`), never as a `waitForTimeout`
+placeholder — a step that uploads nothing passes green and proves nothing. Declare
+each payload on its case under `uploads`:
+
+```json
+test_generator(
+  operation="generate_spec",
+  issue_key="PROJ-456",
+  test_cases=[{
+    "title": "Import orders from CSV",
+    "steps": ["Navigate to /orders/import", "Upload the orders.csv file", "Click Import"],
+    "uploads": [{"filename": "orders.csv", "content": "id,total\n1,42\n"}]
+  }]
+)
+```
+
+Three ways to supply a payload, in order of preference:
+
+1. **Generated inline** (`content` for text, `content_base64` for bytes) — the
+   spec carries its own data, so it cannot rot when a file moves. 512KB per
+   payload, 5 uploads per case. This is the default choice for a fixture the
+   test itself can synthesize.
+2. **Existing asset** (`fixture_path: "fixtures/orders.xlsx"`) — for large or
+   byte-exact files. The path is relative to `tests/` (the runner's cwd is
+   always `tests/`, so never use `__dirname` — the specs are ESM).
+3. **`needs_path: true`** — only when the widget needs a real filesystem path;
+   the spec writes the payload to `test.info().outputPath()` first.
+
+Other keys: `selector` (defaults to `input[type=file]`), `via_chooser: true`
+when a button opens the native picker instead of a visible input, `mime_type`
+(inferred from the filename when omitted).
+
+If an upload step has no payload queued, the generator emits a real
+`setInputFiles('input[type=file]', 'fixtures/<name>')` with a TODO — the test
+fails until the fixture exists, which is the point. Never "fix" it by deleting
+the call.
+
+Upload assertions belong in `expected_results` ("the upload progress bar is
+visible", "the imported row count is 1") — the generator cannot infer them.
+
 ## Selector Strategy (Reference Knowledge)
 
 Read `knowledge/{project}/ui-patterns.md`. If it already records a commonly used selector pattern for the page, reuse it directly:
@@ -82,6 +124,12 @@ Command priority (use the first that applies):
 4. `shell(command="npm run typecheck", cwd="tests")` — verify TypeScript before running.
 
 Do **not** use bare `npx playwright test`: `playwright` (no `/test`) is a different package that lacks the `test` subcommand.
+
+Evidence: the scaffold sets `video` and `trace` to `retain-on-failure`, so a
+failed case leaves `tests/test-results/**/{video.webm,trace.zip}` — attach those
+to the test card. A **passing** scenario that still needs a recording is captured
+with `browser_playwright(operation="record_start"/"record_stop")`; a spec run
+keeps no video for it.
 
 Credentials for login flows: inject via `env` (server-side channel) or `env_refs` (agent-side shell) — `APP_USERNAME` / `APP_PASSWORD` resolved from the vault; non-secret values (e.g. `APP_BASE_URL`) go inline.
 

@@ -154,3 +154,104 @@ async def test_http_error_body_redacts_credential(caplog):
     assert "ATATT-secret-token-999" not in result["error"]
     assert "REDACTED" in result["error"]
     assert "ATATT-secret-token-999" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# add_attachment size caps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_attachment_over_the_cap_is_refused_before_sending(tmp_path):
+    """attach_file reads the whole file into memory on a worker thread; a
+    50MB+ recording must be refused with advice, not uploaded and 413'd."""
+    from agent_core.tools.jira import _MAX_ATTACHMENT_BYTES
+
+    big = tmp_path / ".tmp" / "media" / "conv" / "recording_ab12cd34.webm"
+    big.parent.mkdir(parents=True)
+    with open(big, "wb") as fh:
+        fh.truncate(_MAX_ATTACHMENT_BYTES + 1)
+
+    client = AsyncMock()
+    result = await JiraTool()._op_add_attachment(
+        {"issue_key": "DDM-1", "file_path": ".tmp/media/conv/recording_ab12cd34.webm"},
+        client,
+        _ctx(project_fs_path=str(tmp_path)),
+    )
+
+    assert "Attachment too large" in result["error"]
+    assert "trace.zip" in result["error"]  # the actionable alternative
+    assert result["size"] == _MAX_ATTACHMENT_BYTES + 1
+    client.attach_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_attachment_maps_upstream_413(tmp_path):
+    """The instance's own limit can be lower than ours — the 413 must come
+    back as the same advice instead of a raw Jira API error."""
+    import httpx
+
+    clip = tmp_path / "clip.webm"
+    clip.write_bytes(b"webm" * 4)
+
+    def _boom(key, path):
+        resp = httpx.Response(
+            413,
+            text='{"message": "Attachment is too large"}',
+            request=httpx.Request("POST", "https://jira.example.com/rest/api/2/issue/DDM-1/attachments"),
+        )
+        raise httpx.HTTPStatusError("Payload Too Large", request=resp.request, response=resp)
+
+    client = AsyncMock()
+    client.attach_file = AsyncMock(side_effect=_boom)
+
+    result = await JiraTool()._op_add_attachment(
+        {"issue_key": "DDM-1", "file_path": "clip.webm"}, client, _ctx(project_fs_path=str(tmp_path))
+    )
+
+    assert "413" in result["error"]
+    assert "trace.zip" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_attachment_passes_through_other_errors(tmp_path):
+    """Only 413 is reworded; everything else keeps the tool's generic
+    HTTP-error path (and its credential redaction)."""
+    import httpx
+
+    clip = tmp_path / "clip.webm"
+    clip.write_bytes(b"webm")
+
+    resp = httpx.Response(
+        404,
+        text="Not Found",
+        request=httpx.Request("POST", "https://jira.example.com/rest/api/2/issue/DDM-1/attachments"),
+    )
+    client = AsyncMock()
+    client.attach_file = AsyncMock(
+        side_effect=httpx.HTTPStatusError("Not Found", request=resp.request, response=resp)
+    )
+    client.api_token = "tok"
+    client.email = "agent@example.com"
+
+    tool = JiraTool()
+    with patch.object(tool, "_build_client", new=AsyncMock(return_value=client)):
+        result = await tool.execute(
+            {"operation": "add_attachment", "issue_key": "DDM-1", "file_path": "clip.webm"},
+            _ctx(project_fs_path=str(tmp_path)),
+        )
+
+    assert result["error"].startswith("Jira API returned 404")
+
+
+@pytest.mark.asyncio
+async def test_add_attachment_rejects_a_directory(tmp_path):
+    """is_file(), not exists(): reading a directory raises IsADirectoryError
+    inside the worker thread and surfaces as a generic failure."""
+    (tmp_path / "tests").mkdir()
+    client = AsyncMock()
+    result = await JiraTool()._op_add_attachment(
+        {"issue_key": "DDM-1", "file_path": "tests"}, client, _ctx(project_fs_path=str(tmp_path))
+    )
+    assert "Not a file" in result["error"]
+    client.attach_file.assert_not_awaited()

@@ -119,10 +119,21 @@ If `output_path` is omitted in `image_annotator`, it defaults to writing `*-anno
 8. If the screenshot may be reused across different resolutions, prefer a percentage-coordinate template.
 9. If the screenshot is a full-page capture, remember to add `window.scrollY` to element y coordinates (see Getting Accurate Coordinates).
 
+## Recording Evidence
+
+A recording complements screenshots; it does not replace them.
+
+- Record with `browser_playwright(operation="record_start")` / `record_stop(filename="<case-id>-<scenario-slug>")`, and stop it in the same turn or the video is discarded. Name it at record time — nothing can rename the file afterwards. A spec run already keeps `tests/test-results/**/video.webm` and `trace.zip` for failed cases.
+- **Do not annotate a video.** There is no frame-stable way to place focus boxes, and an annotated clip is no longer the raw record a reviewer needs. The pairing is: screenshots carry the annotated proof of each assertion point, the recording carries the flow between them.
+- Keep clips short and stop them right after the scenario — they are attached to Jira under a 50MB cap, and a long clip of idle waiting helps nobody.
+- Name the file after the scenario (`record_stop(filename="<case-id>-<scenario-slug>")`); it is uploaded from `.tmp/media/{conversation_id}/`, matching `testing/jira-test-case-manager`'s evidence rules.
+- If a case genuinely needs a focus point inside a video, append a still frame extracted from it — annotate the frame, not the clip.
+
 ## Recommended Output Paths
 
 - Original image: `tests/generated/artifacts/<issue>/<case-id>-<scenario-slug>.png`
 - Annotated image: `tests/generated/artifacts/<issue>/<case-id>-<scenario-slug>-annotated.png`
+- Recording: `.tmp/media/{conversation_id}/<case-id>-<scenario-slug>.webm` (named by `record_stop`)
 
 ## Example Flow
 

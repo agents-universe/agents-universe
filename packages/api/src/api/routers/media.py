@@ -33,12 +33,17 @@ router = APIRouter(prefix="/api/media")
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9_\-][A-Za-z0-9_\-.]*$")
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+# Screenshots and generated images are images; recordings (browser_playwright
+# record_stop, Playwright's own retain-on-failure video) are video — served as
+# octet-stream a .webm downloads instead of playing inline.
 _MIME_BY_SUFFIX = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".webm": "video/webm",
+    ".mp4": "video/mp4",
     ".html": "text/html",
     ".htm": "text/html",
 }
@@ -270,6 +275,8 @@ async def serve_media(
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
         ".gif": "image/gif",
+        ".webm": "video/webm",
+        ".mp4": "video/mp4",
         ".html": "text/html",
         ".htm": "text/html",
     }

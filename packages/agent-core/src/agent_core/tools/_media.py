@@ -48,6 +48,8 @@ _MIME_OVERRIDES = {
     ".yml": "application/yaml",
     ".pdf": "application/pdf",
     ".zip": "application/zip",
+    ".webm": "video/webm",
+    ".mp4": "video/mp4",
 }
 
 _MEDIA_MARKER = "/api/media/"

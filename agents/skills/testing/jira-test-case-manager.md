@@ -89,6 +89,8 @@ Current implementation notes:
 
 - Use the `jira` tool for all Jira operations. Authentication is handled automatically.
 - `jira(operation="add_attachment", issue_key="<TEST-KEY>", file_path="<relative-path>")` — invoke separately for each file.
+- Producing the recording for a UI case: `browser_playwright(operation="record_start")` → drive the scenario → `browser_playwright(operation="record_stop", filename="<target-key>-<scenario-slug>")`. The file lands under `.tmp/media/{conversation_id}/` and its name is what the Jira attachment shows, so name it at record time — the filesystem tool cannot rename it afterwards. **A recording that is never stopped is discarded at turn end** — always stop it in the same turn. A spec run keeps its own `tests/test-results/**/video.webm` and `trace.zip`, but only for *failed* cases (the scaffold sets `retain-on-failure`); a passing scenario needs the browser tool.
+- Attachment limit is 50MB. Over it (or when the instance's own limit is lower than the file) the tool returns `Attachment too large` with the file untouched: attach the Playwright trace `tests/test-results/**/trace.zip` or a trimmed clip instead, and say so in the comment.
 - `jira(operation="update_assignee", issue_key="<KEY>", assignee_account_id="<ID>")` or `assignee_name="<name>"` only when assignment is part of the current workflow.
 - `jira(operation="transition_issue", issue_key="<KEY>", transition_name="<name>")` only after confirming the intended transition through `get_transitions`.
 - Evidence upload: attachments first, then a comment summarizing the execution with references to the uploaded files; after a screenshot upload succeeds, the comment still explains which case or scenario it belongs to.

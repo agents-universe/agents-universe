@@ -118,8 +118,16 @@ class ToolContext:
         self.http_client_no_proxy = None
         self._browser_lock = asyncio.Lock()
         # Every page this session opened (its own and each task clone's) so
-        # cleanup() can close them all — see copy_for_task.
+        # cleanup() can close them all — see copy_for_task. Contexts are
+        # registered the same way: an explicit BrowserContext owns its pages,
+        # and a recording is only written to disk when its context closes, so
+        # cleanup() must close them before the browser goes away.
         self._browser_pages: list = []
+        self._browser_contexts: list = []
+        self._browser_context = None
+        # Active recording state (context/page/video/temp dir) while a
+        # record_start is in flight; None when not recording.
+        self._browser_recording: dict | None = None
         self.mcp_manager = None  # McpConnectionManager, lazily set by attach_mcp_tools
 
     def copy_for_task(self, task_id: str, turn: int) -> "ToolContext":
@@ -142,6 +150,8 @@ class ToolContext:
         # its own (registered on the owner for cleanup).
         clone._shared = self
         clone._browser_page = None
+        clone._browser_context = None
+        clone._browser_recording = None
         clone.current_task_id = task_id
         clone.current_turn = turn
         # Concurrent tasks must not share one SQLAlchemy async session:
@@ -303,6 +313,21 @@ class ToolContext:
             except Exception:
                 _log.debug("http_client_no_proxy close failed", exc_info=True)
             self.http_client_no_proxy = None
+        # Contexts close their own pages; closing them first also finalizes any
+        # in-flight video (Playwright writes the .webm when the context goes
+        # away). Left to browser.close() the recording would never be written.
+        contexts = list(getattr(self, "_browser_contexts", None) or [])
+        own_context = getattr(self, "_browser_context", None)
+        if own_context is not None and own_context not in contexts:
+            contexts.append(own_context)
+        for ctx in contexts:
+            try:
+                await ctx.close()
+            except Exception:
+                _log.debug("browser context close failed", exc_info=True)
+        self._browser_contexts = []
+        self._browser_context = None
+        self._browser_recording = None
         pages = list(getattr(self, "_browser_pages", None) or [])
         own_page = getattr(self, "_browser_page", None)
         if own_page is not None and own_page not in pages:

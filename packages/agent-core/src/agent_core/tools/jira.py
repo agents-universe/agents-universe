@@ -18,6 +18,29 @@ from ._wiki import markdown_to_wiki
 
 _log = logging.getLogger(__name__)
 
+# attach_file reads the whole file into memory, and Atlassian's own attachment
+# limit is instance-configured and often lower than this — past it the upload
+# is a slow way to get a 413.
+_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+
+def _attachment_too_large(rel_path: str, size: int, *, upstream: bool = False) -> dict[str, Any]:
+    reason = (
+        "Jira rejected the upload (413)"
+        if upstream
+        else f"{size / (1024 * 1024):.1f}MB exceeds the "
+        f"{_MAX_ATTACHMENT_BYTES // (1024 * 1024)}MB attachment limit"
+    )
+    return {
+        "error": (
+            f"Attachment too large: {reason} ({rel_path}). Attach the Playwright "
+            "trace (tests/test-results/**/trace.zip) or a trimmed clip/screenshot "
+            "instead, and note the substitution in the issue comment."
+        ),
+        "file_path": rel_path,
+        "size": size,
+    }
+
 
 def _jql_literal(value: Any) -> str:
     """Quote a value as a JQL string literal.
@@ -61,7 +84,10 @@ class JiraTool(Tool):
             "issue_type": {"type": "string", "default": "Task"},
             "labels": {"type": "array", "items": {"type": "string"}},
             "transition_name": {"type": "string"},
-            "file_path": {"type": "string", "description": "Relative path for attachments"},
+            "file_path": {
+                "type": "string",
+                "description": "Relative path for attachments (workspace-relative, 50MB max)",
+            },
             "jql": {"type": "string", "description": "JQL query for search"},
             "link_type": {"type": "string", "default": "Tests"},
             "target_issue_key": {"type": "string", "description": "Target issue for linking/test creation"},
@@ -295,7 +321,20 @@ class JiraTool(Tool):
             return {"error": f"Access denied: path {rel_path!r} is outside project scope"}
         if not full_path.exists():
             return {"error": f"File not found: {rel_path}"}
-        result = await client.attach_file(key, str(full_path))
+        if not full_path.is_file():
+            return {"error": f"Not a file: {rel_path}"}
+        size = full_path.stat().st_size
+        if size > _MAX_ATTACHMENT_BYTES:
+            return _attachment_too_large(rel_path, size)
+        try:
+            result = await client.attach_file(key, str(full_path))
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 413:
+                # The instance's own limit is often lower than ours — the fix
+                # for the agent is the same either way.
+                _log.warning("jira add_attachment got 413 for %s", rel_path)
+                return _attachment_too_large(rel_path, size, upstream=True)
+            raise
         return {"success": True, "issue_key": key, "attachments": result}
 
     async def _op_link_issues(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:

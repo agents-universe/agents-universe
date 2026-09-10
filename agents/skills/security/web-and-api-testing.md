@@ -25,8 +25,8 @@ Phase 3 of the full-project pentest. Inputs: the attack surface inventory (Phase
 
 Per the reachability matrix in `security/recon-and-attack-surface.md`:
 
-- **`api_request`** - API-level testing of hostname targets. Secret injection via `secret_ref`/`secret_refs` + `secret_scope` keeps credentials out of the conversation. Confirmation prompts stay enabled for this agent - accept them as the per-request authorization gate.
-- **`browser_playwright`** - UI flows, rendered-page checks, screenshots. No secret injection exists on this tool: never `fill` a password field with a vault credential (the value would enter the conversation). Use the script mode below for authenticated UI tests.
+- **`api_request`** - API-level testing of hostname targets. Secret injection via `secret_ref`/`secret_refs` + `secret_scope` keeps credentials out of the conversation. Confirmation prompts stay enabled for this agent - accept them as the per-request authorization gate. Multipart endpoints are reachable through `files` + `form_fields` (never set `Content-Type` yourself; the tool generates the boundary) - use it for upload-validation checks with probes the UI would never send.
+- **`browser_playwright`** - UI flows, rendered-page checks, screenshots. No secret injection exists on this tool: never `fill` a password field with a vault credential (the value would enter the conversation). Use the script mode below for authenticated UI tests. `operation="upload"` drives a real `<input type=file>` (or the native picker via `via_chooser=true`) with an in-memory payload, so an upload check exercises the same client-side validation the product actually applies.
 - **`code_executor` (python, httpx)** - universal channel: literal-IP targets, non-standard ports, custom PoC scripts (differential responses, bounded timing checks, header/cookie manipulation). 30 s ceiling - keep scripts single-purpose.
 - **Authenticated UI script mode** - write a Playwright Python script to `.tmp/pentest/`, run it via `shell(env_refs={"PT_USERNAME": ..., "PT_PASSWORD": ...})`; the script reads credentials from env, logs in, performs the check, writes screenshots to `security/evidence/`. Same pattern as QA-generated test scripts.
 - **sqlmap** - per `security/pentest-toolchain.md`, targeted at code-identified injection points only.
@@ -38,8 +38,8 @@ Per the reachability matrix in `security/recon-and-attack-surface.md`:
 | A01 Broken Access Control | Two-account differential: low-priv creds against high-priv resources; object-ID substitution on every ID-bearing endpoint; unauthenticated access to auth-required routes | api_request |
 | A02 Cryptographic Failures | TLS config (sslyze); sensitive data in responses/caches/localStorage; weak token construction from code review | sslyze + code review |
 | A03 Injection | sqlmap on queued candidates; manual payloads for command/path/template injection via httpx PoCs | sqlmap + code_executor |
-| A04 Insecure Design | Business-flow abuse from permission-matrix knowledge (privilege-dependent flows, step-skipping) | api_request |
-| A05 Security Misconfiguration | dirsearch for exposed paths (backups, admin panels, dotfiles, swagger in prod); default credentials; verbose errors | dirsearch + browser_playwright |
+| A04 Insecure Design | Business-flow abuse from permission-matrix knowledge (privilege-dependent flows, step-skipping); validation that only exists in the client (re-issue the same upload/filter/limit through the API channel and compare) | api_request |
+| A05 Security Misconfiguration | dirsearch for exposed paths (backups, admin panels, dotfiles, swagger in prod); default credentials; verbose errors; unrestricted file upload (extension/MIME/`Content-Type` mismatch, traversal or double-extension filenames, oversized payload) | dirsearch + browser_playwright + api_request |
 | A06 Vulnerable Components | pip-audit on runtime deps + reachability triage from code | pip-audit |
 | A07 Identification & Auth Failures | Login flow behavior (error specificity, rate limiting, lockout), session token lifecycle (expiry, rotation, logout invalidation), password policy from code | api_request + browser_playwright |
 | A08 Software & Data Integrity | Unsigned update/deploy paths, unverified deserialization of external input | code review + code_executor |

@@ -149,14 +149,23 @@ jira(operation="get_transitions", issue_key="<KEY>")
 // Transition a test card after execution
 jira(operation="transition_issue", issue_key="<TEST-KEY>", transition_name="Task Done")
 
-// Upload evidence to test card
+// Drive a real browser scenario, including file uploads (never writes the payload to disk)
+browser_playwright(operation="upload", selector="input[type=file]", files=[{source: "path", path: "tests/fixtures/orders.csv"}])
+browser_playwright(operation="upload", selector="#import-btn", via_chooser=true, files=[{source: "inline", name: "gen.json", content="{\"a\":1}"}])
+
+// Record the scenario, then stop it under its scenario name (stop in the same turn)
+browser_playwright(operation="record_start")
+browser_playwright(operation="record_stop", filename="<CASE-ID>-<scenario-slug>")
+
+// Upload evidence to test card, one file per call
 jira(operation="add_attachment", issue_key="<TEST-KEY>", file_path="tests/generated/file.spec.ts")
 ```
 
 Default conventions:
 
 - Test card titles start with `[AI test][UI]` or `[AI test][API]`; use `test_kind="api"` for pure API cases, UI for everything else.
-- Playwright tests record video by default; Jira writeback uploads both screenshot and video evidence by default.
+- Playwright tests record video by default; Jira writeback uploads both screenshot and video evidence by default. Every executed UI scenario's recording goes to its own test card: a spec run only keeps `tests/test-results/**/video.webm` for **failed** cases (`retain-on-failure`), so for a passing scenario record it with `browser_playwright(operation="record_start" / "record_stop")`. Name it at record time (`record_stop(filename="<case-id>-<scenario-slug>")`) — nothing downstream can rename the file, and an unstopped recording is discarded at turn end.
+- Upload scenarios: the payload may be a project file (`source="path"`), a conversation attachment (`source="attachment"`), or generated in memory (`source="inline"` / a spec's `Buffer.from(...)`). Attach the exact input bytes to the test card — when the payload only ever existed in memory, write it to a scenario-named file first. Multipart API scenarios are evidenced the same way, with the file parts plus the form contract.
 - Self-adapt DB access steps in a Jira description/comment body → prefix those lines with `[SELF-ADAPT-DB]`.
 - Full Kong URLs from users → normalize into project base + relative path, persist the variants in `kong-map.md`, then reuse via the `kong` tool.
 

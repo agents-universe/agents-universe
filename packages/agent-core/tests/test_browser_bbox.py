@@ -20,25 +20,12 @@ from pathlib import Path
 
 import pytest
 
+from browser_fakes import chromium_available
 from agent_core.tools.base import ToolContext
 from agent_core.tools.browser_playwright import BrowserPlaywrightTool
 
-
-def _chromium_available() -> bool:
-    """True when the Playwright Chromium binary is actually installed."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return False
-    try:
-        with sync_playwright() as p:
-            return Path(p.chromium.executable_path).exists()
-    except Exception:
-        return False
-
-
 requires_chromium = pytest.mark.skipif(
-    not _chromium_available(),
+    not chromium_available(),
     reason="Playwright Chromium not installed (run: playwright install chromium)",
 )
 

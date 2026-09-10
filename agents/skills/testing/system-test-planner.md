@@ -77,9 +77,12 @@ Secret prompts return only an opaque status — never request or echo plaintext 
 
 ## Execution Notes (for later runs)
 
-When a `SYS-xxx` case is executed on demand, login credentials are injected at runtime via:
+When a `SYS-xxx` case is executed on demand, prefer the platform server-side channel `POST /api/projects/{project_id}/playwright/specs/{slug}/run` with body `{"env": {"APP_USERNAME": "...", "APP_PASSWORD": "...", "APP_BASE_URL": "..."}}` (APP_*-prefixed keys only, values ≤ 500 chars), then poll `GET /api/scripts/runs/{run_id}`. It pins `cwd` to the project `tests/` directory and runs the same `test:{slug}` npm script with sandboxed env. **Never hand a TypeScript `.spec.ts` to `code_executor(language="python-playwright")`** — that channel executes Python browser scripts, not `.spec.ts`; use it only for ad-hoc Python browser probes.
+
+Only when the platform API is unreachable (local-only development), fall back to the agent-side shell:
 
 ```json
+// Fallback only — prefer the platform server-side channel above.
 shell(
   command="npm run test:sys-001",
   cwd="tests",

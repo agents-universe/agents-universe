@@ -548,26 +548,37 @@ async def script_run_ws(run_id: str, ws: WebSocket):
     from api.config import get_settings
     from api.services.redis_client import _get_pool, get_session as get_redis_session
     settings = get_settings()
-    session_id = ws.cookies.get(settings.auth_cookie_name)
-    if not session_id:
-        await ws.close(code=4001)
-        return
-    try:
-        redis = _get_pool()
-        session_data = await get_redis_session(redis, session_id)
-    except Exception:
-        await ws.close(code=4001)
-        return
-    if not session_data:
-        await ws.close(code=4001)
-        return
+
+    # Mirror the conversation WebSocket's auth: AUTH_BYPASS deployments
+    # (local dev, internal test hosts) have no session cookie at all - the
+    # REST endpoints and the conversation socket accept the bypass user
+    # without one. Refusing here closes the socket before accept(), which
+    # uvicorn answers with HTTP 403, so the script-run log pane sees a
+    # dropped connection ("connection lost") even though the run itself is
+    # executing fine server-side.
+    if settings.auth_bypass_enabled:
+        user_id = settings.auth_bypass_user_id
+    else:
+        session_id = ws.cookies.get(settings.auth_cookie_name)
+        if not session_id:
+            await ws.close(code=4001)
+            return
+        try:
+            redis = _get_pool()
+            session_data = await get_redis_session(redis, session_id)
+        except Exception:
+            await ws.close(code=4001)
+            return
+        if not session_data:
+            await ws.close(code=4001)
+            return
+        user_id = session_data.get("user_id")
 
     from api.database import AsyncSessionLocal
 
     # Authenticate the run through its complete ownership chain before
     # accepting the socket. A valid Redis session alone must not expose a run
     # from another user's project.
-    user_id = session_data.get("user_id")
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ScriptRun)

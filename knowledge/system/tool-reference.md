@@ -66,14 +66,22 @@ Jira as attachments, 50MB cap).
 
 ## code_executor
 
-Execute Python code in a sandboxed subprocess. 30s timeout. No network access.
+Execute Python, Python-Playwright, or Bash code in a sandboxed subprocess.
+Python/Bash: 30s timeout; python-playwright: 120s. File access is confined to
+the project workspace; network follows the `SANDBOX_NETWORK` policy (default:
+allowed).
 
 ```
-Inputs: code (str), language (python|bash)
-Output: {stdout: str, stderr: str, exit_code: int, images: [...]}
+Inputs: code (str), language (python|python-playwright|bash)
+Output: {stdout: str, stderr: str, exit_code: int, images: [...], files: [...]}
 ```
 
-For image output, code must write PNG files to `/tmp/output_{n}.png`.
+The working directory is the project root (`PROJECT_DIR`); files written to
+`OUTPUT_DIR` are delivered to the user (images inline, other files as
+downloads). Outbound HTTP(S) uses the platform proxy — `HTTPS_PROXY` is set in
+the sandbox environment; a browser launched inside with Playwright must be
+given it explicitly as `proxy=os.environ['HTTPS_PROXY']` (Playwright ignores
+proxy env vars). Proxy credentials never appear in the returned output or logs.
 
 ## knowledge_rw
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -1262,3 +1264,139 @@ async def test_cancel_during_spawn_propagates_cancelled_error(sibling_projects, 
         await tool.execute(
             {"code": "print(1)", "language": "python"}, make_context(str(proj_a))
         )
+
+
+# ---------------------------------------------------------------------------
+# Proxy env + credential redaction
+# ---------------------------------------------------------------------------
+
+_PROXY_URL = "http://proxy.example.com:8080"
+
+
+def _proxy_probe(*names: str) -> str:
+    """Sandbox code that prints the named environment variables as JSON."""
+    return (
+        "import json, os\n"
+        f"print(json.dumps({{n: os.environ.get(n) for n in {list(names)!r}}}))"
+    )
+
+
+@pytest.fixture
+def clean_proxy_env(monkeypatch):
+    """Drop whatever proxy the developer's shell exports."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy",
+                "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+
+async def test_sandbox_env_gets_resolved_proxy(sibling_projects, guarded_temp, clean_proxy_env):
+    """Sandboxed code reaches the network through the same proxy as the
+    browser tool, under every spelling an HTTP client may look for."""
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": _proxy_probe("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"),
+         "language": "python"},
+        make_context(str(proj_a), settings={"HTTPS_PROXY": _PROXY_URL}),
+    )
+    assert result.get("exit_code") == 0, result
+    env = json.loads(result["stdout"])
+    assert set(env) == {"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"}
+    assert set(env.values()) == {_PROXY_URL}
+
+
+async def test_sandbox_env_settings_beat_process_env(
+    sibling_projects, guarded_temp, monkeypatch, clean_proxy_env
+):
+    monkeypatch.setenv("HTTPS_PROXY", "http://upper-env.example.com:1")
+    monkeypatch.setenv("https_proxy", "http://lower-env.example.com:2")
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": _proxy_probe("HTTPS_PROXY", "https_proxy"), "language": "python"},
+        make_context(str(proj_a), settings={"HTTPS_PROXY": _PROXY_URL}),
+    )
+    assert json.loads(result["stdout"]) == {"HTTPS_PROXY": _PROXY_URL, "https_proxy": _PROXY_URL}
+
+
+async def test_sandbox_env_drops_all_proxy(
+    sibling_projects, guarded_temp, monkeypatch, clean_proxy_env
+):
+    """ALL_PROXY is not part of the shared resolution — the host value must not
+    route sandbox traffic through a proxy the browser tool never uses."""
+    monkeypatch.setenv("ALL_PROXY", "socks5://host-proxy.example.com:1080")
+    monkeypatch.setenv("all_proxy", "socks5://host-proxy.example.com:1080")
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": _proxy_probe("ALL_PROXY", "all_proxy", "HTTPS_PROXY"), "language": "python"},
+        make_context(str(proj_a), settings={"HTTPS_PROXY": _PROXY_URL}),
+    )
+    env = json.loads(result["stdout"])
+    assert env["ALL_PROXY"] is None and env["all_proxy"] is None
+    assert env["HTTPS_PROXY"] == _PROXY_URL
+
+
+async def test_sandbox_env_scrubs_empty_placeholder(
+    sibling_projects, guarded_temp, monkeypatch, clean_proxy_env
+):
+    """The .env placeholder `HTTPS_PROXY=` means "no proxy" to Python but is a
+    fatal URI to native parsers — it must not reach the child."""
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    monkeypatch.setenv("https_proxy", "")
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": _proxy_probe("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"),
+         "language": "python"},
+        make_context(str(proj_a)),
+    )
+    assert set(json.loads(result["stdout"]).values()) == {None}
+
+
+async def test_sandbox_env_keeps_no_proxy(
+    sibling_projects, guarded_temp, monkeypatch, clean_proxy_env
+):
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,llm.example.com")
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": _proxy_probe("NO_PROXY"), "language": "python"},
+        make_context(str(proj_a), settings={"HTTPS_PROXY": _PROXY_URL}),
+    )
+    assert json.loads(result["stdout"]) == {"NO_PROXY": "localhost,127.0.0.1,llm.example.com"}
+
+
+async def test_sandbox_output_redacts_proxy_credentials(
+    sibling_projects, guarded_temp, clean_proxy_env
+):
+    url = "http://scanner:not-a-real-secret@proxy.example.com:8080"
+    code = (
+        "import os, sys\n"
+        "print(os.environ['HTTPS_PROXY'])\n"
+        "print(os.environ['HTTPS_PROXY'], file=sys.stderr)\n"
+    )
+    proj_a, _, _ = sibling_projects
+    result = await CodeExecutorTool().execute(
+        {"code": code, "language": "python"},
+        make_context(str(proj_a), settings={"HTTPS_PROXY": url}),
+    )
+    assert result.get("exit_code") == 0, result
+    assert "not-a-real-secret" not in result["stdout"] + result["stderr"]
+    assert "[REDACTED:PROXY_URL]" in result["stdout"]
+    assert "[REDACTED:PROXY_URL]" in result["stderr"]
+
+
+async def test_proxy_credentials_absent_from_failure_log(
+    sibling_projects, guarded_temp, clean_proxy_env, caplog
+):
+    url = "http://scanner:not-a-real-secret@proxy.example.com:8080"
+    code = (
+        "import os, sys\n"
+        "print(os.environ['HTTPS_PROXY'], file=sys.stderr)\n"
+        "sys.exit(3)\n"
+    )
+    proj_a, _, _ = sibling_projects
+    with caplog.at_level(logging.WARNING, logger="agent_core.tools.code_executor"):
+        result = await CodeExecutorTool().execute(
+            {"code": code, "language": "python"},
+            make_context(str(proj_a), settings={"HTTPS_PROXY": url}),
+        )
+    assert result.get("exit_code") == 3, result
+    assert "not-a-real-secret" not in caplog.text
+    assert "[REDACTED:PROXY_URL]" in caplog.text

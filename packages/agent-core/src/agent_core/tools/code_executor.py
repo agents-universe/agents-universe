@@ -17,6 +17,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from ..sandbox import (
     _SAFE_ENV_PATH_VARS,
@@ -33,6 +34,7 @@ from ..sandbox import (
 )
 from ._media import _IMAGE_SUFFIXES, media_type_for, media_url, sanitize_suffix
 from .base import Tool, ToolContext
+from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
 _TIMEOUT = 30
@@ -58,6 +60,51 @@ _ASSIGN_PREFIX_RE = re.compile(r"^(?:export|local|declare|typeset|readonly)(?:\s
 # (unquoted heredoc bodies, assignment values).
 _SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 
+# Scheme prefix of a proxy URL. The userinfo is peeled off with this instead of
+# urlparse because a scheme-less "user:pass@host:port" parses as scheme="user"
+# and the credential would be missed entirely.
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
+
+def _proxy_credential_variants(proxy_url: str) -> dict[str, str]:
+    """Substrings of a credentialed proxy URL that must never reach output.
+
+    Ordered widest-first so the whole URL is replaced before its parts. A
+    username without a password is not treated as a secret: masking every
+    occurrence of a short name would garble unrelated output.
+    """
+    if not proxy_url or "@" not in proxy_url:
+        return {}
+    userinfo = _SCHEME_RE.sub("", proxy_url.rpartition("@")[0], count=1)
+    _, sep, password = userinfo.partition(":")
+    if not sep or not password:
+        return {}
+    variants = {
+        "PROXY_URL": proxy_url,
+        "PROXY_CREDENTIALS": userinfo,
+        "PROXY_PASSWORD": password,
+    }
+    # Percent-encoded spellings reach error messages verbatim, and their
+    # decoded form leaks the credential the encoding was hiding.
+    decoded_userinfo = unquote(userinfo)
+    if decoded_userinfo != userinfo:
+        variants["PROXY_CREDENTIALS_DECODED"] = decoded_userinfo
+    decoded_password = unquote(password)
+    if decoded_password != password:
+        variants["PROXY_PASSWORD_DECODED"] = decoded_password
+    return variants
+
+
+def redact_proxy_credentials(text: str, proxy_url: str) -> str:
+    """Scrub a credentialed proxy URL out of tool-visible text.
+
+    Sandboxed code that prints its own environment — or a requests/httpx error
+    echoing the proxy it could not reach — would otherwise hand the credential
+    to the model and to the server log. Applied after decode and before
+    truncation; exact substring replacement, like shell.redact_secrets.
+    """
+    return redact_secrets(text, _proxy_credential_variants(proxy_url))
+
 
 class CodeExecutorTool(Tool):
     name = "code_executor"
@@ -81,6 +128,10 @@ class CodeExecutorTool(Tool):
         "(images appear in chat, other files as downloadable attachments) — "
         "write anything the user should receive there "
         "(e.g., $OUTPUT_DIR/output_0.png, $OUTPUT_DIR/report.csv). "
+        "Outbound HTTP(S) follows the platform proxy — the sandbox environment "
+        "carries the resolved URL as HTTPS_PROXY; a browser launched with Playwright "
+        "must be given it explicitly as proxy=os.environ['HTTPS_PROXY'] because "
+        "Playwright ignores proxy env vars. "
         "Bash mode is for in-project data processing; use the shell tool for external commands."
     )
     parameters = {
@@ -250,6 +301,17 @@ class CodeExecutorTool(Tool):
                 # project. Point it at the scratch dir, like python does.
                 extra["HOME"] = str(work_dir)
 
+            # Proxy env comes after safe_env() because a merge can only set
+            # values, never delete the empty HTTPS_PROXY placeholder or evict a
+            # conflicting inherited spelling. Every network mode gets the same
+            # proxy as the browser tool — SANDBOX_NETWORK decides which sockets
+            # the guard allows, not which proxy the process is configured with.
+            # A Chromium the code launches itself does NOT read these vars
+            # (Playwright only honors an explicit launch(proxy=...) kwarg), but
+            # requests/httpx/urllib and child processes do.
+            proxy_url = context.proxy_url()
+            env = context.proxy_env(context.safe_env(extra=extra))
+
             # Bound before the await: a cancellation delivered while
             # create_subprocess_exec is still awaiting would otherwise hit the
             # except handlers with `proc` unbound, replacing the
@@ -265,7 +327,7 @@ class CodeExecutorTool(Tool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(project_cwd),
-                    env=context.safe_env(extra=extra),
+                    env=env,
                     # Own session on POSIX so a forked/backgrounded
                     # grandchild dies with the tree on timeout/abort.
                     **spawn_in_new_session(),
@@ -289,8 +351,13 @@ class CodeExecutorTool(Tool):
                 _log.warning("code_executor failed to start subprocess: %s", exc)
                 return {"error": f"Failed to start code execution: {exc}"}
 
-            stdout_text = stdout.decode(errors="replace")[:_MAX_OUTPUT]
-            stderr_text = stderr.decode(errors="replace")[:_MAX_OUTPUT]
+            # Redact before truncation so a proxy credential straddling the
+            # _MAX_OUTPUT boundary is fully masked; the log line below reads
+            # the same scrubbed text.
+            stdout_text = redact_proxy_credentials(
+                stdout.decode(errors="replace"), proxy_url)[:_MAX_OUTPUT]
+            stderr_text = redact_proxy_credentials(
+                stderr.decode(errors="replace"), proxy_url)[:_MAX_OUTPUT]
             if proc.returncode != 0:
                 _log.warning("code_executor failed (exit=%d, language=%s)\nstderr: %s",
                              proc.returncode, language, stderr_text[:500])

@@ -180,17 +180,11 @@ class ToolContext:
             if owner.browser is not None:
                 self.browser = owner.browser
                 return owner.browser
-            import os
             from playwright.async_api import async_playwright
 
             playwright = await async_playwright().start()
             try:
-                proxy_url = (
-                    self.cfg("HTTPS_PROXY")
-                    or self.cfg("HTTP_PROXY")
-                    or os.environ.get("https_proxy")
-                    or os.environ.get("http_proxy")
-                )
+                proxy_url = self.proxy_url()
                 launch_kwargs: dict = {"headless": True}
                 if proxy_url:
                     launch_kwargs["proxy"] = {"server": proxy_url}
@@ -226,6 +220,25 @@ class ToolContext:
             return default
         import os
         return os.environ.get(key, default)
+
+    def proxy_url(self) -> str:
+        """Resolved outbound proxy — one precedence for every networked channel.
+
+        Mirrors the browser launch: the injected setting wins, then HTTP_PROXY,
+        then the lowercase spellings Python clients look at (uppercase env
+        values ride the cfg() fallback on the first two rungs). Empty means
+        "no proxy". NO_PROXY is deliberately not resolved here — subprocesses
+        inherit it untouched so main.py's bypass list (localhost + the LLM
+        hosts) keeps working.
+        """
+        import os
+        return (
+            self.cfg("HTTPS_PROXY")
+            or self.cfg("HTTP_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("http_proxy")
+            or ""
+        )
 
     # Env-var keys to strip when building subprocess environments for tools
     # that pass env to LLM-generated code (code_executor, shell).  Matches by
@@ -272,6 +285,35 @@ class ToolContext:
             env[key] = value
         if extra:
             env.update(extra)
+        return env
+
+    # Every spelling that can route HTTP(S) traffic through a proxy. The four
+    # HTTP(S) ones always carry the resolved URL; the ALL_PROXY spellings are
+    # dropped because nothing in this codebase resolves them — a value that
+    # only the host environment knows would route code_executor somewhere the
+    # browser tool never goes.
+    _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+    _PROXY_ENV_STALE_KEYS = ("ALL_PROXY", "all_proxy")
+
+    def proxy_env(self, env: dict[str, str]) -> dict[str, str]:
+        """Normalize proxy variables in a subprocess environment, in place.
+
+        Replaces whatever the child would have inherited with the resolved
+        proxy so sandboxed code (and any Playwright it launches by env-reading
+        libraries) reaches the network exactly like the browser tool does.
+        With no resolved proxy every spelling is removed — that doubles as the
+        empty-.env-placeholder scrub (an empty proxy value breaks URI parsers
+        in native tooling; the shell tool does the same for its own children).
+        NO_PROXY survives untouched.
+        """
+        url = self.proxy_url()
+        for key in self._PROXY_ENV_KEYS:
+            if url:
+                env[key] = url
+            else:
+                env.pop(key, None)
+        for key in self._PROXY_ENV_STALE_KEYS:
+            env.pop(key, None)
         return env
 
     @property

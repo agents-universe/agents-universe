@@ -205,7 +205,8 @@ export default {
   },
   chatPanel: {
     connecting: '连接中…',
-    connectFailed: '连接失败，正在重试…',
+    connectFailed: '连接已断开，正在自动重连…',
+    reconnect: '立即重连',
     compressing: '压缩中…',
     compressContext: '压缩上下文',
     wsNotConnected: 'WebSocket 未连接，消息未发送。',

@@ -717,18 +717,30 @@ async def run_turn(
                                     tc["status"] = "error"
                         elif event.type == "stream_end":
                             msg_id = event.data.get("message_id")
-                            # Terminal run-state transition. The snapshot is
-                            # kept for interrupted runs (recovery); completed
-                            # runs leave the Message row authoritative. Turns
-                            # that ended in a failure (provider exception,
-                            # refusal, empty output) must NOT be marked
-                            # "completed" — the frontend's RunNotice + rerun
-                            # affordance only fires on failed/interrupted, and
-                            # a completed run with no message row looks like a
-                            # silently vanished turn after reload.
+                            # Run-state transition — terminal for every event
+                            # except an injection step boundary (see below).
+                            # The snapshot is kept for interrupted runs
+                            # (recovery); completed runs leave the Message row
+                            # authoritative. Turns that ended in a failure
+                            # (provider exception, refusal, empty output) must
+                            # NOT be marked "completed" — the frontend's
+                            # RunNotice + rerun affordance only fires on
+                            # failed/interrupted, and a completed run with no
+                            # message row looks like a silently vanished turn
+                            # after reload.
                             _stop_reason = event.data.get("stop_reason")
                             _has_content = bool(_text_buf or _tool_calls_buf or _images_buf or _files_buf)
-                            if _stop_reason in ("aborted", "interrupted"):
+                            # A mid-turn injection freezes the current partial
+                            # output as an "interrupted" message, but the turn
+                            # itself keeps running. Settling the run here would
+                            # lock it to "interrupted" forever: the real
+                            # terminal stream_end later loses to finish_run's
+                            # running-only guard, and the conversation shows
+                            # "last run was interrupted" for good.
+                            _is_step_boundary = bool(event.data.get("injection"))
+                            if _is_step_boundary:
+                                _run_status = None
+                            elif _stop_reason in ("aborted", "interrupted"):
                                 _run_status = "interrupted"
                             elif _stop_reason == "api_error" or _turn_error:
                                 _run_status = "failed"
@@ -755,15 +767,18 @@ async def run_turn(
                                 _turn_error = _turn_error or "Model returned no output"
                             else:
                                 _run_status = "completed"
-                            # Whether the interrupted partial output landed in a
+                            # Whether this event's partial output lands in a
                             # Message row below (drives the snapshot decision at
                             # finish_run: a persisted partial needs no recovery
                             # snapshot - see materialize_interrupted_snapshots).
-                            _persisted_interrupted = (
-                                _run_status == "interrupted"
-                                and bool(msg_id and (_has_content or _turn_error))
+                            # Keyed off the event, not the run: the injection
+                            # boundary has no run status but does persist a
+                            # frozen partial, and the event is the only thing
+                            # that knows whether there is anything to persist.
+                            _partial_persisted = bool(
+                                msg_id and (_has_content or _turn_error)
                             )
-                            if (msg_id and (_has_content or _turn_error)):
+                            if _partial_persisted:
                                 _log.info(
                                     "Persisting assistant stream: conversation=%s message_id=%s text_chars=%d tool_calls=%d plan_task_calls=%d images=%d files=%d error=%s",
                                     conversation_id,
@@ -786,7 +801,10 @@ async def run_turn(
                                         _tool_calls_buf, msg_id,
                                         images=_images_buf if _images_buf else None,
                                         files=_files_buf if _files_buf else None,
-                                        interrupted=_run_status == "interrupted",
+                                        # Both aliases freeze the partial: a
+                                        # user Stop reports "aborted", an
+                                        # injection boundary "interrupted".
+                                        interrupted=_stop_reason in ("aborted", "interrupted"),
                                         error=_run_status == "failed",
                                         agent_slug=agent_config.slug,
                                         model_name=_model_name,
@@ -799,7 +817,10 @@ async def run_turn(
                                     # persist finish before unwinding.
                                     await _persist_guard
                                     raise
-                            if run_id:
+                            # _run_status is None at an injection step boundary:
+                            # the turn is still running, so the run row stays
+                            # "running" and a later stream_end settles it.
+                            if run_id and _run_status:
                                 try:
                                     from api.services.conversation_runs import finish_run
                                     await finish_run(
@@ -815,9 +836,17 @@ async def run_turn(
                                         snapshot=(
                                             _text_buf
                                             if _run_status == "interrupted"
-                                            and not _persisted_interrupted
+                                            and not _partial_persisted
                                             else None
                                         ),
+                                        # This path knows whether the partial
+                                        # landed in a Message row, so its answer
+                                        # is final: a None here clears whatever
+                                        # the throttled snapshot left behind
+                                        # instead of leaving recovery to
+                                        # re-materialize it. Safety-net callers
+                                        # pass no snapshot and keep it.
+                                        replace_snapshot=True,
                                     )
                                 except Exception:
                                     _log.warning("finish_run(stream_end) failed for %s", conversation_id, exc_info=True)
@@ -1719,9 +1748,9 @@ async def _persist_assistant_message(
     agent_slug: str | None = None, model_name: str | None = None,
 ) -> None:
     """Save an assistant message to DB after stream_end."""
-    import json as _json
     import uuid as _uuid
     from sqlalchemy import func, select, update
+    from api.json_utils import dumps as _json_dumps
     from api.models.conversation import Conversation, Message as DbMessage
     from agent_core.tools._media import normalize_media_urls
 
@@ -1735,7 +1764,7 @@ async def _persist_assistant_message(
         .where(DbMessage.conversation_id == conversation_id)
     )
     next_seq = max_seq_result.scalar() + 1
-    tool_calls_json = _json.dumps(tool_calls) if tool_calls else None
+    tool_calls_json = _json_dumps(tool_calls) if tool_calls else None
     refs = {}
     if images:
         refs["images"] = images
@@ -1750,7 +1779,7 @@ async def _persist_assistant_message(
         # the error text when the turn produced nothing else) so the failure
         # survives reloads — the live error bubble is client-only.
         refs["error"] = True
-    knowledge_refs_json = _json.dumps(refs) if refs else None
+    knowledge_refs_json = _json_dumps(refs) if refs else None
     # Collapse any duplicated base URL the LLM may have prepended to a media
     # link (tool URLs are already absolute). Keeps conversation history clean
     # so later turns never see the corrupted form.
@@ -1821,8 +1850,8 @@ def _bounded_json(payload: dict, limit: int = 8000) -> str:
     the whole task-events timeline. So the source is trimmed instead: a cut
     string VALUE is still valid JSON.
     """
-    import json as _json
-    encoded = _json.dumps(payload, ensure_ascii=False)
+    from api.json_utils import dumps as _json_dumps
+    encoded = _json_dumps(payload, ensure_ascii=False)
     if len(encoded) <= limit:
         return encoded
 
@@ -1835,12 +1864,12 @@ def _bounded_json(payload: dict, limit: int = 8000) -> str:
             return {k: _trim(v, max(budget // 2, 32)) for k, v in value.items()}
         return value
 
-    trimmed = _json.dumps(_trim(payload, limit // 8), ensure_ascii=False)
+    trimmed = _json_dumps(_trim(payload, limit // 8), ensure_ascii=False)
     if len(trimmed) <= limit:
         return trimmed
     # Last resort: minimal valid envelope — the event still shows in the
     # timeline; the oversized data is dropped rather than persisted corrupt.
-    return _json.dumps(
+    return _json_dumps(
         {k: payload[k] for k in ("task_id", "status", "summary", "error") if k in payload},
         ensure_ascii=False,
     )

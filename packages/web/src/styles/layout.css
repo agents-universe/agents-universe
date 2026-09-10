@@ -1296,6 +1296,20 @@
   color: #f87171;
 }
 
+.ws-status-retry {
+  margin-left: 10px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-status-retry:hover {
+  background: rgba(220,53,69,0.12);
+}
+
 .compress-btn {
   display: inline-flex;
   align-items: center;

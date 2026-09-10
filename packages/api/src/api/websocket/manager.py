@@ -4,18 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import date, datetime
 from typing import Any
 
 from fastapi import WebSocket
 
+from api.json_utils import json_default as _json_default
+
 _log = logging.getLogger("agents_universe.ws")
-
-
-def _json_default(obj: object) -> object:
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class ConnectionManager:

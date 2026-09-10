@@ -155,8 +155,18 @@ async def test_inject_during_stream_consumed_at_step_boundary():
 
     types = _event_types(session)
     assert types.count("stream_end") == 2, f"expected 2 stream_end, got {types}"
-    interrupted = _events_of(session, "stream_end")
-    assert sum(1 for d in interrupted if d.get("stop_reason") == "interrupted") == 1
+    ends = _events_of(session, "stream_end")
+    assert sum(1 for d in ends if d.get("stop_reason") == "interrupted") == 1
+    # The frozen snapshot is a step boundary, not the end of the turn: the API
+    # persists the partial but must leave the run row open for the real
+    # terminal event below. Without the marker the run is settled to
+    # "interrupted" here and the later terminal write loses to finish_run's
+    # running-only guard — the conversation shows "last run was interrupted"
+    # while the turn keeps producing output.
+    frozen = [d for d in ends if d.get("stop_reason") == "interrupted"][0]
+    assert frozen.get("injection") is True
+    # ... and the real terminal event carries no such mark.
+    assert "injection" not in ends[-1]
     assert types.count("user_message_injected") == 1
     injected = _events_of(session, "user_message_injected")[0]
     assert injected["message_id"] == "inj-1"
@@ -464,6 +474,37 @@ async def test_abort_leaves_queued_input_unconsumed():
     ends = _events_of(session, "stream_end")
     assert len(ends) == 1, f"expected a single plain stream_end, got {ends}"
     assert "stop_reason" not in ends[0] or ends[0].get("stop_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_hard_cancel_emits_aborted_stream_end():
+    """Stop mid-stream unwinds straight into the loop's finally fallback, and
+    the fallback must say WHY the turn ended.
+
+    Regression: it emitted a bare stream_end, which the API classified as
+    "completed" — and since finish_run only transitions out of 'running', the
+    later finish_run(..., "interrupted") was a no-op. The user pressed Stop,
+    reloaded, and the conversation claimed the run completed.
+    """
+    agent = _make_agent()
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+    provider = _ScriptedProvider()
+
+    run_task = asyncio.create_task(agent._run_loop(
+        [Message(role="user", content="Initial")], [], provider, session, "cfg1"
+    ))
+    await provider.started.wait()  # cancelled mid-stream, before the final chunk
+
+    session.abort()
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    await session.stop_drainer()
+
+    ends = _events_of(session, "stream_end")
+    assert len(ends) == 1, f"expected the fallback stream_end, got {ends}"
+    assert ends[0].get("stop_reason") == "aborted"
 
 
 @pytest.mark.asyncio

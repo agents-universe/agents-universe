@@ -205,7 +205,8 @@ export default {
   },
   chatPanel: {
     connecting: 'Connecting…',
-    connectFailed: 'Connection failed, retrying…',
+    connectFailed: 'Connection lost, reconnecting…',
+    reconnect: 'Reconnect now',
     compressing: 'Compressing…',
     compressContext: 'Compress context',
     wsNotConnected: 'WebSocket disconnected; the message was not sent.',

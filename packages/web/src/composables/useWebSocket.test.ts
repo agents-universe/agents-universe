@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
-import { closeAllConnections, closeConnection, useWebSocket, _failedConversations } from './useWebSocket'
+import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES } from './useWebSocket'
 
 const conversationsApi = vi.hoisted(() => ({
   getMessages: vi.fn(),
@@ -38,7 +38,7 @@ function fire(ws: FakeWebSocket, payload: unknown) {
 function mount(convId: string) {
   const s = ref(convId)
   const api = useWebSocket(s)
-  return { ws: instances[instances.length - 1], status: api.status }
+  return { ws: instances[instances.length - 1], ...api }
 }
 
 describe('useWebSocket image/file output payload guards', () => {
@@ -102,6 +102,46 @@ describe('useWebSocket image/file output payload guards', () => {
     // conversation).
     closeConnection('conv-fail-a')
     expect(_failedConversations.has('conv-fail-a')).toBe(false)
+  })
+
+  it('keeps retrying after the fast ladder is exhausted', () => {
+    // Regression: the ladder used to stop at MAX_RETRIES and delete the
+    // entry. connect() is only reachable from the conversationId watch, so a
+    // lingering outage (reverse-proxy restart, sleep, captive portal) left
+    // the conversation permanently dead and every send failed with
+    // "WebSocket 未连接" until the user switched away and back.
+    useConversationStore().startConversation('conv-slow')
+    mount('conv-slow')
+
+    // Persistent outage: every attempt fails outright, for 8 rounds — well
+    // past the 1s/2s/4s fast phase, deep into the 8s/15s/30s slow one.
+    const OUTAGE_ROUNDS = 8
+    for (let i = 0; i < OUTAGE_ROUNDS; i++) {
+      instances[instances.length - 1].onclose!({} as CloseEvent)
+      vi.advanceTimersByTime(60_000)
+    }
+
+    // One initial attempt plus one per round. The old code stopped at
+    // MAX_RETRIES, so anything beyond that proves the ladder no longer
+    // terminates.
+    expect(instances.length).toBe(1 + OUTAGE_ROUNDS)
+    expect(instances.length).toBeGreaterThan(1 + MAX_RETRIES)
+  })
+
+  it('reconnect() forces a fresh attempt while degraded', () => {
+    useConversationStore().startConversation('conv-manual')
+    const { ws, reconnect, status } = mount('conv-manual')
+    for (let i = 0; i < 4; i++) {
+      ws.onclose!({} as CloseEvent)
+      vi.advanceTimersByTime(10_000)
+    }
+    expect(status.value).toBe('failed')
+
+    const openedBefore = instances.length
+    expect(reconnect()).toBe(true)
+    expect(instances.length).toBe(openedBefore + 1)
+    // Back to a fresh ladder, so the banner stops claiming a lost connection.
+    expect(status.value).toBe('connecting')
   })
 
   it('closeAllConnections clears every failed tombstone', () => {

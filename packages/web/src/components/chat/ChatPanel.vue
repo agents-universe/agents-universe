@@ -1,8 +1,23 @@
 <template>
   <div class="chat-panel">
-    <!-- WS status banner -->
-    <div v-if="wsStatus === 'connecting'" class="ws-status reconnecting">{{ t('chatPanel.connecting') }}</div>
-    <div v-else-if="wsStatus === 'failed'" class="ws-status failed">{{ t('chatPanel.connectFailed') }}</div>
+    <!-- WS status banner. Every non-connected state blocks sends, so all of
+         them must be visible: 'disconnected' used to render nothing at all,
+         which made a dropped socket look like a frozen app. -->
+    <div
+      v-if="props.conversationId && wsStatus !== 'connected'"
+      class="ws-status"
+      :class="wsStatus === 'failed' ? 'failed' : 'reconnecting'"
+    >
+      <span>{{ wsStatus === 'failed' ? t('chatPanel.connectFailed') : t('chatPanel.connecting') }}</span>
+      <button
+        v-if="wsStatus === 'failed'"
+        type="button"
+        class="ws-status-retry"
+        @click="reconnect"
+      >
+        {{ t('chatPanel.reconnect') }}
+      </button>
+    </div>
 
     <!-- Last run ended in a terminal failure while the panel was away (tab
          closed / process restarted): a passive hint - the interrupted
@@ -188,7 +203,7 @@ const lastRunNotice = computed(() => {
 const composerRef = ref<InstanceType<typeof Composer> | null>(null)
 
 const convIdRef = computed(() => props.conversationId)
-const { send, abort: wsAbort, status: wsStatus } = useWebSocket(convIdRef)
+const { send, abort: wsAbort, status: wsStatus, reconnect } = useWebSocket(convIdRef)
 
 // strip mermaid placeholders from the streaming preview.
 // During streaming the fence may be half-closed/empty — and even a complete
@@ -332,6 +347,20 @@ function handleAbort() {
   convStore.abortStreaming()
 }
 
+/** A prompt answer can only travel over the socket. The dialog stays open so
+ *  the user can retry once reconnected, but a silent no-op reads as "the app
+ *  ignored my click" — surface the reason and start a reconnect. */
+function reportPromptSendFailure() {
+  convStore.addMessage({
+    id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: 'assistant',
+    content: t('chatPanel.wsNotConnected'),
+    isError: true,
+    timestamp: Date.now(),
+  })
+  reconnect()
+}
+
 function handleResolve(
   promptId: string,
   value: string,
@@ -350,11 +379,13 @@ function handleResolve(
   // Only dismiss the prompt when the response actually left the client —
   // otherwise the agent is left waiting on an answer that was never sent.
   if (sent) convStore.resolvePrompt(promptId)
+  else reportPromptSendFailure()
 }
 
 function handleCancel(promptId: string) {
   const sent = send({ type: 'user_selection_response', prompt_id: promptId, value: '__cancelled__' })
   if (sent) convStore.resolvePrompt(promptId)
+  else reportPromptSendFailure()
 }
 </script>
 

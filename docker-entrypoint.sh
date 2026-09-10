@@ -63,6 +63,24 @@ uvicorn api.main:app --host 127.0.0.1 --port 8001 &
 UV_PID=$!
 echo "[entrypoint] uvicorn started (pid $UV_PID)"
 
+# Decode a reaped child's wait status for the log line. A signal death shows
+# up as 128+signum, which is exactly the distinction that matters: 137 SIGKILL
+# (killed from outside, or by the kernel), 143 SIGTERM, 139/134 a crash of its
+# own, 0 a clean exit.
+_status_desc() {
+    case "$1" in
+        0)   echo "clean exit" ;;
+        129) echo "SIGHUP" ;;
+        130) echo "SIGINT" ;;
+        131) echo "SIGQUIT" ;;
+        134) echo "SIGABRT" ;;
+        137) echo "SIGKILL" ;;
+        139) echo "SIGSEGV" ;;
+        143) echo "SIGTERM" ;;
+        *)   echo "exit status" ;;
+    esac
+}
+
 # Supervisor loop: this script is PID 1, so it must stay alive for the whole
 # container lifetime.
 #  - `wait -n` wakes the moment a direct child dies and reaps it. Without the
@@ -73,15 +91,22 @@ echo "[entrypoint] uvicorn started (pid $UV_PID)"
 #  - uvicorn death exits the container; the compose `restart: unless-stopped`
 #    policy recreates it fresh.
 while :; do
-    wait -n 2>/dev/null || true
+    # `wait -n` reports the status of the child it reaped - capture it before
+    # anything else clobbers $?. Only nginx and uvicorn are direct children of
+    # this script, and the uvicorn branch below exits, so any status that
+    # reaches the nginx branch is nginx's own. Without it a death is
+    # unattributable after the fact: the master has died mid-run more than
+    # once with an empty error log and no OOM or resource trace.
+    _child_status=0
+    wait -n 2>/dev/null || _child_status=$?
 
     if ! kill -0 "$UV_PID" 2>/dev/null; then
-        echo "[entrypoint] uvicorn died - exiting container (restart policy recreates it)" >&2
+        echo "[entrypoint] uvicorn died (status $_child_status) - exiting container (restart policy recreates it)" >&2
         exit 1
     fi
 
     if ! kill -0 "$NGINX_PID" 2>/dev/null; then
-        echo "[entrypoint] nginx died - stopping orphaned workers, restarting"
+        echo "[entrypoint] nginx died - status=$_child_status ($(_status_desc "$_child_status")) - stopping orphaned workers, restarting" >&2
         # A master that dies suddenly leaves its workers behind; they get
         # reparented here and keep listening on 8000/8003, which would make
         # the new master's bind fail. TERM first (graceful), then KILL.

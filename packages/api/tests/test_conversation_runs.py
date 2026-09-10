@@ -206,6 +206,46 @@ async def test_run_interrupted_on_aborted_stream_end(agent_spy, db, make_project
     assert refs.get("interrupted") is True
 
 
+async def test_injection_boundary_does_not_settle_the_run(agent_spy, db, make_project):
+    """A mid-turn injection freezes the partial output as an interrupted
+    message, but the TURN keeps running — so the run row must stay open until
+    the real terminal stream_end.
+
+    Regression: the injection's stream_end was classified as terminal, locking
+    the run to "interrupted" for good (finish_run only transitions out of
+    "running"), while the turn kept producing output for another hour. The
+    conversation then showed "last run was interrupted" permanently, and the
+    notice invited the user to type into a socket that was already gone.
+    """
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    frozen_id, final_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def _run(kwargs):
+        session = kwargs["session"]
+        await session.emit("stream_delta", delta="first half ")
+        await session.emit(
+            "stream_end", message_id=frozen_id, total_tokens=3,
+            stop_reason="interrupted", injection=True,
+        )
+        await session.emit("stream_delta", delta="second half")
+        await session.emit("stream_end", message_id=final_id, total_tokens=9)
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "completed"
+    assert run.tokens_used == 9
+
+    # Both halves persist: the frozen one keeps its interrupted marker (the
+    # frontend renders it as a paused bubble), the continuation is a normal row.
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert [m.content for m in msgs] == ["first half ", "second half"]
+    import json as _json
+    assert _json.loads(msgs[0].knowledge_refs).get("interrupted") is True
+
+
 async def test_run_failed_on_agent_exception(agent_spy, db, make_project):
     conv = await _make_conversation(db, make_project)
     await _add_config(db)
@@ -515,6 +555,52 @@ async def test_finish_run_guard_and_snapshot(db, make_project):
     await update_run_snapshot(run_id, "ignored")
     await db.refresh(run)
     assert run.streaming_snapshot is None
+
+
+async def test_finish_run_snapshot_clearance(db, make_project):
+    """Who clears the throttled snapshot, and who must not.
+
+    The startup sweep reads a non-null snapshot on an interrupted run as "this
+    partial is not in messages yet". The stream_end path knows it just
+    persisted the partial, so its None must CLEAR the leftover (otherwise the
+    text is recovered a second time). The abort/finally safety nets have no
+    such knowledge — there the snapshot is sometimes the only surviving copy
+    (the persist never got to run) and clearing it discards the partial.
+    """
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    kept = ConversationRun(
+        conversation_id=conv.conversation_id, user_message_id=user.message_id
+    )
+    cleared = ConversationRun(
+        conversation_id=conv.conversation_id, user_message_id=user.message_id
+    )
+    db.add_all([kept, cleared])
+    await db.commit()
+
+    await update_run_snapshot(kept.run_id, "throttled partial")
+    await update_run_snapshot(cleared.run_id, "already in a message row")
+
+    await finish_run(kept.run_id, "interrupted")  # safety net: no opinion
+    await db.refresh(kept)
+    assert kept.streaming_snapshot == "throttled partial"
+
+    await finish_run(
+        cleared.run_id, "interrupted", snapshot=None, replace_snapshot=True
+    )
+    await db.refresh(cleared)
+    assert cleared.streaming_snapshot is None
+
+    # The kept snapshot is still recoverable; the cleared one is not.
+    assert await materialize_interrupted_snapshots(db) == 1
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert [m.content for m in msgs] == ["throttled partial"]
 
 
 # ── REST surface ─────────────────────────────────────────────────────────

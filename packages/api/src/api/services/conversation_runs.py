@@ -73,20 +73,34 @@ async def finish_run(
     error_message: str | None = None,
     tokens_used: int | None = None,
     snapshot: str | None = None,
+    replace_snapshot: bool = False,
 ) -> None:
     """Terminal transition running → completed | failed | interrupted.
 
     Guarded by ``status == 'running'`` so a racing terminal write (e.g. the
     finally-tail safety net after a normal finish) is a no-op.
+
+    ``snapshot``/``replace_snapshot``: the throttled ``update_run_snapshot``
+    writes partial text every few seconds while the turn runs, and the startup
+    sweep reads a non-null snapshot on an interrupted run as "this partial is
+    NOT in the message history yet". So a caller that just persisted the
+    partial into a Message row must clear the leftover (`replace_snapshot=True,
+    snapshot=None`), or recovery re-materializes text that is already there.
+
+    Every other caller must NOT: on the abort/finally paths the throttled
+    snapshot is sometimes the only surviving copy of the text (the persist
+    never got to run), and clearing it would discard the partial for good.
     """
     async with AsyncSessionLocal() as db:
         values: dict = {"status": status, "ended_at": now_utc()}
+        if replace_snapshot:
+            values["streaming_snapshot"] = _cap(snapshot) if snapshot else None
+        elif snapshot:
+            values["streaming_snapshot"] = _cap(snapshot)
         if error_message is not None:
             values["error_message"] = error_message[:2000]
         if tokens_used is not None:
             values["tokens_used"] = tokens_used
-        if snapshot is not None:
-            values["streaming_snapshot"] = _cap(snapshot)
         await db.execute(
             update(ConversationRun)
             .where(

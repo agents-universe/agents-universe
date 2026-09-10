@@ -262,10 +262,17 @@ RUN set -eux; \
 # as the in-image appuser or as a random OpenShift/K8s uid. The entrypoint
 # also recreates these dirs at startup in case the runtime mounts /tmp as an
 # empty tmpfs (wiping anything baked in here).
+#
+# error_log goes to stderr, not to /tmp/nginx/error.log: the master has died
+# silently mid-run more than once, and each time that file was 0 bytes — a
+# dead master writes its last words nowhere anyone can read them. stderr lands
+# in `docker logs` alongside the entrypoint's own lines. `notice` (not the
+# default `error`) because the evidence we want — signal handling, worker
+# start/exit — is logged at notice level.
 RUN sed -i \
         -e 's|^user .*;|# user directive is unnecessary for non-root nginx|' \
         -e 's|^pid .*|pid /tmp/nginx/nginx.pid;|' \
-        -e 's|^error_log .*|error_log /tmp/nginx/error.log;|' \
+        -e 's|^error_log .*|error_log /dev/stderr notice;|' \
         -e 's|access_log .*|access_log /tmp/nginx/access.log;|' \
         -e '/client_body_temp_path/d' \
         -e '/proxy_temp_path/d' \

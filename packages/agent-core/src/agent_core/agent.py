@@ -878,11 +878,17 @@ class Agent:
         # Snapshot the current partial output as an interrupted message
         # (persisted by forward_events). emitted_end stays False — the turn
         # continues and must not be double-finalized by the finally block.
+        # injection=True marks this as a STEP boundary, not a terminal
+        # interruption: the API must not settle the conversation run here, or
+        # its status would stay "interrupted" forever (the real terminal
+        # stream_end loses the race to finish_run's running-only guard) and
+        # the UI would keep showing "last run was interrupted".
         await session.emit(
             "stream_end",
             message_id=message_id,
             total_tokens=session.tokens_used,
             stop_reason="interrupted",
+            injection=True,
         )
 
         # Ask the handler to persist the user messages now — event order
@@ -1455,7 +1461,18 @@ class Agent:
                     emitted_end = True
         finally:
             if not emitted_end:
-                await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used)
+                # Hard cancel (Stop mid-stream or mid-tool) unwinds straight
+                # into this fallback, which used to emit with no stop_reason —
+                # the API then classified the run "completed" and, because
+                # finish_run only transitions out of "running", the later
+                # finish_run(..., "interrupted") became a no-op. Reported as
+                # "stop, reload, and the run says completed".
+                await session.emit(
+                    "stream_end",
+                    message_id=message_id,
+                    total_tokens=session.tokens_used,
+                    **({"stop_reason": "aborted"} if session.is_aborted() else {}),
+                )
             await self._tool_ctx.cleanup()
             await session.close()
 

@@ -7,8 +7,17 @@ import { conversationsApi } from '@/api/conversations'
 import { apiBase } from '@/utils/basePath'
 import type { WsStatus, WsMessage, ToolCallRecord, ImageRecord, AttachmentRecord, SelectionPrompt, PersonalMemory, EpisodicMemory } from '@/types'
 
-const MAX_RETRIES = 3
+// Fast phase: the common blip (dropped frame, one-second reverse-proxy
+// reload) is usually over by the second attempt.
+// Exported for tests, which assert the ladder outlives it.
+export const MAX_RETRIES = 3
 const BACKOFF_MS = [1000, 2000, 4000]
+// Slow phase: a backend/reverse-proxy restart takes tens of seconds, so the
+// ladder must keep going. Reconnection NEVER gives up — see _scheduleRetry.
+const SLOW_BACKOFF_MS = [8000, 15_000, 30_000]
+// ±20% jitter so a server restart doesn't have every open tab retry in
+// lockstep.
+const JITTER_RATIO = 0.2
 const PING_INTERVAL_MS = 30_000
 // Half-open detection: the server answers every ping with a pong, so a
 // healthy connection always produces a frame within one interval. 3× gives
@@ -31,15 +40,32 @@ interface ConnectionEntry {
 // Module-level state: one entry per conversation with an open WS
 const _connections = new Map<string, ConnectionEntry>()
 
-// conversations whose retries were exhausted. The connection
-// ENTRY is removed from _connections (it must not count toward
-// MAX_CONNECTIONS forever), but the UI still needs to show "连接失败" — the
-// status computed checks this set first. Reactive so the computed re-runs
-// when a conversation enters/leaves the failed state (a plain Set mutation
-// never triggers it, leaving the UI stuck on 'disconnected').
-// Exported for tests: the close paths must purge tombstones, else the set
-// grows one entry per conversation that failed and was then closed/deleted.
+// Conversations whose connection has been down past the fast phase. Retries
+// continue in the background (the ladder never terminates), but the UI needs
+// to distinguish "reconnecting, be patient" from "this is not coming back on
+// its own" — the status computed checks this set first. Reactive so the
+// computed re-runs when a conversation enters/leaves the degraded state (a
+// plain Set mutation never triggers it, leaving the UI stuck on
+// 'disconnected'). Cleared by a successful open and by connect().
+// Exported for tests: the close paths must purge stale entries, else the set
+// grows one entry per conversation that degraded and was then closed/deleted.
 export const _failedConversations = reactive(new Set<string>())
+
+// Lifecycle listeners are bound once, on the first connection. Background-tab
+// timer throttling can push the next backoff tick minutes into the future, so
+// "the user came back to this tab" is the strongest available signal that it
+// is worth trying now.
+let _lifecycleBound = false
+
+function _bindLifecycleListeners(kick: () => void) {
+  if (_lifecycleBound || typeof window === 'undefined') return
+  _lifecycleBound = true
+  window.addEventListener('online', kick)
+  window.addEventListener('focus', kick)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') kick()
+  })
+}
 
 /** Close the oldest idle (non-streaming) connection to stay under the limit.
  * Returns true if a connection was evicted. */
@@ -109,6 +135,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
   })
 
   function connect(id: string) {
+    // Network back / tab visible / window focused: retry every known
+    // connection at once instead of waiting out a throttled backoff timer.
+    _bindLifecycleListeners(() => {
+      const ids = Array.from(new Set([..._connections.keys(), ..._failedConversations]))
+      for (const cid of ids) connect(cid)
+    })
     // A fresh attempt clears the failed marker; retries start over.
     _failedConversations.delete(id)
     // If already connected and open, just ensure status is correct
@@ -148,18 +180,14 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       // Re-arms the same entry instead of re-entering connect(): connect()
       // rebuilds the entry with retries: 0, so the give-up check below was
       // dead code and a saturated server retried forever with the UI stuck
-      // on 'connecting' (no 'failed' state ever surfaced).
+      // on 'connecting' (no degraded state ever surfaced).
       const retryWhenFull = () => {
         entry.retryTimer = setTimeout(() => {
           entry.retryTimer = null
-          if (entry.retries >= MAX_RETRIES) {
-            // no slot freed up in time — drop the pending
-            // entry instead of leaving a 'failed' tombstone in _connections
-            // forever; the UI failure state lives in _failedConversations.
-            _failedConversations.add(id)
-            _cleanupConnection(id)
-            return
-          }
+          // No slot freed up for a while: surface the degraded state in the
+          // UI, but keep waiting. A live turn always ends eventually, and
+          // dropping the entry here would strand the conversation for good.
+          if (entry.retries >= MAX_RETRIES) _failedConversations.add(id)
           entry.retries++
           // A stream may have ended since the last attempt, freeing a slot —
           // evict an idle connection if possible, otherwise keep waiting.
@@ -207,6 +235,14 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       entry.retries = 0
       entry.lastMessageAt = Date.now()
       entry.staleProbeSent = false
+      _failedConversations.delete(id)
+      // Drop any backoff still pending: with the ladder now unbounded there is
+      // always a timer armed, and letting it fire would open a second socket
+      // on top of this healthy one (every delta would then arrive twice).
+      if (entry.retryTimer) {
+        clearTimeout(entry.retryTimer)
+        entry.retryTimer = null
+      }
       _startPing(id, entry)
       // Reconcile local streaming state on EVERY successful connection, not
       // just reconnects: a connection that died while the server turn kept
@@ -263,23 +299,35 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     }
   }
 
+  /** Backoff for the Nth consecutive failure: 1s/2s/4s, then 8s/15s/30s. */
+  function _retryDelay(retries: number): number {
+    const base = retries < BACKOFF_MS.length
+      ? BACKOFF_MS[retries]
+      : SLOW_BACKOFF_MS[Math.min(retries - BACKOFF_MS.length, SLOW_BACKOFF_MS.length - 1)]
+    const spread = base * JITTER_RATIO
+    return Math.round(base - spread + Math.random() * spread * 2)
+  }
+
   function _scheduleRetry(id: string, entry: ConnectionEntry) {
+    // Reconnection never gives up. An outage of the reverse proxy, a sleeping
+    // laptop or a captive portal routinely lasts longer than the fast ladder,
+    // and this used to delete the entry outright — with connect() reachable
+    // only from the conversationId watch, the conversation then stayed dead
+    // until the user switched away and back, and every send failed with
+    // "WebSocket 未连接".
     if (entry.retries >= MAX_RETRIES) {
-      // Give up: stop the watchdog and drop the entry entirely. Leaving a
-      // 'failed' tombstone in _connections would permanently count against
-      // MAX_CONNECTIONS, so _closeOldestIdle could evict a HEALTHY idle
-      // connection to make room for a dead one  — and the tombstone
-      // itself is never removed unless the user reopens that conversation.
-      // remove the entry; the failure state for the UI is
-      // kept in _failedConversations.
+      // Past the fast phase: flag the degraded state for the UI. The ladder
+      // below keeps running either way.
       _failedConversations.add(id)
-      _cleanupConnection(id)
-      return
     }
+    // Never stack two ladders on one entry (onerror and onclose can both land
+    // before the first timer fires).
+    if (entry.retryTimer) return
     entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null
       entry.retries++
       _open(id, entry)
-    }, BACKOFF_MS[entry.retries] ?? 4000)
+    }, _retryDelay(entry.retries))
   }
 
   function _dispatch(convId: string, msg: WsMessage, entry: ConnectionEntry) {
@@ -598,8 +646,27 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     const id = conversationId.value
     if (!id) return false
     const entry = _connections.get(id)
-    if (!entry?.ws || entry.ws.readyState !== WebSocket.OPEN) return false
+    if (!entry?.ws || entry.ws.readyState !== WebSocket.OPEN) {
+      // Not connected: make sure an attempt is actually in flight. A live
+      // handshake or an armed backoff must not be restarted — that would
+      // reset the ladder on every Enter press during an outage.
+      const inFlight =
+        entry?.ws?.readyState === WebSocket.CONNECTING || !!entry?.retryTimer
+      if (!inFlight) connect(id)
+      return false
+    }
     entry.ws.send(JSON.stringify(payload))
+    return true
+  }
+
+  /** Manual retry, for the "connection lost" banner. Returns true when a new
+   *  attempt was started (false when already connected). */
+  function reconnect(): boolean {
+    const id = conversationId.value
+    if (!id) return false
+    const entry = _connections.get(id)
+    if (entry?.ws && entry.ws.readyState === WebSocket.OPEN) return false
+    connect(id)
     return true
   }
 
@@ -646,5 +713,5 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     { immediate: true },
   )
 
-  return { send, abort, status }
+  return { send, abort, status, reconnect }
 }

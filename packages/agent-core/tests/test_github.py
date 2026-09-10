@@ -323,3 +323,108 @@ async def test_commit_checks_failed_check_run_is_not_passing():
     )
 
     assert result["all_passing"] is False
+
+
+# ---------------------------------------------------------------------------
+# Repository / code search
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_search_repositories_maps_fields_and_keeps_qualifiers():
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": [{
+        "full_name": "acme/skills",
+        "description": "A skill library",
+        "stargazers_count": 12,
+        "default_branch": "main",
+        "clone_url": "https://ghe.example/acme/skills.git",
+        "html_url": "https://ghe.example/acme/skills",
+        "topics": ["claude-skills"],
+    }]})
+
+    result = await GitHubTool()._op_search_repositories(
+        {"query": "claude skills topic:claude-skills", "limit": 5, "sort": "stars"},
+        "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert result["count"] == 1
+    assert result["repositories"][0]["full_name"] == "acme/skills"
+    assert result["repositories"][0]["topics"] == ["claude-skills"]
+    assert "skill_source" in result["hint"]
+    assert http.get.await_args.kwargs["params"] == {
+        "q": "claude skills topic:claude-skills", "per_page": 5, "sort": "stars",
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_limit_is_capped_and_best_match_sends_no_sort():
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": []})
+
+    await GitHubTool()._op_search_repositories(
+        {"query": "x", "limit": 5000}, "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert http.get.await_args.kwargs["params"] == {"q": "x", "per_page": 100}
+
+
+@pytest.mark.asyncio
+async def test_search_operations_require_a_query():
+    http = AsyncMock()
+
+    repos = await GitHubTool()._op_search_repositories({}, "u", {}, http)
+    code = await GitHubTool()._op_search_code({}, "u", {}, http)
+
+    assert repos["error"] == "query is required"
+    assert code["error"] == "query is required"
+    http.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_code_reports_instances_without_code_search():
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(404, {"message": "Not Found"})
+
+    result = await GitHubTool()._op_search_code(
+        {"query": "filename:SKILL.md pdf"}, "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert "not available" in result["error"]
+    assert "search_repositories" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_search_code_maps_results():
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": [{
+        "repository": {"full_name": "acme/skills"},
+        "path": "skills/pdf/SKILL.md",
+        "html_url": "https://ghe.example/acme/skills/blob/main/skills/pdf/SKILL.md",
+    }]})
+
+    result = await GitHubTool()._op_search_code(
+        {"query": "filename:SKILL.md"}, "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert result["results"] == [{
+        "repository": "acme/skills",
+        "path": "skills/pdf/SKILL.md",
+        "url": "https://ghe.example/acme/skills/blob/main/skills/pdf/SKILL.md",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_search_without_a_token_points_at_the_offline_catalog():
+    from agent_core.tools._auth import ToolAuthError
+
+    async def _no_token(context, service_key):
+        raise ToolAuthError("Git token not configured")
+
+    ctx = _FakeCtx(AsyncMock())
+    with patch("agent_core.tools.github.get_token", _no_token):
+        result = await GitHubTool().execute(
+            {"operation": "search_repositories", "query": "x"}, ctx,
+        )
+
+    assert "Git token not configured" in result["error"]
+    assert "list_sources" in result["hint"]

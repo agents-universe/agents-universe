@@ -51,6 +51,7 @@ _OPTIONAL_TOOL_MODULES = {
     "scheduler":          ("agent_core.tools.scheduler",          "SchedulerTool"),
     "git_repo":           ("agent_core.tools.git_repo",           "GitRepoTool"),
     "repo_graph":         ("agent_core.tools.repo_graph",         "RepoGraphTool"),
+    "skill_source":       ("agent_core.tools.skill_source",       "SkillSourceTool"),
 }
 
 

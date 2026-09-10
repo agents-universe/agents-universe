@@ -23,6 +23,7 @@ categories:
       - skills/ui-patterns
       - integrations/custom-api
       - integrations/mcp-servers
+      - integrations/skill-sources
   - slug: data-analysis
     label: 数据分析
     description: 指标分析、报表看板、取数与数据治理等数据类项目
@@ -32,6 +33,7 @@ categories:
       - system/history
       - integrations/custom-api
       - integrations/mcp-servers
+      - integrations/skill-sources
       - technical/data-source-map
       - technical/data-model
       - technical/data-pipelines
@@ -51,6 +53,7 @@ categories:
       - skills/support-scripts
       - integrations/custom-api
       - integrations/mcp-servers
+      - integrations/skill-sources
   - slug: docs
     label: 文档知识库
     description: 以文档沉淀、规范、知识整理为主的非工程类项目

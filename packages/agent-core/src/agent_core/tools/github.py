@@ -23,13 +23,16 @@ class GitHubTool(Tool):
         "First stop for any PR task — the remote PR diff, reviews, comments, and "
         "checks are authoritative. Use for GitHub work (public GitHub or GitHub "
         "Enterprise): search commits/PRs by Jira key, review, approve, merge, or "
-        "create PRs, fork/star repositories, and check CI statuses."
+        "create PRs, fork/star repositories, check CI statuses, and search "
+        "repositories or code when hunting for reference material such as skill "
+        "libraries."
     )
     description = (
         "GitHub (public or Enterprise): search commits/PRs by Jira key, "
         "list/detail/approve/merge/create PRs, "
         "fork a repository, star/check-star a repository, get repository and user info, "
-        "get commit check-runs and combined status."
+        "get commit check-runs and combined status, "
+        "search repositories and code (e.g. topic:claude-skills or filename:SKILL.md)."
     )
     parameters = {
         "type": "object",
@@ -40,6 +43,7 @@ class GitHubTool(Tool):
                     "search_by_jira_key", "get_repo_info", "get_user",
                     "list_prs", "get_pr_detail", "approve_pr", "merge_pr", "create_pr",
                     "get_commit_checks", "add_pr_comment", "fork", "is_starred", "star",
+                    "search_repositories", "search_code",
                 ],
             },
             "jira_key": {"type": "string", "description": "Jira issue key to search for"},
@@ -60,6 +64,19 @@ class GitHubTool(Tool):
             "commit_title": {"type": "string"},
             "sha": {"type": "string", "description": "Head SHA for merge verification"},
             "all_repos": {"type": "boolean", "default": False, "description": "Search across all repos"},
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search query for search_repositories/search_code. Supports GitHub "
+                    "qualifiers, e.g. 'claude skills topic:claude-skills' or 'filename:SKILL.md pdf'."
+                ),
+            },
+            "sort": {
+                "type": "string",
+                "enum": ["best-match", "stars", "updated"],
+                "default": "best-match",
+                "description": "search_repositories ordering",
+            },
             "limit": {"type": "integer", "default": 30},
         },
         "required": ["operation"],
@@ -71,6 +88,18 @@ class GitHubTool(Tool):
         try:
             token = await get_token(context, "git")
         except ToolAuthError as e:
+            search_ops = ("search_repositories", "search_code")
+            if operation in search_ops:
+                # Search runs before any repository is known, so it cannot fall
+                # back to an anonymous call — point at the offline catalog.
+                return {
+                    "error": str(e),
+                    "hint": (
+                        "GitHub search needs the configured Git credential; without it, "
+                        "read the curated skill catalog instead (skill_source with "
+                        "operation=list_sources), which needs no network access."
+                    ),
+                }
             return {"error": str(e)}
 
         base_url = context.cfg("GIT_BASE_URL").rstrip("/")
@@ -461,6 +490,69 @@ class GitHubTool(Tool):
             return {"status": "starred", "repository": repo}
         resp.raise_for_status()
         return {"status": "starred", "repository": repo}
+
+    async def _op_search_repositories(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
+        """Find repositories by keyword or qualifier — e.g. skill libraries."""
+        query = (params.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
+        limit = max(1, min(int(params.get("limit", 30) or 30), 100))
+        sort = params.get("sort", "best-match")
+        query_params: dict[str, Any] = {"q": query, "per_page": limit}
+        if sort in ("stars", "updated"):
+            query_params["sort"] = sort
+        resp = await http.get(f"{api_url}/search/repositories", headers=headers, params=query_params)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return {
+            "query": query,
+            "count": len(items),
+            "repositories": [
+                {
+                    "full_name": r.get("full_name", ""),
+                    "description": (r.get("description") or "")[:200],
+                    "stars": r.get("stargazers_count", 0),
+                    "default_branch": r.get("default_branch", ""),
+                    "clone_url": r.get("clone_url", ""),
+                    "url": r.get("html_url", ""),
+                    "topics": r.get("topics", [])[:10],
+                }
+                for r in items
+            ],
+            "hint": (
+                "Pass a full_name (owner/repo) to the skill_source tool to browse "
+                "the skills it publishes."
+            ),
+        }
+
+    async def _op_search_code(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
+        """Find files by content or path — e.g. filename:SKILL.md across GitHub."""
+        query = (params.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
+        limit = max(1, min(int(params.get("limit", 30) or 30), 100))
+        resp = await http.get(f"{api_url}/search/code", headers=headers, params={"q": query, "per_page": limit})
+        if resp.status_code == 404:
+            # Code search is unavailable on older GitHub Enterprise versions
+            # and on instances where the search index is disabled.
+            return {
+                "error": "Code search is not available on this GitHub instance.",
+                "hint": "Use search_repositories instead, then browse the repository with skill_source.",
+            }
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return {
+            "query": query,
+            "count": len(items),
+            "results": [
+                {
+                    "repository": i.get("repository", {}).get("full_name", ""),
+                    "path": i.get("path", ""),
+                    "url": i.get("html_url", ""),
+                }
+                for i in items
+            ],
+        }
 
     def _resolve_pr(self, params: dict) -> tuple[str, int | None]:
         if params.get("url"):

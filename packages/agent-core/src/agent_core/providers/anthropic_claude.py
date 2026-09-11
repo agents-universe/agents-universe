@@ -63,7 +63,7 @@ class AnthropicClaudeProvider(LLMProvider):
         # Per-config override from Settings → AI Models; None = name-matched default.
         self._context_window_override = context_window
         # Exact host comparison, not substring: a gateway whose domain merely
-        # CONTAINS "api.anthropic.com" (e.g. api.anthropic.com.corp.internal)
+        # CONTAINS "api.anthropic.com" (e.g. api.anthropic.com.evil.example)
         # must not be misdetected as the official API and forced down the
         # AsyncAnthropic SDK path with its different timeout/header behavior
         # .

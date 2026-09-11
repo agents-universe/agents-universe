@@ -128,11 +128,11 @@ def test_normalize_duplicated_base_in_sentence():
 
 
 def test_normalize_multiple_urls():
-    bad1 = "https://h.comhttps://h.com/api/media/p/c/a.pptx"
-    bad2 = "https://h.comhttps://h.com/api/media/p/c/b.xlsx"
+    bad1 = "https://h.example.comhttps://h.example.com/api/media/p/c/a.pptx"
+    bad2 = "https://h.example.comhttps://h.example.com/api/media/p/c/b.xlsx"
     out = normalize_media_urls(f"{bad1} and {bad2}")
     assert out == (
-        "https://h.com/api/media/p/c/a.pptx and https://h.com/api/media/p/c/b.xlsx"
+        "https://h.example.com/api/media/p/c/a.pptx and https://h.example.com/api/media/p/c/b.xlsx"
     )
 
 

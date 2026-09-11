@@ -96,7 +96,7 @@ def test_validate_url_private_ip_allowed():
 
 
 def test_validate_url_allowed_hosts_mismatch():
-    err = _validate_mcp_url("https://evil.com/mcp", ["mcp.example.com"], False)
+    err = _validate_mcp_url("https://evil.example.com/mcp", ["mcp.example.com"], False)
     assert err is not None and "not in allowed_hosts" in err
 
 

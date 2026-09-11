@@ -1,0 +1,77 @@
+# Commit hygiene policy — the rules behind CLAUDE.md convention 14
+# ("No corporate identifiers").
+#
+# Enforced by scripts/check_commit_hygiene.py in three places:
+#   * pre-commit hook `commit-identity` — author/committer email of the commit
+#     being created;
+#   * pre-commit hook `url-policy`      — URL hosts in the staged files;
+#   * CI job `hygiene`                  — same script over a pushed range and
+#                                         over every tracked file.
+#
+# Editing this file is meant to be deliberate: the host list is a "deny by
+# default" gate, so a new third-party domain has to be added here on purpose.
+
+[email]
+# Substrings (case-insensitive) that must never appear in an author/committer
+# email address. Keep the list short and specific — a substring rule matches
+# any address containing it.
+banned_substrings = ["mer"]
+
+[url]
+# A line containing this marker is exempt from the URL check — the escape
+# hatch for deliberate fixtures (security tests, docs quoting a hostile host).
+allow_marker = "hygiene:allow-url"
+
+# Allowed hosts. An entry also covers its subdomains (github.com covers
+# api.github.com). Everything not listed here must be an `example`-family or
+# otherwise reserved host (see RESERVED_TLDS in the script).
+allowed_hosts = [
+  "github.com",            # project home, gh CLI/REST defaults
+  "githubusercontent.com", # raw.githubusercontent.com in Dockerfile/docs
+  "apache.org",            # LICENSE boilerplate
+  "npmjs.org",             # registry.npmjs.org (npm default)
+  "npmmirror.com",         # npmmirror registry + Node/Playwright mirrors
+  "shields.io",            # README badges
+  "python.org",
+  "vuejs.org",
+  "eslint.org",
+  "semver.org",
+  "keepachangelog.com",
+  "pre-commit.com",
+  "opencollective.com",    # dependency funding metadata
+  "tidelift.com",
+  "feross.org",
+  "paulmillr.com",
+  "polar.sh",
+  "jsdelivr.net",
+  "tuna.tsinghua.edu.cn",  # pypi mirror used by the Docker build
+  "microsoft.com",         # packages.microsoft.com apt feed
+  "ghproxy.net",           # GitHub download mirrors used behind the GFW
+  "ghfast.top",
+  "gh-proxy.com",
+  "patreon.com",
+  "openai.com",            # OpenAI/Azure-OpenAI API defaults
+  "anthropic.com",         # Anthropic API default
+  "googleapis.com",        # Gemini API default
+  "agents-universe.com",   # this project's own public site
+  "w3.org",                # SVG XML namespace
+  "docker.internal",       # host.docker.internal in the nginx dev config
+]
+
+# Corporate/intranet suffixes: rejected even when the host also carries an
+# `example` label somewhere (e.g. jira.example.corp.internal). Explicit
+# allowed_hosts entries win over this list.
+blocked_tlds = ["internal", "local", "localdomain", "corp", "lan", "home", "intranet", "office"]
+
+# IP literals used by security tests — cloud metadata endpoints are public
+# constants, not private information.
+allowed_ips = [
+  "169.254.169.254",  # AWS/GCP/Azure metadata endpoint (SSRF fixtures)
+]
+
+# Generated files that are never hand-edited. pre-commit's own `exclude`
+# already skips them in the hooks, but the script runs directly from CI where
+# that exclude does not apply.
+skip_paths = [
+  "packages/web/package-lock.json",
+]

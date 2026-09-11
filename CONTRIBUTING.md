@@ -59,6 +59,14 @@ npm run dev
 alembic upgrade head
 ```
 
+### 提交钩子
+
+```bash
+pre-commit install
+```
+
+安装后每次提交自动运行：gitleaks（密钥扫描）、`commit-identity`（提交身份邮箱）、`url-policy`（URL 主机检查）与空白/YAML 等基础检查。凭据之外的两条防泄露规则由 `scripts/check_commit_hygiene.py` 执行，策略集中在仓库根的 `.commit-hygiene.toml`：邮箱禁用子串、允许的公开域名、内网后缀黑名单与 `hygiene:allow-url` 行内豁免。示例、夹具与知识库一律用保留域名（`example.com` / `.test` / `.invalid`）；确需引用新的公开域名时，把该域名加进 `.commit-hygiene.toml` 并随提交一起评审。CI 的 `hygiene` job 会跑同一份策略——服务端（含平台智能体）的提交装不到本地钩子，靠它兜底。
+
 ## 提交规范
 
 - **分支**：从 `main` 新建分支，命名如 `feat/skill-java-qa`、`fix/knowledge-overflow`
@@ -68,7 +76,7 @@ alembic upgrade head
 
 ## 硬性准则
 
-1. **不提交任何秘密** — API Key、令牌、域名、内部路径只进 `.env`（已被 gitignore），提交前检查 diff
+1. **不提交任何秘密** — API Key、令牌、域名、内部路径只进 `.env`（已被 gitignore），提交前检查 diff；域名与提交身份另由 pre-commit 与 CI 的 `hygiene` 检查自动拦截
 2. **知识文件用 `[[slug]]` 交叉引用**，不要复制粘贴内容
 3. **DB 主键始终 `UNIQUEIDENTIFIER`**，不用 `IDENTITY`
 4. **SQL Server 驱动用 `mssql+aioodbc`**，不用 `pymssql`

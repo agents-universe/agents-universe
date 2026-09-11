@@ -79,8 +79,8 @@ class Settings(BaseSettings):
 
 
     # Atlassian (base URL is system-level; tokens are per-user in DB)
-    # Cloud:  https://your-org.atlassian.net  → basic auth, no sub-paths
-    # Server: https://jira.your-company.com   → bearer auth, /jira + /confluence sub-paths
+    # Cloud:  https://example.atlassian.net  → basic auth, no sub-paths
+    # Server: https://jira.example.com       → bearer auth, /jira + /confluence sub-paths
     atlassian_base_url: str = ""
 
     # Git (base URL is system-level; token is per-user in DB)

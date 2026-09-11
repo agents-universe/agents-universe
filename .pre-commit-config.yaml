@@ -16,6 +16,27 @@ repos:
         language: system
         pass_filenames: false
 
+  # ---- Commit hygiene (CLAUDE.md convention 14) ----
+  # Policy lives in .commit-hygiene.toml; the same script also runs in the CI
+  # `hygiene` job (which is what covers server-side/agent commits — a local
+  # hook cannot be installed in someone else's clone).
+  - repo: local
+    hooks:
+      - id: commit-identity
+        name: commit identity (email policy)
+        description: Reject author/committer emails containing a banned substring
+        entry: python scripts/check_commit_hygiene.py identity
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: url-policy
+        name: URL policy (example-family hosts)
+        description: Reject URL hosts that are neither example-family nor allowlisted
+        entry: python scripts/check_commit_hygiene.py urls
+        language: system
+        pass_filenames: true
+        types: [text]
+
   # ---- Basic hygiene ----
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

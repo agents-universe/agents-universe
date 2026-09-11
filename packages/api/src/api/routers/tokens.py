@@ -236,7 +236,7 @@ async def test_token(
             base = (token.base_url or "https://api.anthropic.com").rstrip("/")
             model_id = token.model_id or "claude-haiku-4-5"
             # Exact hostname match, not substring: a base_url like
-            # "https://api.anthropic.com.evil.com" must not be treated as the
+            # "https://api.anthropic.com.evil.example" must not be treated as the
             # official API — it would receive the plaintext key as x-api-key.
             is_direct = urlsplit(base).hostname == "api.anthropic.com"
             if is_direct:

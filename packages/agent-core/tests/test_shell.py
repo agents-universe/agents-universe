@@ -149,11 +149,11 @@ def test_build_env_drops_empty_proxy_vars(monkeypatch):
     any child process. Non-empty values pass through for real proxy setups."""
     monkeypatch.setenv("HTTPS_PROXY", "")
     monkeypatch.setenv("https_proxy", "")
-    monkeypatch.setenv("HTTP_PROXY", "http://proxy.corp:8080")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
     ctx = make_context()
     env = shell_module._build_env(ctx)
     assert "HTTPS_PROXY" not in env and "https_proxy" not in env
-    assert env["HTTP_PROXY"] == "http://proxy.corp:8080"
+    assert env["HTTP_PROXY"] == "http://proxy.example.com:8080"
 
 
 # ---------------------------------------------------------------------------
@@ -833,7 +833,7 @@ async def test_compound_command_second_segment_not_in_allowlist(sibling_projects
     tool = shell_module.ShellTool()
     ctx = make_context(project_fs_path=str(proj_a))
     result = await tool.execute(
-        {"command": "echo hi; curl http://evil.com"}, ctx
+        {"command": "echo hi; curl http://evil.example.com"}, ctx
     )
     assert "error" in result
     # curl is caught by blocklist first, so test with a non-blocked, non-allowed cmd

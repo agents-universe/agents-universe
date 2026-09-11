@@ -389,7 +389,7 @@ async def _do_test(provider: str, model_id: str, api_key: str, base_url: str | N
         if provider == "anthropic":
             url_base = (base_url or "https://api.anthropic.com").rstrip("/")
             # Exact hostname match — a substring match would send the plaintext
-            # key to a lookalike domain (api.anthropic.com.evil.com).
+            # key to a lookalike domain (api.anthropic.com.evil.example).
             is_direct = urlsplit(url_base).hostname == "api.anthropic.com"
             if url_mode == "full_url":
                 url = url_base

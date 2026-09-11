@@ -95,3 +95,43 @@ jobs:
       - name: Test
         run: npm test -- --run
         working-directory: packages/web
+
+  hygiene:
+    name: commit hygiene (identity + URLs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the commit range below references base/before commits
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Commit identity check
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$PUSH_BEFORE" ] \
+            && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            range="$PUSH_BEFORE..${{ github.sha }}"
+          else
+            range="${{ github.sha }}"  # new branch or force-push: scan history
+          fi
+          echo "identity range: $range"
+          python scripts/check_commit_hygiene.py identity --rev-range "$range"
+
+      - name: URL host check (tracked files)
+        run: python scripts/check_commit_hygiene.py urls --all-files
+
+      - name: Test the hygiene script
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest scripts/tests -q

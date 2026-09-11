@@ -229,3 +229,168 @@ async def test_write_into_git_rejected(tmp_path):
         _ctx(proj, fw),
     )
     assert result.get("content") == "[core]"
+
+
+# --- Definition checks ------------------------------------------------------
+# Registration of agents/skills/workflows is lazy and silent, so the tool hands
+# the verdict back with the write/read result. The write itself still succeeds.
+
+
+def _ctx_for_slug(root: Path, framework_root: Path, slug: str) -> ToolContext:
+    """Context whose workspace directory name is the project slug."""
+    return _ctx(root / slug, framework_root)
+
+
+VALID_AGENT = (
+    '---\nslug: "proj-a--helper"\ndisplay_name: "助手"\ndescription: "帮忙"\n'
+    "tools:\n  - filesystem\n---\n\n# 助手\n"
+)
+INVALID_AGENT = '---\nslug: "helper"\ndisplay_name: "助手"\n---\n\n# 助手\n'
+
+
+async def test_write_valid_project_agent_reports_ok(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw")
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "agents/proj-a--helper.agent.md", "content": VALID_AGENT},
+        ctx,
+    )
+
+    assert result.get("success") is True
+    assert result["definition_check"]["ok"] is True
+    assert result["definition_check"]["scope"] == "project"
+    assert (tmp_path / "proj-a" / "agents" / "proj-a--helper.agent.md").exists()
+
+
+async def test_write_agent_missing_prefix_succeeds_but_flags_check(tmp_path):
+    """The file lands on disk; the check says it will never register."""
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw")
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "agents/proj-a--helper.agent.md", "content": INVALID_AGENT},
+        ctx,
+    )
+
+    assert result.get("success") is True
+    assert (tmp_path / "proj-a" / "agents" / "proj-a--helper.agent.md").exists()
+    check = result["definition_check"]
+    assert check["ok"] is False
+    assert check["expected"]["slug_prefix"] == "proj-a--"
+    assert any("proj-a--" in e for e in check["errors"])
+
+
+async def test_write_agent_bad_yaml_flags_check(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw")
+
+    result = await tool.execute(
+        {
+            "operation": "write_file",
+            "path": "agents/proj-a--helper.agent.md",
+            "content": '---\nslug: "proj-a--helper"\ndescription: 负责 助手: 做事\n---\n',
+        },
+        ctx,
+    )
+
+    assert result.get("success") is True
+    assert result["definition_check"]["ok"] is False
+    assert any("YAML" in e for e in result["definition_check"]["errors"])
+
+
+async def test_read_broken_agent_returns_content_and_check(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a" / "agents", tmp_path / "fw")
+    (tmp_path / "proj-a" / "agents" / "proj-a--helper.agent.md").write_text(
+        INVALID_AGENT, encoding="utf-8"
+    )
+
+    result = await tool.execute(
+        {"operation": "read_file", "path": "agents/proj-a--helper.agent.md"}, ctx
+    )
+
+    assert "# 助手" in result["content"]
+    assert result["definition_check"]["ok"] is False
+
+
+async def test_read_valid_definition_without_errors_has_no_check_noise(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a" / "skills", tmp_path / "fw")
+    (tmp_path / "proj-a" / "skills" / "foo.md").write_text(
+        '---\nslug: "foo"\ntype: "guidance"\n---\n\n# Skill\n', encoding="utf-8"
+    )
+
+    result = await tool.execute({"operation": "read_file", "path": "skills/foo.md"}, ctx)
+
+    assert result["definition_check"]["ok"] is True
+
+
+async def test_framework_agent_read_skips_prefix_rule(tmp_path):
+    """Global agents live in the framework dir and never carry the prefix."""
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw" / "agents")
+    (tmp_path / "fw" / "agents" / "tech-lead.agent.md").write_text(
+        '---\nslug: "tech-lead"\ndisplay_name: "Tech Lead"\n---\n', encoding="utf-8"
+    )
+
+    result = await tool.execute({"operation": "read_file", "path": "agents/tech-lead.agent.md"}, ctx)
+
+    check = result["definition_check"]
+    assert check["ok"] is True
+    assert check["scope"] == "global"
+
+
+async def test_write_workflow_stem_trap_is_flagged(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw")
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "workflows/x.workflow.md", "content": '---\ndescription: "d"\n---\n'},
+        ctx,
+    )
+
+    assert result.get("success") is True
+    assert result["definition_check"]["ok"] is True
+    assert any("x.workflow" in w for w in result["definition_check"]["warnings"])
+
+
+async def test_non_definition_write_has_no_check_key(tmp_path):
+    tool = FilesystemTool()
+    ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")
+    _mkdir(tmp_path / "proj-a", tmp_path / "fw")
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "knowledge/notes.md", "content": "hello"}, ctx
+    )
+
+    assert result.get("success") is True
+    assert "definition_check" not in result
+
+
+async def test_non_slug_workspace_dir_skips_prefix_rule(tmp_path, monkeypatch):
+    """An unusual workspace path must not invent a wrong project prefix."""
+    monkeypatch.chdir(tmp_path)
+    ctx = ToolContext(
+        project_id="p1",
+        project_fs_path="",
+        conversation_id="c1",
+        user_id="u1",
+    )
+    tool = FilesystemTool()
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "agents/helper.agent.md", "content": '---\nslug: "helper"\ndisplay_name: "x"\n---\n'},
+        ctx,
+    )
+
+    check = result["definition_check"]
+    assert check["ok"] is True
+    assert "slug_prefix" not in check.get("expected", {})

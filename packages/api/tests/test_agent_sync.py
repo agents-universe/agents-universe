@@ -5,6 +5,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from agent_core import definition_check
+
 from api.models.agent import Agent
 from api.models.conversation import Conversation
 from api.services.agent_sync import sync_agents_dir
@@ -128,3 +130,42 @@ async def test_missing_project_agents_dir_cleans_rows(db, tmp_path, make_project
     )
     assert synced == []
     assert removed == ["proj-e--y"]
+
+
+async def test_definition_check_predicts_registration(db, tmp_path, make_project):
+    """The write-time verdict must match what sync actually does.
+
+    The whole point of `definition_check` is that the model can trust it
+    instead of waiting for a second round-trip: ok=True has to mean "this will
+    be listed", ok=False has to mean "this will be skipped". Each case gets its
+    own agents/ dir so one file cannot mask another.
+    """
+    project = await make_project("proj-f")
+    cases = [
+        ("proj-f--good", '---\nslug: "proj-f--good"\ndisplay_name: "Good"\n---\n', True),
+        # Slug missing the project prefix → sync skips it silently.
+        ("proj-f--bad", '---\nslug: "bad"\ndisplay_name: "Bad"\n---\n', False),
+        # slug not equal to the filename stem → listed but unrunnable.
+        ("proj-f--mismatch", '---\nslug: "proj-f--other"\ndisplay_name: "M"\n---\n', False),
+        # Unquoted colon → YAML parse error.
+        ("proj-f--yaml", '---\nslug: "proj-f--yaml"\ndescription: 负责 助手: 做事\n---\n', False),
+    ]
+
+    for stem, content, expect_ok in cases:
+        agents_dir = tmp_path / stem / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / f"{stem}.agent.md").write_text(content, encoding="utf-8")
+
+        check = definition_check.check_definition(
+            f"agents/{stem}.agent.md", content, scope="project", project_slug="proj-f"
+        )
+        assert check["ok"] is expect_ok, stem
+
+        synced, _ = await sync_agents_dir(
+            db, agents_dir, project_id=str(project.project_id),
+            is_system=False, slug_prefix="proj-f--",
+        )
+        # A mismatched slug still syncs — under the *frontmatter* slug, which
+        # resolves to no file at runtime. "Not registered under its own name"
+        # is the accurate statement for every ok=False case.
+        assert (stem in synced) is expect_ok, stem

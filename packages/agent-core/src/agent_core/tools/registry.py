@@ -55,6 +55,20 @@ _OPTIONAL_TOOL_MODULES = {
 }
 
 
+def known_static_tool_names() -> frozenset[str]:
+    """Tool names the registry can resolve, without importing optional modules.
+
+    Used to flag agent frontmatter declaring capabilities that do not exist.
+    Optional tools contribute their catalog keys — importing them just to read
+    ``name`` would drag playwright in for nothing, and the keys are what
+    ``build_tool_registry`` matches a declaration against anyway. Core tools
+    are instantiated because ``name`` is a property on some of them, and
+    reading it off the class would yield the property object instead of the
+    string — making a real tool look unknown.
+    """
+    return frozenset(cls().name for cls in _CORE_TOOLS) | frozenset(_OPTIONAL_TOOL_MODULES)
+
+
 def _load_optional(name: str) -> type[Tool] | None:
     entry = _OPTIONAL_TOOL_MODULES.get(name)
     if entry is None:

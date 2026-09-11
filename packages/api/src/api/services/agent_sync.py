@@ -15,28 +15,25 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 
 import frontmatter
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Canonical slug rules live in agent-core, shared with the filesystem tool's
+# write-time definition check — two copies would drift apart and let a file
+# pass one gate while failing the other. Re-exported here because the routers
+# and tests import them from this module.
+from agent_core.definition_check import (
+    PROJECT_SLUG_SEPARATOR as PROJECT_SLUG_SEPARATOR,  # re-exported for routers
+    validate_agent_slug,
+)
+
 from api.models.agent import Agent
 from api.models.conversation import Conversation
 
 log = logging.getLogger("agents_universe.agent_sync")
-
-#: Separator between project slug and agent name in project agent slugs.
-PROJECT_SLUG_SEPARATOR = "--"
-
-#: Path-safe slug: lowercase letters, digits, dashes; must start alnum.
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-
-
-def validate_agent_slug(slug: str) -> bool:
-    """Return True when the slug is safe to use as a filename segment."""
-    return bool(_SLUG_RE.match(slug))
 
 
 def resolve_agent_definition_path(slug: str, project_fs_path: str | None) -> str | None:

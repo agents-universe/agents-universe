@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..definition_check import check_definition, project_slug_from_workspace
 from .base import Tool, ToolContext
 
 _log = logging.getLogger(__name__)
@@ -15,6 +16,37 @@ _log = logging.getLogger(__name__)
 # already huge there); writing is capped to bound disk usage.
 _MAX_READ_BYTES = 2_000_000
 _MAX_WRITE_BYTES = 5_000_000
+
+
+def _definition_check(
+    rel_path: str, content: str, context: ToolContext, scope: str
+) -> dict[str, Any] | None:
+    """Advisory validation block for a definition file, or None.
+
+    Registration of agents/skills/workflows happens later and fails silently,
+    so the writer is the only party that can still fix the file — it gets the
+    verdict with the write result instead of having to guess.
+    """
+    return check_definition(
+        rel_path,
+        content,
+        scope=scope,
+        project_slug=project_slug_from_workspace(context.project_fs_path) if scope == "project" else None,
+        project_fs_path=context.project_fs_path or None,
+        framework_root=context.framework_root or None,
+    )
+
+
+def _attach_definition_check(
+    result: dict[str, Any], rel_path: str, context: ToolContext, scope: str
+) -> dict[str, Any]:
+    """Attach the advisory block to a read result; reads stay unmodified."""
+    content = result.get("content")
+    if isinstance(content, str):
+        check = _definition_check(rel_path, content, context, scope)
+        if check is not None:
+            result["definition_check"] = check
+    return result
 
 
 def _normalize_rel_path(rel_path: str, project_fs_path: str) -> str:
@@ -133,11 +165,16 @@ class FilesystemTool(Tool):
     prompt_hint = (
         "Preferred tool for ALL file reads, writes, and directory listings — never use "
         "shell cat/head/tail/echo>/sed for reading or writing files. It has no content "
-        "search; shell grep/find is acceptable for searching only."
+        "search; shell grep/find is acceptable for searching only. Writing or reading an "
+        "agent/skill/workflow definition returns a `definition_check` block: when `ok` is "
+        "false the file will NOT be registered — fix the reported errors and rewrite the "
+        "file before reporting the task as done."
     )
     description = (
         "Read, write, list, or delete files within the current project directory. "
-        "All paths must be relative to the project root or knowledge directory."
+        "All paths must be relative to the project root or knowledge directory. "
+        "Writes and reads of definition files (agents/*.agent.md, skills/*.md, "
+        "workflows/*.workflow.md) also return an advisory `definition_check` block."
     )
     parameters = {
         "type": "object",
@@ -202,7 +239,9 @@ class FilesystemTool(Tool):
                     if ws_target.is_relative_to(ws_base) and ws_target.exists():
                         if operation == "list_dir":
                             return _list_dir(ws_target, rel_path)
-                        return _read_file(ws_target, rel_path)
+                        return _attach_definition_check(
+                            _read_file(ws_target, rel_path), rel_path, context, "project"
+                        )
                 if operation not in ("read_file", "list_dir"):
                     return {"error": f"{rel_path.split('/')[0]}/ directory is read-only"}
                 target = (Path(context.framework_root) / rel_path).resolve()
@@ -219,7 +258,9 @@ class FilesystemTool(Tool):
                     return hint
                 if operation == "list_dir":
                     return _list_dir(target, rel_path)
-                return _read_file(target, rel_path)
+                return _attach_definition_check(
+                    _read_file(target, rel_path), rel_path, context, "global"
+                )
 
         # Security: resolve and validate path is within project scope
         base = Path(context.project_fs_path).resolve()
@@ -230,7 +271,9 @@ class FilesystemTool(Tool):
         if operation == "read_file":
             parent = target.parent
             if target.exists():
-                return _read_file(target, rel_path)
+                return _attach_definition_check(
+                    _read_file(target, rel_path), rel_path, context, "project"
+                )
             # User attachments live in the in-memory upload store (never on
             # disk) — serve those bytes so the agent can re-read full content
             # when the inline preview was truncated or omitted.
@@ -268,7 +311,17 @@ class FilesystemTool(Tool):
             except OSError as e:
                 _log.warning("filesystem write_file: OSError on %s: %s", rel_path, e)
                 return {"error": f"Cannot write {rel_path}: {e}"}
-            return {"success": True, "path": rel_path, "bytes_written": len(content.encode())}
+            result: dict[str, Any] = {
+                "success": True,
+                "path": rel_path,
+                "bytes_written": len(content.encode()),
+            }
+            # The file is on disk either way; a failing check means it will not
+            # register, so the caller must rewrite rather than report success.
+            check = _definition_check(rel_path, content, context, "project")
+            if check is not None:
+                result["definition_check"] = check
+            return result
 
         elif operation == "list_dir":
             media_parts = _media_parts(rel_path)

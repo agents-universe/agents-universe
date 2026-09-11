@@ -18,6 +18,14 @@ Operations: read_file, write_file, list_dir, delete_file, create_dir
 Constraint: paths must be within project's fs_path or knowledge root
 ```
 
+Writing or reading a definition file (`agents/*.agent.md`, project `skills/**/*.md`,
+`workflows/*.workflow.md`) also returns an advisory `definition_check`:
+`{ok, kind, scope, path, slug, errors[], warnings[], expected?, suggested_frontmatter?}`.
+The write still succeeds — registration happens later and skips bad definitions
+silently, so `ok: false` means the file will not be picked up: fix `errors` and
+rewrite the same path. `warnings` (unknown tool names, unresolved skill/workflow
+references, missing optional fields) never affect `ok`.
+
 ## web_fetch
 
 Fetch content from a URL via HTTP GET.

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from agent_core import definition_check
+
+from api.services import agent_sync
 from api.services.agent_sync import resolve_agent_definition_path, validate_agent_slug
 
 
@@ -42,3 +45,14 @@ def test_validate_agent_slug_allows_project_prefix():
     assert validate_agent_slug("x") is True
     assert validate_agent_slug("") is False
     assert validate_agent_slug("A--X") is False
+
+
+def test_slug_rules_are_the_same_object_as_agent_core():
+    """The sync gate and the filesystem tool's write-time check must agree.
+
+    Guard by identity, not by value: a copied constant would pass an equality
+    assertion today and drift apart on the next edit, which is exactly how a
+    file gets written green and then silently skipped at registration.
+    """
+    assert agent_sync.validate_agent_slug is definition_check.validate_agent_slug
+    assert agent_sync.PROJECT_SLUG_SEPARATOR is definition_check.PROJECT_SLUG_SEPARATOR

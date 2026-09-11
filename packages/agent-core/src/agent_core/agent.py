@@ -699,11 +699,28 @@ class Agent:
         parts = [self._config.system_prompt]
 
         workspace = self._tool_ctx.project_fs_path
+        # The workspace directory name IS the project slug — the naming rule for
+        # project-scoped definitions depends on it, and "the last path segment"
+        # is easy to overlook when the requirement is spelled out elsewhere.
+        # Same helper the write-time definition check uses, so the rule stated
+        # here and the rule enforced there cannot disagree. Imported here to
+        # stay clear of this module's code-before-imports block.
+        from .definition_check import project_slug_from_workspace
+
+        project_slug = project_slug_from_workspace(workspace) or ""
+        slug_note = (
+            f"Project-scoped definitions belong in `agents/`, `skills/`, and `workflows/` under "
+            f"the workspace; project agent files are named `{project_slug}--<name>.agent.md` with a "
+            f"frontmatter `slug` equal to the filename stem (this workspace's project slug is "
+            f"`{project_slug}`). "
+            if project_slug else ""
+        )
         parts.append(
             f"\n## Workspace Convention\n"
             f"Your workspace root is `{workspace}`. "
             "All filesystem and shell paths are relative to this root. "
             "Key directories: `knowledge/`, `tests/generated/`, `.tmp/media/`, `.tmp/work/`. "
+            f"{slug_note}"
             "Files you write to the code_executor `OUTPUT_DIR`, or hand over with the "
             "`deliver_file` tool, appear in the chat as images or downloadable "
             "attachments for the user. "

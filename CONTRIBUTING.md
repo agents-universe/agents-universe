@@ -62,8 +62,11 @@ alembic upgrade head
 ### 提交钩子
 
 ```bash
+python -m pip install -r requirements-dev.txt   # 仓库级开发工具（pre-commit）
 pre-commit install
 ```
+
+钩子定义随仓库分发，但 `.git/hooks/` 不参与版本控制——**每个 clone 装一次**即可；之后钩子随配置自动更新，无需重装。已装过的开发者拉到新配置即生效。钩子以系统 `python` 执行（脚本纯标准库，需 Python ≥ 3.11）。
 
 安装后每次提交自动运行：gitleaks（密钥扫描）、`commit-identity`（提交身份邮箱）、`url-policy`（URL 主机检查）与空白/YAML 等基础检查。凭据之外的两条防泄露规则由 `scripts/check_commit_hygiene.py` 执行，策略集中在仓库根的 `.commit-hygiene.toml`：邮箱禁用子串、允许的公开域名、内网后缀黑名单与 `hygiene:allow-url` 行内豁免。示例、夹具与知识库一律用保留域名（`example.com` / `.test` / `.invalid`）；确需引用新的公开域名时，把该域名加进 `.commit-hygiene.toml` 并随提交一起评审。CI 的 `hygiene` job 会跑同一份策略——服务端（含平台智能体）的提交装不到本地钩子，靠它兜底。
 

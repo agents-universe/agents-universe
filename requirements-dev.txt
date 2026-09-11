@@ -1,0 +1,7 @@
+# Development tooling for this repository itself: the platform does not need
+# it, and container images never install it.
+#
+# Install once per clone, then wire up the git hooks:
+#   python -m pip install -r requirements-dev.txt
+#   pre-commit install
+pre-commit>=4.0.0

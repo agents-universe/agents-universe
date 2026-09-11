@@ -67,6 +67,29 @@ function _bindLifecycleListeners(kick: () => void) {
   })
 }
 
+/** Map a server prompt payload to the store's SelectionPrompt shape.
+ *
+ * Shared by the live `user_selection_required` event and the `sync` replay of
+ * prompts still awaiting input, so both paths agree on the field names. */
+function _promptFromEvent(data: Record<string, unknown>): SelectionPrompt {
+  return {
+    promptId: data.prompt_id as string,
+    fieldKey: data.field_key as string ?? '',
+    question: data.question as string,
+    options: (data.options ?? []) as SelectionPrompt['options'],
+    allowOther: data.allow_other as boolean ?? true,
+    kind: (data.kind as SelectionPrompt['kind']) ?? 'selection',
+    title: data.title as string | undefined,
+    message: data.message as string | undefined,
+    secret: data.secret as boolean | undefined,
+    taskId: data.task_id as string | undefined,
+    serviceKey: data.service_key as string | undefined,
+    environment: data.environment as string | undefined,
+    saveToProjectSecrets: data.save_to_project_secrets as boolean | undefined,
+    saveToUserTokens: data.save_to_user_tokens as boolean | undefined,
+  }
+}
+
 /** Close the oldest idle (non-streaming) connection to stay under the limit.
  * Returns true if a connection was evicted. */
 function _closeOldestIdle(excludeId: string): boolean {
@@ -336,9 +359,17 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     // event belongs to the conversation currently shown in the UI.
     const isActiveConversation = convId === conv.conversationId
     switch (msg.type) {
-      case 'sync':
+      case 'sync': {
+        // Prompts still waiting on user input, replayed by the server when a
+        // client connects to a conversation sitting on a user_confirm (the
+        // dialog lives only in client memory + the live session — the message
+        // history has no trace of it, so a conversation switch used to come
+        // back with the agent still waiting and no dialog).
+        const prompts = ((msg.prompts as Array<Record<string, unknown>> | null | undefined) ?? [])
+          .map(_promptFromEvent)
         conv.applySync(convId, {
           streamingContent: (msg.streaming_text as string) || '',
+          prompts,
           // The server sends snake_case tool-call fields (call_id, task_id,
           // current_step, next_step). Passed through unmapped, callId would
           // be undefined on every card: completeToolCall and the
@@ -355,7 +386,20 @@ export function useWebSocket(conversationId: Ref<string | null>) {
             nextStep: tc.next_step as string | undefined,
           })),
         })
+        // A prompt awaiting input keeps its user_confirm call "running" in the
+        // server's snapshot (the tool returns only after the answer). The live
+        // event settles the card when the dialog appears; the replay must do
+        // the same or the restored dialog sits beside a spinning card.
+        let unsettled = prompts.length
+        for (const tc of conv.getActiveToolCalls(convId)) {
+          if (unsettled === 0) break
+          if (tc.tool === 'user_confirm' && tc.status === 'running') {
+            conv.completeToolCall(tc.callId, {}, 'done', convId)
+            unsettled--
+          }
+        }
         break
+      }
       case 'stream_delta':
         conv.appendDelta(msg.delta as string, msg.task_id as string | undefined, convId)
         break
@@ -525,22 +569,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         break
       }
       case 'user_selection_required':
-        conv.addPendingPrompt({
-          promptId: msg.prompt_id as string,
-          fieldKey: msg.field_key as string ?? '',
-          question: msg.question as string,
-          options: (msg.options ?? []) as SelectionPrompt['options'],
-          allowOther: msg.allow_other as boolean ?? true,
-          kind: (msg.kind as SelectionPrompt['kind']) ?? 'selection',
-          title: msg.title as string | undefined,
-          message: msg.message as string | undefined,
-          secret: msg.secret as boolean | undefined,
-          taskId: msg.task_id as string | undefined,
-          serviceKey: msg.service_key as string | undefined,
-          environment: msg.environment as string | undefined,
-          saveToProjectSecrets: msg.save_to_project_secrets as boolean | undefined,
-          saveToUserTokens: msg.save_to_user_tokens as boolean | undefined,
-        }, convId)
+        conv.addPendingPrompt(_promptFromEvent(msg), convId)
         // Mark the running user_confirm tool call as done so UI stops showing "工具运行中"
         for (const tc of conv.getActiveToolCalls(convId)) {
           if (tc.tool === 'user_confirm' && tc.status === 'running') {

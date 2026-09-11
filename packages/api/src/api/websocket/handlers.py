@@ -181,11 +181,17 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     # and _session_memories. Clean up explicitly and bail.
     existing_session = manager.get_session(conversation_id)
     if existing_session:
+        # Prompts still waiting on user input are replayed alongside the
+        # streaming snapshot. They live only in the live session — history
+        # has no trace of them — so without the replay a client that comes
+        # back to a conversation sitting on a user_confirm shows no dialog
+        # while the agent keeps waiting for an answer it can no longer give.
         try:
             await ws.send_json({
                 "type": "sync",
                 "streaming_text": existing_session.current_streaming_text,
                 "tool_calls": existing_session.current_tool_calls,
+                "prompts": existing_session.pending_prompt_events(),
             })
         except Exception:
             await manager.disconnect(conversation_id, ws)

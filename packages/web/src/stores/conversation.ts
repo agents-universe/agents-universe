@@ -1071,7 +1071,7 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   /** Apply a sync event from the server (WS reconnect mid-stream). */
-  function applySync(targetId: string, sync: { streamingContent: string; toolCalls: ToolCallRecord[] }) {
+  function applySync(targetId: string, sync: { streamingContent: string; toolCalls: ToolCallRecord[]; prompts?: SelectionPrompt[] }) {
     const rt = ensureRuntime(targetId)
     // Only apply if we don't already have live streaming content (avoid
     // overwriting deltas that arrived between connect and sync).
@@ -1099,10 +1099,30 @@ export const useConversationStore = defineStore('conversation', () => {
         rt.streamingStartTime = Date.now()
       }
     }
+    // Prompts the server is still waiting on: restore the dialogs this
+    // client dropped when it navigated away and rebuilt the runtime from
+    // history (pendingPrompts is client-only state, history carries no trace
+    // of it). A reconnect with the dialog still on screen must not stack a
+    // second copy — matched by promptId, which identifies the server-side
+    // Future the answer has to resolve.
+    if (sync.prompts?.length) {
+      const shown = new Set(rt.pendingPrompts.map((p) => p.promptId))
+      for (const prompt of sync.prompts) {
+        if (!shown.has(prompt.promptId)) rt.pendingPrompts.push(prompt)
+      }
+      // A pending prompt proves the turn is alive and blocked on the user.
+      // Without the flag the composer offers "send" (which would try to
+      // claim a new turn on a claimed conversation) instead of the inject
+      // path, and the sidebar loses the run indicator.
+      rt.isStreaming = true
+      rt.isThinking = false
+      rt.abortSnapshotted = false
+      if (!rt.streamingStartTime) rt.streamingStartTime = Date.now()
+    }
     // Empty sync (reconnect after the turn already finished server-side)
     // must NOT re-arm the streaming flag — nothing would ever clear it and
     // the conversation would show "running" forever in the tree.
-    if (sync.streamingContent || sync.toolCalls?.length) {
+    if (sync.streamingContent || sync.toolCalls?.length || sync.prompts?.length) {
       // Non-empty sync proves the server turn is alive — any recovery note
       // injected by a history fetch that raced the sync is a false alarm.
       _dropStaleRecovery(targetId)

@@ -80,6 +80,11 @@ class ConversationSession:
         self.abort_event = asyncio.Event()
         self._current_message_id: str = str(uuid.uuid4())
         self._pending_prompts: dict[str, asyncio.Future[str]] = {}
+        # The emitted payload of each in-flight prompt, keyed by prompt_id.
+        # A prompt exists only here and in the client's memory — it is never
+        # part of the message history — so the transport layer replays these
+        # when a client reconnects (conversation switch, page reload).
+        self._pending_prompt_events: dict[str, dict[str, Any]] = {}
         # Interactive-prompt ledger, keyed by a caller-supplied signature
         # (field key + question). Tool-level callers use it to hand back a
         # repeated question's recorded outcome instead of showing the dialog
@@ -361,6 +366,10 @@ class ConversationSession:
         if save_to_user_tokens:
             event_data["save_to_user_tokens"] = True
 
+        # Register the payload BEFORE emitting: a client connecting in the
+        # window between the emit and this line would get a sync event that
+        # replays nothing, and the dialog would be lost until the next prompt.
+        self._pending_prompt_events[prompt_id] = event_data
         await self.emit("user_selection_required", **event_data)
         # Also wake on abort: once the session is aborted the UI has closed
         # this prompt's path (emit can even fail with a full queue) and the
@@ -376,6 +385,7 @@ class ConversationSession:
         finally:
             abort_waiter.cancel()
             self._pending_prompts.pop(prompt_id, None)
+            self._pending_prompt_events.pop(prompt_id, None)
         if not done:
             # The client must dismiss the dialog it is still showing for this
             # prompt — otherwise the UI keeps a zombie prompt that never
@@ -427,6 +437,18 @@ class ConversationSession:
             self._note_user_present()
             return True
         return False
+
+    def pending_prompt_events(self) -> list[dict[str, Any]]:
+        """Snapshot of the prompts still awaiting user input.
+
+        A client that (re)connects to the conversation gets these replayed so
+        it can restore the dialog: the prompt's Future lives only in this
+        session, and the message history holds no trace of it, so a client
+        that dropped the dialog (switched conversations and came back, or
+        reloaded the page) would otherwise show a conversation waiting on an
+        answer it cannot give.
+        """
+        return [dict(payload) for payload in self._pending_prompt_events.values()]
 
     def is_aborted(self) -> bool:
         return self.abort_event.is_set()

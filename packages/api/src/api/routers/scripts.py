@@ -32,6 +32,13 @@ from api.models.script import AutomationScript, ScriptRun
 
 router = APIRouter(prefix="/api")
 
+# Script-run log sockets deliberately bypass the /api prefix: only /ws/* gets
+# Upgrade/Connection forwarding from the vite dev proxy and the combined
+# image's nginx, so an APIRouter(prefix="/api") websocket would register at
+# /api/ws/... and never complete a handshake. Mounted in main.py's WebSocket
+# block, not alongside the REST routes.
+ws_router = APIRouter()
+
 # Module-level aliases into agent_core.scripts.runner — the shared execution
 # path used by both human runs (below) and agent runs (the script_writer
 # tool). The API test suite monkeypatches these exact names on this module
@@ -543,7 +550,7 @@ async def list_runs(
     ]
 
 
-@router.websocket("/ws/script-runs/{run_id}")
+@ws_router.websocket("/ws/script-runs/{run_id}")
 async def script_run_ws(run_id: str, ws: WebSocket):
     from api.config import get_settings
     from api.services.redis_client import _get_pool, get_session as get_redis_session

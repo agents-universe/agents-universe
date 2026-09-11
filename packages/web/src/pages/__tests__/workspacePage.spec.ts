@@ -176,7 +176,9 @@ describe('WorkspacePage', () => {
       method: 'POST',
     })
     const sock = lastSocket()
-    expect(sock.url).toContain('/ws/script-runs/r1')
+    // Exact pathname, not toContain: /api/ws/... regressions must fail — only
+    // /ws/* is upgraded by the vite dev proxy and nginx.
+    expect(new URL(sock.url).pathname).toBe('/ws/script-runs/r1')
 
     sock.emit({ type: 'log', log: 'preparing deps' })
     await flushPromises()

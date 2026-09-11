@@ -276,6 +276,11 @@ def create_app() -> FastAPI:
     from .websocket import handlers
     app.include_router(handlers.router, tags=["websocket"])
 
+    # The script-run log socket must stay outside scripts.router's /api prefix:
+    # only /ws/* is upgraded by the vite dev proxy and the combined-image
+    # nginx, so /api/ws/... would never handshake.
+    app.include_router(scripts.ws_router, tags=["websocket"])
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}

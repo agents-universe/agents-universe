@@ -11,7 +11,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
+from starlette.routing import WebSocketRoute
+from starlette.websockets import WebSocketDisconnect
 
+from api.main import app
 from api.routers.scripts import script_run_ws
 
 
@@ -96,3 +100,28 @@ async def test_script_run_ws_session_mode_still_closes_without_cookie(monkeypatc
     assert ws.close.call_args_list, "expected a pre-accept close"
     codes = [c.kwargs.get("code") for c in ws.close.call_args_list]
     assert 4001 in codes
+
+
+def test_script_run_ws_route_has_no_api_prefix():
+    """Route-table guard: exact path, and no /api/ws alias that proxies can't upgrade."""
+    ws_paths = {r.path for r in app.routes if isinstance(r, WebSocketRoute)}
+    assert "/ws/script-runs/{run_id}" in ws_paths
+    assert "/api/ws/script-runs/{run_id}" not in ws_paths
+
+
+def test_script_run_ws_handshakes_through_real_route():
+    """A real handshake at the proxied path must reach the handler.
+
+    No `with TestClient(app)`: the app lifespan (scheduler, redis) is not
+    needed here and conftest already migrated the DB schema. An unknown run id
+    hits the handler's ownership check, which closes with 4003 before accept;
+    a route missing at this path would close with Starlette's not-found 1000.
+    """
+    client = TestClient(app)
+    try:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect("/ws/script-runs/no-such-run"):
+                pass
+    finally:
+        client.close()
+    assert excinfo.value.code == 4003

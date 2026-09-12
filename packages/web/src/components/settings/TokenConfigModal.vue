@@ -1284,6 +1284,13 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   color: #34d399;
 }
 .mcp-section {
+  /* Nested inside the integrations .token-section, which is the scrollable
+     flex column of the tab. Inheriting its flex:1 would give this block
+     flex-basis:0, and once enough integration rows push the panel past its
+     max height the negative free space collapses the block to nothing.
+     Keep content height here; the panel scrolls. */
+  flex: 0 0 auto;
+  overflow: visible;
   margin-top: 4px;
   padding-top: 12px;
 }

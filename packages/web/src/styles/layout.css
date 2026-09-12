@@ -664,6 +664,13 @@
 .agent-select:focus { border-color: var(--accent); }
 
 .btn-primary {
+  /* inline-flex + nowrap so an optional icon and the label share one line:
+     Tailwind preflight forces svg to display:block, which would otherwise
+     push the text onto a second line inside a plain button. */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
   background: var(--accent-gradient);
   color: #fff;
   border: none;

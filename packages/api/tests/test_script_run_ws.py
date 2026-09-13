@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
 from api.main import app
@@ -103,10 +102,23 @@ async def test_script_run_ws_session_mode_still_closes_without_cookie(monkeypatc
 
 
 def test_script_run_ws_route_has_no_api_prefix():
-    """Route-table guard: exact path, and no /api/ws alias that proxies can't upgrade."""
-    ws_paths = {r.path for r in app.routes if isinstance(r, WebSocketRoute)}
-    assert "/ws/script-runs/{run_id}" in ws_paths
-    assert "/api/ws/script-runs/{run_id}" not in ws_paths
+    """/api/ws/... must not reach the handler — proxies don't upgrade there.
+
+    Asserted with a handshake rather than by scanning app.routes for
+    WebSocketRoute instances: FastAPI 0.141 wraps include_router() results in a
+    lazy container instead of flattening them into app.routes, so such a scan
+    finds an empty set and passes vacuously. The two outcomes are
+    distinguishable — an unrouted path closes with Starlette's not-found 1000,
+    while reaching script_run_ws closes with 4003 for an unknown run.
+    """
+    client = TestClient(app)
+    try:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect("/api/ws/script-runs/no-such-run"):
+                pass
+    finally:
+        client.close()
+    assert excinfo.value.code == 1000
 
 
 def test_script_run_ws_handshakes_through_real_route():

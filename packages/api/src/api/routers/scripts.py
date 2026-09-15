@@ -20,6 +20,7 @@ from agent_core.scripts.runner import (
     RUN_POLL_INTERVAL,
     STDERR_CAP,
     execute_script,
+    new_log_tail,
     persist_run_log,
     sandbox_env,
     script_slot_guard,
@@ -53,6 +54,7 @@ _execute_script = execute_script
 _stream_subprocess = stream_subprocess
 _persist_run_log = persist_run_log
 _sandbox_env = sandbox_env
+_new_log_tail = new_log_tail
 
 # Playwright phase budgets: browser preflight and the test run itself (the
 # dependency install budget lives inside agent-core's ensure_node_deps). Their
@@ -65,6 +67,9 @@ _PLAYWRIGHT_TEST_TIMEOUT = 540
 # (deps 120s + browser 180s + tests 540s) plus margin; plain python/bash
 # scripts cap at 300s, far below this.
 _RUN_POLL_LOOPS = 450
+
+# How many past runs a history request returns.
+_RUN_HISTORY_LIMIT = 20
 
 
 class ScriptCreate(BaseModel):
@@ -133,18 +138,22 @@ async def _spawn_script_run(
     db: AsyncSession,
     current_user: UserInfo,
     prepare: Callable[[AsyncSession], Awaitable[tuple[AutomationScript, Callable[[str, str], Awaitable[None]]]]],
+    run_meta: dict | None = None,
 ) -> dict:
     """Shared run bootstrap for the script and Playwright-spec endpoints.
 
     ``prepare`` runs under the acquired slot (target lookup, authorization,
     anchor creation) and returns the owning script row plus a factory that
-    builds the executor coroutine once the workspace path is known. The slot
-    is acquired BEFORE any DB work: the request-scoped session checks out a
-    pool connection on its first query, and queued waiters holding checked-out
-    connections can exhaust the shared pool (size 10 / overflow 20) for every
-    other endpoint while up to 3 long runs hold slots. Anything that throws
-    between acquire() and the spawned task releases the slot; once the run
-    row is committed it is marked failed too (a leftover pending row would
+    builds the executor coroutine once the workspace path is known. ``run_meta``
+    carries extra ScriptRun columns (the spec a Playwright run belongs to), set
+    at row creation so even a run that fails to start stays attributable.
+
+    The slot is acquired BEFORE any DB work: the request-scoped session checks
+    out a pool connection on its first query, and queued waiters holding
+    checked-out connections can exhaust the shared pool (size 10 / overflow 20)
+    for every other endpoint while up to 3 long runs hold slots. Anything that
+    throws between acquire() and the spawned task releases the slot; once the
+    run row is committed it is marked failed too (a leftover pending row would
     block project deletion forever).
     """
     sem = _script_slot_guard()
@@ -157,6 +166,7 @@ async def _spawn_script_run(
             triggered_by=current_user.user_id,
             status="pending",
             started_at=datetime.now(timezone.utc),
+            **(run_meta or {}),
         )
         db.add(run)
         await db.commit()
@@ -260,6 +270,27 @@ def _validated_playwright_env(request_env: dict[str, str]) -> dict[str, str]:
     return validated
 
 
+async def _playwright_anchors(db: AsyncSession, project_id: str) -> list[AutomationScript]:
+    """Every Playwright anchor row of the project, earliest first."""
+    return (await db.execute(
+        select(AutomationScript)
+        .where(
+            AutomationScript.project_id == project_id,
+            AutomationScript.script_type == "playwright",
+        )
+        .order_by(AutomationScript.created_at, AutomationScript.script_id)
+    )).scalars().all()
+
+
+async def _find_playwright_anchor(db: AsyncSession, project_id: str) -> AutomationScript | None:
+    """Read-only anchor lookup: a project that never ran a spec has none.
+
+    History must not create one - listing past runs is not a reason to write.
+    """
+    rows = await _playwright_anchors(db, project_id)
+    return rows[0] if rows else None
+
+
 async def _get_or_create_playwright_anchor(
     db: AsyncSession, project_id: str, created_by: str,
 ) -> AutomationScript:
@@ -269,14 +300,7 @@ async def _get_or_create_playwright_anchor(
     project deletion guard join ScriptRun -> AutomationScript -> Project. One
     anchor row per project satisfies both without a schema migration;
     list_scripts filters it out of the user-visible list."""
-    rows = (await db.execute(
-        select(AutomationScript)
-        .where(
-            AutomationScript.project_id == project_id,
-            AutomationScript.script_type == "playwright",
-        )
-        .order_by(AutomationScript.created_at, AutomationScript.script_id)
-    )).scalars().all()
+    rows = await _playwright_anchors(db, project_id)
     if rows:
         # Two concurrent first-runs raced the create and both committed an
         # anchor. Keep the earliest deterministically and drop the extras -
@@ -363,7 +387,37 @@ async def run_playwright_spec(
 
         return anchor, build
 
-    return await _spawn_script_run(db, current_user, prepare)
+    return await _spawn_script_run(db, current_user, prepare, run_meta={"spec_slug": slug})
+
+
+@router.get("/projects/{project_id}/playwright/specs/{slug}/runs")
+async def list_playwright_spec_runs(
+    project_id: str,
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+    project: Project = Depends(authorize_project),
+):
+    """Past runs of one spec, newest first.
+
+    Every Playwright run hangs off the project's shared anchor script, so
+    spec_slug is what separates one spec's history from another's.
+    """
+    from api.services.script_artifacts import run_summary_payload
+
+    if not _PW_SLUG_RE.match(slug):
+        raise HTTPException(status_code=422, detail="Invalid spec slug")
+
+    anchor = await _find_playwright_anchor(db, project_id)
+    if anchor is None:
+        return []
+    runs = (await db.execute(
+        select(ScriptRun)
+        .where(ScriptRun.script_id == anchor.script_id, ScriptRun.spec_slug == slug)
+        .order_by(ScriptRun.created_at.desc())
+        .limit(_RUN_HISTORY_LIMIT)
+    )).scalars().all()
+    return [run_summary_payload(r) for r in runs]
 
 
 def _on_script_task_done(task: asyncio.Task) -> None:
@@ -377,21 +431,77 @@ def _on_script_task_done(task: asyncio.Task) -> None:
 
 # ── Playwright executor ──────────────────────────────────────────────────────
 
-def _playwright_test_cmd(tests_dir: Path, slug: str) -> list[str]:
+def _playwright_test_cmd(tests_dir: Path, slug: str, extra_args: list[str] | None = None) -> list[str]:
     """Prefer the per-issue npm script test_generator injects
     (`test:{slug}`); fall back to passing the spec path when the entry is
     missing (hand-written specs). Both run the project's local
     @playwright/test runner - never bare `npx playwright test`, the
     `playwright` package is a different thing without the test subcommand."""
     npm = shutil.which("npm") or "npm"
+    args = list(extra_args or [])
     try:
         package = json.loads((tests_dir / "package.json").read_text(encoding="utf-8"))
         scripts = package.get("scripts") if isinstance(package, dict) else None
         if isinstance(scripts, dict) and f"test:{slug}" in scripts:
-            return [npm, "run", f"test:{slug}"]
+            return [npm, "run", f"test:{slug}", *(["--", *args] if args else [])]
     except (OSError, ValueError):
         pass
-    return [npm, "test", "--", f"generated/{slug}.spec.ts"]
+    return [npm, "test", "--", *args, f"generated/{slug}.spec.ts"]
+
+
+# Reporters the platform asks for: `list` keeps the live WS log human-readable,
+# `html` and `json` produce the report and the result the UI shows. Passed on the
+# command line because CLI --reporter REPLACES the config's list - which is what
+# makes result capture work for projects whose config predates us.
+_PLAYWRIGHT_REPORTERS = "list,html,json"
+
+
+def _playwright_output_args(artifacts: Path | None) -> list[str]:
+    """Where the runner writes attachments and the HTML report.
+
+    Both go to run-scoped paths because Playwright empties its own output
+    folders at the start of every run - anything left in the default
+    tests/test-results/ is gone by the next run, which is what made past
+    results unviewable.
+    """
+    if artifacts is None:
+        return []
+    return [
+        "--output", str(artifacts / "test-results"),
+        "--reporter", _PLAYWRIGHT_REPORTERS,
+    ]
+
+
+def _store_run_result(
+    run: ScriptRun, artifacts: Path | None, tail, *, status_override: str | None = None,
+) -> None:
+    """Attach the parsed result - and the artifact manifest - to the run row.
+
+    Called on every terminal path: a failed or timed-out run still has a verdict
+    worth showing. The log fallback reads the uncapped tail buffer, because the
+    stored log is head-capped and loses the summary of a verbose run first.
+
+    Deliberately never raises: result capture is a nicety, and the caller still
+    has a terminal status and a commit to write afterwards - an exception here
+    would strand the row at "running". Only assignments touch the run, never
+    attribute reads (a committed session expires the instance, and reading it
+    back synchronously raises MissingGreenlet under the async driver).
+    """
+    from api.services.script_artifacts import (
+        build_manifest, collect_result, find_json_report, parse_log_summary, write_manifest,
+    )
+
+    tail_text = "".join(tail) if tail else ""
+    try:
+        report = find_json_report(artifacts) if artifacts is not None else None
+        result = collect_result(artifacts, tail_text) if report is not None else parse_log_summary(tail_text)
+        if status_override is not None:
+            result = {**result, "status": status_override}
+        run.result_json = json.dumps(result, ensure_ascii=False)
+        if artifacts is not None:
+            write_manifest(artifacts, build_manifest(artifacts, report))
+    except Exception:
+        logging.getLogger("agents_universe.scripts").exception("Could not capture a script run result")
 
 
 async def _execute_playwright(
@@ -411,8 +521,13 @@ async def _execute_playwright(
     download) append progress markers to the run's stderr so the WS log view
     shows what is happening; the subprocess output itself streams into the
     run row every couple of seconds.
+
+    The run's result and artifacts land in a run-scoped directory rather than
+    tests/test-results/: Playwright clears its output folders at the start of
+    every run, so only copies survive as history.
     """
     from api.database import AsyncSessionLocal
+    from api.services.script_artifacts import artifacts_dir, prune_run_artifacts
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ScriptRun).where(ScriptRun.run_id == run_id))
@@ -427,15 +542,20 @@ async def _execute_playwright(
         # reading an attribute back under the async driver raises
         # MissingGreenlet. Only assignment is used below.
         log_acc: list[str] = []
+        # Survives the log cap, which truncates the end of a verbose run - the
+        # very part holding the verdict.
+        tail_acc = _new_log_tail()
+        artifacts = artifacts_dir(project_fs, run_id) if project_fs else None
 
         async def progress(text: str) -> None:
             log_acc.append(f"[executor] {text}\n")
             _persist_run_log(run, log_acc)
             await db.commit()
 
-        async def fail(message: str) -> None:
+        async def fail(message: str, result_status: str = "failed") -> None:
             log_acc.append(f"[executor] {message}\n")
             _persist_run_log(run, log_acc)
+            _store_run_result(run, artifacts, tail_acc, status_override=result_status)
             run.status = "failed"
             run.exit_code = -1
             run.completed_at = datetime.now(timezone.utc)
@@ -449,6 +569,20 @@ async def _execute_playwright(
 
             env = _sandbox_env()
             env.update(request_env)
+            if artifacts is not None:
+                # The JSON reporter's destination is env-only (no CLI flag), and
+                # PLAYWRIGHT_HTML_OPEN=never keeps a headless container from
+                # trying to launch a browser for the report. Set after
+                # request_env so a request can never redirect them.
+                artifacts.mkdir(parents=True, exist_ok=True)
+                env.update(
+                    {
+                        "PLAYWRIGHT_JSON_OUTPUT_DIR": str(artifacts),
+                        "PLAYWRIGHT_JSON_OUTPUT_NAME": "results.json",
+                        "PLAYWRIGHT_HTML_REPORT": str(artifacts / "html-report"),
+                        "PLAYWRIGHT_HTML_OPEN": "never",
+                    }
+                )
 
             # Phase 1: dependencies. ensure_node_deps runs npm install only
             # when the local playwright/tsc shims are missing - a warm project
@@ -476,29 +610,35 @@ async def _execute_playwright(
                     str(tests_dir), env, _PLAYWRIGHT_BROWSER_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                await fail(f"Browser verification timed out ({_PLAYWRIGHT_BROWSER_TIMEOUT}s)")
+                await fail(
+                    f"Browser verification timed out ({_PLAYWRIGHT_BROWSER_TIMEOUT}s)",
+                    result_status="timed_out",
+                )
                 return
             if code != 0:
                 await fail(f"Browser verification failed (exit code {code})")
                 return
             await progress("Browser ready")
 
-            # Phase 3: the test run itself. Artifacts (screenshots, videos,
-            # traces) stay in tests/test-results/ - surfacing them in the UI
-            # would need run-scoped media, deliberately out of scope here.
+            # Phase 3: the test run itself, with its report, machine-readable
+            # result and attachments redirected into the run's own directory.
             await progress("Running tests...")
-            cmd = _playwright_test_cmd(tests_dir, slug)
+            cmd = _playwright_test_cmd(tests_dir, slug, _playwright_output_args(artifacts))
             try:
                 code = await _stream_subprocess(
                     db, run, log_acc,
-                    cmd, str(tests_dir), env, _PLAYWRIGHT_TEST_TIMEOUT,
+                    cmd, str(tests_dir), env, _PLAYWRIGHT_TEST_TIMEOUT, tail_acc,
                 )
             except asyncio.TimeoutError:
-                await fail(f"Test execution timed out ({_PLAYWRIGHT_TEST_TIMEOUT}s)")
+                await fail(
+                    f"Test execution timed out ({_PLAYWRIGHT_TEST_TIMEOUT}s)",
+                    result_status="timed_out",
+                )
                 return
             _persist_run_log(run, log_acc)
             run.exit_code = code
             run.status = "completed" if code == 0 else "failed"
+            _store_run_result(run, artifacts, tail_acc)
         except asyncio.CancelledError:
             # Persist a terminal state before propagating - a run left at
             # "running" blocks project deletion with a phantom job.
@@ -512,9 +652,19 @@ async def _execute_playwright(
             run.status = "failed"
             run.stderr_log = str(e)[:_STDERR_CAP]
             run.exit_code = -1
+            # Whatever the tail holds is still more informative than an empty
+            # card; the success path already stored the real verdict, and
+            # nothing below it can raise, so this never overwrites one.
+            _store_run_result(run, artifacts, tail_acc, status_override="failed")
 
         run.completed_at = datetime.now(timezone.utc)
         await db.commit()
+
+        if project_fs:
+            # Retention off the event loop: these are videos, traces and
+            # screenshots, and nothing else ever deletes them. Never removes
+            # the run that just finished.
+            await asyncio.to_thread(prune_run_artifacts, project_fs, run_id)
 
 
 @router.get("/scripts/{script_id}/runs")
@@ -531,23 +681,19 @@ async def list_runs(
         raise HTTPException(status_code=404, detail="Script not found")
     await authorize_project(str(script.project_id), db, current_user)
 
+    from api.services.script_artifacts import run_summary_payload
+
     result = await db.execute(
         select(ScriptRun)
         .where(ScriptRun.script_id == script.script_id)
         .order_by(ScriptRun.created_at.desc())
-        .limit(20)
+        .limit(_RUN_HISTORY_LIMIT)
     )
     runs = result.scalars().all()
-    return [
-        {
-            "run_id": str(r.run_id),
-            "status": r.status,
-            "exit_code": r.exit_code,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        }
-        for r in runs
-    ]
+    # Rows carry the compact summary (counts, verdict) but never the log or the
+    # per-test list - an anchor script's history mixes specs, so the row's
+    # spec_slug is what tells them apart.
+    return [run_summary_payload(r) for r in runs]
 
 
 @ws_router.websocket("/ws/script-runs/{run_id}")

@@ -4,7 +4,7 @@ import { apiBase } from '@/utils/basePath'
 
 export interface LogLine { text: string; level: string }
 
-export interface ScriptRunDone { status: string; exitCode: number | null }
+export interface ScriptRunDone { runId: string; status: string; exitCode: number | null }
 
 /**
  * Live log of a script/Playwright run over `/ws/script-runs/{run_id}`.
@@ -73,7 +73,9 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
           ? (msg.status ?? 'completed')
           : `${msg.status ?? 'failed'} (exit ${msg.exit_code ?? '?'})`
         pushLog({ text: t('workspace.runFinished', { status: statusText }), level: ok ? 'info' : 'error' })
-        opts.onDone?.({ status: msg.status ?? 'failed', exitCode: msg.exit_code ?? null })
+        // runId travels with the callback so the consumer can fetch the
+        // authoritative result without re-deriving which run it was watching.
+        opts.onDone?.({ runId, status: msg.status ?? 'failed', exitCode: msg.exit_code ?? null })
         return
       }
       pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })

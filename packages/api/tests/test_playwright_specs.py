@@ -119,11 +119,43 @@ async def test_run_creates_anchor_and_run(client, db, make_project, monkeypatch)
     assert run.script_id == anchor.script_id
     assert run.status == "pending"
     assert run.triggered_by == "test-user"
+    # Stamped on the row at spawn time, so even a run that dies before the
+    # executor starts is attributable to its spec.
+    assert run.spec_slug == "proj-456"
 
     # The anchor never appears in the user-visible script list.
     list_resp = await client.get(f"/api/projects/{project.project_id}/scripts")
     assert list_resp.status_code == 200
     assert all(s["script_id"] != str(anchor.script_id) for s in list_resp.json())
+
+
+@pytest.mark.asyncio
+async def test_every_spec_run_hangs_off_one_anchor(client, db, make_project, monkeypatch):
+    """All the project's specs share the hidden anchor, so spec_slug is the
+    only thing a per-spec history can filter on."""
+    project = await make_project("pw-shared-anchor")
+    _write_spec(project, "alpha-1")
+    _write_spec(project, "beta-2")
+    monkeypatch.setattr(scripts_router, "_execute_playwright", _noop_execute)
+
+    run_ids = []
+    for slug in ("alpha-1", "beta-2"):
+        resp = await client.post(
+            f"/api/projects/{project.project_id}/playwright/specs/{slug}/run"
+        )
+        assert resp.status_code == 200
+        run_ids.append(resp.json()["run_id"])
+
+    anchors = (await db.execute(
+        select(AutomationScript).where(AutomationScript.project_id == str(project.project_id))
+    )).scalars().all()
+    assert len(anchors) == 1
+
+    runs = (await db.execute(
+        select(ScriptRun).where(ScriptRun.run_id.in_(run_ids))
+    )).scalars().all()
+    assert {r.script_id for r in runs} == {anchors[0].script_id}
+    assert {r.spec_slug for r in runs} == {"alpha-1", "beta-2"}
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,12 @@ vi.mock('vue-router', async () => {
   route.params = params
   return { useRoute: () => route }
 })
-vi.mock('@/utils/basePath', () => ({ apiBase: '' }))
+vi.mock('@/utils/basePath', () => ({
+  apiBase: '',
+  // Artifact and report URLs are built with withApi(); identity keeps the
+  // assertions readable while still exercising the call.
+  withApi: (path: string) => path,
+}))
 
 vi.mock('@/api/client', () => ({ apiFetch: vi.fn() }))
 const apiFetchMock = vi.mocked(apiFetch) as unknown as ReturnType<typeof vi.fn>
@@ -47,9 +52,90 @@ function lastSocket(): FakeWebSocket {
   return ws
 }
 
+/** A finished run as the history endpoint projects it (no result, no log). */
+function runRow(overrides: Record<string, unknown> = {}) {
+  return {
+    run_id: 'r0',
+    script_id: 's1',
+    spec_slug: 'proj-1',
+    status: 'completed',
+    exit_code: 1,
+    triggered_by: 'u1',
+    started_at: '2026-09-15T10:00:00+00:00',
+    completed_at: '2026-09-15T10:00:12+00:00',
+    created_at: '2026-09-15T10:00:00+00:00',
+    summary: {
+      status: 'failed',
+      source: 'json',
+      partial: false,
+      counts: { total: 2, passed: 1, failed: 1, flaky: 0, skipped: 0 },
+      duration_ms: 12400,
+      failed_count: 1,
+    },
+    ...overrides,
+  }
+}
+
+/** The run-detail payload: verdict, artifacts and the sandboxed report URL. */
+function runDetail(runId = 'r1') {
+  return {
+    ...runRow({ run_id: runId }),
+    result: {
+      source: 'json',
+      partial: false,
+      status: 'failed',
+      counts: { total: 2, passed: 1, failed: 1, flaky: 0, skipped: 0 },
+      duration_ms: 12400,
+      failed_tests: [
+        {
+          title: 'rejects a bad password',
+          file: 'tests/generated/proj-1.spec.ts',
+          line: 12,
+          error: 'Error: expected 200, got 401',
+        },
+      ],
+      tests: [],
+      truncated: false,
+    },
+    artifacts: [
+      {
+        name: 'screenshot',
+        rel_path: 'test-results/login-fails/test-failed-1.png',
+        kind: 'screenshot',
+        mime: 'image/png',
+        size_bytes: 2048,
+        test_title: 'rejects a bad password',
+      },
+      {
+        name: 'trace',
+        rel_path: 'trace.zip',
+        kind: 'trace',
+        mime: 'application/zip',
+        size_bytes: 4096,
+        test_title: 'rejects a bad password',
+      },
+      {
+        name: 'playwright-report',
+        rel_path: 'html-report/index.html',
+        kind: 'report',
+        mime: 'text/html',
+        size_bytes: 100,
+        test_title: '',
+      },
+    ],
+    artifacts_truncated: false,
+    report_url: `/api/scripts/runs/${runId}/report/tok/index.html`,
+    log: 'Running 2 tests\n',
+  }
+}
+
 /** Route apiFetch by URL: workspace files list, file read/write, scripts. */
 function defaultApi() {
   apiFetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    // Matched before the generic /run rule below - "/runs" contains "/run",
+    // and a catch-all answer would hand the card a run without a result.
+    if (url.startsWith('/api/scripts/runs/')) return runDetail(url.split('/')[4])
+    if (url.endsWith('/runs')) return [runRow()]
     if (url.startsWith('/api/projects/p1/workspace/files')) {
       return {
         path: '',
@@ -255,6 +341,78 @@ describe('WorkspacePage', () => {
         body: JSON.stringify({ env: { APP_BASE_URL: 'https://demo.example.com' } }),
       }),
     )
+  })
+
+  it('shows the verdict and artifacts once a run finishes', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('Login flow'))!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.workspace-content-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    const sock = lastSocket()
+    sock.emit({ type: 'done', status: 'failed', exit_code: 1 })
+    await flushPromises()
+
+    // The done frame carries no verdict, so the card is built from the detail
+    // fetch the done handler kicks off.
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/scripts/runs/r1')
+    const card = wrapper.find('.run-result-card')
+    expect(card.classes()).toContain('failed')
+    expect(card.find('.run-result-counts').text()).toContain('1 失败')
+    expect(card.find('.run-failure-title').text()).toBe('rejects a bad password')
+    expect(card.find('.run-failure-location').text()).toContain('tests/generated/proj-1.spec.ts:12')
+
+    expect(wrapper.find('.run-shot img').attributes('src')).toBe(
+      '/api/scripts/runs/r1/artifacts/test-results/login-fails/test-failed-1.png',
+    )
+    // The trace downloads; the report entry is only reachable sandboxed.
+    expect(wrapper.find('.run-artifact-file').attributes('href')).toBe(
+      '/api/scripts/runs/r1/artifacts/trace.zip',
+    )
+    expect(wrapper.find('.run-report-btn').exists()).toBe(true)
+    expect(wrapper.find('.run-artifacts').text()).not.toContain('playwright-report')
+  })
+
+  it('reopens a past run from the history list', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('Login flow'))!.trigger('click')
+    await flushPromises()
+
+    // Selecting the spec lists its runs - scoped by slug, since every spec
+    // shares the project's hidden anchor script.
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/projects/p1/playwright/specs/proj-1/runs')
+    const row = wrapper.find('.run-history-row')
+    expect(row.exists()).toBe(true)
+
+    await row.trigger('click')
+    await flushPromises()
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/scripts/runs/r0')
+    expect(wrapper.find('.run-result-card').exists()).toBe(true)
+    // Replaying a finished run goes through the same log socket.
+    expect(new URL(lastSocket().url).pathname).toBe('/ws/script-runs/r0')
+  })
+
+  it('drops the run card when the project switches', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('Login flow'))!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.workspace-content-actions .btn-primary').trigger('click')
+    await flushPromises()
+    lastSocket().emit({ type: 'done', status: 'failed', exit_code: 1 })
+    await flushPromises()
+    expect(wrapper.find('.run-result-card').exists()).toBe(true)
+
+    route.params.projectId = 'p2'
+    await flushPromises()
+
+    // The other project's run must not linger on screen.
+    expect(wrapper.find('.run-result-card').exists()).toBe(false)
+    route.params.projectId = 'p1' // restore for other tests
   })
 
   it('opens a knowledge cross-reference through the knowledge API', async () => {

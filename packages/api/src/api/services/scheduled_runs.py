@@ -25,6 +25,7 @@ from api.database import AsyncSessionLocal
 from api.models._compat import now_utc
 from api.models.schedule import ScheduledTask, ScheduledTaskRun
 from api.services.agent_turn import Transport
+from api.services.script_artifacts import load_result
 
 _log = logging.getLogger("agents_universe.scheduler")
 
@@ -338,8 +339,9 @@ async def _run_script_target(target: _Target) -> _Outcome:
             status = "completed" if done.status == "completed" else "failed"
             exit_code = done.exit_code
             log_text = (done.stdout_log or "") + (done.stderr_log or "")
+            result = load_result(done)
 
-        summary = _script_summary(target, status, exit_code, log_text)
+        summary = _script_summary(target, status, exit_code, log_text, result)
         error = None if status == "completed" else f"Exit code {exit_code}"
         return _Outcome(status, summary, error, script_run_id)
     finally:
@@ -383,6 +385,10 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
             run = ScriptRun(
                 script_id=anchor_id,
                 triggered_by=target.created_by,
+                # Same tagging as a UI-triggered run: the anchor script is
+                # shared, so spec_slug is what makes the run findable in that
+                # spec's history.
+                spec_slug=target.spec_slug,
                 status="pending",
                 started_at=now_utc(),
             )
@@ -411,8 +417,9 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
             status = "completed" if done.status == "completed" else "failed"
             exit_code = done.exit_code
             log_text = (done.stdout_log or "") + (done.stderr_log or "")
+            result = load_result(done)
 
-        summary = _script_summary(target, status, exit_code, log_text)
+        summary = _script_summary(target, status, exit_code, log_text, result)
         error = None if status == "completed" else f"Exit code {exit_code}"
         return _Outcome(status, summary, error, script_run_id)
     finally:
@@ -538,17 +545,43 @@ async def _last_reply(db, conversation_id: str, transport: _NullTransport) -> st
 
 
 def _script_summary(
-    target: _Target, status: str, exit_code: int | None, log_text: str
+    target: _Target, status: str, exit_code: int | None, log_text: str,
+    result: dict | None = None,
 ) -> str:
-    tail = log_text[-_LOG_TAIL_CHARS:].strip()
     lines = [
         f"定时任务「{target.name}」{_status_label(status)}",
         f"退出码: {exit_code}",
     ]
-    if tail:
-        lines.append("日志尾部:")
-        lines.append(tail)
+    verdict = _result_line(result)
+    if verdict:
+        # The parsed verdict beats the raw tail: the stored log is head-capped,
+        # so a long test run's conclusion is exactly what it dropped.
+        lines.append(verdict)
+    else:
+        tail = log_text[-_LOG_TAIL_CHARS:].strip()
+        if tail:
+            lines.append("日志尾部:")
+            lines.append(tail)
     return "\n".join(lines)
+
+
+def _result_line(result: dict | None) -> str:
+    """One-line verdict from a stored Playwright result, if there is one."""
+    counts = (result or {}).get("counts") or {}
+    if not counts:
+        return ""
+    parts = [f"{counts.get('passed', 0)} 通过", f"{counts.get('failed', 0)} 失败"]
+    for key, label in (("flaky", "不稳定"), ("skipped", "跳过")):
+        if counts.get(key):
+            parts.append(f"{counts[key]} {label}")
+    line = " · ".join(parts)
+    duration = (result or {}).get("duration_ms") or 0
+    if duration:
+        line += f"（{duration / 1000:.1f}s）"
+    failed = [t.get("title") for t in (result.get("failed_tests") or []) if t.get("title")]
+    if failed:
+        line += "\n失败用例: " + "、".join(failed[:5])
+    return line
 
 
 def _status_label(status: str) -> str:

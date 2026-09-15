@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -38,6 +39,16 @@ RUN_POLL_INTERVAL = 2
 # tail-truncation would shift the diff boundary and garble the client view.
 LOG_CAP = 100_000
 STDERR_CAP = 4000
+
+# Lines kept past the log cap when a caller passes a tail buffer. A test
+# runner's verdict (counts, failed case names) is the LAST thing it prints, so
+# a head-capped log alone cannot answer "did it pass?".
+TAIL_LINES = 200
+
+
+def new_log_tail() -> deque[str]:
+    """Bounded tail buffer for stream_subprocess(tail_acc=...)."""
+    return deque(maxlen=TAIL_LINES)
 
 
 def script_slot_guard() -> asyncio.Semaphore:
@@ -74,11 +85,17 @@ def persist_run_log(run, log_acc: list[str]) -> None:
     run.stdout_log = "".join(log_acc)[:LOG_CAP]
 
 
-async def drain_stream(stream, log_acc: list[str], budget: list[int]) -> None:
+async def drain_stream(
+    stream, log_acc: list[str], budget: list[int],
+    tail_acc: deque[str] | None = None,
+) -> None:
     """Append output lines to log_acc in arrival order, up to the log cap.
 
     budget is a one-element mutable counter of remaining chars; once it hits
-    zero a truncation marker is emitted and further output is dropped."""
+    zero a truncation marker is emitted and further output is dropped.
+    tail_acc, when given, keeps the last lines *regardless* of the cap - the
+    verdict of a test run is printed last, i.e. exactly what a head-capped log
+    loses first."""
     while True:
         line = await stream.readline()
         if not line:
@@ -87,15 +104,24 @@ async def drain_stream(stream, log_acc: list[str], budget: list[int]) -> None:
             if budget[0] == 0:
                 log_acc.append("[executor] output truncated (log cap reached)\n")
                 budget[0] = -1
+            if tail_acc is not None:
+                tail_acc.append(line.decode(errors="replace"))
             continue
         text = line.decode(errors="replace")
         budget[0] -= len(text)
+        if budget[0] < 0:
+            # A single line can overshoot the cap, and the marker above only
+            # fires on exactly zero - clamp so the truncation is never silent.
+            budget[0] = 0
         log_acc.append(text)
+        if tail_acc is not None:
+            tail_acc.append(text)
 
 
 async def stream_subprocess(
     db: AsyncSession, run, log_acc: list[str],
     cmd: list[str], cwd: str, env: dict[str, str], timeout: float,
+    tail_acc: deque[str] | None = None,
 ) -> int:
     """Run a subprocess and stream its output into the run row every ~2s.
 
@@ -104,7 +130,10 @@ async def stream_subprocess(
     Playwright run spawns chromium children that plain proc.kill() would
     leave running (and writing) after the run ends. Returns the exit code;
     raises asyncio.TimeoutError on timeout and re-raises CancelledError
-    after cleanup."""
+    after cleanup.
+
+    tail_acc (see drain_stream) survives the log cap so the caller can parse a
+    verdict out of output the stored log had to drop."""
     from agent_core.sandbox import spawn_in_new_session, terminate_process_tree
 
     proc = await asyncio.create_subprocess_exec(
@@ -118,8 +147,8 @@ async def stream_subprocess(
     )
     budget = [LOG_CAP - sum(len(s) for s in log_acc)]
     readers = [
-        asyncio.create_task(drain_stream(proc.stdout, log_acc, budget)),
-        asyncio.create_task(drain_stream(proc.stderr, log_acc, budget)),
+        asyncio.create_task(drain_stream(proc.stdout, log_acc, budget, tail_acc)),
+        asyncio.create_task(drain_stream(proc.stderr, log_acc, budget, tail_acc)),
     ]
     # A stop event (not task cancellation) ends the flusher: cancelling it
     # mid-commit could poison the session for the terminal-state write that

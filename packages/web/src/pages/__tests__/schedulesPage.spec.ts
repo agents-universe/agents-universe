@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, DOMWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import SchedulesPage from '@/pages/SchedulesPage.vue'
@@ -7,7 +7,7 @@ import { apiFetch } from '@/api/client'
 
 const route = vi.hoisted(() => ({ params: { projectId: 'p-1' } }))
 vi.mock('vue-router', () => ({ useRoute: () => route }))
-vi.mock('@/utils/basePath', () => ({ apiBase: '' }))
+vi.mock('@/utils/basePath', () => ({ apiBase: '', withApi: (path: string) => path }))
 
 vi.mock('@/api/client', () => ({ apiFetch: vi.fn() }))
 const apiFetchMock = vi.mocked(apiFetch) as unknown as ReturnType<typeof vi.fn>
@@ -32,6 +32,24 @@ const agentStore = vi.hoisted(() => ({
   fetchAgents: vi.fn(),
 }))
 vi.mock('@/stores/agent', () => ({ useAgentStore: () => agentStore }))
+
+/** The board only ever mounts a socket when the log drawer opens. */
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = []
+  url: string
+  readyState = 0
+  onopen: ((e: unknown) => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  onclose: ((e: unknown) => void) | null = null
+
+  constructor(url: string) {
+    this.url = url
+    FakeWebSocket.instances.push(this)
+  }
+
+  send() {}
+  close() { this.readyState = 3 }
+}
 
 function makeTask(over: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -61,6 +79,8 @@ function makeTask(over: Partial<ScheduledTask> = {}): ScheduledTask {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  FakeWebSocket.instances = []
+  vi.stubGlobal('WebSocket', FakeWebSocket)
   setActivePinia(createPinia())
   route.params = { projectId: 'p-1' }
   agentStore.agents = []
@@ -78,6 +98,10 @@ beforeEach(() => {
     }
     return []
   })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('SchedulesPage', () => {
@@ -175,6 +199,62 @@ describe('SchedulesPage', () => {
     expect(rows[0].find('button').exists()).toBe(true)
     expect(rows[1].text()).toContain('previous run still active')
     expect(rows[1].find('button').exists()).toBe(false)
+  })
+
+  it('shows the verdict and artifacts of a scheduled run in the log drawer', async () => {
+    schedulesApi.list.mockResolvedValue([makeTask()])
+    schedulesApi.runs.mockResolvedValue([
+      {
+        run_id: 'r-1', schedule_id: 's-1', trigger: 'schedule', status: 'completed',
+        script_run_id: 'sr-1', conversation_id: null, summary: '1 通过', error: null,
+        started_at: null, completed_at: null, created_at: '2026-09-09T01:00:00+00:00',
+      },
+    ])
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/scripts/runs/sr-1') {
+        return {
+          run_id: 'sr-1', script_id: 'sc-1', spec_slug: 'login-flow', status: 'failed',
+          exit_code: 1, triggered_by: 'u-1', started_at: null, completed_at: null,
+          created_at: null, summary: null,
+          result: {
+            source: 'json', partial: false, status: 'failed',
+            counts: { total: 2, passed: 1, failed: 1, flaky: 0, skipped: 0 },
+            duration_ms: 4600,
+            failed_tests: [{
+              title: 'rejects a bad password', file: 'tests/generated/login-flow.spec.ts',
+              line: 12, error: 'Error: expected 200, got 401',
+            }],
+            tests: [], truncated: false,
+          },
+          artifacts: [{
+            name: 'screenshot', rel_path: 'test-results/login-fails/test-failed-1.png',
+            kind: 'screenshot', mime: 'image/png', size_bytes: 2048, test_title: '',
+          }],
+          artifacts_truncated: false,
+          report_url: '/api/scripts/runs/sr-1/report/tok/index.html',
+          log: 'Running 2 tests\n',
+        }
+      }
+      return []
+    })
+    const wrapper = mount(SchedulesPage)
+    await flushPromises()
+
+    await wrapper.findAll('.schedule-card-actions-left button')[1].trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.schedule-run-row')[0].find('button').trigger('click')
+    await flushPromises()
+
+    // The drawer replays the log over the socket and fetches the verdict that
+    // the socket does not carry.
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/scripts/runs/sr-1')
+    const dialog = document.querySelector('.schedule-log-modal') as HTMLElement
+    expect(dialog.querySelector('.run-result-card')?.textContent).toContain('1 失败')
+    expect(dialog.querySelector('.run-failure-title')?.textContent).toBe('rejects a bad password')
+    expect(dialog.querySelector('.run-shot img')?.getAttribute('src')).toBe(
+      '/api/scripts/runs/sr-1/artifacts/test-results/login-fails/test-failed-1.png',
+    )
+    wrapper.unmount()
   })
 
   it('fires a manual run', async () => {

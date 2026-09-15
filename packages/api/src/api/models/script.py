@@ -32,8 +32,16 @@ class ScriptRun(Base):
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     script_id: Mapped[str] = mapped_column(ForeignKey("automation_scripts.script_id"), nullable=False)
     triggered_by: Mapped[str | None] = mapped_column(String(100))
+    # Which tests/generated/{slug}.spec.ts this run executed. Every Playwright
+    # run hangs off the project's shared __playwright__ anchor script, so this
+    # is the only per-spec discriminator; NULL for python/bash runs.
+    spec_slug: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending|running|completed|failed
     exit_code: Mapped[int | None] = mapped_column(Integer)
+    # Normalized run result (counts, failed cases, durations) as JSON text -
+    # from Playwright's JSON reporter when present, otherwise parsed from the
+    # uncapped log. UnicodeText because no dialect-agnostic JSON column exists.
+    result_json: Mapped[str | None] = mapped_column(UnicodeText)
     stdout_log: Mapped[str | None] = mapped_column(UnicodeText)
     stderr_log: Mapped[str | None] = mapped_column(UnicodeText)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

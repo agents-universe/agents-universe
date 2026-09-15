@@ -291,9 +291,27 @@
               <X :size="16" />
             </button>
           </div>
-          <div class="script-log-output" ref="logPanel">
-            <div v-for="(line, i) in logs" :key="i" class="script-log-line" :class="line.level">
-              {{ line.text }}
+          <div class="schedule-log-body">
+            <!-- The socket carries only output; the verdict and the artifacts a
+                 scheduled Playwright run produced come from the run detail. -->
+            <RunResultCard
+              v-if="runDetail"
+              :status="runDetail.status"
+              :result="runResult"
+              :exit-code="runDetail.exit_code"
+              :started-at="runDetail.started_at"
+              :completed-at="runDetail.completed_at"
+            />
+            <RunArtifactGallery
+              v-if="runDetail"
+              :run-id="runDetail.run_id"
+              :artifacts="runArtifacts"
+              :report-url="runReportUrl"
+            />
+            <div class="script-log-output" ref="logPanel">
+              <div v-for="(line, i) in logs" :key="i" class="script-log-line" :class="line.level">
+                {{ line.text }}
+              </div>
             </div>
           </div>
         </div>
@@ -316,6 +334,9 @@ import { conversationsApi } from '@/api/conversations'
 import { useSchedulesStore } from '@/stores/schedules'
 import { useAgentStore } from '@/stores/agent'
 import { useScriptRunLog } from '@/composables/useScriptRunLog'
+import { useScriptRunResult } from '@/composables/useScriptRunResult'
+import RunResultCard from '@/components/workspace/RunResultCard.vue'
+import RunArtifactGallery from '@/components/workspace/RunArtifactGallery.vue'
 
 interface ScriptItem { script_id: string; name: string; script_type: string }
 interface SpecItem { slug: string; title: string; file: string }
@@ -329,6 +350,15 @@ const projectId = computed(() => route.params.projectId as string)
 const { logs, logPanel, connectToRun, closeLog } = useScriptRunLog({
   onDone: () => { void reloadHistoryIfExpanded() },
 })
+// Verdict/artifacts of the run in the drawer, fetched alongside the log.
+const {
+  detail: runDetail,
+  result: runResult,
+  artifacts: runArtifacts,
+  reportUrl: runReportUrl,
+  loadRun: loadRunResult,
+  reset: resetRunResult,
+} = useScriptRunResult()
 
 /* ── Reference data for the dialog ────────────────────────────── */
 const scripts = ref<ScriptItem[]>([])
@@ -483,12 +513,15 @@ function openLog(task: ScheduledTask, run: ScheduledTaskRun) {
   if (!run.script_run_id) return
   logTitle.value = task.name
   logOpen.value = true
+  resetRunResult()
   connectToRun(run.script_run_id)
+  void loadRunResult(run.script_run_id)
 }
 
 function closeLogDrawer() {
   logOpen.value = false
   closeLog()
+  resetRunResult()
 }
 
 /* ── Create / edit dialog ─────────────────────────────────────── */
@@ -1095,11 +1128,23 @@ onBeforeUnmount(() => {
   margin-top: 4px;
 }
 
-.schedule-log-modal .script-log-output {
+/* Result card + artifacts scroll with the log rather than pinning a fixed
+   height on either. */
+.schedule-log-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.schedule-log-body .script-log-output {
   flex: 1;
   min-height: 260px;
   max-height: 62vh;
-  margin: 0 20px 20px;
+  margin: 0;
 }
 
 @media (max-width: 720px) {

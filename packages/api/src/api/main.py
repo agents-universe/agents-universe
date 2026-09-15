@@ -250,7 +250,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
 
     # API routers
-    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_members, project_secrets, projects, publish, schedules, scripts, tier_models, tokens, workspace_files
+    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_members, project_secrets, projects, publish, schedules, script_runs, scripts, tier_models, tokens, workspace_files
 
     app.include_router(agents.router, tags=["agents"])
     app.include_router(projects.router, tags=["projects"])
@@ -263,6 +263,10 @@ def create_app() -> FastAPI:
     app.include_router(preferences.router, prefix="/api/preferences", tags=["preferences"])
     app.include_router(media.router, tags=["media"])
     app.include_router(scripts.router, tags=["scripts"])
+    # Registered after scripts.router; the two share the /api/scripts prefix
+    # but no path pattern (/api/scripts/{script_id}/runs vs
+    # /api/scripts/runs/{run_id} differ in every segment that is a literal).
+    app.include_router(script_runs.router, tags=["script-runs"])
     app.include_router(schedules.router, tags=["schedules"])
     app.include_router(workspace_files.router, tags=["workspace-files"])
     app.include_router(memories.router, tags=["memories"])

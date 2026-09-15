@@ -75,6 +75,29 @@
         </div>
         <div class="workspace-run-panel">
           <div v-if="runError" class="script-run-error">{{ runError }}</div>
+
+          <!-- Outcome of the run being watched (fresh or replayed history) -->
+          <RunResultCard
+            v-if="runDetail"
+            :status="runDetail.status"
+            :result="runResult"
+            :exit-code="runDetail.exit_code"
+            :started-at="runDetail.started_at"
+            :completed-at="runDetail.completed_at"
+          />
+          <RunArtifactGallery
+            v-if="runDetail"
+            :run-id="runDetail.run_id"
+            :artifacts="runArtifacts"
+            :report-url="runReportUrl"
+          />
+          <RunHistoryList
+            :runs="runHistory"
+            :active-run-id="activeRunId"
+            :loading="historyLoading"
+            @select="reviewRun"
+          />
+
           <div v-if="!activeRunId" class="workspace-run-empty">
             {{ t('workspace.runHint') }}
           </div>
@@ -103,12 +126,17 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
+import { scriptsApi } from '@/api/scripts'
 import { workspaceApi } from '@/api/workspace'
 import { knowledgeApi } from '@/api/knowledge'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
 import { useScriptRunLog } from '@/composables/useScriptRunLog'
+import { useScriptRunResult } from '@/composables/useScriptRunResult'
 import type { WorkspaceTreeNode, WorkspaceNodeKind } from '@/types/workspace'
 import FileTree from '@/components/workspace/FileTree.vue'
+import RunResultCard from '@/components/workspace/RunResultCard.vue'
+import RunArtifactGallery from '@/components/workspace/RunArtifactGallery.vue'
+import RunHistoryList from '@/components/workspace/RunHistoryList.vue'
 
 interface ScriptItem { script_id: string; run_id?: string; name: string; status: string; script_type: string }
 interface SpecItem { slug: string; run_id?: string; title: string; file: string; status: string }
@@ -160,8 +188,25 @@ const saving = ref(false)
 const scripts = ref<ScriptItem[]>([])
 const specs = ref<SpecItem[]>([])
 const running = ref(false)
-// Live log socket + buffers (shared with the scheduled-tasks page).
-const { activeRunId, logs, runError, logPanel, connectToRun, closeLog } = useScriptRunLog()
+// Live log socket + buffers (shared with the scheduled-tasks page). The run's
+// verdict is NOT on this socket - the done frame only carries the terminal
+// status, so the result/artifacts are fetched from the run-detail endpoint.
+const { activeRunId, logs, runError, logPanel, connectToRun, closeLog } = useScriptRunLog({
+  onDone: ({ runId }) => { void refreshRun(runId) },
+})
+// Result card, artifact gallery and per-script history for the panel above.
+const {
+  detail: runDetail,
+  result: runResult,
+  artifacts: runArtifacts,
+  reportUrl: runReportUrl,
+  history: runHistory,
+  historyLoading,
+  loadRun: loadRunResult,
+  loadSpecHistory,
+  loadScriptHistory,
+  reset: resetRunResult,
+} = useScriptRunResult()
 
 // Target-system URL for Playwright runs (APP_BASE_URL). Remembered per
 // project so repeated runs do not re-enter it; empty = spec default.
@@ -342,6 +387,10 @@ function onSelect(node: WorkspaceTreeNode) {
         file: sp?.file,
       }
     }
+    // Another target: its own history, and no verdict card until it has run
+    // (or a past run is picked from the list).
+    resetRunResult()
+    void loadHistoryForSelection()
     return
   }
   // Regular file → load content
@@ -468,13 +517,14 @@ async function runScript(scriptId: string | undefined) {
   runError.value = null
   const pidAtStart = projectId.value
   try {
-    const result = await apiFetch<{ run_id: string; status: string }>(
-      `/api/scripts/${scriptId}/run`,
-      { method: 'POST' },
-    )
+    const result = await scriptsApi.runScript(scriptId)
     if (projectId.value !== pidAtStart) return
     const sc = scripts.value.find((s) => s.script_id === scriptId)
     if (sc) { sc.run_id = result.run_id; sc.status = result.status }
+    // Drop the previous run's card and refresh the list so the new run shows
+    // up as running while its log streams below.
+    resetRunResult()
+    void loadHistoryForSelection()
     connectToRun(result.run_id)
   } catch (e) {
     runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
@@ -490,24 +540,43 @@ async function runSpec(slug: string | undefined) {
   const pidAtStart = projectId.value
   persistBaseUrl(pidAtStart)
   try {
-    const result = await apiFetch<{ run_id: string; status: string }>(
-      `/api/projects/${encodeURIComponent(pidAtStart)}/playwright/specs/${encodeURIComponent(slug)}/run`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          env: baseUrl.value.trim() ? { APP_BASE_URL: baseUrl.value.trim() } : {},
-        }),
-      },
-    )
+    const result = await scriptsApi.runSpec(pidAtStart, slug, {
+      ...(baseUrl.value.trim() ? { APP_BASE_URL: baseUrl.value.trim() } : {}),
+    })
     if (projectId.value !== pidAtStart) return
     const sp = specs.value.find((s) => s.slug === slug)
     if (sp) { sp.run_id = result.run_id; sp.status = result.status }
+    resetRunResult()
+    void loadHistoryForSelection()
     connectToRun(result.run_id)
   } catch (e) {
     runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
   } finally {
     running.value = false
   }
+}
+
+/** Reopen a finished run: replay its log and load its verdict. */
+function reviewRun(runId: string) {
+  runError.value = null
+  connectToRun(runId)
+  void loadRunResult(runId)
+}
+
+/** Past runs of whatever the tree has selected. */
+async function loadHistoryForSelection() {
+  const current = selection.value
+  if (!current) return
+  if (current.kind === 'playwright' && current.specSlug) {
+    await loadSpecHistory(projectId.value, current.specSlug)
+  } else if (current.kind === 'script' && current.scriptId) {
+    await loadScriptHistory(current.scriptId)
+  }
+}
+
+/** After a run ends: fetch what it produced, and re-list so it appears there. */
+async function refreshRun(runId: string) {
+  await Promise.all([loadRunResult(runId), loadHistoryForSelection()])
 }
 
 // ── Lifecycle & project switching ───────────────────────────────
@@ -520,6 +589,7 @@ watch(projectId, (pid) => {
   // Project switched while this page stays mounted: drop the socket tied to
   // the previous project's run and reset the selection.
   closeLog()
+  resetRunResult()
   fileLoadSeq++ // invalidate any in-flight file load from the old project
   nodes.value = []
   scripts.value = []

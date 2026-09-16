@@ -301,7 +301,7 @@ async def list_projects(
     Public projects are visible to everyone; private ones only to their
     creator and whitelisted members (hidden from the list entirely).
     """
-    _log.info(
+    _log.debug(
         "list_projects called by user=%s (%s)",
         current_user.user_id, current_user.display_name,
     )
@@ -323,7 +323,7 @@ async def list_projects(
         .order_by(Project.created_at.asc())
     )
     projects = result.scalars().all()
-    _log.info(
+    _log.debug(
         "list_projects returning %d projects: %s",
         len(projects),
         [(p.slug, p.created_by, p.is_active) for p in projects],

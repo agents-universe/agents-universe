@@ -113,7 +113,11 @@ async def authorize_project(
     current_user: UserInfo = Depends(get_current_user),
 ) -> Project:
     """Return an active project the current user may access, or 404/403."""
-    _log.info(
+    # This runs on every project-scoped request — including the web UI's
+    # 5-second conversation-list poll — so the success path stays at DEBUG.
+    # Only the DENIED branches below log at WARNING: those are the ones worth
+    # seeing in a normal-level log.
+    _log.debug(
         "authorize_project: project_id=%s, user=%s",
         project_id, current_user.user_id,
     )
@@ -136,7 +140,7 @@ async def authorize_project(
             project_id, current_user.user_id,
         )
         raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
-    _log.info(
+    _log.debug(
         "authorize_project OK: project_id=%s, slug=%s, created_by=%s",
         project_id, project.slug, project.created_by,
     )

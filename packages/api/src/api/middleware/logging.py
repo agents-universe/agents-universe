@@ -13,12 +13,13 @@ from ..logging_setup import request_id_var
 
 _log = logging.getLogger("agents_universe.http")
 
-# Endpoints the web UI polls on a timer. One INFO line per request would flood
-# the log for as long as a user keeps a tab open (the conversation tree
-# refreshes every 5s), so successful polls drop to DEBUG — failures stay at
-# INFO so a broken poller is still visible.
-_QUIET_POLL_PATHS = (
-    re.compile(r"^/api/projects/[^/]+/conversations$"),
+# A single always-quiet-path allowlist rots: the web UI polls on a timer, and
+# every new poller added later would need its path appended here or the log
+# would start flooding again. So the default is inverted — routine successful
+# reads are quiet, and only writes, failures and a few audited paths stay at
+# INFO. Failures are checked first, so a broken poller is still visible.
+_ALWAYS_INFO_PATHS = (
+    re.compile(r"^/auth/"),  # login / OAuth callback / logout
 )
 
 
@@ -26,10 +27,14 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     """Log every HTTP request/response and propagate request_id via ContextVar."""
 
     @staticmethod
-    def _is_quiet_poll(request: Request, response: Response) -> bool:
-        if request.method != "GET" or response.status_code >= 400:
-            return False
-        return any(p.match(request.url.path) for p in _QUIET_POLL_PATHS)
+    def _access_level(request: Request, response: Response) -> int:
+        if response.status_code >= 400:
+            return logging.INFO
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            return logging.INFO
+        if any(p.match(request.url.path) for p in _ALWAYS_INFO_PATHS):
+            return logging.INFO
+        return logging.DEBUG
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = str(uuid.uuid4())[:8]
@@ -51,7 +56,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
 
         duration_ms = round((time.perf_counter() - start) * 1000, 1)
         _log.log(
-            logging.DEBUG if self._is_quiet_poll(request, response) else logging.INFO,
+            self._access_level(request, response),
             "HTTP %s %s -> %d (%.1fms)",
             request.method, request.url.path, response.status_code, duration_ms,
         )

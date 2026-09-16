@@ -89,6 +89,36 @@ class CorrelationFilter(logging.Filter):
 # ── Setup Function ────────────────────────────────────────────────────────────
 
 
+class WebSocketLifecycleFilter(logging.Filter):
+    """Demote per-connection WebSocket chatter from INFO to DEBUG.
+
+    uvicorn's WebSocket protocol passes ``logging.getLogger("uvicorn.error")``
+    down to the websockets library, so every connect/disconnect emits roughly
+    three INFO lines ("connection open", ``"WebSocket /ws/..." [accepted]``,
+    "connection closed") on a logger that quieting ``uvicorn.access`` does not
+    touch. The web UI reconnects on a never-give-up backoff ladder, so a flaky
+    proxy turns that into a steady stream.
+
+    Handshake failures (403, closing handshake failed) keep their level — those
+    mean authentication is broken and must stay visible.
+    """
+
+    _QUIET_PREFIXES = ("connection open", "connection closed")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.INFO:
+            return True
+        msg = record.getMessage()
+        if msg.startswith(self._QUIET_PREFIXES) or (
+            '"WebSocket ' in msg and msg.endswith("[accepted]")
+        ):
+            # The record still propagates; the INFO-level handler on the root
+            # logger is what drops it. Raising LOG_LEVEL to DEBUG brings it back.
+            record.levelno = logging.DEBUG
+            record.levelname = "DEBUG"
+        return True
+
+
 def setup_logging() -> None:
     """Configure root logger. Call once from create_app()."""
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -117,3 +147,12 @@ def setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+    # WebSocket connect/disconnect lines arrive on uvicorn.error (uvicorn hands
+    # that logger to the websockets library), so a level tweak on uvicorn.access
+    # cannot reach them. "websockets.server" is the library default, kept for
+    # protocol implementations that do not accept uvicorn's logger.
+    for name in ("uvicorn.error", "websockets.server"):
+        ws_logger = logging.getLogger(name)
+        if not any(isinstance(f, WebSocketLifecycleFilter) for f in ws_logger.filters):
+            ws_logger.addFilter(WebSocketLifecycleFilter())

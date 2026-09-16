@@ -13,6 +13,8 @@
 
 ### 修复
 
+- **挂机时服务端日志不再刷屏** - 用户只要在浏览器里开着对话，服务端日志就一行接一行地刷。此前那次修复（把 middleware 里那条访问日志按路径降为 DEBUG）只砍了一层，大头其实在 `authorize_project` 依赖：项目级接口全走它（12 个 router、66 处调用），而它在进入与通过时各打一条 INFO，5 秒一次的会话树轮询于是每轮刷两行（单个打开的标签页每分钟 24 行），middleware 降不降级都拦不住。现把该依赖的成功路径降为 DEBUG，两条 `DENIED` 保持 WARNING（越权尝试仍看得见）；`list_projects` 里把整个项目清单（slug / created_by）打进 INFO 的两行同样降为 DEBUG。访问日志策略一并反转为「默认安静」：成功的常规读取（GET/HEAD/OPTIONS）走 DEBUG，只有 4xx/5xx、写操作和少数需留痕的路径（登录 / OAuth 回调 / 登出）保持 INFO——原先按具体路径列白名单的做法会随新端点腐化，每加一个轮询接口都要记得补一次；`/api/media` 图片、`/health` 健康检查、`/conversations/latest` 这些漏网的读取因此一并静音。另修 WebSocket 连接噪音：uvicorn 的 WS 协议把 `uvicorn.error` 这个 logger 传给 websockets 库，每次连接建立/断开都会在那上面打约三行 INFO，而静音 `uvicorn.access` 管不到它，前端断线后是永不放弃的重连阶梯，代理一抖动即持续刷屏；现由 `WebSocketLifecycleFilter` 把 `connection open` / `connection closed` / `[accepted]` 降为 DEBUG，握手 403 保持 INFO（那意味着鉴权坏了）。排查时 `LOG_LEVEL=DEBUG` 仍可拿回全量，nginx 侧 `access.log` 也仍是完整的请求台账。回归测试改为**走真实路由**断言「挂机轮询零 INFO」——上一版只给 middleware 挂了个假 app，看不见依赖层的刷屏，才绿着放过了这个问题
+
 - **外部集成配多了，MCP 服务器整块消失** - 「AI 模型」弹窗的「外部集成」页签里，集成系统一多，下方的「MCP 服务器」就无踪可寻，滚动也翻不出来。根因是 MCP 区块与页签面板共用 `token-section` 类：面板自身的样式是「滚动用 flex 列」（`flex: 1` 即 `flex-basis: 0`），嵌套的 MCP 区块沿用后，一旦上方集成行把面板撑过 `max-height: 88vh`，剩余空间转负、而基线为 0 的项再缩也缩不到负数，该块高度坍缩为 0（只剩 `padding-top`），内容又被继承来的 `overflow-y: auto` 裁掉。现让该区块只取内容高度、不做内部滚动（`flex: 0 0 auto; overflow: visible`），由面板统一滚动
 
 - **主按钮里的图标不再把文字顶到第二行** - Tailwind preflight 把 `svg` 统一设为 `display: block`，在 flex 容器里无碍，但在普通按钮里图标会独占一行：带图标的主按钮（运行选中内容、新建发布 / 定时任务 / 项目）文字被挤到图标下方。现 `.btn-primary` 改为 `inline-flex` 横向排列（垂直居中、6px 间距、不换行），图标与文字恒在同一行

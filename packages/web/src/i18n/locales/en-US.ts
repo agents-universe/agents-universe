@@ -266,6 +266,7 @@ export default {
     remove: 'Remove attachment',
     newConversation: 'New conversation',
     attach: 'Add attachment',
+    dropToAttach: 'Drop to attach',
     stop: 'Stop',
     uploadingTitle: 'Uploading…',
     sendInjectionTitle: 'Send (queued into the running turn)',

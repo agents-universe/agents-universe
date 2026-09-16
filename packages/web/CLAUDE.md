@@ -66,6 +66,7 @@ Pinia stores in `stores/`. **不要用 Vue provide/inject** 做跨面板状态�
 - `Ctrl/Cmd + Enter` 发送；`Enter` 换行
 - `@` 触发 `MentionPopup.vue`（搜索知识 + 个人记忆）
 - `/` 触发 `SlashPopup.vue`（内置命令列表）
+- 附件：回形针选择、剪贴板粘贴、拖拽文件到**对话面板任意位置**（`ChatPanel.vue` 是放置区）三条入口都汇入 `Composer.vue` 的 `addFiles`，上传队列与附件条只在 Composer 里
 
 ## API Layer
 

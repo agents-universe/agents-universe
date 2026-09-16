@@ -308,19 +308,12 @@ onMounted(() => {
     }
   })
 
-  // Paste images / files from clipboard, and drag-and-drop files onto the editor
-  const attachmentHandlers = EditorView.domEventHandlers({
+  // Paste images / files from clipboard. File DROPS are handled one level up
+  // by ChatPanel, which owns the whole panel as a drop target — handling them
+  // here too would attach every file dropped on the editor twice.
+  const pasteHandlers = EditorView.domEventHandlers({
     paste(event) {
       const files = Array.from(event.clipboardData?.files ?? [])
-      if (files.length) {
-        event.preventDefault()
-        addFiles(files)
-        return true
-      }
-      return false
-    },
-    drop(event) {
-      const files = Array.from(event.dataTransfer?.files ?? [])
       if (files.length) {
         event.preventDefault()
         addFiles(files)
@@ -340,7 +333,7 @@ onMounted(() => {
         markdown(),
         oneDark,
         updateListener,
-        attachmentHandlers,
+        pasteHandlers,
         EditorView.lineWrapping,
         EditorView.theme({
           '&': { background: 'transparent', fontSize: '14px' },
@@ -404,7 +397,10 @@ function clearDraft() {
   clearAttachments()
 }
 
-defineExpose({ clearDraft })
+// addFiles is the single entry point every attach path funnels into (picker,
+// clipboard paste, panel-wide drag & drop) — the parent calls it for drops
+// that land outside the editor.
+defineExpose({ clearDraft, addFiles })
 
 function insertMention(agent: { slug: string; label: string }) {
   if (!view) return

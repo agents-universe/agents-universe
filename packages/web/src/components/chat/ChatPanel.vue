@@ -1,5 +1,11 @@
 <template>
-  <div class="chat-panel">
+  <div
+    class="chat-panel"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <!-- WS status banner. Every non-connected state blocks sends, so all of
          them must be visible: 'disconnected' used to render nothing at all,
          which made a dropped socket look like a frozen app. -->
@@ -108,12 +114,21 @@
       @abort="handleAbort"
       @new-conversation="emit('new-conversation')"
     />
+
+    <!-- Drop hint. Decorative only: the drop is handled by the panel itself,
+         so the overlay must not swallow the events (pointer-events: none) or
+         the drag would end on it with dragleave/drop landing nowhere useful. -->
+    <div v-if="dragActive" class="drop-overlay">
+      <Paperclip :size="24" />
+      <span>{{ t('composer.dropToAttach') }}</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Paperclip } from 'lucide-vue-next'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
@@ -251,6 +266,67 @@ const scrollSignature = computed(() => [
 watch(scrollSignature, () => nextTick(() => {
   if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
 }))
+
+// --- Drag & drop attachments ------------------------------------------------
+// The whole panel is a drop target, not just the CodeMirror editor: dropping a
+// file on the message list used to do nothing at all — or worse, made the
+// browser navigate away and open the file, losing the session. Dropped files
+// go through the composer, which owns the upload queue and renders the
+// attachment strip; the picker, clipboard paste and drops share that one path.
+const dragDepth = ref(0)
+const dragActive = computed(() => dragDepth.value > 0)
+
+/** OS file drags only. Text/selection drags must keep their native behavior
+ *  (dragging a snippet within the editor, dropping text into it). */
+function carriesFiles(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types
+  return !!types && Array.from(types).includes('Files')
+}
+
+function resetDrag() {
+  dragDepth.value = 0
+}
+
+function onDragEnter(e: DragEvent) {
+  if (!carriesFiles(e)) return
+  // dragenter/dragleave fire for every descendant crossed while dragging over
+  // the panel; counting keeps the hint up until the pointer really leaves.
+  e.preventDefault()
+  dragDepth.value++
+}
+
+function onDragOver(e: DragEvent) {
+  if (!carriesFiles(e)) return
+  // Without this the browser never delivers the drop event at all.
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+function onDragLeave(e: DragEvent) {
+  if (!carriesFiles(e)) return
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+}
+
+function onDrop(e: DragEvent) {
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  resetDrag()
+  if (!files.length) return
+  e.preventDefault()
+  composerRef.value?.addFiles(files)
+}
+
+// A drag that ends outside the panel (Esc, drop on the sidebar, drop past the
+// window edge) gets no matching dragleave here — without these the hint stays
+// on screen, covering the panel, until the next reload.
+onMounted(() => {
+  window.addEventListener('dragend', resetDrag)
+  window.addEventListener('drop', resetDrag)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('dragend', resetDrag)
+  window.removeEventListener('drop', resetDrag)
+})
 
 function handleSubmit(payload: { content: string; config_id?: string; attachments?: AttachmentRecord[]; agentSlug?: string }) {
   if (!props.conversationId) return
@@ -393,5 +469,25 @@ function handleCancel(promptId: string) {
 /* Vertically center the capability card in the empty flex-column message list. */
 .fresh-conversation-card {
   margin: auto 0;
+}
+
+/* Drop hint while an OS file drag is over the panel (.chat-panel is the
+   positioned ancestor). pointer-events: none keeps the events flowing to the
+   panel's own handlers instead of ending on this element. */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+  color: var(--accent);
+  font-size: 14px;
+  background: rgba(15, 15, 15, 0.72);
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
 }
 </style>

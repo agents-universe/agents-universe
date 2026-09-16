@@ -616,6 +616,8 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* Positioning context for the drag & drop overlay (ChatPanel.vue). */
+  position: relative;
 }
 
 .messages-list {

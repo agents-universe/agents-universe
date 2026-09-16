@@ -266,6 +266,7 @@ export default {
     remove: '移除附件',
     newConversation: '新建对话',
     attach: '添加附件',
+    dropToAttach: '松开鼠标即可添加附件',
     stop: '停止',
     uploadingTitle: '附件上传中…',
     sendInjectionTitle: '发送（将加入当前执行）',

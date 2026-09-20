@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -76,7 +77,16 @@ class TestGeneratorTool(Tool):
                         "title": {"type": "string"},
                         "objective": {"type": "string"},
                         "preconditions": {"type": "array", "items": {"type": "string"}},
-                        "steps": {"type": "array", "items": {"type": "string"}},
+                        "steps": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "One actionable UI action per entry — navigate / click / "
+                                "fill / select / wait / upload / download. Checks belong in "
+                                "expected_results: a step about what the page SHOWS cannot be "
+                                "automated and is emitted as a TODO instead."
+                            ),
+                        },
                         "expected_results": {"type": "array", "items": {"type": "string"}},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "uploads": {
@@ -130,7 +140,13 @@ class TestGeneratorTool(Tool):
             "include_login": {
                 "type": "boolean",
                 "default": True,
-                "description": "Include login helper in generated spec",
+                "description": (
+                    "Whether cases sign in. Default true. Where the scaffold already "
+                    "signs in once per run the cases inherit that session and only the "
+                    "ones that exercise signing in sign in again; false means these "
+                    "cases need no session at all. Cases that switch user or check "
+                    "permissions always get a signed-out start."
+                ),
             },
             "base_url_env": {
                 "type": "string",
@@ -177,9 +193,9 @@ class TestGeneratorTool(Tool):
 
         # Ensure tests/ has package.json for Playwright execution.
         tests_root = Path(context.project_fs_path) / "tests"
-        scaffold_error = _ensure_test_scaffold(tests_root)
-        if scaffold_error:
-            return {"error": scaffold_error}
+        scaffold = _ensure_test_scaffold(tests_root)
+        if scaffold.error:
+            return {"error": scaffold.error}
 
         include_login = params.get("include_login", True)
         base_url_env = params.get("base_url_env", "APP_BASE_URL")
@@ -201,6 +217,7 @@ class TestGeneratorTool(Tool):
             include_login=include_login,
             base_url_env=base_url_env,
             case_uploads=case_uploads,
+            shared_session=scaffold.shared_session,
         )
         spec_bytes = len(spec_content.encode("utf-8"))
         if spec_bytes > _MAX_SPEC_BYTES:
@@ -213,7 +230,18 @@ class TestGeneratorTool(Tool):
             }
 
         if filepath.exists():
-            return {"error": f"Spec file already exists and was not overwritten: {filepath}"}
+            # The hint is here because the two facts meet at this line: a spec
+            # generated before the workspace had the setup project still signs
+            # in per case, and under the upgraded config that sign-in now races
+            # with the session the scaffold hands out. Regenerating fixes it.
+            return {
+                "error": f"Spec file already exists and was not overwritten: {filepath}",
+                "hint": (
+                    "Delete it and generate again to pick up the current scaffold "
+                    "(one sign-in per run) — a spec written before the workspace was "
+                    "upgraded still signs in inside every case."
+                ),
+            }
         try:
             filepath.write_text(spec_content, encoding="utf-8")
         except OSError as e:
@@ -230,13 +258,19 @@ class TestGeneratorTool(Tool):
                 _log.warning("test_generator: failed to clean up %s after script setup failure", filepath)
             return {"error": script_error}
 
-        return {
+        result = {
             "success": True,
             "file_path": f"{output_dir}/{filename}",
             "relative_path": f"{output_dir}/{filename}",
             "test_count": len(test_cases),
             "issue_key": issue_key,
         }
+        if scaffold.notes:
+            # Worth surfacing exactly when something moved under the caller: the
+            # spec shape follows the config version, so a workspace that did not
+            # upgrade silently keeps producing the slower specs.
+            result["scaffold_updates"] = list(scaffold.notes)
+        return result
 
 
 def _slugify(text: str) -> str:
@@ -354,12 +388,38 @@ def _clean_upload_name(raw: Any) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", "", text.rsplit("/", 1)[-1]).strip()[:255]
 
 
+# Wording that means the case is about the session itself: signing in or out,
+# acting as someone else, or lacking rights. These cases must not inherit the
+# run's shared session — that is the very thing they exercise. Matching in the
+# title/steps rather than a caller-declared flag is a deliberate bias toward
+# over-applying: a case that did not need a fresh session only pays a login it
+# would have paid before, while one that did need it would otherwise pass
+# without ever reaching the login form.
+_SESSION_STEP_RE = re.compile(
+    r"log ?in|log ?out|sign ?in|sign ?out|switch (?:user|account|role|tenant)|"
+    r"permission|unauthori[sz]ed|without a valid account|"
+    r"登录|登陆|退出登录|切换用户|切换账号|切换角色|权限|未授权",
+    re.IGNORECASE,
+)
+
+
+def _needs_fresh_session(tc: dict) -> bool:
+    """Whether *tc* has to start from a signed-out browser."""
+    parts = [str(tc.get("title", "")), str(tc.get("objective", ""))]
+    for key in ("steps", "expected_results"):
+        value = tc.get(key) or []
+        # A stringified array would otherwise iterate character by character.
+        parts.extend([value] if isinstance(value, str) else [str(v) for v in value])
+    return any(_SESSION_STEP_RE.search(part) for part in parts)
+
+
 def _generate_spec(
     issue_key: str,
     test_cases: list[dict],
     include_login: bool,
     base_url_env: str,
     case_uploads: list[list[_Upload]] | None = None,
+    shared_session: bool = False,
 ) -> str:
     lines: list[str] = []
     # Ambient declarations the emitted snippets rely on (Buffer/require are
@@ -367,84 +427,142 @@ def _generate_spec(
     # them here keeps `npm run typecheck` green without an @types/node dep).
     declarations: set[str] = set()
 
-    if include_login:
+    # The scaffold's setup project signs in once per run and every case
+    # inherits that session, so only a case that signs in by itself pays for a
+    # login. `include_login` keeps its meaning on top of that: skipping it means
+    # "don't sign in for these cases at all", which has to be said out loud once
+    # a project-level storageState exists.
+    fresh = {i for i, tc in enumerate(test_cases) if _needs_fresh_session(tc)}
+    # `include_login: false` applies to the file; a session-relevant case opts
+    # out on its own describe instead, so the two never both need saying.
+    file_opted_out = shared_session and not include_login
+
+    if file_opted_out:
+        lines.extend([
+            "// Cases that sign in themselves, or that run before any sign-in.",
+            "test.use({ storageState: { cookies: [], origins: [] } });",
+            "",
+        ])
+
+    if include_login and (not shared_session or fresh):
         lines.extend([
             "async function login(page: any) {",
             f"  const baseUrl = process.env.{base_url_env} || 'http://localhost:3000';",
             "  const loginUrl = process.env.APP_LOGIN_URL || `${baseUrl}/login`;",
-            "  await page.goto(loginUrl);",
             "  const username = process.env.APP_USERNAME || '';",
             "  const password = process.env.APP_PASSWORD || '';",
-            "  if (username && password) {",
-            "    await page.getByLabel(/user|email|account/i).fill(username);",
-            "    await page.getByLabel(/pass/i).fill(password);",
-            "    await page.getByRole('button', { name: /log|sign|submit/i }).click();",
-            "    await page.waitForURL('**/dashboard**', { timeout: 15000 }).catch(() => {});",
+            "  if (!username || !password) {",
+            "    test.skip(true, 'APP_USERNAME/APP_PASSWORD not set - this case needs a session');",
+            "    return;",
             "  }",
+            "  await page.goto(loginUrl);",
+            "  await page.getByLabel(/user|email|account/i).fill(username);",
+            "  await page.getByLabel(/pass/i).fill(password);",
+            "  await page.getByRole('button', { name: /log|sign|submit/i }).click();",
+            "  // No .catch() on the wait: a sign-in that quietly gave up left the case",
+            "  // running unauthenticated, so its failure showed up at some unrelated",
+            "  // assertion instead of here. 'Left the login page' is the check because",
+            "  // the post-login route differs per application.",
+            "  await page.waitForURL((url: any) => !/\\/login\\b/i.test(url.pathname), { timeout: 30000 });",
             "}",
             "",
         ])
 
-    lines.append(f"test.describe('{_escape_ts(issue_key)}', () => {{")
+    regular = [(i, tc) for i, tc in enumerate(test_cases) if i not in fresh]
+    fresh_cases = [(i, tc) for i, tc in enumerate(test_cases) if i in fresh]
 
-    if include_login:
-        lines.extend([
-            "  test.beforeEach(async ({ page }) => {",
-            "    await login(page);",
-            "  });",
-            "",
-        ])
-
-    for i, tc in enumerate(test_cases):
-        title = tc.get("title", f"Test case {i + 1}")
-        objective = tc.get("objective", "")
-        steps = tc.get("steps", [])
-        expected = tc.get("expected_results", [])
-        uploads = list(case_uploads[i]) if case_uploads and i < len(case_uploads) else []
-
-        lines.append(f"  test('{_escape_ts(title)}', async ({{ page }}) => {{")
-
-        if objective:
-            lines.append(f"    // Objective: {_escape_ts(objective)}")
+    if regular:
+        lines.append(f"test.describe('{_escape_ts(issue_key)}', () => {{")
+        if include_login and not shared_session:
+            lines.extend([
+                "  test.beforeEach(async ({ page }) => {",
+                "    await login(page);",
+                "  });",
+                "",
+            ])
+        for i, tc in regular:
+            lines.extend(_case_lines(issue_key, i, tc, case_uploads, declarations))
+        lines.append("});")
         lines.append("")
 
-        for step in steps:
-            upload = uploads.pop(0) if uploads and _classify_step(step) == "upload" else None
-            action = _step_to_action(step, upload=upload, decls=declarations)
-            lines.append(f"    // Step: {_escape_ts(step)}")
-            lines.append(f"    {action}")
+    if fresh_cases:
+        lines.append(
+            f"test.describe('{_escape_ts(issue_key)} - session cases', () => {{"
+        )
+        if shared_session and not file_opted_out:
+            # These cases exist to exercise signing in or a different role, so
+            # inheriting the shared session would let them pass without ever
+            # reaching the login form.
+            lines.append("  test.use({ storageState: { cookies: [], origins: [] } });")
+        if include_login:
+            lines.extend([
+                "  test.beforeEach(async ({ page }) => {",
+                "    await login(page);",
+                "  });",
+            ])
             lines.append("")
-
-        if uploads:
-            # Payloads nothing in the step list claimed — emitting them beats
-            # dropping them, but the mismatch is worth a comment: the test
-            # still uploads, just not at the step the author pictured.
-            for upload in uploads:
-                action = _step_to_action(f"upload {upload.filename}", upload=upload, decls=declarations)
-                lines.append(f"    // Unmatched upload: {_escape_ts(upload.filename)}")
-                lines.append(f"    {action}")
-                lines.append("")
-
-        if expected:
-            for exp in expected:
-                assertion = _expected_to_assertion(exp)
-                lines.append(f"    // Expected: {_escape_ts(exp)}")
-                lines.append(f"    {assertion}")
-            lines.append("")
-
-        lines.append(f"    await page.screenshot({{ path: "
-                     f"'test-results/{_slugify(issue_key)}-{i}.png' }});")
-        lines.append("  });")
+        for i, tc in fresh_cases:
+            lines.extend(_case_lines(issue_key, i, tc, case_uploads, declarations))
+        lines.append("});")
         lines.append("")
-
-    lines.append("});")
-    lines.append("")
 
     header = ["import { test, expect } from '@playwright/test';", ""]
     if declarations:
         header.extend(f"declare const {name}: any;" for name in sorted(declarations))
         header.append("")
     return "\n".join(header + lines)
+
+
+def _case_lines(
+    issue_key: str,
+    index: int,
+    tc: dict,
+    case_uploads: list[list[_Upload]] | None,
+    declarations: set[str],
+) -> list[str]:
+    """One `test(...)` block. Shared by the plain and session-case describes."""
+    lines: list[str] = []
+    title = tc.get("title", f"Test case {index + 1}")
+    objective = tc.get("objective", "")
+    steps = tc.get("steps", [])
+    expected = tc.get("expected_results", [])
+    uploads = list(case_uploads[index]) if case_uploads and index < len(case_uploads) else []
+
+    lines.append(f"  test('{_escape_ts(title)}', async ({{ page }}) => {{")
+
+    if objective:
+        lines.append(f"    // Objective: {_escape_ts(objective)}")
+        lines.append("")
+
+    for step in steps:
+        upload = uploads.pop(0) if uploads and _classify_step(step) == "upload" else None
+        action = _step_to_action(step, upload=upload, decls=declarations)
+        lines.append(f"    // Step: {_escape_ts(step)}")
+        lines.append(f"    {action}")
+        lines.append("")
+
+    if uploads:
+        # Payloads nothing in the step list claimed — emitting them beats
+        # dropping them, but the mismatch is worth a comment: the test
+        # still uploads, just not at the step the author pictured.
+        for upload in uploads:
+            action = _step_to_action(f"upload {upload.filename}", upload=upload, decls=declarations)
+            lines.append(f"    // Unmatched upload: {_escape_ts(upload.filename)}")
+            lines.append(f"    {action}")
+            lines.append("")
+
+    if expected:
+        for exp in expected:
+            assertion = _expected_to_assertion(exp)
+            lines.append(f"    // Expected: {_escape_ts(exp)}")
+            lines.append(f"    {assertion}")
+        lines.append("")
+
+    lines.append(f"    await page.screenshot({{ path: "
+                 f"'test-results/{_slugify(issue_key)}-{index}.png' }});")
+    lines.append("  });")
+    lines.append("")
+    return lines
 
 
 def _escape_ts(s: str) -> str:
@@ -616,7 +734,17 @@ def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] 
         return f"// TODO: Download - await page.waitForEvent('download') around the click that triggers it. // {_escape_ts(step)}"
     if kind == "select":
         return f"await page.getByRole('combobox').selectOption({{ index: 0 }}); // {_escape_ts(step)}"
-    return f"await page.waitForTimeout(1000); // TODO: {_escape_ts(step)}"
+    # An unclassified step used to burn a fixed second and then run the rest of
+    # the case against whatever the page happened to be showing. Waiting on the
+    # load state instead is an anchor rather than a sleep: it returns as soon as
+    # there is nothing left to wait for (~0ms on a settled page) and fails fast
+    # if the page never settles. The TODO stays because the step is still not
+    # exercised — `_STEP_VERBS` shows how often "Verify ..." lands here, and
+    # failing the case outright would turn design sloppiness into a red run.
+    return (
+        "await page.waitForLoadState('domcontentloaded');"
+        f" // TODO: unautomated step — {_escape_ts(step)}"
+    )
 
 
 def _expected_to_assertion(expected: str) -> str:
@@ -657,13 +785,29 @@ _SCAFFOLD_PACKAGE_JSON = """\
 }
 """
 
-_SCAFFOLD_PLAYWRIGHT_CONFIG = """\
-import { defineConfig, devices } from '@playwright/test';
+_SCAFFOLD_PLAYWRIGHT_CONFIG = r"""import { defineConfig, devices } from '@playwright/test';
+
+// Run shape is a tunable, not policy. The knobs exist because the same config
+// has to serve a laptop, a shared test environment and a CI box:
+//   PW_SERIAL=1    run one case at a time (cases that share mutable state)
+//   PW_WORKERS=2   cap browser processes (small boxes, shared environments)
+//   PW_RETRIES=1   retry a failure (a known-flaky target; off by default)
+const serial = process.env.PW_SERIAL === '1';
 
 export default defineConfig({
   testDir: './generated',
   timeout: 60_000,
-  retries: 1,
+  // Retries off by default: a retry doubles the wall clock of every failing
+  // case, and the retried attempt overwrites the first one's video/trace — the
+  // evidence is then of a different run than the failure that was reported.
+  retries: process.env.PW_RETRIES ? Number(process.env.PW_RETRIES) : 0,
+  // Cases inside one spec file run in parallel — a card whose cases each set up
+  // their own data pays for one browser at a time otherwise. Cases that depend
+  // on each other's effects must be merged or wrapped in
+  // `test.describe.configure({ mode: 'serial' })`; PW_SERIAL=1 turns the whole
+  // run serial without editing a spec.
+  fullyParallel: !serial,
+  workers: serial ? 1 : undefined,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: process.env.APP_BASE_URL || 'http://localhost:3000',
@@ -674,11 +818,73 @@ export default defineConfig({
   },
   projects: [
     {
+      // Signs in once per run and hands the session to the chromium project, so
+      // a spec no longer logs in in every case. Runs even when a single spec
+      // file is selected (`playwright test generated/x.spec.ts`): Playwright
+      // keeps a selected project's dependencies.
+      name: 'setup',
+      testDir: '.',
+      testMatch: /auth\.setup\.ts/,
+    },
+    {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['setup'],
+      testMatch: /\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        // Must stay the path auth.setup.ts writes. A case that must start
+        // signed out (sign-in, role/permission, sign-out) opts out with
+        // `test.use({ storageState: { cookies: [], origins: [] } })`.
+        storageState: '.auth/state.json',
+      },
     },
   ],
   outputDir: './test-results',
+});
+"""
+
+# Written by _ensure_test_scaffold, so it must stay byte-identical to
+# scaffold/tests/auth.setup.ts — test_scaffold_parity.py fails otherwise.
+_SCAFFOLD_AUTH_SETUP = r"""import { test } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+
+// Playwright resolves a relative `storageState` path (see playwright.config.ts)
+// and this script's writes against the working directory, which is `tests/`
+// for every run the platform starts. Keep the two spellings in step if either
+// side ever moves.
+const STATE_PATH = '.auth/state.json';
+const EMPTY_STATE = JSON.stringify({ cookies: [], origins: [] });
+
+test('authenticate', async ({ page }) => {
+  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+
+  const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+  const loginUrl = process.env.APP_LOGIN_URL || `${baseUrl}/login`;
+  const username = process.env.APP_USERNAME || '';
+  const password = process.env.APP_PASSWORD || '';
+
+  if (!username || !password) {
+    // Unauthenticated coverage is a legitimate run, so this is a skip rather
+    // than a failure — but the empty state file is written first, because a
+    // skip that left the file absent would fail every case that names it.
+    fs.writeFileSync(STATE_PATH, EMPTY_STATE);
+    test.skip(true, 'APP_USERNAME/APP_PASSWORD not set - running without a session');
+    return;
+  }
+
+  await page.goto(loginUrl);
+  await page.getByLabel(/user|email|account/i).fill(username);
+  await page.getByLabel(/pass/i).fill(password);
+  await page.getByRole('button', { name: /log|sign|submit/i }).click();
+
+  // Deliberately no `.catch()`: a sign-in that quietly gave up would surface as
+  // one confusing failure per case instead of one clear failure here, and it
+  // would be attempted once per case rather than once per run. "Left the login
+  // page" is the assertion because the post-login route differs per app.
+  await page.waitForURL((url) => !/\/login\b/i.test(url.pathname), { timeout: 30_000 });
+
+  await page.context().storageState({ path: STATE_PATH });
 });
 """
 
@@ -696,6 +902,22 @@ _SCAFFOLD_TSCONFIG = """\
 }
 """
 
+
+# Digests of every config this generator has shipped, newline-normalised. A
+# workspace file hashing to one of these is generator output nobody edited, so
+# replacing it with the current version is safe — and it is the only way an
+# existing project learns about the setup project and parallel cases, because
+# scaffold files are otherwise created once and left alone. Add the outgoing
+# digest here whenever _SCAFFOLD_PLAYWRIGHT_CONFIG changes.
+_SCAFFOLD_CONFIG_BASELINES = frozenset({
+    # v1 — one chromium project, per-case UI sign-in, retries: 1. Two spellings
+    # reached workspaces: the embedded constant, and the older scaffold/ file it
+    # had drifted from (no acceptDownloads).
+    "c6392165abcf64b3621af5d127a9bffcb036a8ab3a53f51a2fcd60c2648c8e9e",
+    "4e7654c4e84add2757aa67cddbbf302a456eded0e5422f28e6225b84acf4494b",
+})
+
+_STORAGE_STATE_RE = re.compile(r"\bstorageState\s*:")
 
 _SCAFFOLD_FIXTURES_README = """\
 # Test fixtures
@@ -716,8 +938,53 @@ traces to `test-results/`.
 """
 
 
-def _ensure_test_scaffold(tests_root: Path) -> str | None:
-    """Create missing scaffold files without replacing user-owned files."""
+@dataclass(frozen=True)
+class _Scaffold:
+    """What ensuring the test scaffold found and did.
+
+    ``shared_session`` is the part the spec generator needs: whether the config
+    that will run the spec signs in for it (see `_ensure_test_scaffold`).
+    """
+
+    error: str | None = None
+    notes: tuple[str, ...] = ()
+    shared_session: bool = False
+
+
+def _scaffold_digest(text: str) -> str:
+    """Digest of scaffold text, newline-normalised.
+
+    The repo's config may reach a workspace as LF or CRLF depending on how the
+    checkout that copied it was configured, and the two must not read as
+    different files.
+    """
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def _upgrade_config_if_pristine(config: Path, current: str) -> bool:
+    """Swap in the current config when the file is still an earlier one of ours.
+
+    Scaffold files are created once and otherwise left alone, which is right for
+    user-owned files and wrong for this one: a workspace built before the setup
+    project existed would keep signing in per case forever, and the spec shape
+    follows the config. The digest check is what makes the rewrite safe — any
+    edit at all moves the file off the baseline and it is left untouched.
+    """
+    if _scaffold_digest(current) not in _SCAFFOLD_CONFIG_BASELINES:
+        return False
+    try:
+        config.write_text(_SCAFFOLD_PLAYWRIGHT_CONFIG, encoding="utf-8")
+    except OSError as e:
+        _log.warning("test_generator: failed to upgrade %s: %s", config, e)
+        return False
+    _log.info("test_generator: upgraded %s to the shared-session layout", config)
+    return True
+
+
+def _ensure_test_scaffold(tests_root: Path) -> _Scaffold:
+    """Create missing scaffold files; upgrade untouched generator-owned ones."""
+    notes: list[str] = []
+    shared_session = False
     try:
         tests_root.mkdir(parents=True, exist_ok=True)
         pkg = tests_root / "package.json"
@@ -725,8 +992,28 @@ def _ensure_test_scaffold(tests_root: Path) -> str | None:
             _log.info("Creating test scaffold package.json at %s", pkg)
             pkg.write_text(_SCAFFOLD_PACKAGE_JSON, encoding="utf-8")
         config = tests_root / "playwright.config.ts"
+        config_text: str
         if not config.exists():
-            config.write_text(_SCAFFOLD_PLAYWRIGHT_CONFIG, encoding="utf-8")
+            config_text = _SCAFFOLD_PLAYWRIGHT_CONFIG
+            config.write_text(config_text, encoding="utf-8")
+        else:
+            config_text = config.read_text(encoding="utf-8")
+            if _upgrade_config_if_pristine(config, config_text):
+                config_text = _SCAFFOLD_PLAYWRIGHT_CONFIG
+                notes.append(
+                    "playwright.config.ts upgraded — one sign-in per run, cases in a "
+                    "file run in parallel (PW_SERIAL=1 restores one-at-a-time)"
+                )
+        # The generated spec's shape depends on the config it will run under: a
+        # config that hands out a session lets the spec stop signing in per
+        # case, and one that does not must keep the per-case login. Matched as a
+        # property assignment so a config that merely mentions storageState in a
+        # comment is not read as handing one out.
+        shared_session = _STORAGE_STATE_RE.search(config_text) is not None
+        setup = tests_root / "auth.setup.ts"
+        if shared_session and not setup.exists():
+            setup.write_text(_SCAFFOLD_AUTH_SETUP, encoding="utf-8")
+            notes.append("auth.setup.ts created — signs in once per run")
         tsconfig = tests_root / "tsconfig.json"
         if not tsconfig.exists():
             tsconfig.write_text(_SCAFFOLD_TSCONFIG, encoding="utf-8")
@@ -737,8 +1024,8 @@ def _ensure_test_scaffold(tests_root: Path) -> str | None:
             readme.write_text(_SCAFFOLD_FIXTURES_README, encoding="utf-8")
     except OSError as e:
         _log.warning("test_generator: failed to write scaffold in %s: %s", tests_root, e)
-        return f"Failed to create test scaffold: {e}"
-    return None
+        return _Scaffold(error=f"Failed to create test scaffold: {e}")
+    return _Scaffold(notes=tuple(notes), shared_session=shared_session)
 
 
 def _ensure_issue_script(tests_root: Path, slug: str) -> str | None:

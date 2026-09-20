@@ -324,3 +324,210 @@ async def test_scaffold_creates_fixtures_dir_and_readme(tmp_path):
     fixtures = tmp_path / "proj" / "tests" / "fixtures"
     assert fixtures.is_dir(), fixtures
     assert "fixtures/<name>" in (fixtures / "README.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Run shape: one sign-in per run, and which cases may not use it
+# ---------------------------------------------------------------------------
+
+
+def _plain_case(title: str, steps=None) -> dict:
+    return {"title": title, "steps": steps or ["Navigate to /orders", "Click Save"]}
+
+
+async def _generate_in(tmp_path, cases: list[dict], **params) -> tuple[dict, str]:
+    """Run the tool over ``tmp_path/proj`` and return (result, spec text)."""
+    (tmp_path / "proj").mkdir(exist_ok=True)
+    result = await TestGeneratorTool().execute(
+        _params(test_cases=cases, **params), _context(tmp_path / "proj")
+    )
+    spec_path = tmp_path / "proj" / "tests" / "generated" / "proj-1.spec.ts"
+    spec = spec_path.read_text(encoding="utf-8") if spec_path.exists() else ""
+    return result, spec
+
+
+def _tests_dir(tmp_path) -> object:
+    return tmp_path / "proj" / "tests"
+
+
+async def test_shared_session_spec_does_not_sign_in_per_case(tmp_path):
+    """The scaffold signs in once per run (setup project + storageState), so a
+    plain case must not carry its own login — that was one UI login per case."""
+    result, spec = await _generate_in(tmp_path, [_plain_case("One"), _plain_case("Two")])
+
+    assert result.get("success") is True, result
+    assert "async function login" not in spec, spec
+    assert "beforeEach" not in spec, spec
+    assert spec.count("test('") == 2, spec
+    # The blind 15s wait is what the setup project's real wait replaced.
+    assert ".catch(() => {})" not in spec, spec
+    assert "dashboard" not in spec, spec
+
+
+async def test_config_without_a_shared_session_keeps_the_per_case_login(tmp_path):
+    """A workspace whose config hands out no session still gets working specs —
+    just the slower shape."""
+    tests_dir = _tests_dir(tmp_path)
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "playwright.config.ts").write_text(
+        "import { defineConfig } from '@playwright/test';\n"
+        "export default defineConfig({ testDir: './generated' });\n",
+        encoding="utf-8",
+    )
+
+    result, spec = await _generate_in(tmp_path, [_plain_case("One")])
+
+    assert result.get("success") is True, result
+    assert "async function login" in spec, spec
+    assert "test.beforeEach" in spec, spec
+    assert "await login(page);" in spec, spec
+
+
+async def test_session_cases_start_signed_out(tmp_path):
+    """A case that switches user or checks permissions inherits nothing — the
+    session is the thing it exercises."""
+    result, spec = await _generate_in(
+        tmp_path,
+        [
+            _plain_case("Edit the order"),
+            _plain_case("Switch user to the auditor role", ["Click the account menu"]),
+        ],
+    )
+
+    assert result.get("success") is True, result
+    assert "- session cases" in spec, spec
+    assert "test.use({ storageState: { cookies: [], origins: [] } });" in spec, spec
+    # Signed out, so this describe is the one that needs the helper.
+    session_block = spec.split("- session cases")[1]
+    assert "await login(page);" in session_block, spec
+    assert "Switch user to the auditor role" in session_block, spec
+    assert "Edit the order" not in session_block, spec
+
+
+async def test_all_session_cases_skip_the_empty_describe(tmp_path):
+    """A card entirely about signing in must not emit an empty first describe."""
+    result, spec = await _generate_in(tmp_path, [_plain_case("Log in with a valid account")])
+
+    assert result.get("success") is True, result
+    assert spec.count("test.describe(") == 1, spec
+    assert "- session cases" in spec, spec
+
+
+async def test_include_login_false_opts_the_whole_file_out(tmp_path):
+    result, spec = await _generate_in(
+        tmp_path, [_plain_case("Read the public docs")], include_login=False
+    )
+
+    assert result.get("success") is True, result
+    assert "test.use({ storageState: { cookies: [], origins: [] } });" in spec, spec
+    assert "async function login" not in spec, spec
+
+
+async def test_no_credentials_skips_instead_of_running_unauthenticated(tmp_path):
+    """The old helper logged in only `if (username && password)` and swallowed
+    the failed wait, so a case ran on with no session and failed somewhere
+    unrelated. Saying so is cheaper to diagnose than that."""
+    result, spec = await _generate_in(
+        tmp_path,
+        [_plain_case("Check the audit trail", ["Switch user to the auditor role"])],
+    )
+
+    assert result.get("success") is True, result
+    assert "test.skip(true, 'APP_USERNAME/APP_PASSWORD not set" in spec, spec
+    assert "waitForURL((url: any) =>" in spec, spec
+
+
+def test_unclassified_step_waits_on_an_anchor_not_a_sleep():
+    from agent_core.tools.test_generator import _step_to_action
+
+    action = _step_to_action("Verify the totals reconcile")
+
+    assert "waitForTimeout" not in action, action
+    assert "waitForLoadState('domcontentloaded')" in action, action
+    # Still surfaced: the step itself is not exercised.
+    assert "TODO: unautomated step" in action, action
+
+
+# ---------------------------------------------------------------------------
+# Scaffold creation and upgrade
+# ---------------------------------------------------------------------------
+
+
+async def test_scaffold_writes_the_setup_project(tmp_path):
+    result, _ = await _generate_in(tmp_path, [_plain_case("One")])
+    assert result.get("success") is True, result
+    tests_dir = _tests_dir(tmp_path)
+
+    config = (tests_dir / "playwright.config.ts").read_text(encoding="utf-8")
+    assert "storageState: '.auth/state.json'" in config, config
+    assert "dependencies: ['setup']" in config, config
+    setup = (tests_dir / "auth.setup.ts").read_text(encoding="utf-8")
+    assert "storageState({ path: STATE_PATH })" in setup, setup
+
+
+async def test_a_pristine_v1_config_is_upgraded(tmp_path, monkeypatch):
+    """Scaffold files are create-only, so without this an existing project keeps
+    signing in per case forever."""
+    from agent_core.tools import test_generator
+    from agent_core.tools.test_generator import (
+        _SCAFFOLD_CONFIG_BASELINES,
+        _SCAFFOLD_PLAYWRIGHT_CONFIG,
+        _scaffold_digest,
+    )
+
+    tests_dir = _tests_dir(tmp_path)
+    tests_dir.mkdir(parents=True)
+    # Stands in for whatever an older generator shipped: the upgrade is driven
+    # by the digest, so enrolling it in the baseline set is the whole setup.
+    v1 = "import { defineConfig } from '@playwright/test';\n// v1\n"
+    config = tests_dir / "playwright.config.ts"
+    config.write_text(v1, encoding="utf-8")
+    monkeypatch.setattr(
+        test_generator, "_SCAFFOLD_CONFIG_BASELINES",
+        _SCAFFOLD_CONFIG_BASELINES | {_scaffold_digest(v1)},
+    )
+
+    result, _ = await _generate_in(tmp_path, [_plain_case("One")])
+
+    assert result.get("success") is True, result
+    assert config.read_text(encoding="utf-8") == _SCAFFOLD_PLAYWRIGHT_CONFIG
+    assert any("upgraded" in note for note in result["scaffold_updates"]), result
+
+
+async def test_an_edited_config_is_left_alone(tmp_path, monkeypatch):
+    """Only an untouched config is swapped: a workspace may have real edits in
+    there (an extra project, a different baseURL)."""
+    from agent_core.tools import test_generator
+
+    tests_dir = _tests_dir(tmp_path)
+    tests_dir.mkdir(parents=True)
+    mine = "// our own config\nexport default { testDir: './generated' };\n"
+    config = tests_dir / "playwright.config.ts"
+    config.write_text(mine, encoding="utf-8")
+    monkeypatch.setattr(test_generator, "_SCAFFOLD_CONFIG_BASELINES", frozenset())
+
+    result, spec = await _generate_in(tmp_path, [_plain_case("One")])
+
+    assert result.get("success") is True, result
+    assert config.read_text(encoding="utf-8") == mine
+    assert "scaffold_updates" not in result, result
+    # No session is handed out, so the spec keeps the slower per-case login
+    # rather than silently going unauthenticated.
+    assert "async function login" in spec, spec
+    assert not (tests_dir / "auth.setup.ts").exists()
+
+
+async def test_a_comment_mentioning_storage_state_is_not_a_session(tmp_path):
+    tests_dir = _tests_dir(tmp_path)
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "playwright.config.ts").write_text(
+        "// no storageState here: cases sign in themselves\n"
+        "export default { testDir: './generated' };\n",
+        encoding="utf-8",
+    )
+
+    result, spec = await _generate_in(tmp_path, [_plain_case("One")])
+
+    assert result.get("success") is True, result
+    assert "async function login" in spec, spec
+    assert not (tests_dir / "auth.setup.ts").exists()

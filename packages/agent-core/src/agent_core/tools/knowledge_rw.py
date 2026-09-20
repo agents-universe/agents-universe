@@ -1,7 +1,7 @@
 """Knowledge read/write tool — manages Markdown knowledge files in the project.
 
 Supports hierarchical knowledge with dynamic loading/unloading:
-- read: one-time file access (content in tool result only)
+- read: one-time file access (content in tool result only); `slugs` reads several at once
 - write: persist changes to disk
 - load: bring a detail file into persistent dynamic context
 - unload: release a dynamically loaded file
@@ -98,6 +98,15 @@ class KnowledgeRWTool(Tool):
                 "type": "string",
                 "description": "Knowledge slug, e.g. 'domain/context' or 'technical/api/get-users'",
             },
+            "slugs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Several slugs for read — one call instead of one per file. "
+                    "Files that are not 'detail' level are already in context; "
+                    "only read what you actually still need."
+                ),
+            },
             "content": {
                 "type": "string",
                 "description": "Full Markdown content including frontmatter (for write only)",
@@ -133,6 +142,8 @@ class KnowledgeRWTool(Tool):
             return await self._op_search(params, knowledge_dir)
 
         elif operation == "read":
+            if params.get("slugs") and not params.get("slug"):
+                return await self._op_read_many(params, knowledge_dir)
             return await self._op_read(params, knowledge_dir)
 
         elif operation == "write":
@@ -271,6 +282,35 @@ class KnowledgeRWTool(Tool):
             "metadata": dict(post.metadata),
             "word_count": len(post.content.split()),
         }
+
+    async def _op_read_many(self, params: dict, knowledge_dir: Path) -> dict:
+        """Read several slugs in one call.
+
+        Answers keep the caller's order and carry per-file errors (a missing
+        slug reports itself, it does not sink the batch) — the same contract as
+        the confluence batch read.
+        """
+        slugs = params.get("slugs") or []
+        # LLM-stringified param: a bare string would iterate character by character.
+        if isinstance(slugs, str):
+            slugs = slugs.split(",")
+        # Stripped in both branches — a whitespace-only entry is a slug the
+        # caller never meant to ask for.
+        slugs = [s.strip() for s in slugs if isinstance(s, str) and s.strip()]
+        if not slugs:
+            return {"error": "slugs must be a non-empty array of slugs"}
+
+        results = await asyncio.gather(
+            *[self._op_read({"slug": s}, knowledge_dir) for s in slugs],
+            return_exceptions=True,
+        )
+        files = []
+        for slug, result in zip(slugs, results):
+            if isinstance(result, BaseException):
+                files.append({"slug": slug, "error": str(result)})
+            else:
+                files.append(result)
+        return {"files": files, "count": len(files)}
 
     async def _op_write(self, params: dict, knowledge_dir: Path, context: ToolContext) -> dict:
         slug = params.get("slug")

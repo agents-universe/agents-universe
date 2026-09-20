@@ -8,11 +8,11 @@ routing:
     anchors:
       - "(?<![A-Za-z0-9])[A-Z]{2,}-\\d+(?![A-Za-z0-9])"
     tool: "jira"
-    first_ops: ["get_issue", "get_comments", "get_transitions"]
+    first_ops: ["get_issue_context"]
     follow_ups:
       - tool: "github"
-        op: "search_by_jira_key"
-        note: "to find the card's PRs, then get_pr_detail on each — diff, reviews, comments, checks"
+        op: "get_pr_details"
+        note: "with the card's jira_key — every linked PR in one call: diff, reviews, comments, checks"
   - id: "pull-request"
     priority: 20
     label: "a pull request"
@@ -39,7 +39,7 @@ It is consumed by two layers: the agent prompt (this body) and the per-turn rout
 
 | Anchor in the user message | First action (authoritative source) | Follow-ups | Local repo role |
 |---|---|---|---|
-| Jira key (e.g. `QA-123`) | `jira` `get_issue` → `get_comments` → `get_transitions` — the card, its comments, and its transitions are the requirement's authority | `github` `search_by_jira_key` to find the card's PRs, then `get_pr_detail` on each — diff, reviews, comments, checks | Supplement only: historical change scope / regression risk the remote cannot provide |
+| Jira key (e.g. `QA-123`) | `jira` `get_issue_context` — the card, its comments, and its transitions are the requirement's authority, in one call | `github` `get_pr_details` with the card's key — every linked PR in one call: diff, reviews, comments, checks | Supplement only: historical change scope / regression risk the remote cannot provide |
 | PR anchor (PR URL, `/pull/<N>`, `review this PR`, `合并请求`, `#N` with a PR context) | `github` `get_pr_detail` (or `list_prs` for a queue) — the remote diff, reviews, comments, and checks are authoritative | `jira-analyzer` on the Jira key found in the PR title, branch, or commits | Supplement only; never the first action |
 | Implementation task (branch / commit / push / test on a card) | Local `git_repo`: dirty-tree `status` → fetch/pull → `feature/{JIRA}` branch | `github` `create_pr` after push | **Primary** — local state genuinely matters; keep the existing gates |
 

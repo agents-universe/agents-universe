@@ -16,6 +16,22 @@ from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
 
+# Cap on a batched PR-detail fetch. A card's PR list is small; the cap keeps a
+# wide jira_key search from fanning out into dozens of concurrent PR reads.
+_MAX_PR_DETAILS = 20
+
+
+def _pr_error(exc: BaseException) -> str:
+    """Render a per-PR failure without echoing a response body.
+
+    The batch path catches its own exceptions, so it cannot reuse the
+    redaction the outer handler applies — never put a response body (which
+    gateways fill with the submitted credential) into the result at all.
+    """
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return f"GitHub API returned {exc.response.status_code}"
+    return f"{type(exc).__name__}: {exc}"
+
 
 class GitHubTool(Tool):
     name = "github"
@@ -25,11 +41,12 @@ class GitHubTool(Tool):
         "Enterprise): search commits/PRs by Jira key, review, approve, merge, or "
         "create PRs, fork/star repositories, check CI statuses, and search "
         "repositories or code when hunting for reference material such as skill "
-        "libraries."
+        "libraries. A card with several PRs: one get_pr_details call, not one "
+        "get_pr_detail per PR."
     )
     description = (
         "GitHub (public or Enterprise): search commits/PRs by Jira key, "
-        "list/detail/approve/merge/create PRs, "
+        "list/detail (one PR or several at once)/approve/merge/create PRs, "
         "fork a repository, star/check-star a repository, get repository and user info, "
         "get commit check-runs and combined status, "
         "search repositories and code (e.g. topic:claude-skills or filename:SKILL.md)."
@@ -41,7 +58,8 @@ class GitHubTool(Tool):
                 "type": "string",
                 "enum": [
                     "search_by_jira_key", "get_repo_info", "get_user",
-                    "list_prs", "get_pr_detail", "approve_pr", "merge_pr", "create_pr",
+                    "list_prs", "get_pr_detail", "get_pr_details",
+                    "approve_pr", "merge_pr", "create_pr",
                     "get_commit_checks", "add_pr_comment", "fork", "is_starred", "star",
                     "search_repositories", "search_code",
                 ],
@@ -49,6 +67,14 @@ class GitHubTool(Tool):
             "jira_key": {"type": "string", "description": "Jira issue key to search for"},
             "repository": {"type": "string", "description": "owner/repo format"},
             "number": {"type": "integer", "description": "PR number"},
+            "pr_numbers": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "PR numbers for get_pr_details — fetched concurrently, so one "
+                    "call replaces one get_pr_detail per PR"
+                ),
+            },
             "url": {"type": "string", "description": "Full PR URL (alternative to repository+number)"},
             "state": {"type": "string", "enum": ["open", "closed", "all"], "default": "open"},
             "author": {"type": "string"},
@@ -226,21 +252,29 @@ class GitHubTool(Tool):
                          "author": p.get("user", {}).get("login", ""),
                          "url": p.get("html_url", "")} for p in prs], "count": len(prs)}
 
-    async def _op_get_pr_detail(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
-        repo, number = self._resolve_pr(params)
-        if not repo or not number:
-            return {"error": "repository+number or url is required"}
+    async def _fetch_pr_detail(
+        self, repo: str, number: int, api_url: str, headers: dict, http: httpx.AsyncClient,
+    ) -> dict:
+        """Fetch one PR's full review context.
 
-        pr_resp, files_resp, commits_resp = await asyncio.gather(
+        Reviews and conversation comments are part of what the QA/tech-lead
+        workflows mean by "read the PR" — without them the agent kept going
+        back for the discussion by hand.
+        """
+        pr_resp, files_resp, commits_resp, reviews_resp, comments_resp = await asyncio.gather(
             http.get(f"{api_url}/repos/{repo}/pulls/{number}", headers=headers),
             http.get(f"{api_url}/repos/{repo}/pulls/{number}/files", headers=headers, params={"per_page": 100}),
             http.get(f"{api_url}/repos/{repo}/pulls/{number}/commits", headers=headers, params={"per_page": 100}),
+            http.get(f"{api_url}/repos/{repo}/pulls/{number}/reviews", headers=headers, params={"per_page": 50}),
+            http.get(f"{api_url}/repos/{repo}/issues/{number}/comments", headers=headers, params={"per_page": 50}),
         )
         pr_resp.raise_for_status()
         pr = pr_resp.json()
 
         files = files_resp.json() if files_resp.status_code == 200 else []
         commits = commits_resp.json() if commits_resp.status_code == 200 else []
+        reviews = reviews_resp.json() if reviews_resp.status_code == 200 else []
+        comments = comments_resp.json() if comments_resp.status_code == 200 else []
 
         checks = []
         head_sha = pr.get("head", {}).get("sha", "")
@@ -252,6 +286,7 @@ class GitHubTool(Tool):
                           for c in cr_resp.json().get("check_runs", [])]
 
         return {
+            "repository": repo,
             "number": pr["number"], "title": pr["title"], "state": pr["state"],
             "draft": pr.get("draft", False),
             "author": pr.get("user", {}).get("login", ""),
@@ -264,7 +299,72 @@ class GitHubTool(Tool):
                        "additions": f["additions"], "deletions": f["deletions"]} for f in files[:50]],
             "commits": [{"sha": c["sha"][:8], "message": c["commit"]["message"][:120]} for c in commits],
             "checks": checks,
+            "reviews": [{"author": r.get("user", {}).get("login", ""), "state": r.get("state"),
+                         "body": (r.get("body") or "")[:1000], "submitted_at": r.get("submitted_at")}
+                        for r in reviews],
+            "comments": [{"author": c.get("user", {}).get("login", ""),
+                          "body": (c.get("body") or "")[:1000], "created_at": c.get("created_at")}
+                         for c in comments],
         }
+
+    async def _op_get_pr_detail(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
+        repo, number = self._resolve_pr(params)
+        if not repo or not number:
+            return {"error": "repository+number or url is required"}
+        return await self._fetch_pr_detail(repo, int(number), api_url, headers, http)
+
+    async def _op_get_pr_details(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
+        """Fetch several PRs in one call, concurrently.
+
+        A card usually has more than one PR, and the per-PR detail call is
+        several round trips on its own; looping it serially in the agent costs
+        one full turn per PR.
+        """
+        targets: list[tuple[str, int]] = []
+        skipped: list[str] = []
+        jira_key = params.get("jira_key", "")
+        if jira_key:
+            found = await self._op_search_by_jira_key(
+                {"jira_key": jira_key}, api_url, headers, http)
+            if "error" in found:
+                return found
+            for pr in found.get("pull_requests", []):
+                repo = pr.get("repository") or params.get("repository", "")
+                if repo and pr.get("number"):
+                    targets.append((repo, int(pr["number"])))
+        else:
+            repo = params.get("repository", "")
+            numbers = params.get("pr_numbers") or []
+            # Same LLM-stringified-param defense as the confluence batch read:
+            # a bare string would be iterated character by character.
+            if isinstance(numbers, str):
+                numbers = [n.strip() for n in numbers.split(",") if n.strip()]
+            if not repo:
+                return {"error": "repository is required (owner/repo format)"}
+            for entry in numbers:
+                try:
+                    targets.append((repo, int(entry)))
+                except (TypeError, ValueError):
+                    skipped.append(str(entry))
+
+        if not targets:
+            return {"error": "no PRs to fetch — pass repository+pr_numbers, or a jira_key that links PRs"}
+
+        targets = targets[:_MAX_PR_DETAILS]
+        results = await asyncio.gather(
+            *[self._fetch_pr_detail(repo, number, api_url, headers, http) for repo, number in targets],
+            return_exceptions=True,
+        )
+        details = []
+        for (repo, number), result in zip(targets, results):
+            if isinstance(result, BaseException):
+                details.append({"repository": repo, "number": number, "error": _pr_error(result)})
+            else:
+                details.append(result)
+        payload: dict[str, Any] = {"pull_requests": details, "count": len(details)}
+        if skipped:
+            payload["skipped"] = skipped
+        return payload
 
     async def _op_approve_pr(self, params: dict, api_url: str, headers: dict, http: httpx.AsyncClient) -> dict:
         repo, number = self._resolve_pr(params)

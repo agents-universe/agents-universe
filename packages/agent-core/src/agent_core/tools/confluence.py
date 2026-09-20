@@ -1,6 +1,7 @@
 """Confluence tool — fetch pages and page trees for project documentation."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -16,6 +17,35 @@ from ._http import ensure_http_client
 from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
+
+
+def _redact(client: "_ConfluenceClient", text: str) -> str:
+    """Scrub the resolved credential out of text bound for the LLM or the log.
+
+    Atlassian echoes the credential in error bodies, so every message that can
+    carry a response body must pass through here before it is returned or
+    logged (same pattern as kong.py / api_request.py).
+    """
+    return redact_secrets(text, {
+        # getattr: _op_get_pages is exercised with duck-typed clients in tests.
+        "confluence": getattr(client, "api_token", ""),
+        "jira:email": getattr(client, "email", ""),
+    })
+
+
+def _http_error_message(client: "_ConfluenceClient", e: httpx.HTTPStatusError,
+                        operation: str = "get_pages") -> str:
+    """Status + redacted body for an HTTP error.
+
+    Shared by execute()'s handler and the batched get_pages error path: the
+    batch collects per-page exceptions instead of letting them propagate, so it
+    never reaches that handler and must redact for itself. Kept in one place so
+    the two cannot drift.
+    """
+    status = e.response.status_code if e.response is not None else "error"
+    body = _redact(client, e.response.text[:500])[:500] if e.response is not None else ""
+    _log.warning("confluence %s HTTP %s: %s", operation, status, body[:200])
+    return f"Confluence API returned {status}: {body}"
 
 
 class ConfluenceTool(Tool):
@@ -110,20 +140,11 @@ class ConfluenceTool(Tool):
                 return await self._op_update_page(params, client)
             return {"error": f"Unknown operation: {operation}"}
         except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else ""
-            # Atlassian can echo the credential in error bodies — scrub the
-            # resolved token and email before the body reaches the LOG as well
-            # as the LLM/history (same pattern as kong.py / api_request.py),
-            # then truncate.
-            body = redact_secrets(
-                body,
-                {"confluence": client.api_token, "jira:email": client.email},
-            )[:500]
-            _log.warning("confluence %s HTTP %d: %s", operation, e.response.status_code, body[:200])
-            return {"error": f"Confluence API returned {e.response.status_code}: {body}"}
+            return {"error": _http_error_message(client, e, operation)}
         except Exception as e:
-            _log.warning("confluence %s failed: %s", operation, e, exc_info=True)
-            return {"error": f"Confluence operation failed ({type(e).__name__}): {e}"}
+            message = _redact(client, str(e))[:500]
+            _log.warning("confluence %s failed: %s", operation, message, exc_info=True)
+            return {"error": f"Confluence operation failed ({type(e).__name__}): {message}"}
 
     async def _build_client(self, context: ToolContext) -> "_ConfluenceClient":
         token = await get_token_optional(context, "confluence")
@@ -158,10 +179,26 @@ class ConfluenceTool(Tool):
             page_ids = [p.strip() for p in page_ids.split(",") if p.strip()]
         if not page_ids:
             return {"error": "page_ids is required (array of page IDs)"}
+        # Fetch concurrently but keep the caller's id order: the pages are
+        # independent, and a serial loop made a 5-page read five round trips.
+        fetched = await asyncio.gather(
+            *[client.get_page(pid) for pid in page_ids], return_exceptions=True,
+        )
         pages = []
-        for pid in page_ids:
-            page = await client.get_page(pid)
-            if "error" in page:
+        for pid, page in zip(page_ids, fetched):
+            # A raised exception lands here instead of in execute()'s handler, so
+            # it has to be redacted here — an HTTP error body can carry the
+            # credential. Other exceptions are scrubbed too: over-redaction only
+            # garbles an error message, under-redaction leaks.
+            if isinstance(page, httpx.HTTPStatusError):
+                pages.append({"id": pid, "error": _http_error_message(client, page)})
+            elif isinstance(page, BaseException):
+                # Type name included: str(KeyError("x")) is just "'x'", which
+                # tells the agent nothing about what failed.
+                detail = _redact(client, f"{type(page).__name__}: {page}")[:500]
+                _log.warning("confluence get_pages %s failed: %s", pid, detail)
+                pages.append({"id": pid, "error": detail})
+            elif "error" in page:
                 pages.append({"id": pid, "error": page["error"]})
             else:
                 pages.append(page)

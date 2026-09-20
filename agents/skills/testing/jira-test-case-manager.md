@@ -23,7 +23,7 @@ Convert the test design in the target issue comment into a Jira test card, autom
 
 ## Execution Steps
 
-1. If the target issue has no structured test-design comment yet, write one first. Then read the comments back immediately, confirm the latest comment's body, comment id, and structure, and treat it as the sole input source for the downstream flow. Prefer the latest comment that is both recent and structurally complete, and enter the test-card flow only after readback verification.
+1. If the target issue has no structured test-design comment yet, write one first. Then read back **that comment** by the id `add_comment` returned (`jira(operation="get_comment", issue_key="<KEY>", comment_id="<id>")`), confirm its body and structure, and treat it as the sole input source for the downstream flow. Read the whole comment list only when you actually need an older comment. The read-back stays mandatory — the write response proves the comment landed, the read-back proves the body survived Jira's wiki conversion; only its breadth shrinks. Enter the test-card flow only after readback verification.
 2. Generate the test-card title. Default recommended format: `[AI test][UI][<TARGET-KEY>] <summary>`. For pure API scenarios use `[AI test][API][<TARGET-KEY>] <summary>` and pass `test_kind="api"` to `jira(operation="create_test_issue", ...)`.
 3. Create the Jira test card:
   - Issue type: the system injects `JIRA_TEST_ISSUE_TYPE` from integration settings / environment variables; when unset the tool defaults to `Test`. Do not read it from knowledge files or invent a value.
@@ -51,13 +51,13 @@ Convert the test design in the target issue comment into a Jira test card, autom
 - Prefer short status tables in summary comments: scenario status, current execution result, historical result if relevant, linked Bug if relevant, next action.
 - Keep descriptions stable and concise: scope, data-preparation rule, case table, reusable steps, APIs, evidence requirements; no long narrative execution summaries.
 - A comment written with a wrong marker or unclear result is not deleted or overwritten; add a corrected follow-up with the standard `[AI test][UI|API][<TARGET-KEY>]` marker stating which earlier comment it supersedes.
-- Always read back the Jira issue or comment after writing and verify the marker, first-paragraph result, table rendering, and Chinese text readability before continuing.
+- Always read back what you wrote and verify the marker, first-paragraph result, table rendering, and Chinese text readability before continuing. Read back **the artifact you wrote, not the whole card**: a comment → `get_comment` with the id from the write response; a description → `get_issue`. A read-back that reports `truncated: true` is not proof of the tail — shorten the body or split it.
 
 ## Output Constraints
 
 - Do not bypass the comment and reconstruct test scope directly from the Jira description.
 - Windows / PowerShell: do not pass multi-line Markdown or long Chinese-rich bodies as long CLI arguments; use the `jira` tool's `description` or `comment_body` parameter directly.
-- Read long bodies back immediately after submission; if garbled, truncated, or only the first line was written, stop the downstream flow and fix the body first.
+- Read long bodies back immediately after submission (the one artifact you wrote, per the rule above); if garbled, truncated, or only the first line was written, stop the downstream flow and fix the body first.
 - The test card must explicitly reference the target issue key and the source comment; scenario descriptions in the test-design comment, test-card description, execution-result comment, and Bug must all include the target-issue link.
 - Every case keeps executable steps in the structured test design and generated assets — for API calls, the request method, endpoint path, and key query/path/body parameters. Jira-facing text may reference the contract without reproducing every parameter; never write only an unexplained API name.
 - Self-adapt DB calls: explain why UI and the system's own API were not enough, and mark the affected lines with `[SELF-ADAPT-DB]` or `[DB-SERVICE]`.

@@ -20,6 +20,7 @@ categories:
       - technical/permission-matrix
       - domain/role-matrix
       - skills/test-patterns
+      - skills/test-data-setup
       - skills/ui-patterns
       - integrations/custom-api
       - integrations/mcp-servers

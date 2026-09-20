@@ -37,7 +37,7 @@ The QA agent's default workflow for whole-system test plan requests. Produces a 
 ## 3. Step 2 — System Inventory from Knowledge
 
 1. `knowledge_rw(operation="list")` to see available knowledge files.
-2. Read the inventory sources in this order: `system-architecture` → `page-map` → `api-map` → `kong-map` → `permission-matrix`/`role-matrix` → `test-patterns` → `login-and-user-switch` → `environment`.
+2. Gather the inventory sources: `system-architecture` → `page-map` → `api-map` → `kong-map` → `permission-matrix`/`role-matrix` → `test-patterns` → `test-data-setup` → `login-and-user-switch` → `environment`. Any of these without `knowledge_level: detail` is already in your context on project selection — read those directly, and fetch the `detail` ones together in one `knowledge_rw(operation="read", slugs=[...])` call rather than one per file.
 3. Produce a `module × entry points (UI page / API / job)` inventory, with the knowledge source for each entry.
 4. Fall back to Git/code only when knowledge is absent or stale; write findings back to knowledge afterwards (Step 7).
 
@@ -73,7 +73,7 @@ Write the plan with the `filesystem` tool to `tests/test-plan.md` using the mand
 3. **Coverage Matrix** — module × dimension table; out-of-scope list with reasons.
 4. **Prioritized Case Inventory** — table: ID, module, title, type (UI/API/DB-fallback), dimension, priority, brief steps.
 5. **Per-Case Execution Contract** — full detail per case grouped by module: preconditions, steps, expected results, data setup, env target, evidence requirements.
-6. **Data Setup** — accounts/orgs/companies/rows needed and how to create them (test-support APIs first, DB last).
+6. **Data Setup** — accounts/orgs/companies/rows needed and how to create them (test-support APIs first, DB last). Resolve each need against `test-data-setup.md`: reuse a verified recipe by id (`test-data-setup.md#<recipe>`) or, for an unindexed need, run one discovery pass and write the recipe back (see `testing/test-data-setup`) — an unresolved "how do we create this?" is a gap in the plan, not an execution-time problem.
 7. **Environment Targets** — env names from `environment.md` mapped to case groups.
 8. **Evidence Requirements** — per-case evidence type (UI screenshot+recording, API request/response JSON, output files) per `workflows/test-artifact-and-jira-conventions.workflow.md`; design-only means evidence is defined for later execution.
 9. **Accounts Needed** — non-secret account metadata table + vault service keys (`qa:login:username`, `qa:login:password`) and their storage scope. NEVER values.

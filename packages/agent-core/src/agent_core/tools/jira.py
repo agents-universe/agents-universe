@@ -18,6 +18,47 @@ from ._wiki import markdown_to_wiki
 
 _log = logging.getLogger(__name__)
 
+
+def _redact(client: "_JiraClient", text: str) -> str:
+    """Scrub the resolved credential out of text bound for the LLM or the log.
+
+    Atlassian echoes the credential in error bodies and SSO redirects, so every
+    message that can carry an upstream response must pass through here before
+    it is returned or logged (same pattern as kong.py / api_request.py).
+    """
+    return redact_secrets(text, {
+        # getattr: the aggregate op is exercised with duck-typed clients in tests.
+        "jira": getattr(client, "api_token", ""),
+        "jira:email": getattr(client, "email", ""),
+    })
+
+
+def _http_error_message(client: "_JiraClient", e: httpx.HTTPStatusError,
+                        operation: str = "") -> str:
+    """Status + redacted body for an HTTP error.
+
+    Shared by execute()'s handler and get_issue_context's per-section error
+    path: the aggregate collects section exceptions instead of letting them
+    propagate, so it never reaches that handler and must redact for itself.
+    Kept in one place so the two cannot drift.
+    """
+    status = e.response.status_code if e.response is not None else "error"
+    body = _redact(client, e.response.text[:500])[:500] if e.response is not None else ""
+    _log.warning("jira %s HTTP %s: %s", operation, status, body[:200])
+    return f"Jira API returned {status}: {body}"
+
+
+def _failure_text(client: "_JiraClient", e: BaseException, operation: str) -> str:
+    """Message for an exception that is reported in place instead of raised.
+
+    HTTP errors keep their status (and get logged) through the shared
+    formatter; anything else falls back to the redacted exception text.
+    """
+    if isinstance(e, httpx.HTTPStatusError):
+        return _http_error_message(client, e, operation)
+    return _redact(client, str(e))[:500]
+
+
 # attach_file reads the whole file into memory, and Atlassian's own attachment
 # limit is instance-configured and often lower than this — past it the upload
 # is a slow way to get a 413.
@@ -52,16 +93,71 @@ def _jql_literal(value: Any) -> str:
     return f'"{text}"'
 
 
+# The three card reads below share their projections with get_issue_context so
+# the caps (description 20000, comment body 2000) cannot drift apart between
+# the single and the aggregate call.
+
+def _project_issue(data: dict, base_url: str) -> dict:
+    fields = data.get("fields", {})
+    return {
+        "key": data.get("key"),
+        "summary": fields.get("summary"),
+        "status": fields.get("status", {}).get("name"),
+        "issue_type": fields.get("issuetype", {}).get("name"),
+        "assignee": (fields.get("assignee") or {}).get("displayName"),
+        "labels": fields.get("labels", []),
+        # Cap the description — a giant body must not flood the LLM context.
+        "description": (fields.get("description", "") or "")[:20000],
+        "acceptance_criteria": fields.get("customfield_10028", ""),
+        "url": f"{base_url}/browse/{data.get('key')}",
+    }
+
+
+# A single-comment read costs one comment of context, so it can afford a bigger
+# cap than a comment list (where every body in the list loads at once).
+_SINGLE_COMMENT_CAP = 8000
+
+
+def _project_comment(c: dict, cap: int = 2000) -> dict:
+    body = c.get("body", "") or ""
+    out: dict[str, Any] = {
+        "id": c.get("id"),
+        "author": c.get("author", {}).get("displayName", ""),
+        "body": body[:cap],
+        "created": c.get("created"),
+    }
+    if len(body) > cap:
+        # Say so: a silently truncated read-back looks like the write itself was
+        # cut, and the read-back exists precisely to prove that it was not.
+        out["truncated"] = True
+        out["body_length"] = len(body)
+    return out
+
+
+def _project_comments(key: str, comments: list[dict]) -> dict:
+    return {"issue_key": key, "comments": [_project_comment(c) for c in comments]}
+
+
+def _project_transitions(key: str, transitions: list[dict]) -> dict:
+    return {"issue_key": key, "transitions": [
+        {"id": t["id"], "name": t["name"], "to": t.get("to", {}).get("name")}
+        for t in transitions
+    ]}
+
+
 class JiraTool(Tool):
     name = "jira"
     prompt_hint = (
         "First stop for any task referencing a Jira key — issue, comments, "
         "transitions, and linked PRs. The only path to Jira: read/create/update "
         "issues, comments, transitions, and test cycles. Ask the user for issue "
-        "keys or project names instead of guessing."
+        "keys or project names instead of guessing. When you need a card's full "
+        "context, prefer get_issue_context over three separate reads; to check a "
+        "comment you just wrote, get_comment by its id, not the whole comment list."
     )
     description = (
-        "Interact with Jira: fetch issues/comments/transitions, create/update issues, "
+        "Interact with Jira: fetch a card's full context (issue+comments+transitions) "
+        "in one call or read each separately, create/update issues, "
         "manage test cycles, upload attachments, link issues, transition status, and search."
     )
     parameters = {
@@ -70,7 +166,8 @@ class JiraTool(Tool):
             "operation": {
                 "type": "string",
                 "enum": [
-                    "get_issue", "get_comments", "get_transitions", "get_release_scope",
+                    "get_issue_context", "get_issue", "get_comments", "get_comment",
+                    "get_transitions", "get_release_scope",
                     "create_issue", "create_test_issue", "create_test_cycle",
                     "update_description", "update_assignee",
                     "add_comment", "add_attachment", "link_issues",
@@ -78,6 +175,13 @@ class JiraTool(Tool):
                 ],
             },
             "issue_key": {"type": "string", "description": "Jira issue key, e.g. DDM-1234"},
+            "comment_id": {
+                "type": "string",
+                "description": (
+                    "Comment id for get_comment — the id add_comment returned, to "
+                    "read back just that comment instead of the whole list"
+                ),
+            },
             "summary": {"type": "string"},
             "description": {"type": "string"},
             "project_key": {"type": "string"},
@@ -120,21 +224,11 @@ class JiraTool(Tool):
                 return {"error": f"Unknown operation: {operation}"}
             return await handler(params, client, context)
         except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else ""
-            # Atlassian can echo the credential in error bodies (401 "Bad
-            # credentials", SSO redirects) — scrub the resolved token and
-            # email before the body reaches the LOG as well as the
-            # LLM/history (same pattern as kong.py / api_request.py), then
-            # truncate post-mask.
-            body = redact_secrets(
-                body,
-                {"jira": client.api_token, "jira:email": client.email},
-            )[:500]
-            _log.warning("jira %s HTTP %d: %s", operation, e.response.status_code, body[:200])
-            return {"error": f"Jira API returned {e.response.status_code}: {body}"}
+            return {"error": _http_error_message(client, e, operation)}
         except Exception as e:
-            _log.warning("jira %s failed: %s", operation, e, exc_info=True)
-            return {"error": f"Jira operation failed: {e}"}
+            message = _failure_text(client, e, operation)
+            _log.warning("jira %s failed: %s", operation, message, exc_info=True)
+            return {"error": f"Jira operation failed: {message}"}
 
     async def _build_client(self, context: ToolContext) -> "_JiraClient":
         token = await get_token(context, "jira")
@@ -158,40 +252,70 @@ class JiraTool(Tool):
         if not key:
             return {"error": "issue_key is required"}
         data = await client.get_issue(key)
-        fields = data.get("fields", {})
-        return {
-            "key": data.get("key"),
-            "summary": fields.get("summary"),
-            "status": fields.get("status", {}).get("name"),
-            "issue_type": fields.get("issuetype", {}).get("name"),
-            "assignee": (fields.get("assignee") or {}).get("displayName"),
-            "labels": fields.get("labels", []),
-            # Cap the description — a giant body must not flood the LLM context.
-            "description": (fields.get("description", "") or "")[:20000],
-            "acceptance_criteria": fields.get("customfield_10028", ""),
-            "url": f"{client.base_url}/browse/{data.get('key')}",
-        }
+        return _project_issue(data, client.base_url)
 
     async def _op_get_comments(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
         key = params.get("issue_key", "")
         if not key:
             return {"error": "issue_key is required"}
-        comments = await client.get_comments(key)
-        return {"issue_key": key, "comments": [
-            {"id": c.get("id"), "author": c.get("author", {}).get("displayName", ""),
-             "body": c.get("body", "")[:2000], "created": c.get("created")}
-            for c in comments
-        ]}
+        return _project_comments(key, await client.get_comments(key))
 
     async def _op_get_transitions(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
         key = params.get("issue_key", "")
         if not key:
             return {"error": "issue_key is required"}
-        transitions = await client.get_transitions(key)
-        return {"issue_key": key, "transitions": [
-            {"id": t["id"], "name": t["name"], "to": t.get("to", {}).get("name")}
-            for t in transitions
-        ]}
+        return _project_transitions(key, await client.get_transitions(key))
+
+    async def _op_get_comment(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
+        """One comment by id — the cheapest way to read back a comment just written.
+
+        ``add_comment`` already returns the id, so verifying a writeback costs one
+        small fetch instead of pulling every comment on a card that may carry
+        dozens (each re-sent to the model on every following turn).
+        """
+        key = params.get("issue_key", "")
+        comment_id = str(params.get("comment_id", "") or "")
+        if not key or not comment_id:
+            return {"error": "issue_key and comment_id are required"}
+        data = await client.get_comment(key, comment_id)
+        return {"issue_key": key, "comment": _project_comment(data, _SINGLE_COMMENT_CAP)}
+
+    async def _op_get_issue_context(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
+        """Issue + comments + transitions in one call.
+
+        The three reads are independent, so one round trip replaces three —
+        the card-first rule in the QA workflow otherwise costs three serial
+        agent turns before any design work starts. A failing section is
+        reported in place (``comments_error``) instead of sinking the whole
+        payload: the description alone is still worth designing from.
+        """
+        key = params.get("issue_key", "")
+        if not key:
+            return {"error": "issue_key is required"}
+        issue, comments, transitions = await asyncio.gather(
+            client.get_issue(key),
+            client.get_comments(key),
+            client.get_transitions(key),
+            return_exceptions=True,
+        )
+
+        result: dict[str, Any] = {"issue_key": key}
+        if isinstance(issue, BaseException):
+            # A section error skips execute()'s handler entirely, so it has to
+            # be redacted here rather than there. Without the issue there is no
+            # card to design from, so this one is fatal.
+            return {"error": f"Jira operation failed: {_failure_text(client, issue, 'get_issue_context')}",
+                    "issue_key": key}
+        result.update(_project_issue(issue, client.base_url))
+        if isinstance(comments, BaseException):
+            result["comments_error"] = _failure_text(client, comments, "get_issue_context")
+        else:
+            result.update(_project_comments(key, comments))
+        if isinstance(transitions, BaseException):
+            result["transitions_error"] = _failure_text(client, transitions, "get_issue_context")
+        else:
+            result.update(_project_transitions(key, transitions))
+        return result
 
     async def _op_get_release_scope(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
         version_id = params.get("version_id")
@@ -429,6 +553,10 @@ class _JiraClient:
     async def get_comments(self, key: str) -> list[dict]:
         return (await self._get_capped(
             f"{self.base_url}/rest/api/2/issue/{key}/comment")).get("comments", [])
+
+    async def get_comment(self, key: str, comment_id: str) -> dict:
+        return await self._get_capped(
+            f"{self.base_url}/rest/api/2/issue/{key}/comment/{comment_id}")
 
     async def get_transitions(self, key: str) -> list[dict]:
         return (await self._get_capped(

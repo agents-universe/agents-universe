@@ -62,7 +62,7 @@ token_budget: 100000
 
 项目创建时选择了分类（注册表 `knowledge/categories.yaml`，`software` 软件项目 / `data-analysis` 数据分析 / `customer-service` 智能客服 / `docs` 文档知识库 / `other` 其他），知识条目按分类复制子集：
 
-- **software**：全部 16 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
+- **software**：全部 17 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
 - **data-analysis**：12 个知识条目（背景、词汇表、历史、第三方 API + MCP 集成 + 7 个数据专用知识条目：`technical/data-source-map`、`technical/data-model`、`technical/data-pipelines`、`domain/metric-catalog`、`domain/analysis-scenarios`、`skills/sql-patterns`、`skills/analysis-patterns`）
 - **customer-service**：8 个知识条目（背景、历史、第三方 API + MCP 集成 + 4 个客服专用知识条目：`domain/faq`、`domain/service-policies`、`domain/escalation-rules`、`skills/support-scripts`）
 - **docs**：精简 5 个知识条目（背景、词汇表、历史、环境、系统架构）
@@ -72,7 +72,7 @@ token_budget: 100000
 
 ### 第 3 步：领域适配判断
 
-**软件/测试项目**：使用现有知识条目矩阵，按优先级深入：`domain/context`、`technical/technical-stack`、`environment/environment`、`technical/system-architecture`、`technical/api-map` / `technical/page-map` / `technical/kong-map`、`technical/permission-matrix` / `domain/role-matrix`、`skills/test-patterns` / `skills/ui-patterns`、`domain/glossary`。
+**软件/测试项目**：使用现有知识条目矩阵，按优先级深入：`domain/context`、`technical/technical-stack`、`environment/environment`、`technical/system-architecture`、`technical/api-map` / `technical/page-map` / `technical/kong-map`、`technical/permission-matrix` / `domain/role-matrix`、`skills/test-patterns` / `skills/ui-patterns`、`skills/test-data-setup`（测试数据的创建配方，自动化测试立项时值得先问清"账号/公司/订单从哪里造"）、`domain/glossary`。
 
 **数据分析项目**：使用数据分析知识条目矩阵，按优先级深入：`domain/metric-catalog`（指标口径是核心，优先确认）、`technical/data-source-map`（数据源与凭据 secret_ref）、`technical/data-model`（表模型与分层）、`domain/context`、`technical/data-pipelines`（加工链路与调度）、`domain/analysis-scenarios`（固定报表与专题）、`skills/sql-patterns` / `skills/analysis-patterns`、`domain/glossary`。连接凭据一律走 project_secrets，禁止明文写入知识。
 

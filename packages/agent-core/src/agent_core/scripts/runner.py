@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -19,12 +20,46 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+_log = logging.getLogger("agents_universe.scripts")
+
 # every POST /scripts/{id}/run spawns a sandboxed subprocess with
 # no concurrency cap - any authenticated user could exhaust server memory by
 # firing unlimited runs. Cap concurrent executions; requests beyond the cap
 # queue for a slot instead of failing, so multi-user access never errors.
-CONCURRENCY_LIMIT = 3
+_DEFAULT_CONCURRENCY_LIMIT = 3
+# Ceiling for the configured value: the cap is a memory guard, so raising it is
+# a deliberate choice about the host, not a preference to be discovered by
+# setting a large number.
+_MAX_CONCURRENCY_LIMIT = 16
 _script_semaphore: asyncio.Semaphore | None = None
+
+
+def _concurrency_limit() -> int:
+    """Configured run cap, defaulting to ``_DEFAULT_CONCURRENCY_LIMIT``.
+
+    Configurable because the right number is a property of the host, and the
+    one global pool is shared by human runs, agent runs and scheduled runs (a
+    browser per Playwright run means a slot is not cheap). Read when the
+    semaphore is created, so an unparseable value degrades to the default
+    rather than disabling the cap.
+    """
+    raw = os.environ.get("SCRIPTS_CONCURRENCY_LIMIT", "").strip()
+    if not raw:
+        return _DEFAULT_CONCURRENCY_LIMIT
+    try:
+        limit = int(raw)
+    except ValueError:
+        _log.warning(
+            "SCRIPTS_CONCURRENCY_LIMIT=%r is not an integer; using %d",
+            raw, _DEFAULT_CONCURRENCY_LIMIT,
+        )
+        return _DEFAULT_CONCURRENCY_LIMIT
+    if not 1 <= limit <= _MAX_CONCURRENCY_LIMIT:
+        _log.warning(
+            "SCRIPTS_CONCURRENCY_LIMIT=%d is outside 1..%d; clamping",
+            limit, _MAX_CONCURRENCY_LIMIT,
+        )
+    return max(1, min(limit, _MAX_CONCURRENCY_LIMIT))
 
 # Execution timeout for python/bash scripts (the WS poll loop outlasts it).
 SCRIPT_TIMEOUT = 300
@@ -55,7 +90,9 @@ def script_slot_guard() -> asyncio.Semaphore:
     """Lazily create the slot semaphore for script runs."""
     global _script_semaphore
     if _script_semaphore is None:
-        _script_semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+        limit = _concurrency_limit()
+        _log.info("script run concurrency limit: %d", limit)
+        _script_semaphore = asyncio.Semaphore(limit)
     return _script_semaphore
 
 
@@ -209,7 +246,7 @@ async def execute_script(
     try:
         from api.models.script import ScriptRun
     except ImportError:
-        logging.getLogger("agents_universe.scripts").warning(
+        _log.warning(
             "api.models.script unavailable - cannot execute run %s", run_id
         )
         return

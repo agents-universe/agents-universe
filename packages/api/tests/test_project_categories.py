@@ -60,6 +60,7 @@ async def test_create_docs_subset(client):
     assert "technical/api-map.md" not in files
     assert "technical/technical-stack.md" not in files
     assert "integrations/custom-api.md" not in files
+    assert "skills/test-data-setup.md" not in files
 
 
 async def test_create_other_minimal(client):

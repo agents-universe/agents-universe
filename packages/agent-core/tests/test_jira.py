@@ -1,5 +1,6 @@
 """Jira tool: JIRA_PROJECT_KEY must come from integration settings — cfg()'s
 credential-key guard (final segment "KEY") would never return it."""
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -255,3 +256,196 @@ async def test_add_attachment_rejects_a_directory(tmp_path):
     )
     assert "Not a file" in result["error"]
     client.attach_file.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# get_issue_context — the card read, collapsed from three calls into one
+# ---------------------------------------------------------------------------
+
+
+class _CardClient:
+    """Duck-typed Jira client that records how the three card reads interleave.
+
+    Each read yields to the loop mid-way, so a serial implementation logs
+    start/end pairs while a gathered one logs all three starts first — that
+    ordering is what the aggregate op exists for.
+    """
+
+    def __init__(self, fail: set[str] | None = None):
+        self.events: list[str] = []
+        self.fail = fail or set()
+        self.base_url = "https://jira.example.com"
+        self.api_token = "ATATT-card-secret"
+        self.email = "agent@example.com"
+
+    async def _read(self, name: str) -> None:
+        self.events.append(f"{name}:start")
+        await asyncio.sleep(0.01)
+        self.events.append(f"{name}:end")
+        if name in self.fail:
+            raise RuntimeError(f"{name} read exploded")
+
+    async def get_issue(self, key: str) -> dict:
+        await self._read("issue")
+        return {
+            "key": key,
+            "fields": {
+                "summary": "Checkout total is wrong",
+                "status": {"name": "Ready for QA"},
+                "issuetype": {"name": "Bug"},
+                "assignee": {"displayName": "Ann"},
+                "labels": ["qa"],
+                "description": "repro steps",
+                "customfield_10028": "order total must persist",
+            },
+        }
+
+    async def get_comments(self, key: str) -> list[dict]:
+        await self._read("comments")
+        return [{"id": "11", "author": {"displayName": "Bob"},
+                 "body": "reproduced on staging", "created": "2026-01-02"}]
+
+    async def get_transitions(self, key: str) -> list[dict]:
+        await self._read("transitions")
+        return [{"id": "31", "name": "Verify", "to": {"name": "Ready for QA"}}]
+
+
+@pytest.mark.asyncio
+async def test_get_issue_context_reads_all_three_concurrently():
+    tool = JiraTool()
+    client = _CardClient()
+
+    result = await tool._op_get_issue_context({"issue_key": "DDM-1"}, client, _ctx())
+
+    assert result["key"] == "DDM-1"
+    assert result["summary"] == "Checkout total is wrong"
+    assert result["acceptance_criteria"] == "order total must persist"
+    assert result["url"] == "https://jira.example.com/browse/DDM-1"
+    assert result["comments"][0]["body"] == "reproduced on staging"
+    assert result["transitions"][0]["to"] == "Ready for QA"
+    # All three reads started before any of them finished.
+    assert sorted(client.events[:3]) == ["comments:start", "issue:start", "transitions:start"]
+
+
+@pytest.mark.asyncio
+async def test_get_issue_context_keeps_issue_when_a_section_fails():
+    """A failing comments read must not sink the card: the description alone is
+    still worth designing from, so the error is reported in place."""
+    tool = JiraTool()
+    client = _CardClient(fail={"comments"})
+
+    result = await tool._op_get_issue_context({"issue_key": "DDM-1"}, client, _ctx())
+
+    assert result["summary"] == "Checkout total is wrong"
+    assert "comments" not in result
+    assert "comments read exploded" in result["comments_error"]
+    assert result["transitions"][0]["name"] == "Verify"
+
+
+@pytest.mark.asyncio
+async def test_get_issue_context_fails_when_the_issue_itself_fails():
+    """Without the issue there is no card to design from — and the section
+    errors are redacted here, since execute()'s handler never sees them."""
+    tool = JiraTool()
+    client = _CardClient(fail={"issue"})
+
+    result = await tool._op_get_issue_context({"issue_key": "DDM-1"}, client, _ctx())
+
+    assert "error" in result
+    assert "issue read exploded" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_issue_context_redacts_credential_in_section_errors(caplog):
+    """A section error carries upstream text that never passes through
+    execute()'s redacting handler."""
+    import httpx
+
+    tool = JiraTool()
+    client = _CardClient()
+
+    async def _boom(key):
+        # async: a sync fake would raise while gather's arguments are built,
+        # which bypasses the per-section isolation under test.
+        resp = httpx.Response(
+            401,
+            text='{"message": "Bad credentials: ATATT-card-secret"}',
+            request=httpx.Request("GET", "https://jira.example.com/rest/api/2/issue/DDM-1/comment"),
+        )
+        raise httpx.HTTPStatusError("Unauthorized", request=resp.request, response=resp)
+
+    client.get_comments = _boom
+
+    result = await tool._op_get_issue_context({"issue_key": "DDM-1"}, client, _ctx())
+
+    assert result["summary"] == "Checkout total is wrong"
+    assert result["comments_error"].startswith("Jira API returned 401")
+    assert "ATATT-card-secret" not in result["comments_error"]
+    assert "REDACTED" in result["comments_error"]
+    assert "ATATT-card-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_get_issue_context_requires_issue_key():
+    result = await JiraTool()._op_get_issue_context({}, _CardClient(), _ctx())
+
+    assert result["error"] == "issue_key is required"
+
+
+# ---------------------------------------------------------------------------
+# get_comment — reading back exactly what was just written
+# ---------------------------------------------------------------------------
+
+
+class _CommentClient:
+    """Duck-typed client for the single-comment read."""
+
+    def __init__(self, body: str):
+        self.body = body
+        self.asked: list[tuple[str, str]] = []
+        self.base_url = "https://jira.example.com"
+        self.api_token = "ATATT-comment-secret"
+        self.email = "agent@example.com"
+
+    async def get_comment(self, key: str, comment_id: str) -> dict:
+        self.asked.append((key, comment_id))
+        return {"id": comment_id, "author": {"displayName": "QA"},
+                "body": self.body, "created": "2026-01-05"}
+
+
+@pytest.mark.asyncio
+async def test_get_comment_fetches_only_the_requested_comment():
+    tool = JiraTool()
+    client = _CommentClient("design summary")
+
+    result = await tool._op_get_comment(
+        {"issue_key": "DDM-1", "comment_id": "10042"}, client, _ctx())
+
+    assert client.asked == [("DDM-1", "10042")]
+    assert result["issue_key"] == "DDM-1"
+    assert result["comment"]["id"] == "10042"
+    assert result["comment"]["body"] == "design summary"
+    assert "truncated" not in result["comment"]
+
+
+@pytest.mark.asyncio
+async def test_get_comment_flags_a_truncated_read_back():
+    """A silently truncated read-back would look like the write itself was cut."""
+    tool = JiraTool()
+    client = _CommentClient("x" * 9000)
+
+    result = await tool._op_get_comment(
+        {"issue_key": "DDM-1", "comment_id": "10042"}, client, _ctx())
+
+    comment = result["comment"]
+    assert comment["truncated"] is True
+    assert comment["body_length"] == 9000
+    assert len(comment["body"]) < 9000
+
+
+@pytest.mark.asyncio
+async def test_get_comment_requires_both_ids():
+    result = await JiraTool()._op_get_comment(
+        {"issue_key": "DDM-1"}, _CommentClient("body"), _ctx())
+
+    assert result["error"] == "issue_key and comment_id are required"

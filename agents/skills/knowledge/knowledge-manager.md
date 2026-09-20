@@ -39,6 +39,7 @@ To initialize a project knowledge directory, use `filesystem(operation="create_d
 | `permission-matrix.md` | Entitlement -> menu, page action, API, data-scope, or masking mappings | After permission docs, UI observation, API/code discovery, or role-difference checks |
 | `role-matrix.md` | Executable role archetypes, observed accounts, capability bundles, minimum entitlements | After account discovery, role exploration, or permission-baseline corrections |
 | `test-patterns.md` | Reusable testing strategies and patterns | Extract after design is completed |
+| `test-data-setup.md` | Verified recipes for creating test data: channel, endpoint, required fields, preconditions, verify read, bulk shape, cleanup | Write the recipe back the moment a creation path is verified — before the spec is generated, not at the end of the task |
 | `data-source-map.md` | Data source inventory: type, environment, access via `secret_ref`, owner, refresh frequency (data-analysis projects) | During onboarding; when sources or access change |
 | `data-model.md` | Core tables with layer/granularity, fact-dimension relationships, data quality rules | When table model or quality rules change |
 | `data-pipelines.md` | ETL/ELT job inventory, schedules, dependencies, backfill and failure handling | When jobs or schedules change |

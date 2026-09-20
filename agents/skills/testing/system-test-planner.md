@@ -26,7 +26,7 @@ Do NOT use this skill for single Jira card test design (that is `testing/test-de
 
 ## System Inventory Method
 
-Inventory sources, read order, and the Git/code fallback rule follow the workflow (Step 2): `system-architecture` → `page-map` → `api-map` → `kong-map` → `permission-matrix`/`role-matrix` → `test-patterns` → `login-and-user-switch` → `environment` — skip a source only when it does not exist for the project. Produce the inventory as `module × entry points (UI page / API / job)` with the knowledge source for each entry; when knowledge is absent or stale, fall back to Git history / code reading and write findings back to knowledge afterwards (see Feedback Into Knowledge).
+Inventory sources, read order, and the Git/code fallback rule follow the workflow (Step 2): `system-architecture` → `page-map` → `api-map` → `kong-map` → `permission-matrix`/`role-matrix` → `test-patterns` → `test-data-setup` → `login-and-user-switch` → `environment` — skip a source only when it does not exist for the project. Files without `knowledge_level: detail` are already in context; fetch the `detail` ones in one `knowledge_rw(operation="read", slugs=[...])` call. Produce the inventory as `module × entry points (UI page / API / job)` with the knowledge source for each entry; when knowledge is absent or stale, fall back to Git history / code reading and write findings back to knowledge afterwards (see Feedback Into Knowledge).
 
 ## Coverage Dimension Application
 
@@ -72,6 +72,7 @@ Secret prompts return only an opaque status — never request or echo plaintext 
 ## Feedback Into Knowledge
 
 - New coverage patterns / reusable strategies → `test-patterns.md`.
+- Verified data-creation recipes (and dead ends) → `test-data-setup.md` per `testing/test-data-setup`.
 - Verified accounts and their scope → `login-and-user-switch.md`.
 - Everything new → `history.md` entry.
 

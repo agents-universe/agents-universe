@@ -74,10 +74,30 @@ async def test_get_pages_keeps_list_input():
 
 
 @pytest.mark.asyncio
+async def test_get_pages_isolates_one_failing_page():
+    """A page that blows up must not sink the rest of the batch (the reason the
+    fetches run through gather), and results stay in the requested order."""
+    tool = ConfluenceTool()
+    client = _FakeClient()
+
+    result = await tool._op_get_pages({"page_ids": ["p1", "missing", "p3"]}, client)
+
+    assert [p["id"] for p in result["pages"]] == ["p1", "missing", "p3"]
+    assert result["count"] == 3
+    assert result["pages"][0]["body"] == "body-p1"
+    assert result["pages"][2]["body"] == "body-p3"
+    assert "KeyError" in result["pages"][1]["error"]
+
+
+@pytest.mark.asyncio
 async def test_http_error_body_redacts_credential(caplog):
     """Atlassian can echo the credential in 401 bodies — the resolved token
     must never reach the LLM/history inside the returned error message, nor
-    the log, which used to receive the raw body before the redaction pass."""
+    the log, which used to receive the raw body before the redaction pass.
+
+    A batch collects raised errors per item instead of letting them propagate,
+    so the redaction has to happen in the batch path itself, not only in
+    execute()'s handler."""
     import httpx
     from unittest.mock import AsyncMock, patch
     from agent_core.tools.confluence import ConfluenceTool
@@ -108,9 +128,10 @@ async def test_http_error_body_redacts_credential(caplog):
             _MinimalCtx(),
         )
 
-    assert result["error"].startswith("Confluence API returned 401")
-    assert "ATATT-secret-token-888" not in result["error"]
-    assert "REDACTED" in result["error"]
+    error = result["pages"][0]["error"]
+    assert error.startswith("Confluence API returned 401")
+    assert "ATATT-secret-token-888" not in error
+    assert "REDACTED" in error
     assert "ATATT-secret-token-888" not in caplog.text
 
 

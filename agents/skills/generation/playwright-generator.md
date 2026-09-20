@@ -27,17 +27,26 @@ test_generator(
 The tool performs the following automatically:
 
 1. Writes one spec file at `tests/generated/{slug}.spec.ts`, where `{slug}` is the issue key lowercased with non-alphanumeric characters replaced by `-` (e.g. `PROJ-456` → `proj-456.spec.ts`).
-2. Creates the `tests/` scaffold if missing (`package.json` with `@playwright/test`, `playwright.config.ts`, `tsconfig.json`).
+2. Creates the `tests/` scaffold if missing (`package.json` with `@playwright/test`, `playwright.config.ts`, `auth.setup.ts`, `tsconfig.json`), and upgrades `playwright.config.ts` in place when it is still an untouched earlier version of the generator's own file. Anything that was edited by hand is left alone.
 3. Adds a focused npm script `test:{slug}` to `tests/package.json` (e.g. `test:proj-456`).
-4. Generates a **self-contained** spec: imports only `@playwright/test`, embeds a login helper (unless `include_login=false`), groups cases with `test.describe('{issue_key}')`, and renders each case as a `test(...)` block with step actions and assertions. There is no framework runtime wrapper — do not import anything from `src/orchestration` or call functions like `runGeneratedCase`; they do not exist.
+4. Generates a **self-contained** spec: imports only `@playwright/test`, groups cases with `test.describe('{issue_key}')`, and renders each case as a `test(...)` block with step actions and assertions. There is no framework runtime wrapper — do not import anything from `src/orchestration` or call functions like `runGeneratedCase`; they do not exist.
+
+## Run Shape
+
+The scaffold signs in **once per run** (`auth.setup.ts` stores the session, the chromium project hands it to every spec), so cases do not log in themselves and the spec carries no login helper. Consequences:
+
+- A case that signs in, signs out, switches user, or checks permissions is detected from its title and steps and is run **signed out**, signing in itself. That is deliberate — the session is what such a case exercises.
+- Pass `include_login=false` only when the cases need no session at all (public pages); they then run with an explicitly signed-out context.
+- Cases in one spec **run in parallel**, so one case may not depend on another's effects. A step sequence that only makes sense as a continuation belongs in a single case.
+- The tool reports `scaffold_updates` when it created or upgraded something — read it, because the spec shape follows the config version. A spec generated before that upgrade still signs in inside every case: delete it and generate again rather than re-running it.
+- A run with no credentials (`APP_USERNAME`/`APP_PASSWORD` unset) skips the sign-in and the cases that need it, and still runs the rest — not a failure to work around.
 
 ## Generation Principles
 
 1. Each test case in `test_cases` maps to one `test()` block; the filename comes from `issue_key` — no manual filename suffix.
-2. Provide `steps` as natural-language actions ("navigate to ...", "click ...", "fill ...", "select ..."); the tool converts them into best-effort Playwright actions. Review the generated spec and tighten selectors where the heuristic falls short.
+2. Provide `steps` as natural-language actions ("navigate to ...", "click ...", "fill ...", "select ..."); the tool converts them into best-effort Playwright actions. Review the generated spec and tighten selectors where the heuristic falls short. A step about what the page *shows* is not automatable and is emitted as a TODO — put those in `expected_results` instead.
 3. Provide `expected_results` as expectations ("... is visible", "URL contains ...", "text contains ...") so the tool can emit assertions.
 4. Set `output_dir` only when the project convention differs from `tests/generated`.
-5. If the product login flow is exercised inside each case instead, pass `include_login=false`.
 
 ## Upload Scenarios
 

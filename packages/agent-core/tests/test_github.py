@@ -1,4 +1,6 @@
 """Mock tests for GitHub tool: create_pr, fork, star operations."""
+import asyncio
+import re
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -428,3 +430,184 @@ async def test_search_without_a_token_points_at_the_offline_catalog():
 
     assert "Git token not configured" in result["error"]
     assert "list_sources" in result["hint"]
+
+
+# ---------------------------------------------------------------------------
+# get_pr_details — a card's PRs in one call
+# ---------------------------------------------------------------------------
+
+
+class _Resp:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"Client error '{self.status_code}'",
+                request=httpx.Request("GET", "https://ghe.example/api/v3/x"),
+                response=self,
+            )
+
+
+class _PRHTTP:
+    """Canned GitHub responses keyed by the PR number in the URL.
+
+    Records the start/finish of every PR entry request so a test can prove the
+    details were fetched concurrently instead of one PR after another.
+    """
+
+    base = "https://ghe.example/api/v3"
+
+    def __init__(self, fail: set[int] | None = None):
+        self.fail = fail or set()
+        self.events: list[str] = []
+
+    async def get(self, url: str, headers: dict | None = None, params: dict | None = None):
+        tail = url[len(self.base):]
+        entry = re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/(\d+)", tail)
+        if entry:
+            self.events.append(f"start {tail}")
+            await asyncio.sleep(0.01)
+            self.events.append(f"end {tail}")
+            number = int(entry.group(1))
+            if number in self.fail:
+                return _Resp(404, {"message": "Not Found"})
+            return _Resp(200, {
+                "number": number, "title": f"PR {number}", "state": "open",
+                "user": {"login": "ann"}, "body": "why",
+                "base": {"ref": "main"}, "head": {"ref": f"feature/{number}", "sha": f"sha{number}"},
+            })
+        if tail == "/search/issues":
+            return _Resp(200, {"items": [
+                {"number": 7, "title": "PR 7", "state": "open",
+                 "repository_url": f"{self.base}/repos/team/svc",
+                 "html_url": f"{self.base}/repos/team/svc/pull/7"},
+            ]})
+        if tail == "/search/commits":
+            return _Resp(200, {"items": []})
+        if tail.endswith("/files"):
+            return _Resp(200, [{"filename": "a.ts", "status": "modified",
+                                "additions": 1, "deletions": 2}])
+        if tail.endswith("/commits"):
+            return _Resp(200, [{"sha": "abcdef1234567890", "commit": {"message": "fix"}}])
+        if tail.endswith("/reviews"):
+            return _Resp(200, [{"user": {"login": "rev"}, "state": "APPROVED",
+                                "body": "lgtm", "submitted_at": "2026-01-03"}])
+        if tail.endswith("/comments"):
+            return _Resp(200, [{"user": {"login": "com"}, "body": "any update?",
+                                "created_at": "2026-01-04"}])
+        if tail.endswith("/check-runs"):
+            return _Resp(200, {"check_runs": [{"name": "ci", "status": "completed",
+                                               "conclusion": "success"}]})
+        return _Resp(404, {})
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_fetches_all_prs_concurrently():
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"repository": "team/svc", "pr_numbers": [7, 8, 9]}, http.base, {}, http,
+    )
+
+    assert result["count"] == 3
+    assert [pr["number"] for pr in result["pull_requests"]] == [7, 8, 9]
+    # Reviews and comments travel with the detail — the review thread is what
+    # the QA/tech-lead workflows mean by "read the PR".
+    assert result["pull_requests"][0]["reviews"][0]["state"] == "APPROVED"
+    assert result["pull_requests"][0]["comments"][0]["body"] == "any update?"
+    assert result["pull_requests"][0]["files"][0]["filename"] == "a.ts"
+    # Every PR's entry request started before any of them finished.
+    starts = [i for i, e in enumerate(http.events)
+              if e in {f"start /repos/team/svc/pulls/{n}" for n in (7, 8, 9)}]
+    ends = [i for i, e in enumerate(http.events)
+            if e in {f"end /repos/team/svc/pulls/{n}" for n in (7, 8, 9)}]
+    assert len(starts) == 3
+    assert max(starts) < min(ends)
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_isolates_one_failed_pr():
+    """One unreachable PR must not sink the card's other PRs, and the error
+    carries no upstream body."""
+    http = _PRHTTP(fail={8})
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"repository": "team/svc", "pr_numbers": [7, 8, 9]}, http.base, {}, http,
+    )
+
+    assert result["count"] == 3
+    failed = result["pull_requests"][1]
+    assert failed["number"] == 8
+    assert failed["repository"] == "team/svc"
+    assert "GitHub API returned 404" in failed["error"]
+    assert result["pull_requests"][0]["title"] == "PR 7"
+    assert result["pull_requests"][2]["title"] == "PR 9"
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_accepts_a_stringified_pr_number_list():
+    """LLM 把数组参数传成 '7,8' 时不能逐字符迭代。"""
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"repository": "team/svc", "pr_numbers": "7, 8"}, http.base, {}, http,
+    )
+
+    assert [pr["number"] for pr in result["pull_requests"]] == [7, 8]
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_reports_unparsable_numbers_as_skipped():
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"repository": "team/svc", "pr_numbers": ["7", "abc"]}, http.base, {}, http,
+    )
+
+    assert result["count"] == 1
+    assert result["skipped"] == ["abc"]
+    assert result["pull_requests"][0]["title"] == "PR 7"
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_caps_the_batch():
+    """A wide jira_key search must not fan out into dozens of concurrent reads."""
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"repository": "team/svc", "pr_numbers": list(range(1, 26))}, http.base, {}, http,
+    )
+
+    assert result["count"] == 20
+    assert "start /repos/team/svc/pulls/21" not in http.events
+    assert all("error" not in pr for pr in result["pull_requests"])
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_resolves_prs_from_a_jira_key():
+    """The common QA shape: the card knows its key, not its PR numbers."""
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details(
+        {"jira_key": "DDM-1"}, http.base, {}, http,
+    )
+
+    assert result["count"] == 1
+    assert result["pull_requests"][0]["number"] == 7
+    assert result["pull_requests"][0]["title"] == "PR 7"
+
+
+@pytest.mark.asyncio
+async def test_get_pr_details_requires_a_target():
+    http = _PRHTTP()
+
+    result = await GitHubTool()._op_get_pr_details({"repository": "team/svc"}, http.base, {}, http)
+
+    assert "no PRs to fetch" in result["error"]

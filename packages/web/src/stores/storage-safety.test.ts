@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from './auth'
 import { useProjectStore } from './project'
 import { useAgentStore } from './agent'
 import { useFavoritesStore } from './favorites'
@@ -76,6 +77,11 @@ describe('stores survive localStorage failures', () => {
   })
 
   it('favorites store: setItem throwing does not break toggling', () => {
+    // Without a signed-in user and a current project the agent side has no
+    // storage scope at all and never writes — the assertions below would pass
+    // without exercising the write path.
+    useAuthStore().setUser({ userId: 'u-1', displayName: 'u-1' })
+    useProjectStore().currentProject = makeProject('p1')
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota exceeded')
     })
@@ -84,6 +90,8 @@ describe('stores survive localStorage failures', () => {
     expect(store.favoriteProjectIds).toContain('p1')
     expect(() => store.toggleProjectFavorite('p1')).not.toThrow()
     expect(store.favoriteProjectIds).not.toContain('p1')
+    expect(() => store.toggleAgentFavorite('analyst')).not.toThrow()
+    expect(store.favoriteAgentSlugs).toContain('analyst')
   })
 
   it('agent store: getItem throwing does not break reconcile or config restore', async () => {
@@ -110,11 +118,23 @@ describe('stores survive localStorage failures', () => {
     // JSON.parse succeeds but the value is not an array — every .map()
     // consumer (resolvedFavorite*) would crash on a raw object/string.
     localStorage.setItem('agents-universe:favoriteProjectIds', '{}')
-    localStorage.setItem('agents-universe:favoriteAgentSlugs', '"abc"')
     const store = useFavoritesStore()
     expect(store.favoriteProjectIds).toEqual([])
-    expect(store.favoriteAgentSlugs).toEqual([])
     expect(() => store.resolvedFavoriteProjects).not.toThrow()
+    expect(() => store.resolvedFavoriteAgents).not.toThrow()
+  })
+
+  it('favorites store: legacy agent list deleted, corrupt scoped value ignored', () => {
+    useAuthStore().setUser({ userId: 'u-1', displayName: 'u-1' })
+    useProjectStore().currentProject = makeProject('p1')
+    localStorage.setItem('agents-universe:favoriteAgentSlugs', '"abc"')
+    localStorage.setItem('agents-universe:agentFav:u-1:p1', '{oops')
+
+    const store = useFavoritesStore()
+    expect(localStorage.getItem('agents-universe:favoriteAgentSlugs')).toBeNull()
+    expect(store.addedAgentSlugs).toEqual([])
+    expect(store.removedAgentSlugs).toEqual([])
+    expect(store.favoriteAgentSlugs).toEqual([])
     expect(() => store.resolvedFavoriteAgents).not.toThrow()
   })
 

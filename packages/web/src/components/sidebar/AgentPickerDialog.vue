@@ -46,6 +46,11 @@
               <span class="picker-item-name">{{ agent.label }}</span>
               <span v-if="agent.description" class="picker-item-desc">{{ agent.description }}</span>
             </div>
+            <span
+              v-if="favoritesStore.isDefaultFavorite(agent.slug) && favoritesStore.isAgentFavorited(agent.slug)"
+              class="picker-default-tag"
+              :title="t('agentPicker.defaultFavoriteHint')"
+            >{{ t('agentPicker.defaultBadge') }}</span>
             <button
               class="picker-star"
               :class="{ favorited: favoritesStore.isAgentFavorited(agent.slug) }"
@@ -60,6 +65,17 @@
             {{ t('agentPicker.noMatches') }}
           </div>
         </div>
+
+        <div class="picker-footer">
+          <button
+            class="btn-ghost picker-reset-btn"
+            :disabled="!favoritesStore.hasAgentFavoriteOverrides"
+            :title="t('agentPicker.resetHint')"
+            @click="favoritesStore.resetAgentFavoritesToDefaults()"
+          >
+            <RotateCcw :size="14" /> {{ t('agentPicker.resetToDefaults') }}
+          </button>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -68,7 +84,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Star, Search, X } from 'lucide-vue-next'
+import { Bot, Star, Search, X, RotateCcw } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
@@ -101,9 +117,13 @@ const filteredAgents = computed(() => {
   )
 })
 
-const categoryOrder = ['agile-development', 'platform-assistant', 'security', 'customer-service', '']
+// '' must stay last: the grouping below uses `slice(0, -1)` as the set of
+// known categories, and the '' bucket collects everything not listed here.
+const categoryOrder = ['agile-development', 'data-analysis', 'office-docs', 'platform-assistant', 'security', 'customer-service', '']
 const categoryLabels: Record<string, string> = {
   'agile-development': t('agentPicker.categoryAgile'),
+  'data-analysis': t('agentPicker.categoryDataAnalysis'),
+  'office-docs': t('agentPicker.categoryOfficeDocs'),
   'platform-assistant': t('agentPicker.categoryPlatform'),
   'security': t('agentPicker.categorySecurity'),
   'customer-service': t('agentPicker.categoryCustomerService'),

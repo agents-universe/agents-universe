@@ -419,6 +419,19 @@
   background: var(--bg-tertiary);
 }
 
+/* 「默认」标记:该智能体因项目分类而默认收藏,不是用户手动收藏的 */
+.picker-default-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 5px;
+  margin-right: 2px;
+  border-radius: 4px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+
 .add-project-btn {
   background: none;
   border: 1px solid var(--border);
@@ -4522,6 +4535,16 @@ textarea:focus-visible {
 }
 
 .picker-create-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  width: 100%;
+  justify-content: center;
+}
+
+/* 恢复分类默认收藏:只在收藏偏离默认时可用 */
+.picker-reset-btn {
   display: flex;
   align-items: center;
   gap: 6px;

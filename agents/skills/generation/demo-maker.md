@@ -1,6 +1,6 @@
 ---
 slug: "generation/demo-maker"
-description: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), styled after the project's own business system style — reuses an existing demo's style or delegates a QA style investigation; implementation is handed to @Tech Lead, runtime verification to @QA"
+description: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), styled after the project's own business system style — reuses an existing demo's style or delegates a QA style investigation; implementation goes to tech-lead, runtime verification to quality-assurance"
 type: "guidance"
 triggers:
   - "demo"
@@ -24,7 +24,7 @@ tools:
 
 # Skill: Demo Maker
 
-Turn a creative idea or requirement into a **single-page product demo**: one self-contained HTML file styled after the **project's own business system style**, delivered in-platform via `/api/media/` with zero runtime errors. Three roles collaborate — the Product Owner coordinates (clarify, obtain style baseline, produce spec, accept), **Tech Lead implements** (writes the single-file HTML), **QA investigates style and verifies runtime behavior**. Follow `workflows/demo-generation.workflow.md` for the collaboration sequence; this skill defines the technical contract.
+Turn a creative idea or requirement into a **single-page product demo**: one self-contained HTML file styled after the **project's own business system style**, delivered in-platform via `/api/media/` with zero runtime errors. Three roles collaborate — the Product Owner coordinates (clarify, obtain style baseline, produce spec, accept), **Tech Lead implements** (writes the single-file HTML), **QA investigates style and verifies runtime behavior**. Follow `workflows/demo-generation.workflow.md` for the collaboration sequence — the hand-offs between those three roles run through `delegate_agent` inside the Product Owner's own turn; this skill defines the technical contract.
 
 Boundaries: presentations → `[[office/web-slides]]`; pure charts/dashboards → `[[analysis/dataviz]]`; office documents → `[[office/docx]]` / `[[office/xlsx]]` / `[[office/pptx]]`. This skill owns single-page interactive demo pages.
 

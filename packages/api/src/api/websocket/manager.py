@@ -31,6 +31,9 @@ class ConnectionManager:
         self._session_memories: dict[str, list[dict]] = {}  # Ephemeral session notes per conversation
         self._lock = asyncio.Lock()
         self._claimed_turns: set[str] = set()  # conversations with an in-flight turn claim
+        # Serializes delegated (nested) turns per conversation — see
+        # delegation_gate().
+        self._delegation_gates: dict[str, asyncio.Lock] = {}
         self._turn_guard = asyncio.Lock()
         # Messages received while a turn is claimed but before the session is
         # registered (the history-load window) — drained into the session by
@@ -55,6 +58,10 @@ class ConnectionManager:
     def release_turn(self, conversation_id: str) -> None:
         """Release a turn claim. Idempotent — safe on any turn end path."""
         self._claimed_turns.discard(conversation_id)
+        # Only top-level turns release the claim, so no delegation can still be
+        # in flight here — dropping the gate keeps a finished conversation from
+        # leaking one lock per delegation.
+        self._delegation_gates.pop(conversation_id, None)
 
     def is_turn_active(self, conversation_id: str) -> bool:
         """True while an agent turn runs on this conversation.
@@ -172,6 +179,25 @@ class ConnectionManager:
 
     def get_abort_event(self, conversation_id: str) -> asyncio.Event | None:
         return self._abort_events.get(conversation_id)
+
+    def delegation_gate(self, conversation_id: str) -> asyncio.Lock:
+        """Return the conversation's delegation lock, creating it if absent.
+
+        A single turn can fan out (``plan_task`` runs up to three tasks in
+        parallel, and each may delegate), and two nested turns in one
+        conversation would interleave their child messages and race for the
+        same message sequence number. Serializing them keeps the transcript
+        deterministic.
+
+        Only the outermost delegation of a chain acquires this: a descendant
+        inherits the already-held gate instead of re-entering it, which would
+        deadlock (the ancestor holds it for the whole of its child's turn).
+        """
+        gate = self._delegation_gates.get(conversation_id)
+        if gate is None:
+            gate = asyncio.Lock()
+            self._delegation_gates[conversation_id] = gate
+        return gate
 
     def ensure_abort_event(self, conversation_id: str) -> asyncio.Event:
         """Return the conversation's abort event, creating it if absent.

@@ -13,6 +13,8 @@ tools:
   - web_fetch
   - filesystem
   - plan_task
+  - delegate_agent
+  - list_agents
 skills:
   - integration/custom-api-onboarding
   - integration/custom-api-consumer

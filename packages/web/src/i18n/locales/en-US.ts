@@ -232,6 +232,22 @@ export default {
   toolCall: {
     input: 'Input',
     output: 'Output',
+    // A delegated subtask is the agent handing work to a colleague, not a
+    // function call — the card says so in words and shows the brief.
+    delegateTo: '→ Delegated to {agent}',
+    delegateBrief: 'Brief',
+    delegateReason: 'Why',
+    delegateSummary: 'Result',
+    delegateCancelled: 'The agent stopped before reporting back.',
+    delegateTokens: '{count} tokens',
+    delegateDuration: '{seconds}s',
+    delegateStatus: {
+      ok: 'done',
+      timeout: 'timed out',
+      error: 'failed',
+      refused: 'refused',
+      aborted: 'stopped',
+    },
   },
   messageBubble: {
     interrupted: '(interrupted)',

@@ -52,6 +52,8 @@ _OPTIONAL_TOOL_MODULES = {
     "git_repo":           ("agent_core.tools.git_repo",           "GitRepoTool"),
     "repo_graph":         ("agent_core.tools.repo_graph",         "RepoGraphTool"),
     "skill_source":       ("agent_core.tools.skill_source",       "SkillSourceTool"),
+    "delegate_agent":     ("agent_core.tools.agent_delegate",     "AgentDelegateTool"),
+    "list_agents":        ("agent_core.tools.agent_delegate",     "ListAgentsTool"),
 }
 
 

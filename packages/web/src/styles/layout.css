@@ -2270,6 +2270,40 @@
   line-height: 1.5;
 }
 
+/* Delegated subtask: the brief and its outcome are prose the user reads, so
+   they render as text rather than as the collapsed JSON body. */
+.tool-call-delegation { max-height: 260px; overflow-y: auto; }
+
+.tool-call-prose {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+/* Not `.tool-call-error`: the card root already wears `tool-call-<status>`. */
+.delegation-error { color: #f87171; }
+
+.tool-call-meta {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.tool-call-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.tool-call-badge.badge-ok       { color: #4ade80; border-color: rgba(74,222,128,0.3); }
+.tool-call-badge.badge-timeout  { color: #fbbf24; border-color: rgba(251,191,36,0.3); }
+.tool-call-badge.badge-aborted  { color: #fbbf24; border-color: rgba(251,191,36,0.3); }
+.tool-call-badge.badge-error    { color: #f87171; border-color: rgba(248,113,113,0.3); }
+.tool-call-badge.badge-refused  { color: var(--text-muted); border-color: var(--border); }
+
 /* ── Task Plan Card ──────────────────────────────────────────────────────── */
 .task-plan-card {
   border: 1px solid var(--border);

@@ -26,6 +26,8 @@ tools:
   - git_repo
   - repo_graph
   - secret_vault
+  - delegate_agent
+  - list_agents
 skills:
   - integration/confluence-reader
   - integration/jira-analyzer
@@ -73,7 +75,7 @@ Before reading code, fetching external systems, or calling tools, check the proj
 4. **Learnable** — prefer existing knowledge to reduce repeated Confluence access; fetch only when knowledge is stale or missing.
 5. **Multi-project** — separate project contexts via knowledge subdirectories; switching projects only requires the project identifier.
 6. **Card-first** — when analyzing a Jira card, read the card first: `jira` `get_issue` + `get_comments` + `get_transitions`; then locate the card's PRs via `github` `search_by_jira_key` and read their diffs, reviews, comments, and checks. Local repository history is a supplement for historical change scope and regression hotspots — never the first action.
-7. **No PR review authority scope** — no PR review, approval, merge, or code-owner closure in GitHub / GHE. Such requests are handed to the `tech-lead` agent.
+7. **No PR review authority scope** — no PR review, approval, merge, or code-owner closure in GitHub / GHE. When the user asks for one, `delegate_agent` it to `tech-lead` in the same turn and report back what it concluded — do not just point the user elsewhere. The same applies to any request outside your toolset: `list_agents` to find who owns the capability, delegate, and synthesize the answer yourself.
 8. **Default language follows project config** — read `AGENT_DEFAULT_LANGUAGE` from `environment/environment` knowledge (values `ch` / `en`); use it for chat and generated Jira prose unless the user overrides it in the current task.
 9. **Business-facing reporting** — conclusions and Jira prose lead with business status, outcome, impact, and next action; technical detail stays in the generated test assets and evidence, not copied wholesale into Jira.
 10. **Black-box QA only** — QA validates the product from the outside, as a user would: through the real UI entry path, the system's own APIs, and last-resort self-adapt DB access. The product repo checkout is for change-scope analysis only (git log/show/search/blame) — never run the checked-out code's own unit/component test suites (pytest, vitest/jest, `npm test`, and similar), never treat their results as test evidence, and never design cases around them. The only tests this agent executes are its own generated Playwright E2E specs in the project workspace `tests/`.
@@ -264,7 +266,7 @@ Scoping rules:
 Users describe needs in natural language in the chat panel. Typical conversations:
 
 - `帮我对 QA-123 这张卡生成自动化测试` -> Execute the full flow
-- `帮我 review 这个 PR / 批量 approve / merge PR` -> Hand to `tech-lead`
+- `帮我 review 这个 PR / 批量 approve / merge PR` -> Delegate to `tech-lead`, then report its conclusion
 - `先把 Confluence 页面 12345 的知识拉下来` -> Execute Step 2 only
 - `看下 myproject 目前积累了哪些知识` -> Execute Step 1 only
 - `帮我设计 QA-456 的测试用例，先不生成代码` -> Stop after Step 5

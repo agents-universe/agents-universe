@@ -99,6 +99,32 @@ async def test_abort_emits_user_selection_cancelled():
     assert cancelled[0].data["reason"] == "aborted"
 
 
+async def test_task_cancellation_emits_user_selection_cancelled():
+    """Cancelled mid-question (delegated turn timeout, teardown): the dialog
+    must still be dismissed, and the prompt must not leak in the session."""
+    s = ConversationSession("c1", "p1", "u1")
+    collector = asyncio.create_task(_collect_events(s))
+
+    task = asyncio.create_task(
+        s.request_user_selection("pc1", "field", "Approve?", timeout=300)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await s.close()
+    events = await asyncio.wait_for(collector, timeout=2)
+
+    cancelled = [e for e in events if e.type == "user_selection_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0].data["prompt_id"] == "pc1"
+    assert cancelled[0].data["reason"] == "cancelled"
+    assert "pc1" not in s._pending_prompts
+    assert s.pending_prompt_events() == []
+
+
 async def test_normal_response_emits_no_cancel():
     """A prompt answered by the user must NOT emit user_selection_cancelled."""
     s = ConversationSession("c1", "p1", "u1")

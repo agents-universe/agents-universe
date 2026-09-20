@@ -23,6 +23,8 @@ tools:
   - github
   - api_request
   - confluence
+  - delegate_agent
+  - list_agents
 skills:
   - integration/pr-review-manager
   - integration/git-pr-manager

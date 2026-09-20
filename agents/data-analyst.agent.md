@@ -14,6 +14,8 @@ tools:
   - api_request
   - user_confirm
   - plan_task
+  - delegate_agent
+  - list_agents
 skills:
   - analysis/sql-crafter
   - analysis/local-file-analyst

@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_timezone: str = "Asia/Shanghai"
 
+    # Agent-to-agent delegation: an agent that lacks a capability hands the
+    # subtask to another agent (see services/delegation.py). Delegation is a
+    # privilege-escalation surface — a narrow agent can borrow a broad one's
+    # tools — so it has a kill switch, and any target agent may narrow its own
+    # targets with `delegates_to:` frontmatter.
+    agent_delegation_enabled: bool = True
+    # Depth counts nested turns: 2 allows root -> child -> grandchild, 0 disables.
+    agent_delegation_max_depth: int = 2
+    agent_delegation_timeout_seconds: int = 1800
+
 
     # Atlassian (base URL is system-level; tokens are per-user in DB)
     # Cloud:  https://example.atlassian.net  → basic auth, no sub-paths

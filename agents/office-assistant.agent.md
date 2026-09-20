@@ -11,6 +11,8 @@ tools:
   - shell
   - code_executor
   - user_confirm
+  - delegate_agent
+  - list_agents
 skills:
   - office/pptx
   - office/xlsx

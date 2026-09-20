@@ -11,6 +11,8 @@ tools:
   - api_request
   - user_confirm
   - plan_task
+  - delegate_agent
+  - list_agents
 skills:
   - knowledge/knowledge-manager
   - integration/repo-file-reader

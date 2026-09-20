@@ -194,6 +194,52 @@ Output: {tasks: [{id, title, tools_needed, depends_on, estimated_complexity}]}
 Called automatically by the agent when task mode is triggered.
 ```
 
+## list_agents
+
+Lists the agents this project can delegate to — the framework's own `agents/` plus the
+project's `{project_slug}--*` definitions. Roster entries carry `slug`, `display_name`,
+`description`, `category`, `skills`, `workflows`.
+
+```
+Inputs: query (str, optional — case-insensitive substring over slug/name/description/skills),
+        category (str, optional — exact match)
+Output: {agents: [{slug, display_name, description, category, skills, workflows}], total, note}
+```
+
+The agent itself and every agent already above it in the delegation chain are excluded, as are
+slugs outside the caller's `delegates_to` allowlist. Cross-project agents never appear.
+
+## delegate_agent
+
+Runs another agent on a self-contained subtask, inside the current turn, and returns what it
+did. The delegated agent gets the full conversation history (other agents' replies are prefixed
+`[display_name]:`), and its own reply is persisted as a normal assistant message attributed to
+its slug — it is visible to the user. The calling agent blocks until the subtask finishes, then
+writes the user-facing answer itself.
+
+```
+Inputs: agent (str — slug from list_agents),
+        brief (str — the full instruction; the agent has not seen your reasoning),
+        reason (str — the capability you lack, one sentence; shown to the user)
+Output: {status: "ok"|"timeout"|"error"|"refused"|"aborted", agent, agent_name, summary,
+         message_id, tokens_used, duration_ms, error?}
+```
+
+`summary` is the sub-agent's reply text, capped at 4000 characters (head and tail are kept,
+the middle is elided) — the whole reply is in the transcript under `message_id`, so a brief that
+needs a long artifact returned (a spec, a report) should ask for a compact verdict line plus the
+pointer, not for the artifact itself.
+
+The tool never raises: a failed subtask returns a `status` and the parent's turn continues.
+`refused` means the framework declined before starting a turn (unknown or cross-project slug,
+depth limit reached, a slug already in the chain, `delegates_to` violation, delegation disabled).
+A delegated agent may still ask the user to confirm a destructive action — that confirmation is
+routed to the same conversation.
+
+Controlled by `AGENT_DELEGATION_ENABLED` (kill switch), `AGENT_DELEGATION_MAX_DEPTH` (default 2,
+`0` disables) and `AGENT_DELEGATION_TIMEOUT_SECONDS` (default 1800). Both tools are optional
+modules — an agent that does not declare them in `tools:` never sees them.
+
 ## memory_rw
 
 Save/recall/update/archive agent memories. Three layers: session (ephemeral), personal (persistent), episodic (past conversation summaries).

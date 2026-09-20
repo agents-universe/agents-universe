@@ -232,6 +232,21 @@ export default {
   toolCall: {
     input: '输入',
     output: '输出',
+    // 委派是把活交给同事，不是一次函数调用——卡片要说人话，并把任务写清楚
+    delegateTo: '→ 委派给 {agent}',
+    delegateBrief: '任务',
+    delegateReason: '原因',
+    delegateSummary: '结果',
+    delegateCancelled: '该智能体在汇报前已停止。',
+    delegateTokens: '{count} tokens',
+    delegateDuration: '{seconds}s',
+    delegateStatus: {
+      ok: '已完成',
+      timeout: '超时',
+      error: '失败',
+      refused: '已拒绝',
+      aborted: '已停止',
+    },
   },
   messageBubble: {
     interrupted: '（已中断）',

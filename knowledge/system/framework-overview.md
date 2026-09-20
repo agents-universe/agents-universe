@@ -42,10 +42,25 @@ Cross-references use `[[slug]]`, resolved to `knowledge_id` at index time.
 
 ### Tool Registry (tools/)
 Core tools (always available): `filesystem`, `knowledge_rw`, `memory_rw`, `web_fetch`,
-`planner`, `sql_query`, `shell`.
+`planner` (declared as `plan_task`), `sql_query`, `shell`, `deliver_file`.
 Optional tools (lazy-loaded, enabled per agent): `browser_playwright`, `chart_renderer`,
 `code_executor`, `image_annotator`, `focus_template`, `user_confirm`, `jira`, `confluence`,
-`github`, `kong`, `api_request`, `test_generator`, `git_repo`.
+`github`, `kong`, `api_request`, `secret_vault`, `test_generator`, `script_writer`,
+`scheduler`, `git_repo`, `repo_graph`, `skill_source`, `delegate_agent`, `list_agents`.
+
+### Agent Delegation (delegation.py, tools/agent_delegate.py)
+An agent that lacks a capability can hand a subtask to another agent instead of telling the
+user to switch: `list_agents` shows the project's roster, `delegate_agent` runs one of them as
+a **nested turn** and returns its summary. The parent blocks on the tool call and then writes
+the final answer itself — the subtask is not a handoff of the conversation. The delegated
+agent's reply is persisted as its own message row with its own `agent_slug`, so the UI shows it
+with the usual "answered by X" attribution; its stream deltas, task events, abort acks and
+token updates are dropped rather than forwarded, because the parent's turn still owns those.
+Bounded by `AGENT_DELEGATION_MAX_DEPTH` (default 2, `0` disables), a per-conversation lock that
+serializes concurrent delegations, and `AGENT_DELEGATION_ENABLED` as a kill switch. Delegation
+is a privilege-escalation surface by design — a narrow agent can borrow a wider one — so the
+sub-agent's own confirmation gates still apply; `delegates_to` in an agent's frontmatter can
+narrow the roster it may reach.
 
 ### Skill System (skills/)
 Skills are Markdown files loaded on-demand. Four types:

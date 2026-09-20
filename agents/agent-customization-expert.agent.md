@@ -11,6 +11,8 @@ tools:
   - skill_source
   - github
   - plan_task
+  - delegate_agent
+  - list_agents
 skills:
   - knowledge/knowledge-manager
   - integration/repo-file-reader
@@ -72,7 +74,8 @@ token_budget: 100000
   token_budget: 100000
   ---
   ```
-- frontmatter `tools` 只能声明 registry 中真实存在的工具名：核心工具 `filesystem`、`knowledge_rw`、`memory_rw`、`web_fetch`、`plan_task`、`sql_query`、`shell`、`deliver_file`；可选工具 `browser_playwright`、`chart_renderer`、`code_executor`、`image_annotator`、`focus_template`、`user_confirm`、`jira`、`confluence`、`github`、`kong`、`api_request`、`secret_vault`、`test_generator`、`script_writer`、`scheduler`、`git_repo`、`repo_graph`、`skill_source`；需要 MCP 时写 `mcp`（全部已启用服务）或 `mcp:<slug>`（指定服务），不要写具体 MCP 工具名。保持最小能力集合，不声明不存在的引用。
+- frontmatter `tools` 只能声明 registry 中真实存在的工具名：核心工具 `filesystem`、`knowledge_rw`、`memory_rw`、`web_fetch`、`plan_task`、`sql_query`、`shell`、`deliver_file`；可选工具 `browser_playwright`、`chart_renderer`、`code_executor`、`image_annotator`、`focus_template`、`user_confirm`、`jira`、`confluence`、`github`、`kong`、`api_request`、`secret_vault`、`test_generator`、`script_writer`、`scheduler`、`git_repo`、`repo_graph`、`skill_source`、`delegate_agent`、`list_agents`；需要 MCP 时写 `mcp`（全部已启用服务）或 `mcp:<slug>`（指定服务），不要写具体 MCP 工具名。保持最小能力集合，不声明不存在的引用。
+- `delegate_agent` / `list_agents` 是**自动委派**能力：声明后该智能体在自己能力不足时可以请名册里的另一个智能体代做子任务并拿回结论。判断标准是「本行活但缺工具/缺专长」——不声明 `git_repo`/`jira` 却要操作仓库或工单就该委派，本行内的活不要委派。可选用 `delegates_to: [slug, ...]` 收窄可委派的目标（缺席=全名册）；被委派的子智能体若要动手做有副作用的操作（push、合并、删除）仍会向用户弹确认，所以**声明这两个工具不会绕过确认门**。框架自带的 10 个智能体都声明了这两个工具；定制项目智能体时按角色取舍，需要跨领域协作的（PO、QA、客服、集成类）加上。
 - 项目专属 skill / workflow 可以与全局同 slug 命名，项目版本会覆盖全局版本。
 - `definition_check.ok` 为 `true` 后再告知用户：「重新打开智能体选择器即可看到并选用，无需重启服务」；并主动建议用户试用，根据反馈继续迭代调整。
 

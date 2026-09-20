@@ -11,6 +11,8 @@ triggers:
 tools:
   - knowledge_rw
   - user_confirm
+  - delegate_agent
+  - list_agents
 ---
 
 # Skill: 客服应答规范
@@ -25,7 +27,7 @@ tools:
 
 - **可答**：知识库有明确答案 → 按规则 2 组织回答
 - **部分可答**：只答已确认的部分，其余明确说明「这一点我需要进一步确认」
-- **不可答**：不猜、不推断、不套用近似条目 → 转人工（support/escalation）
+- **不可答**：不猜、不推断、不套用近似条目 → 转人工（support/escalation）。唯一例外：缺的是**可查的事实**而自有接口查不到（库里的数、日志、批量统计）——先 `delegate_agent` 请对口智能体查回来；仍不可答再转人工
 
 ## 规则 2 — 回答结构
 

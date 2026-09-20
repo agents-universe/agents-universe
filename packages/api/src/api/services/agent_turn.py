@@ -36,10 +36,15 @@ import uuid as _uuid_mod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..logging_setup import correlation_ctx_var, request_id_var
 from ..websocket.manager import manager
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    # api.services.delegation imports run_turn from this module; the annotation
+    # below is a string (PEP 563), so a runtime import would only create a cycle.
+    from .delegation import DelegationContext
 
 _log = logging.getLogger("agents_universe.ws")
 
@@ -127,6 +132,7 @@ async def run_turn(
     transport: Transport | None = None,
     interactive: bool = True,
     actor_user_id: str | None = None,
+    delegation: DelegationContext | None = None,
 ) -> None:
     """Run the agent for the incoming user message and stream events back."""
     from api.config import get_settings
@@ -162,6 +168,13 @@ async def run_turn(
     # False until manager.register_session runs — a failure before that point
     # leaves the claim-window buffer belonging to a dead turn (see finally).
     session_registered = False
+
+    # A nested turn is a delegated agent running INSIDE the top-level turn of
+    # the same conversation. The conversation's turn claim, its registered
+    # session, its task rows and its run record all belong to that top-level
+    # turn, so every code path below that would touch them is guarded by this
+    # flag (see the G-numbered comments).
+    nested = delegation is not None
 
     req_token = request_id_var.set(str(_uuid_mod.uuid4())[:8])
     ctx_token = correlation_ctx_var.set({
@@ -470,46 +483,81 @@ async def run_turn(
             # Persist user message immediately so it survives agent crashes.
             # Validation + persistence share the helper used by in-flight
             # injections — same bounds, same row lock, same idempotency.
-            persist_result, persist_err = await _prepare_and_persist_user_message(
-                db, conversation_id, project_id, fs_path, content, attachments,
-                agent_slug=agent_config.slug,
-            )
-            if persist_err:
-                await _send_turn_error(
-                    transport, conversation_id, {"type": "error", "message": persist_err}
+            if nested:
+                # G16: the delegated brief is an instruction from another
+                # agent, not something the user said. Persisting it would put
+                # words in the user's mouth, let the auto-title pick the
+                # conversation's name from it, and take a row lock this turn
+                # has no use for. The brief reaches the child as its user
+                # message only (llm_user_content below).
+                attachment_records = []
+            else:
+                persist_result, persist_err = await _prepare_and_persist_user_message(
+                    db, conversation_id, project_id, fs_path, content, attachments,
+                    agent_slug=agent_config.slug,
                 )
-                return
-            attachment_records = persist_result.attachment_records
+                if persist_err:
+                    await _send_turn_error(
+                        transport, conversation_id, {"type": "error", "message": persist_err}
+                    )
+                    return
+                attachment_records = persist_result.attachment_records
 
             # Durable run record for background-turn feedback (a reopened
             # session sees status + partial text). Best-effort: tracking must
             # never fail the turn.
+            # G2: a nested turn writes no run record — the conversation's
+            # latest run drives the reopened-session notice and the partial
+            # snapshot, and a delegated child must not shadow the parent's.
             run_id: str = ""
-            try:
-                from api.services.conversation_runs import create_run
-                run_id = await create_run(conversation_id, str(persist_result.message_id))
-            except Exception:
-                _log.warning("create_run failed for %s", conversation_id, exc_info=True)
+            if not nested:
+                try:
+                    from api.services.conversation_runs import create_run
+                    run_id = await create_run(conversation_id, str(persist_result.message_id))
+                except Exception:
+                    _log.warning("create_run failed for %s", conversation_id, exc_info=True)
 
-            # Build session
+            # Build session. A nested turn's session carries a prompt sink: it
+            # is never registered with the manager, so a question asked by a
+            # delegated agent has to register on the top-level session — the
+            # only one the WS handler resolves answers through (G3).
             session = ConversationSession(
                 conversation_id=conversation_id,
                 project_id=project_id,
                 user_id=user_id,
                 token_budget=conv.token_budget,
                 tokens_used=conv.tokens_used,
+                prompt_sink=delegation.parent_session if nested else None,
             )
 
             # Register session so conversation_ws can route user_selection_response messages
-            manager.register_session(conversation_id, session)
-            session_registered = True
-            # Drain messages buffered during the claim window (session not yet
-            # registered) into the injection queue — the agent consumes them
-            # at its first step boundary.
-            for pending in manager.drain_pending_injections(conversation_id):
-                await _enqueue_injected_message(conversation_id, session, pending)
+            # G4: never in nested mode — this would replace the parent's
+            # registration (its answers and mid-run messages would be lost).
+            if not nested:
+                manager.register_session(conversation_id, session)
+                session_registered = True
+                # Drain messages buffered during the claim window (session not yet
+                # registered) into the injection queue — the agent consumes them
+                # at its first step boundary.
+                for pending in manager.drain_pending_injections(conversation_id):
+                    await _enqueue_injected_message(conversation_id, session, pending)
             # Inject session into tool context so tools can call request_user_selection
             tool_context.session = session
+            # G1: the context a delegate_agent call reads. The root turn seeds
+            # the chain with itself so depth/cycle checks have a starting point
+            # and reports/prompts flow through its own session.
+            from api.services.delegation import DelegationContext
+            from agent_core.delegation import read_delegation_policy
+            tool_context.delegation = (
+                delegation
+                if nested
+                else DelegationContext(
+                    chain=(agent_config.slug,),
+                    parent_session=session,
+                    actor_user_id=turn_user_id,
+                    policy=read_delegation_policy(agent_config_path),
+                )
+            )
 
             agent = Agent(
                 config=agent_config,
@@ -580,7 +628,24 @@ async def run_turn(
             # the conversation default. Say so in the LLM-facing message only -
             # the persisted row keeps the text exactly as the user typed it.
             llm_user_content = content
-            if (
+            if nested:
+                # G8: must come BEFORE the @-mention branch below. Every
+                # delegated agent differs from the conversation's default
+                # agent, so that branch would tell it "the user mentioned you"
+                # — inviting it to answer the user directly instead of
+                # reporting back to the agent that asked.
+                parent_slug = delegation.chain[-2] if len(delegation.chain) > 1 else None
+                llm_user_content = (
+                    f"{content}\n\n"
+                    f"[System note: you are running as a delegated sub-task for "
+                    f"@{parent_slug or 'another agent'}, not answering the user directly. "
+                    f"The instruction above was written by that agent, not by the user. "
+                    f"Report back to it: what you did, what you found, and anything it has "
+                    f"to decide. If you need an answer only the user can give, ask for it — "
+                    f"the question is routed to the user from here. Assistant replies in the "
+                    f"history prefixed with [name] were produced by other agents, not by you.]"
+                )
+            elif (
                 conv_default_agent_slug
                 and agent_config.slug != conv_default_agent_slug
                 and content.strip()
@@ -905,14 +970,21 @@ async def run_turn(
                             _deferred_task_ids.update(
                                 _norm_task_id(t) for t in (event.data.get("deferred_task_ids") or [])
                             )
-                        elif event.type == "task_plan_created":
+                        # G9: a delegated child's task plan is its own working
+                        # state. Persisting it would replace the parent's plan
+                        # in the UI (the frame carries the whole list) and let
+                        # its task_started/progress/completed frames rewrite the
+                        # parent's rows by id. The whole task family is skipped
+                        # for nested turns — the child's plan is not this
+                        # conversation's plan.
+                        elif event.type == "task_plan_created" and not nested:
                             await _persist_tasks(
                                 event_db, conversation_id, event.data.get("tasks", [])
                             )
                             await _persist_task_event(
                                 event_db, conversation_id, event.type, None, event.data
                             )
-                        elif event.type == "task_started":
+                        elif event.type == "task_started" and not nested:
                             await _update_task_status(
                                 event_db, conversation_id, event.data.get("task_id", ""), "running",
                                 current_step=event.data.get("current_step"),
@@ -925,7 +997,7 @@ async def run_turn(
                                 event_db, conversation_id, event.type,
                                 event.data.get("task_id"), event.data,
                             )
-                        elif event.type == "task_progress":
+                        elif event.type == "task_progress" and not nested:
                             await _update_task_progress(
                                 event_db, conversation_id, event.data.get("task_id", ""), event.data
                             )
@@ -933,7 +1005,10 @@ async def run_turn(
                                 event_db, conversation_id, event.type,
                                 event.data.get("task_id"), event.data,
                             )
-                        elif event.type in ("task_completed", "task_failed", "task_skipped"):
+                        elif (
+                            event.type in ("task_completed", "task_failed", "task_skipped")
+                            and not nested
+                        ):
                             await _persist_terminal_task_event(event_db, conversation_id, event)
                             if event.data.get("task_id"):
                                 # _norm_task_id keeps this set in sync with the
@@ -974,9 +1049,27 @@ async def run_turn(
             # register_session, the event was cleaned up and a Stop would
             # silently do nothing. Every running turn must own a watcher.
             abort_event = manager.ensure_abort_event(conversation_id)
+            # A nested turn shares the conversation's abort event (one Stop
+            # stops parent and children alike), plus a private one: the
+            # delegator sets it to stop a child that blew its timeout. Nothing
+            # else holds a handle on this turn's agent_task, so cancelling from
+            # outside would leave the agent running (awaiting a task does not
+            # propagate cancellation into it) and the turn would then block in
+            # the forward-drain below until the agent eventually finished.
+            _stop_events = [abort_event]
+            if nested and delegation.cancel_event is not None:
+                _stop_events.append(delegation.cancel_event)
             async def _watch_abort(_at: asyncio.Task = agent_task) -> None:
                 try:
-                    await abort_event.wait()
+                    if len(_stop_events) == 1:
+                        await abort_event.wait()
+                    else:
+                        _waiters = [asyncio.ensure_future(_ev.wait()) for _ev in _stop_events]
+                        try:
+                            await asyncio.wait(_waiters, return_when=asyncio.FIRST_COMPLETED)
+                        finally:
+                            for _w in _waiters:
+                                _w.cancel()
                     session.abort()
                     _at.cancel()
                 except Exception:
@@ -988,6 +1081,15 @@ async def run_turn(
             try:
                 await agent_task
             except asyncio.CancelledError:
+                if nested and not session.is_aborted():
+                    # A delegated turn is awaited inline inside its parent's
+                    # task, so a cancellation that did not come from our own
+                    # abort watcher (which aborts the session BEFORE cancelling
+                    # the agent) means the PARENT is being torn down. Swallowing
+                    # it here would let the parent resume a subtree that has
+                    # already unwound — and would swallow a user's Stop.
+                    agent_task.cancel()
+                    raise
                 _aborted = True
             except Exception as agent_exc:
                 _log.error(
@@ -1090,32 +1192,37 @@ async def run_turn(
             # the next turn's fresh rows are never touched. Aborted turns
             # become skipped (the work never ran — grey, not red); only
             # genuinely failed turns mark leftovers failed.
-            try:
-                from sqlalchemy import update as _sa_update
-                from api.models.conversation import AgentTask as _AgentTaskM
+            # G10: never in nested mode. The sweep is keyed by conversation,
+            # and `_terminal_task_ids` only knows the tasks THIS turn finished,
+            # so a delegated child would flip the parent's still-running rows to
+            # failed. The top-level turn sweeps on its own exit.
+            if not nested:
+                try:
+                    from sqlalchemy import update as _sa_update
+                    from api.models.conversation import AgentTask as _AgentTaskM
 
-                _sweep = _sa_update(_AgentTaskM).where(
-                    _AgentTaskM.conversation_id == conversation_id,
-                    _AgentTaskM.status.in_(("pending", "running")),
-                )
-                if _terminal_task_ids:
-                    _sweep = _sweep.where(_AgentTaskM.task_id.notin_(_terminal_task_ids))
-                if _deferred_task_ids:
-                    # Deferred by an in-flight injection — kept pending for the
-                    # agent's continuation instead of being swept to failed.
-                    _sweep = _sweep.where(_AgentTaskM.task_id.notin_(_deferred_task_ids))
-                _abort = session.is_aborted()
-                _stale = await event_db.execute(
-                    _sweep.values(
-                        status=("skipped" if _abort else "failed"),
-                        error_message=("Turn aborted" if _abort else "Agent execution ended without task completion"),
-                        completed_at=datetime.now(timezone.utc),
+                    _sweep = _sa_update(_AgentTaskM).where(
+                        _AgentTaskM.conversation_id == conversation_id,
+                        _AgentTaskM.status.in_(("pending", "running")),
                     )
-                )
-                if _stale.rowcount:
-                    await event_db.commit()
-            except Exception:
-                _log.debug("Finalize stale tasks failed for %s", conversation_id, exc_info=True)
+                    if _terminal_task_ids:
+                        _sweep = _sweep.where(_AgentTaskM.task_id.notin_(_terminal_task_ids))
+                    if _deferred_task_ids:
+                        # Deferred by an in-flight injection — kept pending for the
+                        # agent's continuation instead of being swept to failed.
+                        _sweep = _sweep.where(_AgentTaskM.task_id.notin_(_deferred_task_ids))
+                    _abort = session.is_aborted()
+                    _stale = await event_db.execute(
+                        _sweep.values(
+                            status=("skipped" if _abort else "failed"),
+                            error_message=("Turn aborted" if _abort else "Agent execution ended without task completion"),
+                            completed_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    if _stale.rowcount:
+                        await event_db.commit()
+                except Exception:
+                    _log.debug("Finalize stale tasks failed for %s", conversation_id, exc_info=True)
 
             await event_db.close()
             await tool_db.close()
@@ -1131,7 +1238,11 @@ async def run_turn(
                 await _transport_send(transport, conversation_id, {"type": "abort_ack"})
                 await _transport_send(transport, conversation_id, {"type": "stream_end", "message_id": None, "total_tokens": session.tokens_used})
 
-            manager.deregister_session(conversation_id)
+            # G11: the registered session belongs to the top-level turn — a
+            # nested turn deregistering it would break abort, the prompt reply
+            # route, and is_session_active() for the remainder of the parent.
+            if not nested:
+                manager.deregister_session(conversation_id)
 
             from sqlalchemy import update
             tokens_delta = session.tokens_used - conv.tokens_used
@@ -1193,8 +1304,10 @@ async def run_turn(
         # Deregister the session on every exit path (normal end already
         # deregistered; without this, an exception mid-turn leaves the
         # session registered forever and is_session_active() blocks every
-        # future message on the conversation).
-        manager.deregister_session(conversation_id)
+        # future message on the conversation). G12: never from a nested turn —
+        # that would deregister the parent's session on the way out.
+        if not nested:
+            manager.deregister_session(conversation_id)
         # Clean up the abort watcher on EVERY exit path (normal, error,
         # cancellation) — otherwise each failed/cancelled turn leaks a
         # watcher holding the closed session, the finished agent_task and
@@ -1215,19 +1328,31 @@ async def run_turn(
         # anything — its buffer belongs to a dead turn, and the next turn's
         # drain would inject stale messages into an unrelated turn. Discard
         # them; the UI's input_queued settles on the failed turn.
-        if not session_registered:
+        # G13: a nested turn never registered, so `session_registered` is False
+        # for it by construction — without the `not nested` guard it would
+        # unconditionally drop the parent turn's buffered injections.
+        if not nested and not session_registered:
             manager.discard_pending_injections(conversation_id)
-        # In-memory uploads and correlation context first: a reconnecting
-        # client can grab the turn claim the moment release_turn() runs, and
-        # drop_uploads() would then wipe the uploads the new turn is
-        # validating mid-flight ("Attachment expired"). Drop only uploads from
-        # BEFORE this turn — a file attached while the agent was running
-        # belongs to the user's next send, not to this turn's cleanup.
-        from api.routers.media import drop_uploads
-        drop_uploads(conversation_id, older_than=turn_started)
+        # G14: `turn_started` is the CHILD's start, so its cutoff would delete
+        # files the user attached while the parent was already running — the
+        # very race the comment below warns about, widened to the parent turn.
+        if not nested:
+            # In-memory uploads and correlation context first: a reconnecting
+            # client can grab the turn claim the moment release_turn() runs, and
+            # drop_uploads() would then wipe the uploads the new turn is
+            # validating mid-flight ("Attachment expired"). Drop only uploads from
+            # BEFORE this turn — a file attached while the agent was running
+            # belongs to the user's next send, not to this turn's cleanup.
+            from api.routers.media import drop_uploads
+            drop_uploads(conversation_id, older_than=turn_started)
         request_id_var.reset(req_token)
         correlation_ctx_var.reset(ctx_token)
-        manager.release_turn(conversation_id)
+        # G15: the turn claim (and, via release_turn, the delegation gate)
+        # belongs to the top-level turn. A nested turn releasing it would let a
+        # second WebSocket frame start a concurrent turn on this conversation
+        # while the parent is still mid-flight.
+        if not nested:
+            manager.release_turn(conversation_id)
         # provider.close() is the only remaining await: keep it last so a
         # cancellation landing here cannot skip the cleanup above.
         _agent = locals().get("agent")

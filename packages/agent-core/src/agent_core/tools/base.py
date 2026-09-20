@@ -129,12 +129,20 @@ class ToolContext:
         # record_start is in flight; None when not recording.
         self._browser_recording: dict | None = None
         self.mcp_manager = None  # McpConnectionManager, lazily set by attach_mcp_tools
+        # Opaque delegation state for the `delegate_agent` / `list_agents`
+        # tools, built by the API layer (api.services.delegation). None means
+        # this run cannot delegate at all — a headless agent-core run, or a
+        # turn whose app wiring predates the feature. agent-core never
+        # introspects it: it is handed straight back to the API on a call.
+        self.delegation: Any = None
 
     def copy_for_task(self, task_id: str, turn: int) -> "ToolContext":
         """Shallow copy for parallel task isolation.
 
         Shares browser, http_client, db_session, project_context, mcp_manager,
-        _browser_lock, _tool_registry (all asyncio-safe or read-only).
+        _browser_lock, _tool_registry, delegation (all asyncio-safe or
+        read-only — the delegation context is frozen, so parallel plan tasks
+        delegating concurrently cannot corrupt each other's chain).
         Owns independent current_task_id / current_turn so tools emit events
         with the correct task ownership during concurrent execution.
         """

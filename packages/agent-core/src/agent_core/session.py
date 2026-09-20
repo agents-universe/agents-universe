@@ -68,6 +68,7 @@ class ConversationSession:
         user_id: str,
         token_budget: int = 128000,
         tokens_used: int = 0,
+        prompt_sink: "ConversationSession | None" = None,
     ) -> None:
         self.conversation_id = conversation_id
         self.project_id = project_id
@@ -85,6 +86,13 @@ class ConversationSession:
         # part of the message history — so the transport layer replays these
         # when a client reconnects (conversation switch, page reload).
         self._pending_prompt_events: dict[str, dict[str, Any]] = {}
+        # A delegated (nested) turn runs its own session — it needs its own
+        # event queue — but a user's answer is routed by the WS handler through
+        # the conversation's *registered* session. Prompts therefore register
+        # on the sink (the top-level session) and record their owning session,
+        # so answering one also lifts that session's prompt pause.
+        self._prompt_sink: ConversationSession | None = prompt_sink
+        self._prompt_owners: dict[str, ConversationSession] = {}
         # Interactive-prompt ledger, keyed by a caller-supplied signature
         # (field key + question). Tool-level callers use it to hand back a
         # repeated question's recorded outcome instead of showing the dialog
@@ -284,6 +292,26 @@ class ConversationSession:
             if outcome.status == "answered"
         }
 
+    def _prompt_store(self) -> "ConversationSession":
+        """The session that owns prompt bookkeeping: this one, or the sink.
+
+        A delegated turn's session is deliberately not registered with the
+        connection manager (the top-level turn owns that registration), and the
+        WS handler resolves an answer through the conversation's registered
+        session. Registering prompts on the sink is what makes a question asked
+        by a delegated agent answerable at all.
+        """
+        store = self
+        while store._prompt_sink is not None:
+            store = store._prompt_sink
+        return store
+
+    def _note_owner_present(self, prompt_id: str) -> None:
+        """Lift the pause on whoever asked, when this session holds the prompt."""
+        owner = self._prompt_owners.get(prompt_id)
+        if owner is not None and owner is not self:
+            owner._note_user_present()
+
     async def request_user_selection(
         self,
         prompt_id: str,
@@ -338,7 +366,10 @@ class ConversationSession:
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
-        self._pending_prompts[prompt_id] = fut
+        store = self._prompt_store()
+        store._pending_prompts[prompt_id] = fut
+        if store is not self:
+            store._prompt_owners[prompt_id] = self
 
         event_data: dict[str, Any] = {
             "prompt_id": prompt_id,
@@ -369,7 +400,7 @@ class ConversationSession:
         # Register the payload BEFORE emitting: a client connecting in the
         # window between the emit and this line would get a sync event that
         # replays nothing, and the dialog would be lost until the next prompt.
-        self._pending_prompt_events[prompt_id] = event_data
+        store._pending_prompt_events[prompt_id] = event_data
         await self.emit("user_selection_required", **event_data)
         # Also wake on abort: once the session is aborted the UI has closed
         # this prompt's path (emit can even fail with a full queue) and the
@@ -382,10 +413,27 @@ class ConversationSession:
                 timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+        except asyncio.CancelledError:
+            # Torn down mid-question (a delegated turn hitting its timeout, or
+            # a Stop that cancelled the run outright). Neither the timeout nor
+            # the abort arm below runs on this path, so without this notice the
+            # client keeps a dialog nobody can ever answer.
+            try:
+                await self.emit(
+                    "user_selection_cancelled",
+                    prompt_id=prompt_id,
+                    field_key=field_key,
+                    reason="cancelled",
+                )
+            except BaseException:
+                # Best effort — the notice must never mask the cancellation.
+                pass
+            raise
         finally:
             abort_waiter.cancel()
-            self._pending_prompts.pop(prompt_id, None)
-            self._pending_prompt_events.pop(prompt_id, None)
+            store._pending_prompts.pop(prompt_id, None)
+            store._pending_prompt_events.pop(prompt_id, None)
+            store._prompt_owners.pop(prompt_id, None)
         if not done:
             # The client must dismiss the dialog it is still showing for this
             # prompt — otherwise the UI keeps a zombie prompt that never
@@ -421,6 +469,7 @@ class ConversationSession:
         if fut is not None and not fut.done():
             fut.set_result(value)
             self._note_user_present()
+            self._note_owner_present(prompt_id)
             return True
         return False
 
@@ -435,6 +484,7 @@ class ConversationSession:
             status = "secret_saved" if saved else "secret_save_failed"
             fut.set_result(status)
             self._note_user_present()
+            self._note_owner_present(prompt_id)
             return True
         return False
 

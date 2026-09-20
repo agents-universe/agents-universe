@@ -798,4 +798,14 @@ async def script_run_ws(run_id: str, ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        await ws.close()
+        # Idempotent close: the client may have already dropped - either a
+        # mid-stream WebSocketDisconnect (caught above) or a disconnect right
+        # after our terminal "done"/"error" event. In both cases uvicorn has
+        # already answered with a close frame, and calling close() again makes
+        # Starlette raise RuntimeError("Cannot call send once a close message
+        # has been sent"), surfacing as a 500 in the script-run pane. Swallow
+        # the already-closed cases only; anything else still propagates.
+        try:
+            await ws.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass

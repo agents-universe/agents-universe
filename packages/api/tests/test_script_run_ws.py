@@ -101,6 +101,43 @@ async def test_script_run_ws_session_mode_still_closes_without_cookie(monkeypatc
     assert 4001 in codes
 
 
+@pytest.mark.asyncio
+async def test_script_run_ws_double_close_after_done_is_idempotent(monkeypatch):
+    """A client that drops right after the terminal "done" event must not 500.
+
+    Regression guard for the idempotent finally-close: after the client
+    disconnects (or uvicorn answers the close handshake), Starlette's
+    WebSocket.close() raises RuntimeError("Cannot call send once a close
+    message has been sent") on a second call. The handler must swallow that
+    already-closed case instead of letting it escape as a 500 in the
+    script-run pane.
+    """
+    from api.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "auth_bypass_enabled", True)
+    monkeypatch.setattr(settings, "auth_bypass_user_id", "dev-user")
+    monkeypatch.setattr("api.config.get_settings", lambda: settings)
+    monkeypatch.setattr("api.database.AsyncSessionLocal", lambda: _FakeSession(_fake_run_row()))
+
+    ws = _fake_ws()
+    # After the client drops, Starlette's close() raises RuntimeError
+    # ("Cannot call send once a close message has been sent"). This is the
+    # exact failure the idempotent finally-close swallows.
+    ws.close = AsyncMock(
+        side_effect=RuntimeError("Cannot call \"send\" once a close message has been sent.")
+    )
+
+    # Must not raise; the RuntimeError from the already-closed socket is
+    # swallowed by the idempotent close.
+    await script_run_ws("run-123", ws)
+
+    ws.accept.assert_awaited_once()
+    ws.close.assert_awaited_once()
+    sent = [c.args[0] for c in ws.send_json.call_args_list if c.args]
+    assert any(m.get("type") == "done" and m.get("status") == "completed" for m in sent)
+
+
 def test_script_run_ws_route_has_no_api_prefix():
     """/api/ws/... must not reach the handler — proxies don't upgrade there.
 
@@ -137,3 +174,38 @@ def test_script_run_ws_handshakes_through_real_route():
     finally:
         client.close()
     assert excinfo.value.code == 4003
+
+
+@pytest.mark.asyncio
+async def test_script_run_ws_midstream_disconnect_close_swallowed(monkeypatch):
+    """A client that drops mid-stream must not re-raise on the finally-close.
+
+    Starlette's WebSocketDisconnect is raised from send_json when the client
+    drops; the handler catches it, then the finally-close tries to send a
+    close frame on an already-closed socket and Starlette raises RuntimeError
+    ("Cannot call send once a close message has been sent"). Both must be
+    swallowed - the RuntimeError in particular must not escape the handler as
+    a 500 in the script-run pane.
+    """
+    from api.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "auth_bypass_enabled", True)
+    monkeypatch.setattr(settings, "auth_bypass_user_id", "dev-user")
+    monkeypatch.setattr("api.config.get_settings", lambda: settings)
+    monkeypatch.setattr("api.database.AsyncSessionLocal", lambda: _FakeSession(_fake_run_row()))
+
+    ws = _fake_ws()
+    # send_json raises WebSocketDisconnect on the first log frame (client
+    # dropped), and the finally-close then hits the already-closed socket.
+    ws.send_json = AsyncMock(side_effect=WebSocketDisconnect(code=1006))
+    ws.close = AsyncMock(
+        side_effect=RuntimeError("Cannot call \"send\" once a close message has been sent.")
+    )
+
+    # Must not raise either exception.
+    await script_run_ws("run-123", ws)
+
+    ws.accept.assert_awaited_once()
+    ws.close.assert_awaited_once()
+    ws.send_json.assert_awaited()

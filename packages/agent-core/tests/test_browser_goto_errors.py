@@ -20,12 +20,14 @@ class FakePage:
         self._url = url
         self._goto_error = goto_error
         self.closed = False
+        self.goto_calls: list[dict] = []
 
     @property
     def url(self) -> str:
         return self._url
 
-    async def goto(self, url: str, timeout: int = 30000):
+    async def goto(self, url: str, timeout: int = 30000, wait_until: str | None = None):
+        self.goto_calls.append({"url": url, "timeout": timeout, "wait_until": wait_until})
         if self._goto_error is not None:
             raise self._goto_error
         self._url = url
@@ -75,6 +77,62 @@ async def test_failed_goto_reports_navigation_error_not_ssrf(monkeypatch):
     assert "Navigation failed" in result["error"]
     assert "ERR_NAME_NOT_RESOLVED" in result["error"]
     assert "SSRF" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_goto_defaults_to_domcontentloaded(monkeypatch):
+    """Playwright's 'load' default waits on every subresource; one stalled
+    beacon on a slow network spends the whole timeout while the DOM is ready."""
+    page = FakePage(url="http://site.test/")
+    ctx = make_context(page)
+
+    async def _ensure_browser(self):
+        return object()
+
+    monkeypatch.setattr(ToolContext, "ensure_browser", _ensure_browser)
+
+    result = await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://site.test/"}, ctx
+    )
+    assert "error" not in result, result
+    assert page.goto_calls[-1]["wait_until"] == "domcontentloaded"
+
+
+@pytest.mark.asyncio
+async def test_goto_honours_explicit_wait_until(monkeypatch):
+    """Pages that genuinely need every subresource can still ask for 'load'."""
+    page = FakePage(url="http://site.test/")
+    ctx = make_context(page)
+
+    async def _ensure_browser(self):
+        return object()
+
+    monkeypatch.setattr(ToolContext, "ensure_browser", _ensure_browser)
+
+    result = await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://site.test/", "wait_until": "load"}, ctx
+    )
+    assert "error" not in result, result
+    assert page.goto_calls[-1]["wait_until"] == "load"
+
+
+@pytest.mark.asyncio
+async def test_goto_unknown_wait_until_falls_back_to_default(monkeypatch):
+    """An unknown value must not reach Playwright, which raises on it and would
+    surface as a navigation failure the agent cannot act on."""
+    page = FakePage(url="http://site.test/")
+    ctx = make_context(page)
+
+    async def _ensure_browser(self):
+        return object()
+
+    monkeypatch.setattr(ToolContext, "ensure_browser", _ensure_browser)
+
+    result = await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://site.test/", "wait_until": "bogus"}, ctx
+    )
+    assert "error" not in result, result
+    assert page.goto_calls[-1]["wait_until"] == "domcontentloaded"
 
 
 @pytest.mark.asyncio

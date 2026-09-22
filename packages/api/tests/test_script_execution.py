@@ -85,8 +85,14 @@ async def test_execute_playwright_reports_phase_progress(client, db, make_projec
         log_acc.append(f"ran {' '.join(cmd)}\n")
         return 0
 
+    async def fake_probe(base_url):
+        # The placeholder host does not resolve; reachability is covered by its
+        # own tests, and this one is about the phase markers.
+        return ""
+
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
+    monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
 
     await scripts_router._execute_playwright(
         run_id, "some-issue", {"APP_BASE_URL": "http://x"}, "test-user",
@@ -308,3 +314,109 @@ async def test_execute_playwright_records_a_verdict_when_startup_fails(
     assert refreshed.status == "failed" and refreshed.exit_code == -1
     result = json.loads(refreshed.result_json)
     assert result["status"] == "failed" and result["source"] == "log"
+
+
+@pytest.mark.asyncio
+async def test_execute_playwright_fails_fast_when_the_target_is_unreachable(
+    client, db, make_project, monkeypatch
+):
+    """A dead target otherwise fails one navigation per case and burns the whole
+    suite budget, and the report reads as an application bug rather than an
+    unreachable environment."""
+    project = await make_project("exec-pw-unreachable")
+    run, project_fs = await _seed_playwright_run(db, project, spec_slug="login-4")
+    run_id = str(run.run_id)
+
+    commands: list[list[str]] = []
+
+    async def fake_deps(*args, **kwargs):
+        return None
+
+    async def fake_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+        commands.append(list(cmd))
+        return 0
+
+    probed: list[str] = []
+
+    async def fake_probe(base_url):
+        probed.append(base_url)
+        return "ConnectError: [Errno 111] Connection refused"
+
+    monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
+    monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
+
+    await scripts_router._execute_playwright(
+        run_id, "login-4", {"APP_BASE_URL": "https://qa.example.com"},
+        "test-user", str(project_fs),
+    )
+
+    refreshed = await _reload_run(run_id)
+    assert refreshed.status == "failed"
+    assert probed == ["https://qa.example.com"]
+    # The suite never launched: only the browser preflight reached a subprocess.
+    assert not any("--reporter" in cmd for cmd in commands), commands
+    assert "qa.example.com" in refreshed.stdout_log
+    assert "unreachable" in refreshed.stdout_log.lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_playwright_runs_the_suite_when_the_target_answers(
+    client, db, make_project, monkeypatch
+):
+    project = await make_project("exec-pw-reachable")
+    run, project_fs = await _seed_playwright_run(db, project, spec_slug="login-5")
+    run_id = str(run.run_id)
+
+    commands: list[list[str]] = []
+
+    async def fake_deps(*args, **kwargs):
+        return None
+
+    async def fake_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+        commands.append(list(cmd))
+        return 0
+
+    async def fake_probe(base_url):
+        return ""
+
+    monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
+    monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
+
+    await scripts_router._execute_playwright(
+        run_id, "login-5", {"APP_BASE_URL": "https://qa.example.com"},
+        "test-user", str(project_fs),
+    )
+
+    assert any("--reporter" in cmd for cmd in commands), commands
+
+
+@pytest.mark.asyncio
+async def test_execute_playwright_skips_the_probe_without_app_base_url(
+    client, db, make_project, monkeypatch
+):
+    """Specs may address absolute URLs; failing a run over a host the suite never
+    visits would be worse than the slow failure the probe guards against."""
+    project = await make_project("exec-pw-nobase")
+    run, project_fs = await _seed_playwright_run(db, project, spec_slug="login-6")
+    run_id = str(run.run_id)
+
+    async def fake_deps(*args, **kwargs):
+        return None
+
+    async def fake_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+        return 0
+
+    async def fake_probe(base_url):
+        raise AssertionError("probe must not run without APP_BASE_URL")
+
+    monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
+    monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
+
+    await scripts_router._execute_playwright(
+        run_id, "login-6", {}, "test-user", str(project_fs),
+    )
+
+    assert (await _reload_run(run_id)).status == "completed"

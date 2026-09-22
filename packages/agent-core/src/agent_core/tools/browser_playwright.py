@@ -33,6 +33,22 @@ def _clamp_timeout(value: Any) -> int:
         return 30_000
 
 
+# Playwright's default navigation wait is 'load', which waits for EVERY
+# subresource. On a slow or filtered network a single stalled analytics beacon
+# or CDN font burns the entire timeout while the DOM has long been usable — the
+# failure then reads to the agent as "cannot reach the target". Waiting for
+# 'domcontentloaded' and then explicitly waiting for the element actually needed
+# is both faster and more precise; 'load'/'networkidle' stay available per call
+# for pages that genuinely depend on subresources.
+_NAV_WAIT_UNTIL = ("domcontentloaded", "load", "networkidle")
+_DEFAULT_WAIT_UNTIL = "domcontentloaded"
+
+
+def _nav_wait_until(value: Any) -> str:
+    """Validated navigation wait condition; unknown values fall back to the default."""
+    return value if value in _NAV_WAIT_UNTIL else _DEFAULT_WAIT_UNTIL
+
+
 def _recording_filename(requested: Any) -> str:
     """Scenario-named .webm, or a generated one when nobody asked for a name.
 
@@ -267,6 +283,18 @@ class BrowserPlaywrightTool(Tool):
             },
             "full_page": {"type": "boolean", "default": True, "description": "Full page screenshot"},
             "timeout": {"type": "integer", "default": 30000, "description": "Timeout in ms"},
+            "wait_until": {
+                "type": "string",
+                "enum": list(_NAV_WAIT_UNTIL),
+                "default": _DEFAULT_WAIT_UNTIL,
+                "description": (
+                    "goto only: when to consider navigation finished. Defaults to "
+                    "'domcontentloaded' (DOM parsed, subresources may still be loading) — "
+                    "the right choice on slow or filtered networks. Use 'load' when the "
+                    "page genuinely needs every image/font, or 'networkidle' for a "
+                    "single-page app that renders after its XHRs settle."
+                ),
+            },
             "via_chooser": {
                 "type": "boolean",
                 "default": False,
@@ -340,6 +368,7 @@ class BrowserPlaywrightTool(Tool):
                 # params.timeout flows straight into Playwright with no
                 # upper bound — a 10^9 ms "timeout" parks the tool call for days.
                 timeout = _clamp_timeout(params.get("timeout", 30000))
+                wait_until = _nav_wait_until(params.get("wait_until"))
 
                 # redirects could land on an internal address the
                 # initial check never saw (302 → http://169.254.169.254) and
@@ -357,8 +386,7 @@ class BrowserPlaywrightTool(Tool):
                               not getattr(context, "browser_ssl_verify", True))
                     goto_error: str | None = None
                     try:
-                        response = await page.goto(url, timeout=timeout)
-                        await page.wait_for_load_state("domcontentloaded")
+                        response = await page.goto(url, timeout=timeout, wait_until=wait_until)
                     except Exception as exc:
                         # An aborted SSRF redirect surfaces here; the post-hoc
                         # check below still decides the outcome.
@@ -613,8 +641,11 @@ class BrowserPlaywrightTool(Tool):
                 if resume_url:
                     try:
                         _check_browser_url(resume_url)
-                        await page.goto(resume_url, timeout=_clamp_timeout(params.get("timeout", 30000)))
-                        await page.wait_for_load_state("domcontentloaded")
+                        await page.goto(
+                            resume_url,
+                            timeout=_clamp_timeout(params.get("timeout", 30000)),
+                            wait_until=_nav_wait_until(params.get("wait_until")),
+                        )
                         result["page_url"] = resume_url
                     except Exception as e:
                         result["navigation_error"] = f"{resume_url} could not be reopened: {e}"

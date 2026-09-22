@@ -26,7 +26,7 @@ test('authenticate', async ({ page }) => {
     return;
   }
 
-  await page.goto(loginUrl);
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
   await page.getByLabel(/user|email|account/i).fill(username);
   await page.getByLabel(/pass/i).fill(password);
   await page.getByRole('button', { name: /log|sign|submit/i }).click();

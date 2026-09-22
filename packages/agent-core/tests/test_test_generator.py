@@ -80,6 +80,17 @@ def test_download_step_uses_wait_for_event():
     assert "name: /the report/i" in action, action
 
 
+def test_navigate_step_pins_domcontentloaded():
+    """Playwright's default navigation wait is 'load', which blocks the case on
+    the slowest subresource — on a poor network that is the whole case timeout
+    while the page has been usable for ages."""
+    from agent_core.tools.test_generator import _step_to_action
+
+    action = _step_to_action("Navigate to https://example.com/login")
+    assert "waitUntil: 'domcontentloaded'" in action, action
+    assert "page.goto('https://example.com/login'" in action, action
+
+
 def test_expected_visible_splits_case_insensitively():
     from agent_core.tools.test_generator import _expected_to_assertion
 

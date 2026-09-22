@@ -455,7 +455,7 @@ def _generate_spec(
             "    test.skip(true, 'APP_USERNAME/APP_PASSWORD not set - this case needs a session');",
             "    return;",
             "  }",
-            "  await page.goto(loginUrl);",
+            "  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });",
             "  await page.getByLabel(/user|email|account/i).fill(username);",
             "  await page.getByLabel(/pass/i).fill(password);",
             "  await page.getByRole('button', { name: /log|sign|submit/i }).click();",
@@ -693,7 +693,14 @@ def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] 
     s = step.lower().strip()
     if kind == "navigate":
         url_part = step.split(" ", 2)[-1].strip()
-        return f"await page.goto('{_escape_ts(url_part)}');"
+        # Explicit 'domcontentloaded': Playwright's default navigation wait is
+        # 'load', which blocks every generated case on the slowest subresource
+        # (analytics beacon, CDN font). On a poor network that eats the case's
+        # whole timeout while the page has been interactive for ages.
+        return (
+            f"await page.goto('{_escape_ts(url_part)}', "
+            "{ waitUntil: 'domcontentloaded' });"
+        )
     if kind == "click":
         # Split the ORIGINAL step, not the lowercased copy: `step.split("click")`
         # found nothing in "Click the login button" and returned the whole step
@@ -873,7 +880,7 @@ test('authenticate', async ({ page }) => {
     return;
   }
 
-  await page.goto(loginUrl);
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
   await page.getByLabel(/user|email|account/i).fill(username);
   await page.getByLabel(/pass/i).fill(password);
   await page.getByRole('button', { name: /log|sign|submit/i }).click();

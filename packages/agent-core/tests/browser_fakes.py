@@ -115,12 +115,14 @@ class FakePage:
         self.uploaded: list = []
         self.file_chooser = FakeFileChooser()
         self.chooser_expectations = 0
+        self.goto_calls: list[dict] = []
 
     @property
     def url(self) -> str:
         return self._url
 
-    async def goto(self, url: str, timeout: int = 30000):
+    async def goto(self, url: str, timeout: int = 30000, wait_until: str | None = None):
+        self.goto_calls.append({"url": url, "timeout": timeout, "wait_until": wait_until})
         if self._goto_error is not None:
             raise self._goto_error
         self._url = url

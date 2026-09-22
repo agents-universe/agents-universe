@@ -68,6 +68,14 @@ _PLAYWRIGHT_TEST_TIMEOUT = 540
 # scripts cap at 300s, far below this.
 _RUN_POLL_LOOPS = 450
 
+# Target reachability probe, run between the browser preflight and the suite.
+# A spec run against a host that no longer answers spends its whole
+# _PLAYWRIGHT_TEST_TIMEOUT failing one navigation per case, and the report reads
+# like an application bug rather than an unreachable environment. Two short
+# attempts: one dropped packet must not sink an otherwise healthy run.
+_PROBE_TIMEOUT = 5.0
+_PROBE_ATTEMPTS = 2
+
 # How many past runs a history request returns.
 _RUN_HISTORY_LIMIT = 20
 
@@ -504,6 +512,33 @@ def _store_run_result(
         logging.getLogger("agents_universe.scripts").exception("Could not capture a script run result")
 
 
+async def _probe_target(base_url: str) -> str:
+    """Probe *base_url*; return "" when the host answers, else the reason.
+
+    Any HTTP status counts as reachable: a 401 or a 404 still proves DNS, TCP
+    and the proxy path work, and the suite can produce a real verdict from
+    there. Only transport failures mean the run cannot tell anyone anything.
+
+    Certificate verification is off because this probe carries no credentials
+    and asks only "does something answer". A QA environment with a self-signed
+    certificate would otherwise be reported as unreachable, failing a run that
+    would have passed.
+    """
+    import httpx
+
+    reason = ""
+    async with httpx.AsyncClient(
+        timeout=_PROBE_TIMEOUT, trust_env=True, follow_redirects=False, verify=False,
+    ) as http:
+        for _ in range(_PROBE_ATTEMPTS):
+            try:
+                await http.get(base_url)
+                return ""
+            except httpx.HTTPError as exc:
+                reason = f"{type(exc).__name__}: {exc}"[:300]
+    return reason
+
+
 async def _execute_playwright(
     run_id: str, slug: str, request_env: dict[str, str],
     triggered_by: str = "", project_fs: str = "",
@@ -619,6 +654,25 @@ async def _execute_playwright(
                 await fail(f"Browser verification failed (exit code {code})")
                 return
             await progress("Browser ready")
+
+            # Phase 2b: target reachability. Only probed when the request named
+            # APP_BASE_URL - specs may otherwise address absolute URLs, and
+            # failing a run over a host the suite never visits would be worse
+            # than the slow failure this guards against.
+            base_url = (request_env.get("APP_BASE_URL") or "").strip()
+            if base_url:
+                await progress(f"Checking target {base_url} ...")
+                reason = await _probe_target(base_url)
+                if reason:
+                    await fail(
+                        f"Target unreachable: {base_url} did not answer after "
+                        f"{_PROBE_ATTEMPTS} attempts of {_PROBE_TIMEOUT:.0f}s ({reason}). "
+                        "Fix connectivity or APP_BASE_URL and re-run - the suite would "
+                        "only report one navigation failure per case.",
+                        result_status="failed",
+                    )
+                    return
+                await progress("Target reachable")
 
             # Phase 3: the test run itself, with its report, machine-readable
             # result and attachments redirected into the run's own directory.

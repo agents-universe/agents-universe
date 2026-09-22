@@ -20,6 +20,18 @@ def make_context(db=None, project_fs_path="/tmp/proj") -> ToolContext:
     )
 
 
+_PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy",
+               "ALL_PROXY", "all_proxy")
+
+
+@pytest.fixture(autouse=True)
+def clean_proxy_env(monkeypatch):
+    """Drop whatever proxy the developer's shell exports (or Docker Desktop
+    injects) — proxy_env assertions must not depend on the host machine."""
+    for key in _PROXY_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 def make_proc(out: bytes, err: bytes = b"", returncode: int = 0) -> SimpleNamespace:
     proc = SimpleNamespace(returncode=returncode)
     proc.communicate = AsyncMock(return_value=(out, err))
@@ -143,22 +155,70 @@ def test_build_env_merges_extra_after_safe_env(monkeypatch):
     assert "_AGENT_EXEC_ALLOWLIST" in env_no_extra
 
 
-def test_build_env_drops_empty_proxy_vars(monkeypatch):
-    """An empty HTTPS_PROXY (the .env placeholder) is 'no proxy' to Python but
-    a fatal URI parse error to osemgrep's OCaml proxy code - it must not reach
-    any child process. Non-empty values pass through for real proxy setups."""
-    monkeypatch.setenv("HTTPS_PROXY", "")
-    monkeypatch.setenv("https_proxy", "")
+def test_build_env_normalizes_proxy_env(monkeypatch):
+    """_build_env runs the shared proxy_env() normalization (parity with
+    code_executor): one resolved URL in all four HTTP(S) spellings, a stale
+    ALL_PROXY dropped, and — as before — empty .env placeholders scrubbed so
+    osemgrep never parses a blank URI."""
+    monkeypatch.setenv("ALL_PROXY", "socks5://host-proxy.example.com:1080")
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+    env = shell_module._build_env(make_context())
+    assert [env[k] for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")] == [
+        "http://proxy.example.com:8080"
+    ] * 4
+    assert "ALL_PROXY" not in env and "all_proxy" not in env
+
+
+def test_build_env_scrubs_empty_proxy_placeholders(monkeypatch):
+    """The .env placeholder `HTTPS_PROXY=` means 'no proxy' to Python but a
+    fatal URI to native parsers — with nothing resolving, every spelling must
+    be absent from the child env."""
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    monkeypatch.setenv("HTTP_PROXY", "")
+    env = shell_module._build_env(make_context())
+    assert [k for k in _PROXY_KEYS if k in env] == []
+
+
+def test_build_env_proxy_from_integration_settings(monkeypatch):
+    """A proxy configured only through injected settings (the conversation
+    path) must reach the shell child. Previously _build_env read os.environ
+    alone, so shell and code_executor could disagree about the proxy."""
     ctx = make_context()
+    ctx.integration_settings = {"HTTPS_PROXY": "http://proxy.example.com:8080"}
     env = shell_module._build_env(ctx)
-    assert "HTTPS_PROXY" not in env and "https_proxy" not in env
-    assert env["HTTP_PROXY"] == "http://proxy.example.com:8080"
+    assert env["HTTPS_PROXY"] == "http://proxy.example.com:8080"
+    assert env["https_proxy"] == "http://proxy.example.com:8080"
+
+
+def test_default_timeout_full_budget_for_playwright_runs():
+    """Playwright / npm test runs get 300s by default — a 30s tool kill
+    mid-navigation reads to the agent as a connection failure. Everything
+    else keeps the 30s general default."""
+    for cmd in ("npx playwright test", "npm run test:sys-001", "npm test",
+                "npm run test -- generated/x.spec.ts"):
+        assert shell_module._default_timeout(cmd) == 300, cmd
+    for cmd in ("git status", "npm run typecheck", "python -m pytest", "ls"):
+        assert shell_module._default_timeout(cmd) == 30, cmd
 
 
 # ---------------------------------------------------------------------------
 # end-to-end execute() with env_refs
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxy_credentials_redacted_from_output():
+    """A child that prints its own proxy (printenv HTTPS_PROXY) must not hand
+    the credential to the model — the same mask code_executor applies."""
+    url = "http://scanner:not-a-real-secret@proxy.example.com:8080"
+    ctx = make_context()
+    ctx.integration_settings = {"HTTPS_PROXY": url}
+    result = await shell_module.ShellTool().execute(
+        {"command": "printenv HTTPS_PROXY"}, ctx
+    )
+    assert "not-a-real-secret" not in result.get("stdout", "") + result.get("stderr", "")
+    if result.get("exit_code") == 0:
+        assert "[REDACTED:PROXY_URL]" in result["stdout"]
 
 
 @pytest.mark.asyncio

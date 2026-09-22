@@ -23,6 +23,17 @@ from .base import Tool, ToolContext
 _log = logging.getLogger(__name__)
 _TIMEOUT = 30
 _MAX_TIMEOUT = 300
+# Playwright / npm test runs default to the full budget: browser launch, the
+# dependency check, and a 60s-per-case suite easily outrun the 30s general
+# default, and a tool-level kill mid-navigation surfaces to the agent as a
+# connection failure rather than a timeout (the failure reads as "cannot reach
+# the target"). Mirrors the server-side spec channel's generous allowance
+# (540s there); 300 is this tool's own cap. An explicit timeout_seconds always
+# wins.
+_PLAYWRIGHT_RUN_TIMEOUT = 300
+# `npm run test:{slug}` has no literal "playwright" in the command line —
+# match the npm test script family too, but not `npm run typecheck`.
+_PLAYWRIGHTISH_CMD = re.compile(r"playwright|\bnpm\s+(?:run\s+)?test\b", re.IGNORECASE)
 _NPM_INSTALL_TIMEOUT = 120
 _MAX_OUTPUT = 10_000
 # Legacy shared npm cache. Only used when it is actually writable -
@@ -46,6 +57,22 @@ def _get_shell() -> list[str] | None:
     return None  # fall back to cmd.exe
 
 _SHELL_ARGS = _get_shell()
+
+
+def redact_proxy_credentials(text: str, proxy_url: str) -> str:
+    """Mask a credentialed proxy URL in tool-visible text (see shell.execute).
+
+    Lazy import: code_executor imports redact_secrets from this module at
+    module level, so importing it at the top would cycle.
+    """
+    from .code_executor import redact_proxy_credentials as _redact
+
+    return _redact(text, proxy_url)
+
+
+def _default_timeout(command: str) -> int:
+    """Default tool timeout for *command* — see _PLAYWRIGHT_RUN_TIMEOUT."""
+    return _PLAYWRIGHT_RUN_TIMEOUT if _PLAYWRIGHTISH_CMD.search(command) else _TIMEOUT
 
 
 def redact_secrets(text: str, secrets: dict[str, str]) -> str:
@@ -112,19 +139,17 @@ def _build_env(
     merged AFTER the strip — it carries vault-resolved secrets whose plaintext
     never enters the LLM context (injected only into the subprocess env).
     `git_identity` carries only the identity fields the repo does not define.
+
+    Proxy vars go through the SAME proxy_env() normalization as
+    code_executor and the browser tool: resolve one URL via proxy_url()
+    (injected settings first, then process env), write it into all four
+    HTTP(S) spellings, drop the unresolved ALL_PROXY leftovers, and scrub
+    empty .env placeholders (an empty ``HTTPS_PROXY=`` is "no proxy" to
+    Python but a fatal URI to osemgrep's OCaml parser). Passing raw
+    os.environ through instead let a shell child disagree with the sandbox
+    about which proxy to use.
     """
-    env = context.safe_env()
-    # An EMPTY proxy var (the .env placeholder `HTTPS_PROXY=`) means "no
-    # proxy" to Python's urllib, but osemgrep's OCaml proxy parser treats the
-    # blank value as a URI and crashes ("No host was provided in URI") before
-    # any scan starts. Drop empty-valued proxy URLs so children see them
-    # unset; non-empty values pass through untouched.
-    for proxy_key in (
-        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-        "http_proxy", "https_proxy", "all_proxy",
-    ):
-        if not env.get(proxy_key):
-            env.pop(proxy_key, None)
+    env = context.proxy_env(context.safe_env())
     java_home = env.get("JAVA_HOME", "")
     if java_home:
         java_bin = os.path.join(java_home, "bin")
@@ -603,7 +628,11 @@ class ShellTool(Tool):
             "cwd": {"type": "string", "description": "Working directory (relative to project root)"},
             "timeout_seconds": {
                 "type": "integer", "default": 30, "minimum": 1, "maximum": 300,
-                "description": "Command timeout in seconds (capped at 300)",
+                "description": (
+                    "Command timeout in seconds (capped at 300). Defaults to "
+                    "300 for playwright / npm test runs and 30 otherwise — "
+                    "omit it rather than passing 30 for browser suites."
+                ),
             },
             "env_refs": {
                 "type": "object",
@@ -641,7 +670,7 @@ class ShellTool(Tool):
         if bad_token is not None:
             return {"error": f"Command not in allowlist. First unallowed token: {bad_token!r}"}
 
-        timeout_value = params.get("timeout_seconds", _TIMEOUT)
+        timeout_value = params.get("timeout_seconds", _default_timeout(command))
         if isinstance(timeout_value, bool) or not isinstance(timeout_value, int):
             return {"error": "timeout_seconds must be an integer between 1 and 300"}
         if not 1 <= timeout_value <= _MAX_TIMEOUT:
@@ -687,6 +716,8 @@ class ShellTool(Tool):
         # in a directory that has package.json but no usable node_modules.
         install_error = await self._ensure_node_deps(command, cwd, context)
         if install_error:
+            # npm's own stderr can quote the proxy it failed to reach.
+            install_error = redact_proxy_credentials(install_error, context.proxy_url())
             return {"error": redact_secrets(install_error, resolved_env)}
 
         # Inject npm cache env to avoid /.npm permission errors in containers.
@@ -737,9 +768,16 @@ class ShellTool(Tool):
         stdout_text = stdout.decode(errors="replace")
         stderr_text = stderr.decode(errors="replace")
         # Redact BEFORE truncation so a secret straddling the _MAX_OUTPUT
-        # boundary is fully masked, then truncate.
-        stdout_str = redact_secrets(stdout_text, resolved_env)[:_MAX_OUTPUT]
-        stderr_str = redact_secrets(stderr_text, resolved_env)[:_MAX_OUTPUT]
+        # boundary is fully masked, then truncate. Proxy credentials ride the
+        # same path as code_executor's output: .env.example promises they are
+        # masked before any tool output or log, and a child that prints its
+        # env (printenv HTTPS_PROXY) or echoes a proxy error would otherwise
+        # hand them to the model.
+        proxy_url = context.proxy_url()
+        stdout_str = redact_proxy_credentials(stdout_text, proxy_url)
+        stderr_str = redact_proxy_credentials(stderr_text, proxy_url)
+        stdout_str = redact_secrets(stdout_str, resolved_env)[:_MAX_OUTPUT]
+        stderr_str = redact_secrets(stderr_str, resolved_env)[:_MAX_OUTPUT]
         if proc.returncode != 0:
             _log.warning("shell command failed (exit=%d): %r\nstderr: %s", proc.returncode, command, stderr_str[:500])
         return {

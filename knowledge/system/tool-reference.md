@@ -138,12 +138,17 @@ Only SELECT queries allowed. Uses a read-only DB connection.
 Run shell commands (bash) in a restricted sandbox.
 
 ```
-Inputs: command (str), cwd (str, optional, relative to project root), timeout_seconds (int, default 30, max 300)
+Inputs: command (str), cwd (str, optional, relative to project root), timeout_seconds (int, max 300; default 300 for playwright/npm test runs, 30 otherwise — OMIT it for browser suites rather than passing 30)
 Allowed: git, ls, cat, grep, find, jq, echo, pwd, head, tail, wc, sort, uniq, diff, mkdir, cp, mv, npx, npm, node, python, java, javac, mvn, ./mvnw, ./gradlew
   Note: ./mvnw and ./gradlew only work from the project directory containing those wrapper scripts.
   java/javac/mvn are available in the default API container (JDK 21, Maven). gradle is NOT globally installed; use ./gradlew.
 Blocked: rm -rf, sudo, curl, wget, pip install, apt-get, xargs
 Output: {stdout: str, stderr: str, exit_code: int}
+Proxy: the shell child gets the same normalized HTTPS_PROXY/HTTP_PROXY env as
+code_executor (credentials in the proxy URL are masked from output). Intranet
+hosts that must bypass the proxy belong in NO_PROXY/APP_NO_PROXY; pass
+APP_BASE_URL inline (`APP_BASE_URL=http://... npm run test:{slug}`) — it is
+stripped from server env.
 ```
 
 Java/Spring Boot tests: detect in order `./mvnw test` → `mvn test` → `./gradlew test`; use the first applicable. Raise `timeout_seconds` (up to 300) for Maven/Gradle builds. Exit codes are faithful — environment failures must be classified by the agent, not the tool.

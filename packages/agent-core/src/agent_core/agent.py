@@ -636,6 +636,9 @@ class Agent:
                     estimate_request_bytes(_probe_messages, tool_defs) > MAX_REQUEST_BYTES
                 )
                 async with _asyncio.timeout(60):
+                    # Phase notice: compression can silently hold the turn
+                    # for up to 60s — without it the UI sees a dead socket.
+                    await session.emit("turn_status", phase="compressing")
                     history = await compress_history(
                         history, available_budget, comp_provider, force=byte_over
                     )
@@ -1181,6 +1184,14 @@ class Agent:
                 tool_calls_buffer: dict[int, dict] = {}
                 preparing_emitted: set[int] = set()
                 stop_reason: StopReason = StopReason.UNKNOWN
+                # Extended-thinking accumulation for this iteration. Signed
+                # blocks ride on the assistant message for the next
+                # tool-loop request; unsigned text is display-only.
+                thinking_text = ""
+                thinking_blocks: list[dict] = []
+                thinking_open = False
+                phase_emitted: set[str] = set()
+                responding_emitted = False
 
                 history_summary, pending_tool_ids = self._history_tool_call_summary(messages)
                 _log.info(
@@ -1197,6 +1208,7 @@ class Agent:
                     # demote the largest knowledge files, then strip images —
                     # before giving up with an actionable error instead of
                     # letting the gateway reject the body with an opaque 413.
+                    await session.emit("turn_status", phase="degrading", message_id=message_id)
                     if await self._degrade_request(messages, tool_defs, provider) == "over_limit":
                         await session.emit("error", message=self._over_limit_message(messages, tool_defs))
                         await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
@@ -1204,10 +1216,46 @@ class Agent:
                         break
                     _log.info("request degrade succeeded, resuming turn")
                 try:
+                    # Phase notice covers the TTFT gap: nothing streams until
+                    # the provider answers, and the UI would otherwise show
+                    # only the old bouncing dots.
+                    await session.emit("turn_status", phase="waiting_model", message_id=message_id)
                     async for chunk in provider.stream(
                         messages, tool_defs, max_tokens=self._config.max_tokens
                     ):
+                        if chunk.thinking:
+                            if not thinking_open:
+                                thinking_open = True
+                                thinking_text = ""
+                                if "thinking" not in phase_emitted:
+                                    phase_emitted.add("thinking")
+                                    await session.emit("turn_status", phase="thinking", message_id=message_id)
+                            thinking_text += chunk.thinking
+                            await session.emit("thinking_delta", delta=chunk.thinking, message_id=message_id)
+                        elif chunk.thinking_signature is not None:
+                            # Signed block closes: keep it for the next
+                            # tool-loop request (Anthropic replays it back).
+                            if thinking_open:
+                                if thinking_text and chunk.thinking_signature:
+                                    thinking_blocks.append({
+                                        "type": "thinking",
+                                        "thinking": thinking_text,
+                                        "signature": chunk.thinking_signature,
+                                    })
+                                thinking_text = ""
+                                thinking_open = False
+                                await session.emit("thinking_end", message_id=message_id)
+                        elif (chunk.delta or chunk.tool_call_delta) and thinking_open:
+                            # Gateways that never send a signature: first real
+                            # content closes the display-only block.
+                            thinking_text = ""
+                            thinking_open = False
+                            await session.emit("thinking_end", message_id=message_id)
+
                         if chunk.delta:
+                            if not responding_emitted:
+                                responding_emitted = True
+                                await session.emit("turn_status", phase="responding", message_id=message_id)
                             full_text += chunk.delta
                             await session.emit("stream_delta", delta=chunk.delta, message_id=message_id)
 
@@ -1226,6 +1274,7 @@ class Agent:
                             if idx not in preparing_emitted and tc["id"] and tc["function"]["name"]:
                                 preparing_emitted.add(idx)
                                 await session.emit("tool_call_preparing", tool=tc["function"]["name"], call_id=tc["id"])
+                                await session.emit("turn_status", phase="running_tool", tool=tc["function"]["name"], call_id=tc["id"], message_id=message_id)
                             current_args = tc["function"].get("arguments", "")
                             tc["function"]["arguments"] = self._merge_tool_args(current_args, fn.get("arguments", ""))
 
@@ -1261,6 +1310,12 @@ class Agent:
                     emitted_end = True
                     break
 
+                # Stream ended with thinking still open (no signature and no
+                # following content) — close the block so the UI collapses it.
+                if thinking_open:
+                    thinking_open = False
+                    await session.emit("thinking_end", message_id=message_id)
+
                 # Append assistant message to history. A stream truncated
                 # mid-tool-call (finish_reason="length", pause_turn, dropped
                 # connection) can leave entries whose id/name never arrived —
@@ -1273,7 +1328,10 @@ class Agent:
                      if tc.get("id") and tc.get("function", {}).get("name")]
                     if tool_calls_buffer else None
                 ) or None
-                assistant_msg = Message(role="assistant", content=full_text, tool_calls=tool_calls)
+                assistant_msg = Message(
+                    role="assistant", content=full_text, tool_calls=tool_calls,
+                    thinking_blocks=thinking_blocks or None,
+                )
                 messages.append(assistant_msg)
 
                 # ─── Stop Reason State Machine ────────────────────────────
@@ -1355,11 +1413,13 @@ class Agent:
                         tc["function"]["arguments"] = "{}"
                         bad_result = {"error": f"Malformed tool arguments (invalid JSON): {_e}"}
                         await session.emit("tool_call_start", tool=tool_name, input={}, call_id=tool_id)
+                        await session.emit("turn_status", phase="running_tool", tool=tool_name, call_id=tool_id, message_id=message_id)
                         await session.emit("tool_call_end", tool=tool_name, output=bad_result, call_id=tool_id)
                         messages.append(Message(role="tool", content=_dumps(bad_result), tool_call_id=tool_id, name=tool_name))
                         continue
 
                     await session.emit("tool_call_start", tool=tool_name, input=args, call_id=tool_id)
+                    await session.emit("turn_status", phase="running_tool", tool=tool_name, call_id=tool_id, message_id=message_id)
 
                     if tool_name == "plan_task":
                         try:
@@ -1980,6 +2040,13 @@ class Agent:
             full_text = ""
             tool_calls_buffer: dict[int, dict] = {}
             stop_reason: StopReason = StopReason.UNKNOWN
+            # Same extended-thinking accumulation as the chat loop — a task
+            # iteration replays its signed blocks on the next request too.
+            thinking_text = ""
+            thinking_blocks: list[dict] = []
+            thinking_open = False
+            phase_emitted: set[str] = set()
+            responding_emitted = False
 
             task_history, pending_tool_ids = self._history_tool_call_summary(messages)
             _log.info(
@@ -1996,14 +2063,44 @@ class Agent:
                 # over-limit via RuntimeError (caught by _run_task →
                 # task_failed → _emit_task_stream_end), so raise only after
                 # every soft lever has been pulled.
+                await session.emit("turn_status", phase="degrading", task_id=task_id)
                 if await self._degrade_request(messages, tool_defs, provider) == "over_limit":
                     raise RuntimeError(self._over_limit_message(messages, tool_defs))
                 _log.info("request degrade succeeded in task loop, resuming")
             try:
+                await session.emit("turn_status", phase="waiting_model", task_id=task_id)
                 async for chunk in provider.stream(
                     messages, tool_defs, max_tokens=self._config.max_tokens
                 ):
+                    if chunk.thinking:
+                        if not thinking_open:
+                            thinking_open = True
+                            thinking_text = ""
+                            if "thinking" not in phase_emitted:
+                                phase_emitted.add("thinking")
+                                await session.emit("turn_status", phase="thinking", message_id=message_id, task_id=task_id)
+                        thinking_text += chunk.thinking
+                        await session.emit("thinking_delta", delta=chunk.thinking, message_id=message_id, task_id=task_id)
+                    elif chunk.thinking_signature is not None:
+                        if thinking_open:
+                            if thinking_text and chunk.thinking_signature:
+                                thinking_blocks.append({
+                                    "type": "thinking",
+                                    "thinking": thinking_text,
+                                    "signature": chunk.thinking_signature,
+                                })
+                            thinking_text = ""
+                            thinking_open = False
+                            await session.emit("thinking_end", message_id=message_id, task_id=task_id)
+                    elif (chunk.delta or chunk.tool_call_delta) and thinking_open:
+                        thinking_text = ""
+                        thinking_open = False
+                        await session.emit("thinking_end", message_id=message_id, task_id=task_id)
+
                     if chunk.delta:
+                        if not responding_emitted:
+                            responding_emitted = True
+                            await session.emit("turn_status", phase="responding", message_id=message_id, task_id=task_id)
                         full_text += chunk.delta
                         await session.emit("stream_delta", delta=chunk.delta, message_id=message_id, task_id=task_id)
                     if chunk.tool_call_delta:
@@ -2015,6 +2112,13 @@ class Agent:
                         if new_name and not prev_name and tc["id"]:
                             await session.emit(
                                 "tool_call_preparing",
+                                tool=new_name,
+                                call_id=tc["id"],
+                                task_id=task_id,
+                            )
+                            await session.emit(
+                                "turn_status",
+                                phase="running_tool",
                                 tool=new_name,
                                 call_id=tc["id"],
                                 task_id=task_id,
@@ -2043,6 +2147,12 @@ class Agent:
                     f"messages={len(messages)}, error_type={type(api_err).__name__}"
                 ) from api_err
 
+            # Close a thinking block left open when the stream ended without
+            # a signature or following content.
+            if thinking_open:
+                thinking_open = False
+                await session.emit("thinking_end", message_id=message_id, task_id=task_id)
+
             # Same truncation guard as the main loop: a task turn cut off
             # mid-tool-call must not orphan an incomplete tool_call in
             # history (next iteration would 400 on the message sequence).
@@ -2051,7 +2161,10 @@ class Agent:
                  if tc.get("id") and tc.get("function", {}).get("name")]
                 if tool_calls_buffer else None
             ) or None
-            messages.append(Message(role="assistant", content=full_text, tool_calls=tool_calls))
+            messages.append(Message(
+                role="assistant", content=full_text, tool_calls=tool_calls,
+                thinking_blocks=thinking_blocks or None,
+            ))
 
             # ─── Stop Reason Handling ─────────────────────────────────
             if stop_reason == StopReason.REFUSAL:
@@ -2099,6 +2212,7 @@ class Agent:
                     tc["function"]["arguments"] = "{}"
                     bad_result = {"error": f"Malformed tool arguments (invalid JSON): {_e}"}
                     await session.emit("tool_call_start", tool=tool_name, input={}, call_id=tool_id, task_id=task_id)
+                    await session.emit("turn_status", phase="running_tool", tool=tool_name, call_id=tool_id, task_id=task_id)
                     await session.emit("tool_call_end", tool=tool_name, output=bad_result, call_id=tool_id, task_id=task_id)
                     messages.append(Message(role="tool", content=_dumps(bad_result), tool_call_id=tool_id, name=tool_name))
                     continue
@@ -2110,6 +2224,13 @@ class Agent:
                     call_id=tool_id,
                     task_id=task_id,
                     **progress,
+                )
+                await session.emit(
+                    "turn_status",
+                    phase="running_tool",
+                    tool=tool_name,
+                    call_id=tool_id,
+                    task_id=task_id,
                 )
 
                 tool = self._tools.get(tool_name)

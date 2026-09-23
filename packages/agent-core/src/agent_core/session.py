@@ -108,6 +108,12 @@ class ConversationSession:
         # Updated by forward_events; read by the WS handler when a new
         # client connects mid-stream.
         self.current_streaming_text: str = ""
+        # Thinking accumulated this turn (same lifecycle as the text buffer).
+        self.current_streaming_thinking: str = ""
+        # Coarse turn phase for the status line / reconnect sync
+        # ("waiting_model" | "thinking" | "responding" | "running_tool" |
+        # "compressing" | "degrading"). Updated by the API's forward_events.
+        self.current_turn_phase: str = "waiting_model"
         self.current_tool_calls: list[dict] = []
 
     def new_message(self) -> str:
@@ -198,8 +204,11 @@ class ConversationSession:
         # reply's attachments. user_selection_cancelled is kept too: a prompt
         # that timed out / was aborted must still reach the client so it can
         # dismiss the dialog — dropping it would leave a zombie prompt pinned
-        # in the UI forever. Other event types (progress/tool updates) are
-        # dropped; they are UI-only.
+        # in the UI forever. thinking_delta is kept too: the handler
+        # accumulates it into the assistant row's persisted `thinking`
+        # column, so dropping it would silently truncate stored reasoning.
+        # Other event types (progress/tool updates) are dropped; they are
+        # UI-only.
         if self._event_queue.full():
             kept: list[SessionEvent] = []
             while not self._event_queue.empty():
@@ -217,6 +226,7 @@ class ConversationSession:
                     "image_output",
                     "file_output",
                     "user_selection_cancelled",
+                    "thinking_delta",
                 ):
                     kept.append(ev)
             # Leave one slot for the sentinel below so forward_events() can

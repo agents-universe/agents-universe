@@ -55,6 +55,16 @@ class StopReason(str, Enum):
         return mapping.get(raw, cls.UNKNOWN)
 
 
+def thinking_enabled_by_env() -> bool:
+    """Shared extended-thinking switch (AGENT_EXTENDED_THINKING, default on).
+
+    Providers that must REQUEST thinking (Anthropic, Gemini) consult this;
+    providers that only PARSE an existing reasoning channel ignore it.
+    """
+    import os
+    return os.environ.get("AGENT_EXTENDED_THINKING", "1").strip().lower() not in ("0", "false", "no")
+
+
 @dataclass
 class Message:
     role: str  # "system" | "user" | "assistant" | "tool"
@@ -62,6 +72,11 @@ class Message:
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
     name: str | None = None  # for tool role messages
+    # Anthropic extended-thinking blocks for same-turn tool-loop replay only
+    # (the API requires signed thinking blocks back on the next request when
+    # the assistant turn carries tool_use). Never persisted to the DB —
+    # history compression would invalidate the signatures.
+    thinking_blocks: list[dict] | None = None
 
 
 @dataclass
@@ -78,6 +93,12 @@ class StreamChunk:
     finish_reason: str | None = None  # raw provider string
     stop_reason: StopReason | None = None  # normalized
     usage: dict | None = None  # {"prompt_tokens": int, "completion_tokens": int}
+    # Extended thinking / reasoning output (mutually exclusive with delta in
+    # practice: a provider yields either visible text or thinking per event).
+    thinking: str = ""
+    # Anthropic signature closing a thinking block — required to replay the
+    # block back on the next tool-loop request.
+    thinking_signature: str | None = None
 
 
 @dataclass

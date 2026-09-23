@@ -55,3 +55,22 @@ async def test_close_keeps_terminal_task_and_stream_events_when_queue_full():
     assert "stream_end" in types
     assert types[-1] == "stream_end"  # sentinel path: end marker last
     assert "tool_call_start" not in types
+
+
+async def test_close_keeps_thinking_delta_when_queue_full():
+    """thinking_delta carries pending reasoning the consumer still has to
+    persist — dropping it on overflow would erase the trace that stream_end
+    is about to snapshot. turn_status is a UI-only phase frame and may drop."""
+    s = ConversationSession("c1", "p1", "u1")
+    _fill(s, [("progress", {"i": i}) for i in range(998)])
+    _fill(s, [
+        ("thinking_delta", {"delta": "deep thought"}),
+        ("turn_status", {"phase": "thinking"}),
+    ])
+    assert s._event_queue.full()
+
+    await s.close()
+
+    types = await _drain(s)
+    assert "thinking_delta" in types
+    assert "turn_status" not in types

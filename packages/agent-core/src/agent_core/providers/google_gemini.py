@@ -23,6 +23,7 @@ from .base import (
     StopReason,
     StreamChunk,
     ToolDefinition,
+    thinking_enabled_by_env,
 )
 
 # Cleared around Client construction: google-genai builds its httpx client
@@ -83,6 +84,9 @@ class GoogleGeminiProvider(LLMProvider):
         self._ssl_verify = ssl_verify
         # Per-config override from Settings -> AI Models; None = name-matched default.
         self._context_window_override = context_window
+        # include_thoughts switch (AGENT_EXTENDED_THINKING, default on); also
+        # flipped off when the model/gateway rejects ThinkingConfig with 400.
+        self._thinking_enabled = thinking_enabled_by_env()
 
     def _client(self) -> genai.Client:
         """Instance-scoped client; a fresh one per call keeps key/endpoint
@@ -188,16 +192,35 @@ class GoogleGeminiProvider(LLMProvider):
         ]
         return [genai_types.Tool(function_declarations=declarations)]
 
+    def _thinking_supported(self) -> bool:
+        if not self._thinking_enabled:
+            return False
+        m = self._model_name.lower()
+        return "gemini-2.5" in m or "gemini-3" in m
+
+    def _disable_thinking(self, reason: str) -> None:
+        if self._thinking_enabled:
+            self._thinking_enabled = False
+            import logging
+            logging.getLogger(__name__).warning(
+                "include_thoughts disabled for %s: %s", self._model_name, reason,
+            )
+
     def _request_config(
         self, system: str | None, tools: list[ToolDefinition] | None,
-        max_tokens: int, temperature: float,
+        max_tokens: int, temperature: float, thinking: bool = True,
     ) -> genai_types.GenerateContentConfig:
-        return genai_types.GenerateContentConfig(
+        kwargs: dict = dict(
             max_output_tokens=max_tokens,
             temperature=temperature,
             system_instruction=system or None,
             tools=self._to_gemini_tools(tools) if tools else None,
         )
+        # Without include_thoughts the API never returns thought parts at all
+        # — the thinking UI would stay empty even though the model thinks.
+        if thinking and self._thinking_supported():
+            kwargs["thinking_config"] = genai_types.ThinkingConfig(include_thoughts=True)
+        return genai_types.GenerateContentConfig(**kwargs)
 
     @staticmethod
     def _empty_result(model: str) -> CompletionResult:
@@ -232,11 +255,24 @@ class GoogleGeminiProvider(LLMProvider):
     ) -> CompletionResult:
         system, contents = self._to_gemini_contents(messages)
         client = self._client()
-        response = await client.aio.models.generate_content(
-            model=self._model_name,
-            contents=contents,
-            config=self._request_config(system, tools, max_tokens, temperature),
-        )
+        config = self._request_config(system, tools, max_tokens, temperature)
+        try:
+            response = await client.aio.models.generate_content(
+                model=self._model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            # Model/gateway rejected ThinkingConfig — retry once without.
+            if config.thinking_config is not None and "think" in str(exc).lower():
+                self._disable_thinking(f"request rejected thinking_config: {exc}")
+                response = await client.aio.models.generate_content(
+                    model=self._model_name,
+                    contents=contents,
+                    config=self._request_config(system, tools, max_tokens, temperature, thinking=False),
+                )
+            else:
+                raise
         if not response.candidates:
             return self._empty_result(self._model_name)
         candidate = response.candidates[0]
@@ -245,6 +281,10 @@ class GoogleGeminiProvider(LLMProvider):
         text_parts = []
         tool_calls = []
         for part in candidate.content.parts:
+            # Thought parts are display-only here (non-stream path has no UI
+            # channel) — they must not leak into the visible assistant text.
+            if getattr(part, "thought", False):
+                continue
             fc = part.function_call
             if fc:
                 # Gemini occasionally emits a function_call part with
@@ -285,11 +325,23 @@ class GoogleGeminiProvider(LLMProvider):
     ) -> AsyncIterator[StreamChunk]:
         system, contents = self._to_gemini_contents(messages)
         client = self._client()
-        chunk_stream = await client.aio.models.generate_content_stream(
-            model=self._model_name,
-            contents=contents,
-            config=self._request_config(system, tools, max_tokens, temperature),
-        )
+        config = self._request_config(system, tools, max_tokens, temperature)
+        try:
+            chunk_stream = await client.aio.models.generate_content_stream(
+                model=self._model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            if config.thinking_config is not None and "think" in str(exc).lower():
+                self._disable_thinking(f"stream rejected thinking_config: {exc}")
+                chunk_stream = await client.aio.models.generate_content_stream(
+                    model=self._model_name,
+                    contents=contents,
+                    config=self._request_config(system, tools, max_tokens, temperature, thinking=False),
+                )
+            else:
+                raise
         tool_call_index = 0
         has_tool_calls = False
         last_usage = None
@@ -319,6 +371,14 @@ class GoogleGeminiProvider(LLMProvider):
             if not candidate.content or not candidate.content.parts:
                 continue
             for part in candidate.content.parts:
+                # Thought parts arrive alongside (or before) visible content
+                # when include_thoughts is on — route them to the thinking
+                # channel. Without this they were mis-labeled as normal text.
+                if getattr(part, "thought", False):
+                    thought_text = _part_text(part)
+                    if thought_text:
+                        yield StreamChunk(thinking=thought_text)
+                    continue
                 fc = part.function_call
                 if fc:
                     name = (fc.name or "").strip()

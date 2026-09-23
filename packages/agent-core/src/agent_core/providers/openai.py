@@ -252,6 +252,12 @@ class OpenAIProvider(LLMProvider):
                 choice = chunk.choices[0] if chunk.choices else None
                 if choice:
                     delta = choice.delta
+                    # OpenAI-compatible reasoning gateways (DeepSeek/GLM/vLLM)
+                    # put the chain-of-thought here — parse-only, never
+                    # requested. Official OpenAI leaves it unset (fine).
+                    reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        yield StreamChunk(thinking=reasoning)
                     text = delta.content or ""
                     finish = choice.finish_reason
                     normalized = StopReason.from_openai(finish) if finish else None
@@ -419,6 +425,11 @@ class AzureOpenAIProvider(OpenAIProvider):
                 choice = chunk.choices[0] if chunk.choices else None
                 if choice:
                     delta = choice.delta
+                    # Same reasoning-channel parse as the OpenAI path above —
+                    # Azure-fronted gateways (DeepSeek via Azure) emit it too.
+                    reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        yield StreamChunk(thinking=reasoning)
                     text = delta.content or ""
                     finish = choice.finish_reason
                     normalized = StopReason.from_openai(finish) if finish else None

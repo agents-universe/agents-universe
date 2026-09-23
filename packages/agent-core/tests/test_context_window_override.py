@@ -72,8 +72,14 @@ def test_every_provider_accepts_the_api_handler_cred_shape():
     """_build_cred in the API handler passes ssl_verify (and for non-Azure
     configs base_url/url_mode) for EVERY provider - a constructor that
     rejects the kwarg TypeErrors the whole turn at provider construction
-    (Gemini did, making the provider unusable)."""
-    common = {"api_key": "x", "model": "m", "ssl_verify": False, "context_window": 1000}
+    (Gemini did, making the provider unusable). thinking_enabled and
+    reasoning_effort joined the cred dict later and are part of the same
+    contract — Azure's **_kwargs would swallow them silently instead of
+    raising, so passing them here is the only guard."""
+    common = {
+        "api_key": "x", "model": "m", "ssl_verify": False, "context_window": 1000,
+        "thinking_enabled": False, "reasoning_effort": "high",
+    }
     for provider_key, extra in [
         ("anthropic", {"base_url": "https://gateway.example.com"}),
         ("openai", {}),
@@ -85,6 +91,10 @@ def test_every_provider_accepts_the_api_handler_cred_shape():
     # azure takes endpoint instead of base_url.
     p = get_provider("azure_openai", {**common, "endpoint": "https://example.openai.azure.com"})
     assert p.context_window == 1000
+    # The OpenAI-family providers must actually store the effort (a silent
+    # **_kwargs swallow would leave Azure configs env-only with no error).
+    assert p._reasoning_effort == "high"
+    assert get_provider("openai", common)._reasoning_effort == "high"
 
 
 def test_provider_http_timeouts_are_phased():

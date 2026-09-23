@@ -105,6 +105,27 @@
                 />
                 <span class="token-url-hint">{{ t('tokenConfig.contextHintDefault', { window: fmtWindow(cfg.default_context_window) }) }}</span>
               </div>
+              <!-- Thinking switch: only anthropic/gemini request thinking —
+                   OpenAI CoT is parse-only, its control is reasoning_effort. -->
+              <div v-if="cfg.provider === 'anthropic' || cfg.provider === 'google_gemini'" class="token-url-row">
+                <select v-model="editForms[cfg.config_id].thinking_enabled" class="input token-tier-select">
+                  <option :value="null">{{ t('tokenConfig.thinkingDefault') }}</option>
+                  <option :value="true">{{ t('tokenConfig.thinkingOn') }}</option>
+                  <option :value="false">{{ t('tokenConfig.thinkingOff') }}</option>
+                </select>
+                <span class="token-url-hint">{{ t('tokenConfig.thinkingHint') }}</span>
+              </div>
+              <div v-if="cfg.provider === 'openai' || cfg.provider === 'azure_openai'" class="token-url-row">
+                <select v-model="editForms[cfg.config_id].reasoning_effort" class="input token-tier-select">
+                  <option :value="null">{{ t('tokenConfig.effortNone') }}</option>
+                  <!-- minimal 400s on o-series; only offer it on gpt-5 ids. -->
+                  <option v-if="(editForms[cfg.config_id].model_id || '').includes('gpt-5')" value="minimal">{{ t('tokenConfig.effortMinimal') }}</option>
+                  <option value="low">{{ t('tokenConfig.effortLow') }}</option>
+                  <option value="medium">{{ t('tokenConfig.effortMedium') }}</option>
+                  <option value="high">{{ t('tokenConfig.effortHigh') }}</option>
+                </select>
+                <span class="token-url-hint">{{ t('tokenConfig.effortHint') }}</span>
+              </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="saveConfig(cfg.config_id)" :disabled="saving === cfg.config_id">
                   {{ saving === cfg.config_id ? t('common.saving') : t('common.save') }}
@@ -166,6 +187,24 @@
                   @change="newContextWindowDirty = true"
                 />
                 <span class="token-url-hint">{{ t('tokenConfig.contextHintNew') }}</span>
+              </div>
+              <div v-if="newProvider === 'anthropic' || newProvider === 'google_gemini'" class="token-url-row">
+                <select v-model="newThinking" class="input token-tier-select">
+                  <option :value="null">{{ t('tokenConfig.thinkingDefault') }}</option>
+                  <option :value="true">{{ t('tokenConfig.thinkingOn') }}</option>
+                  <option :value="false">{{ t('tokenConfig.thinkingOff') }}</option>
+                </select>
+                <span class="token-url-hint">{{ t('tokenConfig.thinkingHintNew') }}</span>
+              </div>
+              <div v-if="newProvider === 'openai' || newProvider === 'azure_openai'" class="token-url-row">
+                <select v-model="newReasoningEffort" class="input token-tier-select">
+                  <option :value="null">{{ t('tokenConfig.effortNone') }}</option>
+                  <option v-if="newModelId.includes('gpt-5')" value="minimal">{{ t('tokenConfig.effortMinimal') }}</option>
+                  <option value="low">{{ t('tokenConfig.effortLow') }}</option>
+                  <option value="medium">{{ t('tokenConfig.effortMedium') }}</option>
+                  <option value="high">{{ t('tokenConfig.effortHigh') }}</option>
+                </select>
+                <span class="token-url-hint">{{ t('tokenConfig.effortHintNew') }}</span>
               </div>
               <div class="token-row-actions">
                 <button class="btn-sm" @click="addConfig" :disabled="!newProvider || !newModelId || saving === '__new__'">
@@ -415,7 +454,7 @@ import { useProjectStore } from '@/stores/project'
 import { inferTier } from '@/utils/modelTier'
 import { inferContextWindow } from '@/utils/contextWindow'
 import { useClickOutside } from '@/composables/useClickOutside'
-import type { ProjectSecret } from '@/types'
+import type { ProjectSecret, ReasoningEffort } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
 const overlayEl = ref<HTMLElement | null>(null)
@@ -435,7 +474,7 @@ const tabs = [
 const systemDefault = computed(() => agentStore.modelConfigs.find(c => c.is_system) ?? null)
 const userConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
 
-const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string; tierDirty: boolean; windowDirty: boolean }>>({})
+const editForms = reactive<Record<string, { model_id: string; api_key: string; base_url: string; url_mode: string; complexity_tier: 'low' | 'mid' | 'high' | null; context_window: string; thinking_enabled: boolean | null; reasoning_effort: ReasoningEffort | null; tierDirty: boolean; windowDirty: boolean }>>({})
 
 // The model id each form's tier/window were last inferred for. Guards the
 // re-inference watcher below against firing on unrelated store refreshes
@@ -457,6 +496,8 @@ function initEditForms() {
         // never an empty field for a model that has one.
         complexity_tier: cfg.complexity_tier ?? inferTier(cfg.provider, cfg.model_id),
         context_window: cfg.context_window ? String(cfg.context_window) : String(inferContextWindow(cfg.provider, cfg.model_id)),
+        thinking_enabled: cfg.thinking_enabled,
+        reasoning_effort: cfg.reasoning_effort,
         tierDirty: false,
         windowDirty: false,
       }
@@ -532,6 +573,8 @@ async function saveConfig(configId: string) {
       model_id?: string; api_key?: string; base_url?: string; url_mode?: string
       complexity_tier?: 'low' | 'mid' | 'high' | null
       context_window?: number | null
+      thinking_enabled?: boolean | null
+      reasoning_effort?: ReasoningEffort | null
     } = {}
     if (form.model_id) body.model_id = form.model_id
     if (form.api_key) body.api_key = form.api_key
@@ -540,6 +583,9 @@ async function saveConfig(configId: string) {
     body.complexity_tier = form.complexity_tier
     const windowNum = Number(form.context_window)
     body.context_window = form.context_window && Number.isFinite(windowNum) ? windowNum : null
+    // Always send: the API treats an explicit null as "clear override".
+    body.thinking_enabled = form.thinking_enabled
+    body.reasoning_effort = form.reasoning_effort
     await agentStore.updateModelConfig(configId, body)
     form.api_key = ''
     messages[configId] = { ok: true, text: t('common.saved') }
@@ -595,6 +641,10 @@ const newContextWindow = ref('')
 // User-typed window wins over inference while the model id keeps changing.
 const newContextWindowDirty = ref(false)
 
+// Tri-state thinking override (null = follow the global env default).
+const newThinking = ref<boolean | null>(null)
+const newReasoningEffort = ref<ReasoningEffort | null>(null)
+
 watch([newProvider, newModelId], ([provider, modelId]) => {
   if (newTierDirty.value) return
   newTier.value = inferTier(provider, modelId)
@@ -617,6 +667,8 @@ async function addConfig() {
       url_mode: newUrlMode.value,
       complexity_tier: newTier.value,
       context_window: newContextWindow.value ? Number(newContextWindow.value) : null,
+      thinking_enabled: newThinking.value,
+      reasoning_effort: newReasoningEffort.value,
     })
     editForms[created.config_id] = {
       model_id: created.model_id,
@@ -625,6 +677,8 @@ async function addConfig() {
       url_mode: created.url_mode ?? 'base_url',
       complexity_tier: created.complexity_tier ?? inferTier(created.provider, created.model_id),
       context_window: created.context_window ? String(created.context_window) : String(inferContextWindow(created.provider, created.model_id)),
+      thinking_enabled: created.thinking_enabled,
+      reasoning_effort: created.reasoning_effort,
       tierDirty: false,
       windowDirty: false,
     }
@@ -637,6 +691,8 @@ async function addConfig() {
     newTierDirty.value = false
     newContextWindow.value = ''
     newContextWindowDirty.value = false
+    newThinking.value = null
+    newReasoningEffort.value = null
     showAddForm.value = false
     messages['__new__'] = { ok: true, text: t('common.added') }
   } catch (e) {

@@ -1,5 +1,6 @@
 """Anthropic `_thinking_param` matrix: adaptive vs budget shapes, the env
-kill-switch, and the budget boundary that a 400 would otherwise enforce."""
+kill-switch, the per-config constructor override, and the budget boundary
+that a 400 would otherwise enforce."""
 from __future__ import annotations
 
 from agent_core.providers.anthropic_claude import AnthropicClaudeProvider
@@ -11,6 +12,14 @@ def _provider(model: str, enabled: bool = True) -> AnthropicClaudeProvider:
     p._model = model
     p._thinking_enabled = enabled
     return p
+
+
+def _constructed(**kwargs) -> AnthropicClaudeProvider:
+    # Gateway mode (non-anthropic host) avoids touching the anthropic SDK.
+    return AnthropicClaudeProvider(
+        api_key="x", model="claude-sonnet-4-6",
+        base_url="https://gateway.example.com", **kwargs,
+    )
 
 
 def test_env_kill_switch_returns_none():
@@ -71,3 +80,60 @@ def test_disable_thinking_is_sticky():
     assert p._thinking_param(64_000) is not None
     p._disable_thinking("gateway rejected the thinking field")
     assert p._thinking_param(64_000) is None
+
+
+# ── per-config constructor override (Settings → AI Models) ───────────────
+
+
+def test_explicit_off_wins_over_env_on(monkeypatch):
+    monkeypatch.delenv("AGENT_EXTENDED_THINKING", raising=False)
+    p = _constructed(thinking_enabled=False)
+    assert p._thinking_param(64_000) is None
+
+
+def test_explicit_on_wins_over_env_off(monkeypatch):
+    monkeypatch.setenv("AGENT_EXTENDED_THINKING", "0")
+    p = _constructed(thinking_enabled=True)
+    assert p._thinking_param(64_000) == {"type": "adaptive", "display": "summarized"}
+
+
+def test_omitted_override_follows_env_both_ways(monkeypatch):
+    monkeypatch.setenv("AGENT_EXTENDED_THINKING", "0")
+    assert _constructed()._thinking_param(64_000) is None
+    monkeypatch.setenv("AGENT_EXTENDED_THINKING", "1")
+    assert _constructed()._thinking_param(64_000) is not None
+
+
+def test_sticky_disable_still_applies_after_explicit_on():
+    p = _constructed(thinking_enabled=True)
+    assert p._thinking_param(64_000) is not None
+    p._disable_thinking("gateway rejected the thinking field")
+    assert p._thinking_param(64_000) is None
+    # Already off — a second call must stay a no-op, not re-log/re-enable.
+    p._disable_thinking("again")
+    assert p._thinking_param(64_000) is None
+
+
+def test_explicit_off_never_builds_param_for_haiku_budget():
+    """Explicit off means the `thinking` key never enters kwargs — the
+    gateway-400 retry branch tests kwargs for it, so this also proves no
+    spurious retry fires when the user turned thinking off."""
+    p = AnthropicClaudeProvider(
+        api_key="x", model="claude-haiku-4-5",
+        base_url="https://gateway.example.com", thinking_enabled=False,
+    )
+    assert p._thinking_param(8192) is None
+
+
+def test_gemini_constructor_override(monkeypatch):
+    from agent_core.providers.google_gemini import GoogleGeminiProvider
+
+    monkeypatch.delenv("AGENT_EXTENDED_THINKING", raising=False)
+    off = GoogleGeminiProvider(api_key="x", model="gemini-2.5-flash", thinking_enabled=False)
+    assert off._thinking_supported() is False
+
+    monkeypatch.setenv("AGENT_EXTENDED_THINKING", "0")
+    on = GoogleGeminiProvider(api_key="x", model="gemini-2.5-flash", thinking_enabled=True)
+    assert on._thinking_supported() is True
+    # Omitted → follows env (off here).
+    assert GoogleGeminiProvider(api_key="x", model="gemini-2.5-flash")._thinking_supported() is False

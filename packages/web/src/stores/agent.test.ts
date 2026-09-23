@@ -44,6 +44,8 @@ function makeConfig(over: Partial<ModelConfig> = {}): ModelConfig {
     complexity_tier: null,
     context_window: null,
     default_context_window: 128_000,
+    thinking_enabled: null,
+    reasoning_effort: null,
     is_system: false,
     ...over,
   }

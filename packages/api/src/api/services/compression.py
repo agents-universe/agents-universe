@@ -210,6 +210,12 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
         if mc.context_window:
             # Per-config window override; absent = name-matched default.
             cred["context_window"] = mc.context_window
+        if mc.thinking_enabled is not None:
+            # Per-config thinking override; absent = env default.
+            cred["thinking_enabled"] = mc.thinking_enabled
+        if mc.reasoning_effort:
+            # OpenAI reasoning_effort; absent = not sent.
+            cred["reasoning_effort"] = mc.reasoning_effort
         if mc.provider == "azure_openai":
             cred["endpoint"] = (mc.base_url or "").strip()
         elif mc.base_url:

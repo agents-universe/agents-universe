@@ -42,6 +42,9 @@ export interface EquippedItem {
   description: string
 }
 
+/** OpenAI reasoning_effort members; no "max" in the OpenAI API. */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high'
+
 export interface ModelConfig {
   config_id: string
   provider: string
@@ -55,6 +58,10 @@ export interface ModelConfig {
   context_window: number | null
   /** Name-matched window the runtime uses when context_window is null. */
   default_context_window: number | null
+  /** Thinking override; null = follow env default (AGENT_EXTENDED_THINKING). */
+  thinking_enabled: boolean | null
+  /** OpenAI reasoning_effort; null = not sent (reasoning models only). */
+  reasoning_effort: ReasoningEffort | null
   is_system: boolean
 }
 

@@ -93,6 +93,11 @@ class UserModelConfig(Base):
     complexity_tier: Mapped[str | None] = mapped_column(String(20))
     # Context-window override (tokens); None = name-matched default at runtime.
     context_window: Mapped[int | None] = mapped_column(Integer)
+    # Extended-thinking override; None = env default (AGENT_EXTENDED_THINKING).
+    thinking_enabled: Mapped[bool | None] = mapped_column(Boolean)
+    # OpenAI reasoning_effort ("minimal"|"low"|"medium"|"high"); None = don't
+    # send. Ignored for non-reasoning models and non-OpenAI providers.
+    reasoning_effort: Mapped[str | None] = mapped_column(String(20))
     sort_order: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

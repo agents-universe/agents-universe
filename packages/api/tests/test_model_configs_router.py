@@ -155,6 +155,137 @@ async def test_update_invalid_tier_rejected(client):
     assert resp.status_code == 422
 
 
+# ── thinking_enabled / reasoning_effort ─────────────────────────────────
+
+
+async def test_create_echoes_thinking_and_effort_defaults(client):
+    resp = await _create(client, model_id="claude-sonnet-5")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["thinking_enabled"] is None
+    assert data["reasoning_effort"] is None
+
+
+async def test_create_with_thinking_override(client):
+    resp = await _create(client, model_id="claude-sonnet-5", thinking_enabled=False)
+    assert resp.status_code == 200
+    assert resp.json()["thinking_enabled"] is False
+
+    resp = await _create(client, model_id="claude-opus-5", thinking_enabled=True)
+    assert resp.json()["thinking_enabled"] is True
+
+
+async def test_create_effort_normalized(client):
+    # Lowercase/strip normalization: "HIGH" stores as "high".
+    resp = await _create(client, provider="openai", model_id="gpt-5", reasoning_effort="HIGH")
+    assert resp.status_code == 200
+    assert resp.json()["reasoning_effort"] == "high"
+
+
+async def test_create_invalid_effort_rejected(client):
+    resp = await _create(client, provider="openai", model_id="gpt-5", reasoning_effort="ultra")
+    assert resp.status_code == 422
+    resp = await _create(client, provider="openai", model_id="gpt-5", reasoning_effort="")
+    assert resp.status_code == 422
+
+
+async def test_update_thinking_tri_state(client):
+    """Omit → unchanged; explicit false → set; explicit null → cleared.
+    The null-clear must go through model_fields_set, not `is not None`."""
+    created = (await _create(client, model_id="claude-sonnet-5")).json()
+    cid = created["config_id"]
+
+    # Set to false.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"thinking_enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["thinking_enabled"] is False
+
+    # Field omitted → keeps false.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"model_id": "claude-sonnet-5"})
+    assert resp.status_code == 200
+    assert resp.json()["thinking_enabled"] is False
+
+    # Explicit null → cleared back to env default.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"thinking_enabled": None})
+    assert resp.status_code == 200
+    assert resp.json()["thinking_enabled"] is None
+
+
+async def test_update_effort_tri_state(client):
+    created = (await _create(client, provider="openai", model_id="gpt-5")).json()
+    cid = created["config_id"]
+
+    resp = await client.put(f"/api/model-configs/{cid}", json={"reasoning_effort": "high"})
+    assert resp.status_code == 200
+    assert resp.json()["reasoning_effort"] == "high"
+
+    # Omitted → unchanged.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"model_id": "gpt-5"})
+    assert resp.json()["reasoning_effort"] == "high"
+
+    # Explicit null → cleared.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"reasoning_effort": None})
+    assert resp.json()["reasoning_effort"] is None
+
+    # Invalid value on update → 422, existing value untouched.
+    resp = await client.put(f"/api/model-configs/{cid}", json={"reasoning_effort": "bogus"})
+    assert resp.status_code == 422
+
+
+async def test_system_default_entry_carries_thinking_fields(client, monkeypatch):
+    """_system_default_entry must expose the two fields (always null) or the
+    TS ModelConfig type lies for the synthetic system row."""
+    from types import SimpleNamespace
+
+    from api.routers import model_configs as mod
+
+    monkeypatch.setattr(mod, "get_settings", lambda: SimpleNamespace(
+        system_default_model_id="gpt-4o",
+        system_default_api_key="sk-system-default-key",
+        system_default_base_url=None,
+    ))
+    entry = mod._system_default_entry()
+    assert entry is not None
+    assert entry["thinking_enabled"] is None
+    assert entry["reasoning_effort"] is None
+
+    resp = await client.get("/api/model-configs")
+    assert resp.status_code == 200
+    for cfg in resp.json():
+        assert "thinking_enabled" in cfg
+        assert "reasoning_effort" in cfg
+
+
+async def test_created_config_threads_thinking_into_cred(client, db):
+    """load_model_credentials must surface the per-config overrides into the
+    provider-agnostic cred dict (the sole channel to agent-core)."""
+    resp = await _create(
+        client,
+        provider="openai",
+        model_id="gpt-5",
+        api_key="sk-thread-test-000111222",
+        thinking_enabled=False,
+        reasoning_effort="high",
+    )
+    assert resp.status_code == 200
+    cid = resp.json()["config_id"]
+
+    from api.services.model_credentials import load_model_credentials
+
+    creds, _tier_models, _tier_map, _fixed = await load_model_credentials(db, "test-user")
+    cred = creds[cid]
+    assert cred["thinking_enabled"] is False
+    assert cred["reasoning_effort"] == "high"
+
+    # A config without overrides must omit both keys entirely → constructors
+    # fall back to env defaults (byte-identical requests to pre-feature runs).
+    resp2 = await _create(client, model_id="claude-sonnet-5", api_key="sk-thread-test-333444555")
+    cid2 = resp2.json()["config_id"]
+    creds2, *_ = await load_model_credentials(db, "test-user")
+    assert "thinking_enabled" not in creds2[cid2]
+    assert "reasoning_effort" not in creds2[cid2]
+
+
 async def test_delete(client):
     created = (await _create(client, model_id="claude-sonnet-5")).json()
     resp = await client.delete(f"/api/model-configs/{created['config_id']}")

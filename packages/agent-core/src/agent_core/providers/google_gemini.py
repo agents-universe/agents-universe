@@ -77,16 +77,19 @@ def _part_text(part) -> str | None:
 class GoogleGeminiProvider(LLMProvider):
     """Google Gemini via the google-genai SDK."""
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url", context_window: int | None = None, ssl_verify: bool = False) -> None:
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash", base_url: str | None = None, url_mode: str = "base_url", context_window: int | None = None, ssl_verify: bool = False, thinking_enabled: bool | None = None, reasoning_effort: str | None = None) -> None:
         self._api_key = api_key
         self._model_name = model
         self._base_url = base_url
         self._ssl_verify = ssl_verify
         # Per-config override from Settings -> AI Models; None = name-matched default.
         self._context_window_override = context_window
-        # include_thoughts switch (AGENT_EXTENDED_THINKING, default on); also
-        # flipped off when the model/gateway rejects ThinkingConfig with 400.
-        self._thinking_enabled = thinking_enabled_by_env()
+        # include_thoughts switch: explicit per-config override wins, else
+        # AGENT_EXTENDED_THINKING (default on); also flipped off when the
+        # model/gateway rejects ThinkingConfig with 400. reasoning_effort is
+        # OpenAI-only — accepted so the provider-agnostic cred dict never
+        # TypeErrors a turn.
+        self._thinking_enabled = thinking_enabled if thinking_enabled is not None else thinking_enabled_by_env()
 
     def _client(self) -> genai.Client:
         """Instance-scoped client; a fresh one per call keeps key/endpoint

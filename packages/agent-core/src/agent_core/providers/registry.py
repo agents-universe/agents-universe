@@ -32,7 +32,12 @@ def get_provider(provider_key: str, credentials: dict[str, Any]) -> LLMProvider:
       azure_openai:  api_key, endpoint, deployment, api_version (opt), model (opt)
       google_gemini: api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
     All providers additionally accept context_window (opt: per-config override
-    for the name-matched default; None = auto-match by model name).
+    for the name-matched default; None = auto-match by model name),
+    thinking_enabled (opt: extended-thinking override; None = env default
+    AGENT_EXTENDED_THINKING — honored by anthropic/google_gemini, accepted
+    and ignored by openai/azure_openai whose CoT is parse-only) and
+    reasoning_effort (opt: "minimal"|"low"|"medium"|"high"; sent only to
+    OpenAI-family reasoning models, ignored elsewhere).
     """
     loader = _PROVIDER_LOADERS.get(provider_key)
     if loader is None:

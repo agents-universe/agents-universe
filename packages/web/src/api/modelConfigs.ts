@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import type { ModelConfig } from '@/types'
+import type { ModelConfig, ReasoningEffort } from '@/types'
 
 interface ModelConfigResponse {
   config_id: string
@@ -13,6 +13,10 @@ interface ModelConfigResponse {
   context_window: number | null
   /** Name-matched window shown as the prefill/default in Settings. */
   default_context_window: number | null
+  /** Thinking override; null = follow env default (AGENT_EXTENDED_THINKING). */
+  thinking_enabled: boolean | null
+  /** OpenAI reasoning_effort; null = not sent. */
+  reasoning_effort: ReasoningEffort | null
   is_system: boolean
 }
 
@@ -24,6 +28,8 @@ export interface ModelConfigCreatePayload {
   url_mode?: string
   complexity_tier?: 'low' | 'mid' | 'high' | null
   context_window?: number | null
+  thinking_enabled?: boolean | null
+  reasoning_effort?: ReasoningEffort | null
 }
 
 export interface ModelConfigUpdatePayload {
@@ -33,6 +39,8 @@ export interface ModelConfigUpdatePayload {
   url_mode?: string
   complexity_tier?: 'low' | 'mid' | 'high' | null
   context_window?: number | null
+  thinking_enabled?: boolean | null
+  reasoning_effort?: ReasoningEffort | null
 }
 
 export const modelConfigsApi = {

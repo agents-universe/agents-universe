@@ -58,7 +58,7 @@ def _http_timeout() -> httpx.Timeout:
 class OpenAIProvider(LLMProvider):
     """OpenAI via the openai SDK."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None) -> None:
+    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None, thinking_enabled: bool | None = None, reasoning_effort: str | None = None) -> None:
         kwargs: dict = {"api_key": api_key}
         if base_url:
             b = base_url.rstrip("/")
@@ -79,6 +79,11 @@ class OpenAIProvider(LLMProvider):
         self._model = model
         # Per-config override from Settings → AI Models; None = name-matched default.
         self._context_window_override = context_window
+        # OpenAI CoT arrives from compatible gateways parse-only — there is no
+        # request-side thinking switch, so thinking_enabled is accepted and
+        # ignored. reasoning_effort IS request-side: sent to reasoning models
+        # only (see _reasoning_kwargs).
+        self._reasoning_effort = reasoning_effort
 
     async def close(self) -> None:
         """Close the SDK's httpx client (connection pool).
@@ -174,6 +179,17 @@ class OpenAIProvider(LLMProvider):
             return max_tokens
         return min(max_tokens, MAX_OUTPUT_RESERVE)
 
+    def _reasoning_kwargs(self) -> dict:
+        """Request kwargs that only reasoning models may receive.
+
+        `reasoning_effort` outside the reasoning branch 400s on gpt-4o-class
+        models and on OpenAI-compatible gateways (vLLM/Ollama model names) —
+        gate on _is_reasoning_model() unconditionally.
+        """
+        if self._is_reasoning_model() and self._reasoning_effort:
+            return {"reasoning_effort": self._reasoning_effort}
+        return {}
+
     async def complete(
         self,
         messages: list[Message],
@@ -188,6 +204,7 @@ class OpenAIProvider(LLMProvider):
         )
         if self._is_reasoning_model():
             kwargs["max_completion_tokens"] = max_tokens
+            kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
             kwargs["temperature"] = temperature
@@ -240,6 +257,7 @@ class OpenAIProvider(LLMProvider):
         )
         if self._is_reasoning_model():
             kwargs["max_completion_tokens"] = max_tokens
+            kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
             kwargs["temperature"] = temperature
@@ -318,6 +336,8 @@ class AzureOpenAIProvider(OpenAIProvider):
         api_version: str = "2024-08-01-preview",
         ssl_verify: bool = False,
         context_window: int | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_effort: str | None = None,
         **_kwargs,
     ) -> None:
         from openai import AsyncAzureOpenAI
@@ -339,6 +359,11 @@ class AzureOpenAIProvider(OpenAIProvider):
         self._display_model = model
         # Per-config override from Settings → AI Models; None = name-matched default.
         self._context_window_override = context_window
+        # Explicit params (not swallowed by **_kwargs): Azure configs must
+        # honor the same thinking/effort overrides as plain openai configs —
+        # silently dropping them would leave Azure env-only with no error.
+        # thinking_enabled itself is still ignored: OpenAI CoT is parse-only.
+        self._reasoning_effort = reasoning_effort
 
     def _is_reasoning_model(self) -> bool:
         m = self._model.lower()
@@ -361,6 +386,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         # splits by reasoning model — Azure must too.
         if self._is_reasoning_model():
             kwargs["max_completion_tokens"] = max_tokens
+            kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
             kwargs["temperature"] = temperature
@@ -413,6 +439,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         )
         if self._is_reasoning_model():
             kwargs["max_completion_tokens"] = max_tokens
+            kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
             kwargs["temperature"] = temperature

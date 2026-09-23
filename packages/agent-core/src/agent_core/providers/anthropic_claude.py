@@ -89,13 +89,15 @@ class AnthropicClaudeProvider(LLMProvider):
     and base_url pointing to the gateway — uses raw httpx (no botocore).
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None) -> None:
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None, thinking_enabled: bool | None = None, reasoning_effort: str | None = None) -> None:
         self._model = model
         self._url_mode = url_mode
-        # Extended thinking switch (AGENT_EXTENDED_THINKING, default on).
-        # Also flipped off for the instance lifetime when a gateway rejects
-        # the param with a thinking-related 400.
-        self._thinking_enabled = thinking_enabled_by_env()
+        # Extended thinking switch: explicit per-config override wins, else
+        # AGENT_EXTENDED_THINKING (default on). Also flipped off for the
+        # instance lifetime when a gateway rejects the param with a
+        # thinking-related 400. reasoning_effort is OpenAI-only — accepted so
+        # the provider-agnostic cred dict never TypeErrors a turn.
+        self._thinking_enabled = thinking_enabled if thinking_enabled is not None else thinking_enabled_by_env()
         # Per-config override from Settings → AI Models; None = name-matched default.
         self._context_window_override = context_window
         # Exact host comparison, not substring: a gateway whose domain merely

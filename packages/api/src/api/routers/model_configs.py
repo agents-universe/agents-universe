@@ -45,6 +45,10 @@ def _serialize_config(row: UserModelConfig) -> dict:
         "context_window": row.context_window,
         # Name-matched window shown as the Settings prefill/default.
         "default_context_window": default_context_window(row.provider, row.model_id),
+        # None = thinking follows the env default (AGENT_EXTENDED_THINKING).
+        "thinking_enabled": row.thinking_enabled,
+        # None = reasoning_effort not sent (OpenAI reasoning models only).
+        "reasoning_effort": row.reasoning_effort,
         "is_system": False,
     }
 
@@ -87,6 +91,23 @@ def _validate_complexity_tier(value: str | None) -> str | None:
     return value
 
 
+# OpenAI reasoning_effort members. No "max" in the OpenAI API; "minimal" is
+# gpt-5-family only (o-series 400s on it) — the UI gates it by model id, the
+# server only membership-validates.
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+
+
+def _validate_reasoning_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized not in VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning_effort must be one of {', '.join(VALID_REASONING_EFFORTS)} or null"
+        )
+    return normalized
+
+
 class ModelConfigCreate(BaseModel):
     provider: str = Field(max_length=50)
     model_id: str = Field(max_length=200)
@@ -100,6 +121,10 @@ class ModelConfigCreate(BaseModel):
     complexity_tier: str | None = Field(None, max_length=20)
     # Context-window override in tokens; null → name-matched default at runtime.
     context_window: int | None = Field(None, ge=1, le=MAX_CONTEXT_WINDOW)
+    # Extended-thinking override; null → env default (AGENT_EXTENDED_THINKING).
+    thinking_enabled: bool | None = None
+    # OpenAI reasoning_effort; null → not sent.
+    reasoning_effort: str | None = Field(None, max_length=20)
 
     @field_validator("base_url")
     @classmethod
@@ -115,6 +140,11 @@ class ModelConfigCreate(BaseModel):
     @classmethod
     def validate_complexity_tier(cls, value: str | None) -> str | None:
         return _validate_complexity_tier(value)
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort(cls, value: str | None) -> str | None:
+        return _validate_reasoning_effort(value)
 
 
 class ModelConfigUpdate(BaseModel):
@@ -127,6 +157,10 @@ class ModelConfigUpdate(BaseModel):
     complexity_tier: str | None = Field(None, max_length=20)
     # Explicit null clears the override (back to name-matched default).
     context_window: int | None = Field(None, ge=1, le=MAX_CONTEXT_WINDOW)
+    # Explicit null clears the override (back to env default).
+    thinking_enabled: bool | None = None
+    # Explicit null clears the override (effort no longer sent).
+    reasoning_effort: str | None = Field(None, max_length=20)
 
     @field_validator("base_url")
     @classmethod
@@ -142,6 +176,11 @@ class ModelConfigUpdate(BaseModel):
     @classmethod
     def validate_complexity_tier(cls, value: str | None) -> str | None:
         return _validate_complexity_tier(value)
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort(cls, value: str | None) -> str | None:
+        return _validate_reasoning_effort(value)
 
 
 def _system_default_entry() -> dict | None:
@@ -158,6 +197,8 @@ def _system_default_entry() -> dict | None:
         "complexity_tier": None,
         "context_window": None,
         "default_context_window": default_context_window("openai", settings.system_default_model_id),
+        "thinking_enabled": None,
+        "reasoning_effort": None,
         "is_system": True,
     }
 
@@ -228,6 +269,8 @@ async def create_model_config(
             else infer_complexity_tier(body.provider, body.model_id.strip())
         ),
         context_window=body.context_window,
+        thinking_enabled=body.thinking_enabled,
+        reasoning_effort=body.reasoning_effort,
         sort_order=next_order,
     )
     db.add(row)
@@ -271,6 +314,12 @@ async def update_model_config(
         row.complexity_tier = body.complexity_tier
     if "context_window" in body.model_fields_set:
         row.context_window = body.context_window
+    # Tri-state: explicit null in model_fields_set clears the override —
+    # an `is not None` guard would make clearing impossible.
+    if "thinking_enabled" in body.model_fields_set:
+        row.thinking_enabled = body.thinking_enabled
+    if "reasoning_effort" in body.model_fields_set:
+        row.reasoning_effort = body.reasoning_effort
     if row.provider == "azure_openai" and not row.base_url:
         raise HTTPException(status_code=400, detail="Azure OpenAI requires a base URL")
 

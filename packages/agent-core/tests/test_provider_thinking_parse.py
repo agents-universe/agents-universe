@@ -56,6 +56,8 @@ def _make_openai():
 
     p = OpenAIProvider.__new__(OpenAIProvider)
     p._model = "gpt-5.6-luna"
+    # __init__ normally sets this; stream() consults it via _reasoning_kwargs.
+    p._reasoning_effort = None
     return p
 
 

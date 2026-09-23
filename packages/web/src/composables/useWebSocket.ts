@@ -5,7 +5,7 @@ import { useKnowledgeStore } from '@/stores/knowledge'
 import { useMemoryStore } from '@/stores/memory'
 import { conversationsApi } from '@/api/conversations'
 import { apiBase } from '@/utils/basePath'
-import type { WsStatus, WsMessage, ToolCallRecord, ImageRecord, AttachmentRecord, SelectionPrompt, PersonalMemory, EpisodicMemory } from '@/types'
+import type { WsStatus, WsMessage, ToolCallRecord, ImageRecord, AttachmentRecord, SelectionPrompt, PersonalMemory, EpisodicMemory, TurnPhase } from '@/types'
 
 // Fast phase: the common blip (dropped frame, one-second reverse-proxy
 // reload) is usually over by the second attempt.
@@ -369,6 +369,8 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           .map(_promptFromEvent)
         conv.applySync(convId, {
           streamingContent: (msg.streaming_text as string) || '',
+          thinking: (msg.thinking as string) || '',
+          phase: (msg.phase as TurnPhase | undefined) ?? null,
           prompts,
           // The server sends snake_case tool-call fields (call_id, task_id,
           // current_step, next_step). Passed through unmapped, callId would
@@ -402,6 +404,29 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       }
       case 'stream_delta':
         conv.appendDelta(msg.delta as string, msg.task_id as string | undefined, convId)
+        break
+      case 'thinking_delta':
+        // Reasoning trace of the live turn — buffered for the streaming
+        // ThinkingBlock and snapshotted onto the message at stream_end.
+        conv.appendThinkingDelta(msg.delta as string, convId)
+        break
+      case 'thinking_end':
+        // The model stopped reasoning for this iteration — collapse the
+        // live thinking block (content that follows renders normally).
+        conv.endThinking(convId)
+        break
+      case 'turn_status':
+        // Phase frames (and 5s heartbeats) keep the status line alive during
+        // TTFT / long tools / compression, when no delta is flowing.
+        conv.setTurnStatus(
+          msg.phase as TurnPhase,
+          {
+            tool: msg.tool as string | undefined,
+            callId: msg.call_id as string | undefined,
+            heartbeat: msg.heartbeat as boolean | undefined,
+          },
+          convId,
+        )
         break
       case 'stream_end': {
         const messageId = msg.message_id as string | undefined

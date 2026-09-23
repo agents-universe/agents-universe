@@ -51,6 +51,13 @@
       <!-- Streaming -->
       <div v-if="convStore.isStreaming || convStore.isThinking" class="message message-assistant streaming">
         <StreamingStatus :hide-step-info="convStore.tasks.length > 0" />
+        <!-- Live reasoning trace, chronologically before tools/output: it
+             expands while the model thinks and collapses on thinking_end. -->
+        <ThinkingBlock
+          v-if="convStore.streamingThinking"
+          :text="convStore.streamingThinking"
+          :live="convStore.thinkingOpen"
+        />
         <!-- Tool calls leading up to the plan (incl. plan_task) -->
         <div v-if="callsBeforePlan.length" class="streaming-tool-calls">
           <ToolCallCard
@@ -137,6 +144,7 @@ import { renderMarkdown } from '@/utils/markdown'
 import type { AttachmentRecord, ImageRecord } from '@/types'
 import MessageBubble from './MessageBubble.vue'
 import StreamingStatus from './StreamingStatus.vue'
+import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import TaskPlanCard from './TaskPlanCard.vue'
 import SelectionDialog from './SelectionDialog.vue'

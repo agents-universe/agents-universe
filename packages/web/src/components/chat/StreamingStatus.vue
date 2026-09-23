@@ -30,7 +30,9 @@ const elapsed = computed(() => {
 })
 
 const runningTools = computed(() =>
-  convStore.activeToolCalls.filter((tc) => tc.status === 'running'),
+  // preparing counts too: the card exists before execution starts, and
+  // leaving it out made the status line say "thinking" while a tool warmed up.
+  convStore.activeToolCalls.filter((tc) => tc.status === 'running' || tc.status === 'preparing'),
 )
 
 const runningTasks = computed(() =>
@@ -46,6 +48,17 @@ const collabLabel = computed(() => {
   const slug = convStore.turnAgentSlug
   if (!slug || slug === agentStore.currentAgent?.slug) return null
   return agentStore.agents.find((a) => a.slug === slug)?.label ?? slug
+})
+
+/** First two tool names for the multi-tool label; null when none carry a
+ *  name (caller falls back to the plain count wording). */
+const namedToolsLabel = computed(() => {
+  const names = runningTools.value
+    .map((tc) => tc.tool)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(', ')
+  return names || null
 })
 
 const statusText = computed(() => {
@@ -64,11 +77,36 @@ const statusText = computed(() => {
     }
     return t('streamingStatus.collabCallingTools', { name: collabLabel.value, count: runningTools.value.length })
   }
+  // Phase frames speak before tool/output heuristics: during a long think,
+  // TTFT or history compression no delta flows, and the old wording could
+  // only guess ("thinking…" with no way to tell compression apart).
+  // running_tool / responding fall through — the branches below state them
+  // more precisely (tool name, "streaming…").
+  if (runningTools.value.length === 0) {
+    switch (convStore.turnPhase) {
+      case 'waiting_model':
+        return t('streamingStatus.phaseWaiting')
+      case 'thinking':
+        return t('streamingStatus.phaseThinking')
+      case 'compressing':
+        return t('streamingStatus.phaseCompressing')
+      case 'degrading':
+        return t('streamingStatus.phaseDegrading')
+    }
+  }
   if (runningTools.value.length === 0) {
     return convStore.streamingContent ? t('streamingStatus.output') : t('streamingStatus.thinking')
   }
   if (runningTools.value.length === 1) {
     return t('streamingStatus.callingTool', { tool: runningTools.value[0].tool })
+  }
+  // Parallel calls: name the first two so the user sees WHAT is running,
+  // not just a count. Falls back to the count wording when names are empty.
+  if (namedToolsLabel.value) {
+    return t('streamingStatus.callingToolsNamed', {
+      names: namedToolsLabel.value,
+      count: runningTools.value.length,
+    })
   }
   return t('streamingStatus.callingTools', { count: runningTools.value.length })
 })

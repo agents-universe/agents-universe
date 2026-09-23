@@ -12,6 +12,7 @@ import type {
   DbMessage,
   DbTask,
   ConversationRun,
+  TurnPhase,
 } from '@/types'
 
 /**
@@ -52,6 +53,18 @@ interface ConversationRuntime {
   messages: Message[]
   streamingContent: string
   streamingByTask: Record<string, string>
+  /** Accumulated reasoning trace of the in-flight turn (thinking_delta). */
+  streamingThinking: string
+  /** True while the model is still emitting thinking; thinking_end (or the
+   *  first content delta) flips it false and the block auto-collapses. */
+  thinkingOpen: boolean
+  /** Last turn_status phase (server-authoritative); null before the first
+   *  frame of a turn / after the turn winds down. */
+  turnPhase: TurnPhase | null
+  /** Tool name carried by a running_tool phase frame. */
+  turnPhaseTool: string | null
+  /** ms timestamp of the last turn_status frame (phase change or heartbeat). */
+  turnPhaseAt: number
   isThinking: boolean
   isStreaming: boolean
   streamingStartTime: number | null
@@ -84,6 +97,11 @@ function createRuntime(): ConversationRuntime {
     messages: [],
     streamingContent: '',
     streamingByTask: {},
+    streamingThinking: '',
+    thinkingOpen: false,
+    turnPhase: null,
+    turnPhaseTool: null,
+    turnPhaseAt: 0,
     isThinking: false,
     isStreaming: false,
     streamingStartTime: null,
@@ -153,6 +171,11 @@ export const useConversationStore = defineStore('conversation', () => {
 
   const messages = computed(() => activeRuntime.value?.messages ?? [])
   const streamingContent = computed(() => activeRuntime.value?.streamingContent ?? '')
+  const streamingThinking = computed(() => activeRuntime.value?.streamingThinking ?? '')
+  const thinkingOpen = computed(() => activeRuntime.value?.thinkingOpen ?? false)
+  const turnPhase = computed(() => activeRuntime.value?.turnPhase ?? null)
+  const turnPhaseTool = computed(() => activeRuntime.value?.turnPhaseTool ?? null)
+  const turnPhaseAt = computed(() => activeRuntime.value?.turnPhaseAt ?? 0)
   const isThinking = computed(() => activeRuntime.value?.isThinking ?? false)
   const pendingInjected = computed(() => activeRuntime.value?.pendingInjected ?? [])
   const isStreaming = computed(() => activeRuntime.value?.isStreaming ?? false)
@@ -224,6 +247,14 @@ export const useConversationStore = defineStore('conversation', () => {
     rt.isStreaming = false
     rt.isThinking = false
     rt.streamingStartTime = null
+    // Reasoning and phase are streaming state too — leaking them would
+    // re-render last turn's thinking block and status label into the next
+    // turn before its first frame arrives.
+    rt.streamingThinking = ''
+    rt.thinkingOpen = false
+    rt.turnPhase = null
+    rt.turnPhaseTool = null
+    rt.turnPhaseAt = 0
     // a finished turn must not leak its in-flight state into the
     // next one — otherwise the TaskPlanCard re-renders last turn's tasks and
     // the next message snapshots stale tool calls/images. Message bubbles
@@ -277,12 +308,14 @@ export const useConversationStore = defineStore('conversation', () => {
     if (!rt) return
     if (!rt.activeToolCalls.length && !rt.streamingContent
         && !Object.keys(rt.streamingByTask).length
+        && !rt.streamingThinking
         && !rt.streamingImages.length && !rt.streamingFiles.length) return
     try {
       localStorage.setItem(`agents-universe:draft:${id}`, JSON.stringify({
         activeToolCalls: rt.activeToolCalls,
         streamingContent: rt.streamingContent,
         streamingByTask: rt.streamingByTask,
+        streamingThinking: rt.streamingThinking,
         streamingImages: rt.streamingImages,
         streamingFiles: rt.streamingFiles,
         tasks: rt.tasks,
@@ -322,6 +355,7 @@ export const useConversationStore = defineStore('conversation', () => {
         activeToolCalls: ToolCallRecord[]
         streamingContent: string
         streamingByTask?: Record<string, string>
+        streamingThinking?: string
         streamingImages: ImageRecord[]
         streamingFiles: AttachmentRecord[]
         tasks: AgentTask[]
@@ -333,7 +367,7 @@ export const useConversationStore = defineStore('conversation', () => {
         return
       }
       if (!draft.activeToolCalls?.length && !draft.streamingContent
-          && !draft.streamingByTask) return
+          && !draft.streamingByTask && !draft.streamingThinking) return
       const recovered: Message = {
         // Unique per interruption: with a fixed `recovered-{targetId}` id, a
         // SECOND interruption in the same runtime (draft re-saved, loadHistory
@@ -344,6 +378,10 @@ export const useConversationStore = defineStore('conversation', () => {
         id: `recovered-${targetId}-${draft.savedAt}`,
         role: 'assistant',
         content: draft.streamingContent || '',
+        // Keep partial reasoning with the recovered text — without it an
+        // interruption during a long think loses the trace entirely (the
+        // server persists thinking only at stream_end, which never came).
+        thinking: draft.streamingThinking || undefined,
         toolCalls: draft.activeToolCalls?.map((tc) => ({
           ...tc,
           status: (tc.status === 'running' || tc.status === 'preparing') ? 'error' as const : tc.status,
@@ -399,6 +437,7 @@ export const useConversationStore = defineStore('conversation', () => {
         id: m.message_id,
         role: m.role as 'user' | 'assistant',
         content: m.content,
+        thinking: m.thinking || undefined,
         agentSlug: m.agent_slug || undefined,
         modelName: m.model_name || undefined,
         toolCalls: (m.tool_calls ?? []).map((tc) => {
@@ -561,6 +600,9 @@ export const useConversationStore = defineStore('conversation', () => {
     const rt = ensureRuntime(id)
     // Streaming deltas prove the turn is alive — drop any stale recovery note.
     _dropStaleRecovery(id)
+    // Content starting means the thinking block is settled even if the
+    // server's thinking_end frame raced ahead of the delta.
+    rt.thinkingOpen = false
     if (taskId) {
       rt.streamingByTask[taskId] = (rt.streamingByTask[taskId] ?? '') + delta
     } else {
@@ -590,12 +632,88 @@ export const useConversationStore = defineStore('conversation', () => {
     return rt?.streamingByTask[taskId] ?? ''
   }
 
+  /** Accumulate a reasoning delta (thinking_delta). Mirrors appendDelta's
+   *  liveness/draft bookkeeping — thinking proves the turn is alive and its
+   *  buffer must survive a refresh like text does. */
+  function appendThinkingDelta(delta: string, targetId?: string) {
+    if (!delta) return
+    const id = targetId ?? activeId.value!
+    const rt = ensureRuntime(id)
+    _dropStaleRecovery(id)
+    rt.streamingThinking += delta
+    rt.thinkingOpen = true
+    rt.abortSnapshotted = false
+    rt.isStreaming = true
+    if (!rt.streamingStartTime) {
+      rt.streamingStartTime = Date.now()
+    }
+    _updateStreamingFlag(id, true)
+    const now = Date.now()
+    if (now - _lastDraftSaveTs >= 500) {
+      _lastDraftSaveTs = now
+      _saveDraft(id)
+    }
+  }
+
+  /** thinking_end (or content starting): the model stopped reasoning for
+   *  this iteration — collapse the live thinking block. */
+  function endThinking(targetId?: string) {
+    const rt = getRuntime(targetId)
+    if (rt) rt.thinkingOpen = false
+  }
+
+  /** Record the turn phase from a turn_status frame. Heartbeats only refresh
+   *  turnPhaseAt (keep the status line's freshness clock ticking) — the
+   *  phase/tool they re-send are by definition unchanged. */
+  function setTurnStatus(
+    phase: TurnPhase,
+    opts?: { tool?: string | null; callId?: string | null; heartbeat?: boolean },
+    targetId?: string,
+  ) {
+    const id = targetId ?? activeId.value
+    if (!id) return
+    const rt = ensureRuntime(id)
+    if (opts?.heartbeat) {
+      // A heartbeat after the turn wound down must not resurrect stale
+      // phase state into the next turn.
+      if (!rt.isStreaming && !rt.isThinking) return
+      rt.turnPhaseAt = Date.now()
+      return
+    }
+    rt.turnPhase = phase
+    rt.turnPhaseTool = opts?.tool ?? null
+    rt.turnPhaseAt = Date.now()
+    // A phase frame proves the server turn is live (waiting_model arrives
+    // before the first delta) — arm the streaming indicators so the panel
+    // shows the status line instead of nothing during a long TTFT.
+    _dropStaleRecovery(id)
+    rt.abortSnapshotted = false
+    rt.isStreaming = true
+    if (!rt.streamingStartTime) {
+      rt.streamingStartTime = Date.now()
+    }
+    _updateStreamingFlag(id, true)
+  }
+
+  function clearTurnStatus(targetId?: string) {
+    const rt = getRuntime(targetId)
+    if (!rt) return
+    rt.turnPhase = null
+    rt.turnPhaseTool = null
+    rt.turnPhaseAt = 0
+  }
+
   function clearStreamingState(targetId?: string, opts?: { preserveDraft?: boolean }) {
     const id = targetId ?? activeId.value
     if (!id) return
     const rt = ensureRuntime(id)
     rt.streamingContent = ''
     rt.streamingByTask = {}
+    rt.streamingThinking = ''
+    rt.thinkingOpen = false
+    rt.turnPhase = null
+    rt.turnPhaseTool = null
+    rt.turnPhaseAt = 0
     rt.isStreaming = false
     rt.isThinking = false
     rt.streamingStartTime = null
@@ -628,6 +746,9 @@ export const useConversationStore = defineStore('conversation', () => {
       id: messageId || `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
       content: content ?? rt.streamingContent,
+      // Reasoning snapshot — the server persists the same buffer on its row;
+      // the bubble keeps it viewable even if history reload lags.
+      thinking: rt.streamingThinking || undefined,
       // The snapshot must not carry tools still in running/preparing — this
       // message is final (stream ended), and a forever-spinning tool chip
       // would render beside it. An interrupted snapshot normalizes them to
@@ -666,13 +787,16 @@ export const useConversationStore = defineStore('conversation', () => {
     // output, so the skip is limited to aborts (abortSnapshotted) and to
     // snapshots with no tool cards at all.
     const noText = !(content ?? rt.streamingContent)
+    const noThinking = !rt.streamingThinking
     const noFreshTools = rt.activeToolCalls.every((tc) => tc.status === 'error' || tc.status === 'interrupted')
-    const emptySnapshot = noText && noFreshTools
+    const emptySnapshot = noText && noThinking && noFreshTools
       && rt.streamingImages.length === 0 && rt.streamingFiles.length === 0
     if (emptySnapshot && !isError && !opts?.interrupted
         && (rt.activeToolCalls.length === 0 || rt.abortSnapshotted)) {
       if (hasParallelTasks) {
         rt.streamingContent = ''
+        rt.streamingThinking = ''
+        rt.thinkingOpen = false
         rt.isThinking = false
         rt.streamingStartTime = null
         _updateStreamingFlag(id, true)
@@ -694,6 +818,8 @@ export const useConversationStore = defineStore('conversation', () => {
       // per-task buffers and running tool calls alive for their own
       // stream_end / tool_call_end events.
       rt.streamingContent = ''
+      rt.streamingThinking = ''
+      rt.thinkingOpen = false
       rt.isThinking = false
       rt.streamingStartTime = null
       _updateStreamingFlag(id, true)
@@ -703,6 +829,10 @@ export const useConversationStore = defineStore('conversation', () => {
       // streaming/thinking flags alive - the agent continues with the
       // injected instruction at the next step boundary.
       rt.streamingContent = ''
+      // The reasoning is on the snapshot above — keeping it buffered would
+      // duplicate it when the continuation appends its own thinking.
+      rt.streamingThinking = ''
+      rt.thinkingOpen = false
       rt.activeToolCalls = []
       rt.streamingImages = []
       rt.streamingFiles = []
@@ -765,7 +895,7 @@ export const useConversationStore = defineStore('conversation', () => {
         tc.status = 'error'
       }
     }
-    if (rt.streamingContent || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0) {
+    if (rt.streamingContent || rt.streamingThinking || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0) {
       pushStreamingMessage(messageId, rt.streamingContent || errorMessage, true, id)
     } else {
       rt.messages.push({
@@ -788,7 +918,7 @@ export const useConversationStore = defineStore('conversation', () => {
         tc.status = 'error'
       }
     }
-    if (rt.streamingContent || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0) {
+    if (rt.streamingContent || rt.streamingThinking || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0) {
       // A second Stop before the server's abort_ack arrives has nothing new
       // to snapshot — the first abort message already holds this turn's
       // state (the error cards were marked above on both calls).
@@ -1063,7 +1193,7 @@ export const useConversationStore = defineStore('conversation', () => {
 
   function hasStreamingContent(targetId: string): boolean {
     const rt = runtimes.get(targetId)
-    return !!rt && (!!rt.streamingContent || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0)
+    return !!rt && (!!rt.streamingContent || !!rt.streamingThinking || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0)
   }
 
   function getActiveToolCalls(targetId: string): ToolCallRecord[] {
@@ -1071,7 +1201,7 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   /** Apply a sync event from the server (WS reconnect mid-stream). */
-  function applySync(targetId: string, sync: { streamingContent: string; toolCalls: ToolCallRecord[]; prompts?: SelectionPrompt[] }) {
+  function applySync(targetId: string, sync: { streamingContent: string; toolCalls: ToolCallRecord[]; prompts?: SelectionPrompt[]; thinking?: string; phase?: TurnPhase | null }) {
     const rt = ensureRuntime(targetId)
     // Only apply if we don't already have live streaming content (avoid
     // overwriting deltas that arrived between connect and sync).
@@ -1084,6 +1214,25 @@ export const useConversationStore = defineStore('conversation', () => {
       if (!rt.streamingStartTime) {
         rt.streamingStartTime = Date.now()
       }
+    }
+    // Same rule for the reasoning buffer: local deltas win over the replay.
+    // A non-empty thinking snapshot also proves the turn is live (it can
+    // only exist mid-turn) — without the flag the panel would show nothing
+    // during a reconnect that lands in a long think.
+    if (!rt.streamingThinking && sync.thinking) {
+      rt.streamingThinking = sync.thinking
+      rt.isStreaming = true
+      rt.isThinking = false
+      rt.abortSnapshotted = false
+      if (!rt.streamingStartTime) {
+        rt.streamingStartTime = Date.now()
+      }
+    }
+    // Phase is server-authoritative at connect time; a later live turn_status
+    // frame overwrites it. Heartbeats don't arrive here.
+    if (sync.phase) {
+      rt.turnPhase = sync.phase
+      rt.turnPhaseAt = Date.now()
     }
     if (sync.toolCalls?.length && !rt.activeToolCalls.length) {
       rt.activeToolCalls = sync.toolCalls
@@ -1122,7 +1271,7 @@ export const useConversationStore = defineStore('conversation', () => {
     // Empty sync (reconnect after the turn already finished server-side)
     // must NOT re-arm the streaming flag — nothing would ever clear it and
     // the conversation would show "running" forever in the tree.
-    if (sync.streamingContent || sync.toolCalls?.length || sync.prompts?.length) {
+    if (sync.streamingContent || sync.thinking || sync.toolCalls?.length || sync.prompts?.length) {
       // Non-empty sync proves the server turn is alive — any recovery note
       // injected by a history fetch that raced the sync is a false alarm.
       _dropStaleRecovery(targetId)
@@ -1148,6 +1297,11 @@ export const useConversationStore = defineStore('conversation', () => {
     conversationId,
     messages,
     streamingContent,
+    streamingThinking,
+    thinkingOpen,
+    turnPhase,
+    turnPhaseTool,
+    turnPhaseAt,
     isThinking,
     isStreaming,
     streamingStartTime,
@@ -1181,6 +1335,10 @@ export const useConversationStore = defineStore('conversation', () => {
     addMessage,
     removeMessage,
     appendDelta,
+    appendThinkingDelta,
+    endThinking,
+    setTurnStatus,
+    clearTurnStatus,
     finalizeStreaming,
     taskStreamingText,
     addStreamingImages,

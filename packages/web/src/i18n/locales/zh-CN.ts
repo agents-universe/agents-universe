@@ -232,8 +232,17 @@ export default {
     thinking: '正在思考…',
     callingTool: '正在调用 {tool}…',
     callingTools: '{count} 个工具并行调用中…',
+    callingToolsNamed: '{names} 等 {count} 个工具并行调用中…',
+    phaseWaiting: '等待模型响应…',
+    phaseThinking: '深度思考中…',
+    phaseCompressing: '正在压缩历史…',
+    phaseDegrading: '正在降级请求…',
     tasksParallel: '{count} 个任务并行中',
     nextStep: '下一步: {step}',
+  },
+  thinkingBlock: {
+    title: '深度思考',
+    live: '思考中',
   },
   toolCall: {
     input: '输入',

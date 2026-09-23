@@ -114,10 +114,22 @@ export interface ToolCallRecord {
   nextStep?: string
 }
 
+/** Turn lifecycle phases pushed by the server's `turn_status` event. */
+export type TurnPhase =
+  | 'waiting_model'
+  | 'thinking'
+  | 'responding'
+  | 'running_tool'
+  | 'compressing'
+  | 'degrading'
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'tool'
   content: string
+  /** Persisted reasoning trace (thinking/reasoning) for this message —
+   *  rendered as a collapsible block, never as markdown. */
+  thinking?: string
   /** Slug of the agent that produced this message (differs from the
    *  conversation default on @-mention turns). */
   agentSlug?: string
@@ -180,6 +192,9 @@ export interface DbMessage {
   message_id: string
   role: string
   content: string
+  /** Persisted reasoning trace; null on legacy rows / providers that did not
+   *  emit thinking. */
+  thinking?: string | null
   /** Agent that produced (assistant) / was addressed by (user) this message;
    *  set on @-mention turns that ran a different agent. */
   agent_slug?: string | null

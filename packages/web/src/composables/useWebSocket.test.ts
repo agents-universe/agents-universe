@@ -200,3 +200,77 @@ describe('useWebSocket image/file output payload guards', () => {
     expect(store.messages[0].attachments).toHaveLength(1)
   })
 })
+
+describe('useWebSocket thinking and turn_status dispatch', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('routes thinking_delta/thinking_end into the live block', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'thinking_delta', delta: 'let me ', message_id: 'm1' })
+    fire(ws, { type: 'thinking_delta', delta: 'think', message_id: 'm1' })
+    expect(store.streamingThinking).toBe('let me think')
+    expect(store.thinkingOpen).toBe(true)
+
+    fire(ws, { type: 'thinking_end', message_id: 'm1' })
+    expect(store.thinkingOpen).toBe(false)
+    expect(store.streamingThinking).toBe('let me think')
+  })
+
+  it('turn_status arms the phase; heartbeats cannot clobber or resurrect it', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'turn_status', phase: 'waiting_model' })
+    expect(store.turnPhase).toBe('waiting_model')
+    expect(store.isStreaming).toBe(true)
+
+    // A heartbeat re-sends a (possibly stale) phase — it must only refresh
+    // the freshness clock, never overwrite the fresher live frame.
+    fire(ws, { type: 'turn_status', phase: 'thinking', heartbeat: true })
+    expect(store.turnPhase).toBe('waiting_model')
+    expect(store.turnPhaseAt).toBeGreaterThan(0)
+
+    // After the turn wound down, a straggler heartbeat is a no-op.
+    store.stopStreaming('conv-a')
+    fire(ws, { type: 'turn_status', phase: 'thinking', heartbeat: true })
+    expect(store.turnPhase).toBeNull()
+    expect(store.isStreaming).toBe(false)
+  })
+
+  it('sync replays the streaming thinking and phase', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, {
+      type: 'sync',
+      streaming_text: '',
+      thinking: 'replayed trace',
+      phase: 'running_tool',
+      tool_calls: [],
+      prompts: [],
+    })
+
+    expect(store.streamingThinking).toBe('replayed trace')
+    expect(store.turnPhase).toBe('running_tool')
+    expect(store.isStreaming).toBe(true)
+  })
+})

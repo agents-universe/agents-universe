@@ -28,6 +28,14 @@
       <span class="message-time">{{ relativeTime(message.timestamp) }}</span>
     </div>
 
+    <!-- Persisted reasoning trace — collapsed by default in history (live
+         expansion belongs to the streaming bubble in ChatPanel). -->
+    <ThinkingBlock
+      v-if="message.thinking"
+      :text="message.thinking"
+      :live="false"
+    />
+
     <!-- Tool calls leading up to the plan (including plan_task itself) -->
     <ToolCallCard
       v-for="tc in callsBeforePlan"
@@ -137,6 +145,7 @@ import { useAgentStore } from '@/stores/agent'
 import type { Message, ImageRecord, AgentTask, ToolCallRecord } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
 import TaskPlanCard from './TaskPlanCard.vue'
+import ThinkingBlock from './ThinkingBlock.vue'
 import MermaidBlock from './MermaidBlock.vue'
 
 const props = defineProps<{ message: Message }>()

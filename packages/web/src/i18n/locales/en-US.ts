@@ -232,8 +232,17 @@ export default {
     thinking: 'Thinking…',
     callingTool: 'Calling {tool}…',
     callingTools: 'Calling {count} tools…',
+    callingToolsNamed: 'Calling {count} tools: {names}…',
+    phaseWaiting: 'Waiting for the model…',
+    phaseThinking: 'Thinking deeply…',
+    phaseCompressing: 'Compressing history…',
+    phaseDegrading: 'Degrading request…',
     tasksParallel: '{count} tasks running in parallel',
     nextStep: 'Next: {step}',
+  },
+  thinkingBlock: {
+    title: 'Thinking',
+    live: 'Thinking',
   },
   toolCall: {
     input: 'Input',

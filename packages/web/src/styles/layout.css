@@ -2283,6 +2283,86 @@
   line-height: 1.5;
 }
 
+/* ── ThinkingBlock — collapsible reasoning trace ─────────────────────────── */
+.thinking-block {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  font-size: 12px;
+  margin-bottom: 8px;
+  transition: border-color 0.15s;
+}
+.thinking-block.thinking-live {
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(167, 139, 250, 0.04);
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: var(--bg-secondary);
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  text-align: left;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+.thinking-header:hover { background: var(--bg-tertiary); }
+
+.thinking-icon { color: #a78bfa; font-size: 12px; }
+.thinking-icon-live { animation: thinking-pulse 1.4s ease-in-out infinite; }
+.thinking-title { flex: 1; color: #a78bfa; font-size: 11.5px; }
+.thinking-live-tag {
+  font-size: 9.5px;
+  color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  border-radius: 8px;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.thinking-body {
+  background: var(--bg-primary);
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.thinking-text {
+  margin: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: #a0aec0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* Collapsed state: keep a two-line preview instead of hiding the trace
+   entirely, so the header still shows what was thought about. */
+.thinking-clamp {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Delegated subtask: the brief and its outcome are prose the user reads, so
    they render as text rather than as the collapsed JSON body. */
 .tool-call-delegation { max-height: 260px; overflow-y: auto; }

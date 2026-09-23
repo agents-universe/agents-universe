@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mapDbTasks, useConversationStore } from './conversation'
 import type { ToolCallRecord, DbMessage, DbTask } from '@/types'
@@ -964,5 +964,230 @@ describe('mapDbTasks', () => {  it('maps error_message to the error field', () =
     }]
     const mapped = mapDbTasks(tasks)
     expect(mapped[0].error).toBeUndefined()
+  })
+})
+
+describe('conversation store - thinking trace and turn phases', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('accumulates thinking deltas into the live block', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('let me ', 'conv-a')
+    store.appendThinkingDelta('think', 'conv-a')
+
+    expect(store.streamingThinking).toBe('let me think')
+    expect(store.thinkingOpen).toBe(true)
+    expect(store.isStreaming).toBe(true)
+    // Content channel stays untouched — thinking never bleeds into text.
+    expect(store.streamingContent).toBe('')
+  })
+
+  it('endThinking collapses the block but keeps the buffer', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('deep dive', 'conv-a')
+    store.endThinking('conv-a')
+
+    expect(store.thinkingOpen).toBe(false)
+    expect(store.streamingThinking).toBe('deep dive')
+  })
+
+  it('a content delta closes the live block (racing thinking_end)', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('trace ', 'conv-a')
+    store.appendDelta('answer', undefined, 'conv-a')
+
+    expect(store.thinkingOpen).toBe(false)
+    // The trace survives for the end-of-turn snapshot.
+    expect(store.streamingThinking).toBe('trace ')
+  })
+
+  it('pushStreamingMessage snapshots thinking and clears the buffer', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('deep ', 'conv-a')
+    store.appendDelta('final answer', undefined, 'conv-a')
+    store.pushStreamingMessage('assistant-1', undefined, false, 'conv-a')
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].thinking).toBe('deep ')
+    expect(store.messages[0].content).toBe('final answer')
+    expect(store.streamingThinking).toBe('')
+    expect(store.thinkingOpen).toBe(false)
+  })
+
+  it('a thinking-only turn still pushes a snapshot (not an empty drop)', () => {
+    // Regression: the empty-snapshot gate once keyed off text/tools only, so
+    // a model that produced reasoning but no answer left nothing in history.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('thought with no answer', 'conv-a')
+    store.pushStreamingMessage('assistant-2', undefined, false, 'conv-a')
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].thinking).toBe('thought with no answer')
+    expect(store.streamingThinking).toBe('')
+  })
+
+  it('loadHistory maps persisted thinking onto messages', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([
+      makeDbMessage({ message_id: 'a1', role: 'assistant', content: 'ok', thinking: 'trace from server' }),
+      makeDbMessage({ message_id: 'a2', role: 'assistant', content: 'plain', thinking: null }),
+    ], 'conv-a')
+
+    expect(store.messages.find((m) => m.id === 'a1')?.thinking).toBe('trace from server')
+    expect(store.messages.find((m) => m.id === 'a2')?.thinking).toBeUndefined()
+  })
+
+  it('thinking deltas persist into the draft for refresh recovery', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('partial think', 'conv-a')
+
+    const raw = localStorage.getItem('agents-universe:draft:conv-a')
+    expect(raw).not.toBeNull()
+    expect(JSON.parse(raw!).streamingThinking).toBe('partial think')
+    localStorage.removeItem('agents-universe:draft:conv-a')
+  })
+
+  it('recovers a thinking-only draft as a recovery message', () => {
+    // The server persists thinking only at stream_end — a refresh mid-think
+    // would lose the trace without the draft carrying it.
+    localStorage.setItem('agents-universe:draft:conv-a', JSON.stringify({
+      activeToolCalls: [],
+      streamingContent: '',
+      streamingThinking: 'interrupted think',
+      streamingImages: [],
+      streamingFiles: [],
+      tasks: [],
+      savedAt: Date.now(),
+    }))
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'persisted reply',
+      created_at: '2026-01-01T00:00:00Z',
+    })], 'conv-a')
+
+    const recovered = store.messages.find((m) => m.id.startsWith('recovered-'))
+    expect(recovered).toBeDefined()
+    expect(recovered!.thinking).toBe('interrupted think')
+    localStorage.removeItem('agents-universe:draft:conv-a')
+  })
+
+  it('setTurnStatus records the phase and arms liveness', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    // waiting_model arrives before any delta — without arming here the panel
+    // shows nothing during a long TTFT.
+    store.setTurnStatus('waiting_model', undefined, 'conv-a')
+
+    expect(store.turnPhase).toBe('waiting_model')
+    expect(store.turnPhaseTool).toBeNull()
+    expect(store.isStreaming).toBe(true)
+    expect(store.turnPhaseAt).toBeGreaterThan(0)
+
+    store.setTurnStatus('running_tool', { tool: 'shell', callId: 'c1' }, 'conv-a')
+    expect(store.turnPhase).toBe('running_tool')
+    expect(store.turnPhaseTool).toBe('shell')
+  })
+
+  it('a heartbeat refreshes the freshness clock without touching the phase', () => {
+    const store = useConversationStore()
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1000)
+    try {
+      store.startConversation('conv-a')
+      store.appendThinkingDelta('trace', 'conv-a')
+      store.setTurnStatus('thinking', undefined, 'conv-a')
+      expect(store.turnPhaseAt).toBe(1000)
+
+      nowSpy.mockReturnValue(6000)
+      store.setTurnStatus('thinking', { heartbeat: true }, 'conv-a')
+
+      expect(store.turnPhaseAt).toBe(6000)
+      // Heartbeats re-send the unchanged phase — they must not clobber a
+      // phase that a fresher live frame already advanced.
+      expect(store.turnPhase).toBe('thinking')
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('a heartbeat after the turn wound down is ignored', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setTurnStatus('thinking', { heartbeat: true }, 'conv-a')
+
+    expect(store.turnPhase).toBeNull()
+    expect(store.turnPhaseAt).toBe(0)
+    expect(store.isStreaming).toBe(false)
+  })
+
+  it('clearTurnStatus and stopStreaming reset the phase fields', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendThinkingDelta('trace', 'conv-a')
+    store.setTurnStatus('compressing', undefined, 'conv-a')
+
+    store.clearTurnStatus('conv-a')
+    expect(store.turnPhase).toBeNull()
+    expect(store.turnPhaseTool).toBeNull()
+    expect(store.turnPhaseAt).toBe(0)
+
+    store.setTurnStatus('degrading', undefined, 'conv-a')
+    store.stopStreaming('conv-a')
+    expect(store.turnPhase).toBeNull()
+    expect(store.streamingThinking).toBe('')
+    expect(store.thinkingOpen).toBe(false)
+    expect(store.isStreaming).toBe(false)
+  })
+
+  it('applySync adopts the server thinking only when the local buffer is empty', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.applySync('conv-a', {
+      streamingContent: '',
+      toolCalls: [],
+      thinking: 'server trace',
+      phase: 'running_tool',
+    })
+
+    expect(store.streamingThinking).toBe('server trace')
+    expect(store.turnPhase).toBe('running_tool')
+    expect(store.isStreaming).toBe(true)
+
+    // Local deltas that arrived between connect and sync win.
+    store.applySync('conv-a', {
+      streamingContent: '',
+      toolCalls: [],
+      thinking: 'older server trace',
+      phase: null,
+    })
+    expect(store.streamingThinking).toBe('server trace')
+  })
+
+  it('applySync phase alone must not arm the streaming flag', () => {
+    // A phase can arrive with an empty snapshot (sync raced the very start
+    // of the turn) — arming on it alone would strand the conversation in
+    // "running" if nothing follows.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.applySync('conv-a', {
+      streamingContent: '',
+      toolCalls: [],
+      phase: 'compressing',
+    })
+
+    expect(store.turnPhase).toBe('compressing')
+    expect(store.isStreaming).toBe(false)
   })
 })

@@ -226,9 +226,9 @@ If the user only asked to clone and read/learn the code, finish without creating
 When all conditions above are met and Git analysis yields stable conclusions, write them into knowledge:
 
 - `context.md`: newly discovered module boundaries and system relationships
-- `page-map.md`: newly confirmed page entry points and function mappings
-- `test-patterns.md`: newly confirmed high-risk regression patterns
-- `history.md`: the conclusions learned from Git during this run
+- `technical/page-map`: newly confirmed page entry points and function mappings
+- `skills/test-patterns`: newly confirmed high-risk regression patterns
+- `system/history`: the conclusions learned from Git during this run
 - `technical/repo-{name}.md`: update "Key Directories" section and "Last Pulled" timestamp
 
 Recommended `history` format:

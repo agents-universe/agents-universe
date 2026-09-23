@@ -1,6 +1,11 @@
 ---
 slug: "testing/system-test-planner"
 description: "Plan whole-system test coverage from project knowledge and produce tests/test-plan.md with a prioritized, executable case inventory"
+triggers:
+  - "为整个系统设计测试计划"
+  - "系统测试计划"
+  - "whole-system test plan"
+  - "system test plan"
 ---
 
 # Skill: System Test Planner
@@ -67,14 +72,14 @@ Credential collection follows the workflow (Step 5). When the skill runs standal
 2. If missing, **ask the user to choose the storage scope** via `user_confirm(kind="selection")`: 个人密钥 (user key vault, cross-project) or 项目共享密钥 (project secrets, current project). Note that project-shared secrets are resolvable by other project members.
 3. Collect one credential at a time with `user_confirm(secret=true, service_key="qa:login:username", save_to_user_tokens=true)` (personal) or `save_to_project_secrets=true` (project-shared, optionally with `environment`). `secret_vault save` covers the personal scope only.
 
-Secret prompts return only an opaque status — never request or echo plaintext credentials in normal chat. Record only non-secret account metadata (account, role, company/tenant, use) and the chosen scope in the `login-and-user-switch.md` Verified Accounts table; passwords never enter knowledge. If the user declines, mark credential-gated cases "blocked by missing credentials" in Open Risks and continue with unauthenticated coverage.
+Secret prompts return only an opaque status — never request or echo plaintext credentials in normal chat. Record only non-secret account metadata (account, role, company/tenant, use) and the chosen scope in the `technical/login-and-user-switch` Verified Accounts table; passwords never enter knowledge. If the user declines, mark credential-gated cases "blocked by missing credentials" in Open Risks and continue with unauthenticated coverage.
 
 ## Feedback Into Knowledge
 
-- New coverage patterns / reusable strategies → `test-patterns.md`.
-- Verified data-creation recipes (and dead ends) → `test-data-setup.md` per `testing/test-data-setup`.
-- Verified accounts and their scope → `login-and-user-switch.md`.
-- Everything new → `history.md` entry.
+- New coverage patterns / reusable strategies → `skills/test-patterns`.
+- Verified data-creation recipes (and dead ends) → `skills/test-data-setup` per `testing/test-data-setup`.
+- Verified accounts and their scope → `technical/login-and-user-switch`.
+- Everything new → `system/history` entry.
 
 ## Execution Notes (for later runs)
 

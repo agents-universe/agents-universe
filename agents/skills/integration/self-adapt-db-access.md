@@ -22,7 +22,7 @@ Per project knowledge:
 - Access-name-aware surface `/api/{accessName}/...`; table discovery `GET /api/{accessName}/tables`; datasource discovery `GET /api/datasources`.
 - Dynamic CRUD examples: `GET /api/{accessName}/{tableName}` and `GET /api/{accessName}/{tableName}/{id}`.
 - In the current gateway usage, consume it through the existing Kong path.
-- Discovery routes `GET /kong/api/<variant-a>/tables` / `GET /kong/api/<variant-b>/tables` only reveal which tables have generated APIs; after discovery, register every returned table's generated CRUD routes in `kong-map.md`.
+- Discovery routes `GET /kong/api/<variant-a>/tables` / `GET /kong/api/<variant-b>/tables` only reveal which tables have generated APIs; after discovery, register every returned table's generated CRUD routes in `technical/kong-map`.
 
 ## Source Priority Rule
 
@@ -36,7 +36,7 @@ Do not jump to it just because it is convenient.
 
 ## Kong Route Rule
 
-Fetch discovery results with the `kong` tool (use the actual paths configured in your project's `kong-map.md`):
+Fetch discovery results with the `kong` tool (use the actual paths configured in your project's `technical/kong-map`):
 
 ```json
 kong(operation="request", path="/kong/api/<variant-a>/tables", method="GET")
@@ -56,7 +56,7 @@ Then use the returned table lists to register dynamic CRUD routes by calling Kon
 Full Kong URLs instead of relative paths → automatically:
 
 1. Normalize into project base + relative path.
-2. Write the normalized variants into `kong-map.md`.
+2. Write the normalized variants into `technical/kong-map`.
 3. Reuse them via the `kong` tool: `kong(operation="request", path="...", method="GET", env="dev")`.
 
 Do not ask the user to manually convert the URLs into `kong-map` format first.
@@ -67,12 +67,12 @@ The target story may differ between named variants (e.g. `<variant-a>` / `<varia
 
 Preferred order:
 
-1. Use the real gateway path or full URL first as configured in `kong-map.md`.
+1. Use the real gateway path or full URL first as configured in `technical/kong-map`.
 2. Check whether the distinction is carried by path, params, headers, returned table set, or downstream business meaning.
-3. Record only the observed distinction; keep concrete variants in `kong-map.md` when the live route exposes them.
+3. Record only the observed distinction; keep concrete variants in `technical/kong-map` when the live route exposes them.
 4. Do not fabricate variant segments the live route does not expose.
 
-Explicit user-provided variants override older knowledge. Actual variant names are project-specific — read them from `kong-map.md` or environment knowledge, never a hardcoded list.
+Explicit user-provided variants override older knowledge. Actual variant names are project-specific — read them from `technical/kong-map` or environment knowledge, never a hardcoded list.
 
 ## Jira Marking Rule
 
@@ -92,8 +92,8 @@ There is no automatic conversion; the `{color:red}...{color}` markup must be inc
 - Whenever used, state why UI and product API were insufficient.
 - Record the gateway path, table name, and table purpose when known (business meaning / why it is the right fallback).
 - Variant differences relevant → record the actual distinguishing factor, not an assumed `accessName`.
-- Full variant URLs provided → persist both normalized routes into `kong-map.md` automatically.
-- Write Kong-backed fallback knowledge into `kong-map.md`, not `api-map.md`.
+- Full variant URLs provided → persist both normalized routes into `technical/kong-map` automatically.
+- Write Kong-backed fallback knowledge into `technical/kong-map`, not `technical/api-map`.
 - Do not stop after `.../tables` — discovery routes are not the full generated API surface.
-- Write to `api-map.md` only when the same business fact also needs a product-owned API inventory entry.
+- Write to `technical/api-map` only when the same business fact also needs a product-owned API inventory entry.
 - Do not write secrets (Kong Admin tokens, gateway keys) into knowledge or Jira.

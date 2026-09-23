@@ -1,6 +1,11 @@
 ---
 slug: "integration/kong-reader"
 description: "Call Kong / OpenAPI endpoints based on the project base and kong-map knowledge, automatically resolve the Kong key from user tokens by environment, and send it in the x-api-key header"
+triggers:
+  - "kong"
+  - "openapi"
+  - "swagger"
+  - "接口文档"
 ---
 
 # Skill: Kong Reader
@@ -32,22 +37,22 @@ The `kong` tool auto-resolves the base URL from `KONG_BASE_URL_{ENV}` in the pro
 
 5. Non-`GET` → set `method` and include `body` as a JSON object.
 6. Token auto-selected by env: `env="dev"` → `kong:dev`, `env="uat"` → `kong:uat`, `env="int"` → `kong:int`.
-7. Business login state or company / tenant switching needed → establish that context per `login-and-user-switch.md`.
-8. Route variants in the provided URLs (e.g. `/kong/api/variant-a/tables` vs `/kong/api/variant-b/tables`) → write both into `kong-map.md` with the observed difference; do not collapse into one guessed path.
+7. Business login state or company / tenant switching needed → establish that context per `technical/login-and-user-switch`.
+8. Route variants in the provided URLs (e.g. `/kong/api/variant-a/tables` vs `/kong/api/variant-b/tables`) → write both into `technical/kong-map` with the observed difference; do not collapse into one guessed path.
 
 ## Output Requirements
 
 - Prefer structured JSON or Markdown; record request URL, method, status code, key response fields.
-- Input was full URLs → record the normalized relative paths into `kong-map.md` for reuse without the host.
+- Input was full URLs → record the normalized relative paths into `technical/kong-map` for reuse without the host.
 - Kong endpoint maps to a downstream business endpoint → record that mapping too (e.g. `POST /closed-contracts`).
 - Gateway layer → distinguish the gateway request body from the downstream business body; do not assume the downstream DTO works as the Kong body.
-- Write back to `kong-map.md` or `history.md`; never write the token into knowledge.
+- Write back to `technical/kong-map` or `system/history`; never write the token into knowledge.
 
 ## Error Handling
 
 - Missing token for the environment → the `kong` tool auto-prompts via a secure input dialog; the token is encrypted and saved as a project secret (`kong:{env}`), never passing through the LLM, usable by any project member via the tool.
 - Missing Kong base URL → tell the user to set `KONG_BASE_URL_DEV` / `KONG_BASE_URL_UAT` / `KONG_BASE_URL_INT` in the project's `environment/environment` config block.
-- Non-2xx response → preserve the original `status` and `body`; do not guess at the meaning. 404/405/400 during data setup → trigger the agent's API Failure Recovery (refresh spec from `api-map.md` `Page:`, update knowledge, retry).
+- Non-2xx response → preserve the original `status` and `body`; do not guess at the meaning. 404/405/400 during data setup → trigger the agent's API Failure Recovery (refresh spec from `technical/api-map` `Page:`, update knowledge, retry).
 - Wrong base/path concatenation → first check whether the relative path in knowledge starts with `/`, then check the Kong Gateway table in environment knowledge.
 
 ## Credentials

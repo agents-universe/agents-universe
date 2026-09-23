@@ -21,6 +21,7 @@ from typing import Any
 
 import frontmatter
 
+from .loader import derive_summary
 from .scorer import compute_completeness
 
 _CROSS_REF_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -145,7 +146,7 @@ async def index_directory(
             knowledge_level = meta.get("knowledge_level", "auto")
             parent_slug = meta.get("parent", None)
             children_slugs = json.dumps(meta.get("children", []))
-            summary = meta.get("summary", "")
+            summary = meta.get("summary") or derive_summary(content)
 
             parsed_files.append({
                 "md_path": md_path,
@@ -430,6 +431,71 @@ async def _recalculate_inbound_links(
         km.agent_gap_score = result.agent_gap_score
 
 
+async def sync_parent_children(
+    child_slug: str,
+    parent_slug: str,
+    project_id: str | None,
+    db_session,
+    knowledge_dir: Path,
+    *,
+    add: bool = True,
+) -> bool:
+    """Add or remove child_slug in the parent file's frontmatter `children`.
+
+    The parent's frontmatter is the source of truth for the children list
+    (the DB row is derived from it by reindex_one). Called by knowledge_rw
+    write (add=True, before the child reindex) and delete (add=False) so a
+    single write leaves parent and child consistent. Returns True when the
+    parent file changed.
+    """
+    from ..paths import KNOWLEDGE_SLUG_RE, PathEscapeError, resolve_within
+
+    if not KNOWLEDGE_SLUG_RE.match(parent_slug):
+        _log.warning("sync_parent_children: invalid parent slug %r", parent_slug)
+        return False
+    try:
+        parent_path = resolve_within(knowledge_dir, f"{parent_slug}.md")
+    except PathEscapeError:
+        _log.warning("sync_parent_children: parent slug escapes knowledge dir: %r", parent_slug)
+        return False
+    try:
+        if not parent_path.exists():
+            _log.warning("sync_parent_children: parent file not found for slug=%s", parent_slug)
+            return False
+        content = parent_path.read_text("utf-8").lstrip("﻿")
+        post = frontmatter.loads(content)
+    except Exception:
+        _log.warning("sync_parent_children: cannot read parent %s", parent_slug, exc_info=True)
+        return False
+
+    children = [str(c) for c in (post.metadata.get("children") or [])]
+    if add:
+        if child_slug in children:
+            return False
+        children.append(child_slug)
+    else:
+        if child_slug not in children:
+            return False
+        children.remove(child_slug)
+    post.metadata["children"] = children
+
+    try:
+        parent_path.write_text(frontmatter.dumps(post, sort_keys=False) + "\n", encoding="utf-8")
+    except OSError:
+        _log.warning("sync_parent_children: cannot write parent %s", parent_slug, exc_info=True)
+        return False
+
+    # Reindex the parent so its DB row (children_slugs, depth, hash) matches.
+    if db_session is not None:
+        try:
+            await reindex_one(
+                fs_path=str(parent_path), project_id=project_id, db_session=db_session
+            )
+        except Exception:
+            _log.warning("sync_parent_children: reindex of parent %s failed", parent_slug, exc_info=True)
+    return True
+
+
 async def reindex_one(
     fs_path: str,
     project_id: str | None,
@@ -477,7 +543,7 @@ async def reindex_one(
     knowledge_level = _normalize_knowledge_level(meta.get("knowledge_level", "auto"))
     parent_slug_val = meta.get("parent", None)
     children_slugs_val = json.dumps(meta.get("children", []))
-    summary_val = meta.get("summary", "")
+    summary_val = meta.get("summary") or derive_summary(content)
 
     # Compute depth by walking parent chain in DB
     depth_val = 0
@@ -624,11 +690,38 @@ async def reindex_one(
 
     await db_session.commit()
 
+    # Single-file symmetry self-check: if this file declares a parent, the
+    # parent's children list should mention it. Non-blocking — returned as
+    # warnings so knowledge_rw can surface them instead of failing the write.
+    warnings: list[str] = []
+    if parent_slug_val:
+        parent_row = (await db_session.execute(
+            select(KnowledgeMetadata.children_slugs, KnowledgeMetadata.slug).where(
+                KnowledgeMetadata.slug == parent_slug_val,
+                (KnowledgeMetadata.project_id == project_id) | (KnowledgeMetadata.project_id == None),  # noqa: E711
+            ).limit(1)
+        )).first()
+        if parent_row is None:
+            warnings.append(
+                f"parent '{parent_slug_val}' has no index row — run a project reindex"
+            )
+        else:
+            try:
+                parent_children = json.loads(parent_row[0] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                parent_children = []
+            if slug not in parent_children:
+                warnings.append(
+                    f"parent '{parent_slug_val}' does not list {slug} as a child "
+                    "(frontmatter `children` out of sync)"
+                )
+
     return {
         "action": action,
         "slug": slug,
         "completeness_score": completeness.final_score,
         "word_count": word_count,
+        "warnings": warnings,
     }
 
 

@@ -203,6 +203,11 @@ class Agent:
         # each loop rebuild independently (see _mark_prompt_dirty).
         self._prompt_revision = 0
         self._static_prompt_cache: str | None = None
+        # Skills whose triggers matched this turn's user message. Stored on the
+        # instance (not appended to a local prompt string) so prompt rebuilds
+        # inside plan_task pipelines keep the skill body — a local append was
+        # dropped the moment _mark_prompt_dirty forced a rebuild.
+        self._active_skills: list = []
         self._provider_cache: dict[str, LLMProvider] = {}
         self._task_plan: list[dict] | None = None  # Live task status tracking
         for tool in self._tools.values():
@@ -581,14 +586,11 @@ class Agent:
                 files=[e.slug for e in self._project_context.loaded_entries],
             )
 
-        # 3. Build system prompt with project context
+        # 3. Match skills for this turn (per-turn only, reset every run) then
+        # build the system prompt — _build_dynamic_prompt injects the bodies,
+        # so a prompt rebuild mid-turn (task loop) keeps them.
+        self._active_skills = self._skill_registry.matching_triggers(user_message)[:3]
         system = self._build_system_prompt()
-
-        # 4. Check if message triggers any skills (per-turn only, not persisted)
-        pinned_skills = self._skill_registry.matching_triggers(user_message)
-        if pinned_skills:
-            for skill in pinned_skills[:3]:
-                system += f"\n\n## Active Skill: {skill.slug}\n{skill.body}"
 
         # 4b. Task-source-priority directive: when the message references a
         # Jira key / PR anchor, tell the model which tool is the authoritative
@@ -832,8 +834,14 @@ class Agent:
         return "\n".join(lines)
 
     def _build_dynamic_prompt(self) -> str:
-        """Build the dynamic portion (task plan + dynamically loaded knowledge + deferred table)."""
+        """Build the dynamic portion (active skills + task plan + dynamically loaded knowledge + deferred table)."""
         parts: list[str] = []
+
+        # Skills whose triggers matched this turn — in the dynamic section so
+        # prompt rebuilds (plan_task loops, knowledge writes) never drop them.
+        if self._active_skills:
+            for skill in self._active_skills:
+                parts.append(f"\n## Active Skill: {skill.slug}\n{skill.body}")
 
         # Live task plan (updated as tasks complete)
         if self._task_plan:
@@ -851,7 +859,7 @@ class Agent:
 
             if ctx.dynamically_loaded:
                 parts.append("\n## Dynamically Loaded Knowledge")
-                parts.append("These will be released when the associated task completes, or use `knowledge_rw unload`.\n")
+                parts.append("These persist across turns until released with `knowledge_rw unload`.\n")
                 for slug, content in ctx.dynamically_loaded.items():
                     record = ctx.dynamic_records.get(slug)
                     task_info = f"(task: {record.task_id})" if record and record.task_id else "(manual)"

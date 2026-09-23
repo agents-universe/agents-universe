@@ -455,6 +455,10 @@ async def run_turn(
                 knowledge_filter=agent_config.knowledge or None,
                 knowledge_dir=Path(fs_path) / "knowledge",
                 framework_knowledge_dir=FRAMEWORK_KNOWLEDGE_DIR,
+                # Rehydrate knowledge_rw loads from this conversation's events —
+                # the context is rebuilt every user message, and without this
+                # a load would silently expire at the next turn boundary.
+                conversation_id=conversation_id,
             )
 
             # Load conversation history from DB (media_dir enables attachment rehydration).

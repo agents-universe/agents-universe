@@ -1,6 +1,11 @@
 ---
 slug: "testing/release-regression-manager"
 description: "Generate release-level test cards from Jira release links, and design both card regression and main-flow regression"
+triggers:
+  - "按 release 做回归测试设计"
+  - "release 级测试卡"
+  - "release regression"
+  - "release-level test"
 ---
 
 # Skill: Release Regression Manager

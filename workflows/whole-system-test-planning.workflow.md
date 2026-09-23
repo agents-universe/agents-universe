@@ -37,7 +37,7 @@ The QA agent's default workflow for whole-system test plan requests. Produces a 
 ## 3. Step 2 — System Inventory from Knowledge
 
 1. `knowledge_rw(operation="list")` to see available knowledge files.
-2. Gather the inventory sources: `system-architecture` → `page-map` → `api-map` → `kong-map` → `permission-matrix`/`role-matrix` → `test-patterns` → `test-data-setup` → `login-and-user-switch` → `environment`. Any of these without `knowledge_level: detail` is already in your context on project selection — read those directly, and fetch the `detail` ones together in one `knowledge_rw(operation="read", slugs=[...])` call rather than one per file.
+2. Gather the inventory sources (full slugs): `technical/system-architecture` → `technical/page-map` → `technical/api-map` → `technical/kong-map` → `technical/permission-matrix`/`domain/role-matrix` → `skills/test-patterns` → `skills/test-data-setup` → `technical/login-and-user-switch` → `environment/environment`. Any of these without `knowledge_level: detail` is already in your context on project selection — read those directly; fetch the `detail` ones together with `knowledge_rw(operation="read", slugs=[...])`, or `load` the ones needed across turns.
 3. Produce a `module × entry points (UI page / API / job)` inventory, with the knowledge source for each entry.
 4. Fall back to Git/code only when knowledge is absent or stale; write findings back to knowledge afterwards (Step 7).
 
@@ -49,7 +49,7 @@ The QA agent's default workflow for whole-system test plan requests. Produces a 
 
 ## 5. Step 4 — Coverage Matrix
 
-- Apply the four coverage dimensions per module and record the dimension on every case: `main-flow` (primary user journeys), `boundary` (edge cases, limits), `exception` (failure/error paths), `permission` (access control — minimum test set: highest-permission role, restricted role, unauthenticated). Derive role/company variants from the permission and role matrices; keep pattern details in `test-patterns.md`.
+- Apply the four coverage dimensions per module and record the dimension on every case: `main-flow` (primary user journeys), `boundary` (edge cases, limits), `exception` (failure/error paths), `permission` (access control — minimum test set: highest-permission role, restricted role, unauthenticated). Derive role/company variants from the permission and role matrices; keep pattern details in `skills/test-patterns`.
 - Every inventory item must map to at least one coverage cell OR be listed as out-of-scope with a specific reason.
 - State the matrix in the plan document.
 
@@ -61,7 +61,7 @@ The QA agent's default workflow for whole-system test plan requests. Produces a 
    - Personal: `user_confirm(secret=true, service_key="qa:login:username", save_to_user_tokens=true)`, then the same for `qa:login:password` (`secret_vault save` is the equivalent alternative).
    - Project-shared: same but `save_to_project_secrets=true`, optionally with an `environment` qualifier (e.g. `uat`).
 4. Secret prompts return only an opaque status — plaintext never enters the conversation. NEVER request or echo credentials in normal chat text.
-5. Record only non-secret account metadata (account name, role, company/tenant, use) and the chosen credential scope into the project's `login-and-user-switch.md` Verified Accounts table. Passwords are never written to knowledge.
+5. Record only non-secret account metadata (account name, role, company/tenant, use) and the chosen credential scope into the project's `technical/login-and-user-switch` Verified Accounts table. Passwords are never written to knowledge.
 6. If the user declines to provide credentials, mark credential-gated cases as "blocked by missing credentials" in Open Risks and continue with unauthenticated coverage.
 
 ## 7. Step 6 — Produce `tests/test-plan.md`
@@ -73,15 +73,15 @@ Write the plan with the `filesystem` tool to `tests/test-plan.md` using the mand
 3. **Coverage Matrix** — module × dimension table; out-of-scope list with reasons.
 4. **Prioritized Case Inventory** — table: ID, module, title, type (UI/API/DB-fallback), dimension, priority, brief steps.
 5. **Per-Case Execution Contract** — full detail per case grouped by module: preconditions, steps, expected results, data setup, env target, evidence requirements.
-6. **Data Setup** — accounts/orgs/companies/rows needed and how to create them (test-support APIs first, DB last). Resolve each need against `test-data-setup.md`: reuse a verified recipe by id (`test-data-setup.md#<recipe>`) or, for an unindexed need, run one discovery pass and write the recipe back (see `testing/test-data-setup`) — an unresolved "how do we create this?" is a gap in the plan, not an execution-time problem.
-7. **Environment Targets** — env names from `environment.md` mapped to case groups.
+6. **Data Setup** — accounts/orgs/companies/rows needed and how to create them (test-support APIs first, DB last). Resolve each need against `skills/test-data-setup`: reuse a verified recipe by id (`skills/test-data-setup#<recipe>`) or, for an unindexed need, run one discovery pass and write the recipe back (see `testing/test-data-setup`) — an unresolved "how do we create this?" is a gap in the plan, not an execution-time problem.
+7. **Environment Targets** — env names from `environment/environment` mapped to case groups.
 8. **Evidence Requirements** — per-case evidence type (UI screenshot+recording, API request/response JSON, output files) per `workflows/test-artifact-and-jira-conventions.workflow.md`; design-only means evidence is defined for later execution.
 9. **Accounts Needed** — non-secret account metadata table + vault service keys (`qa:login:username`, `qa:login:password`) and their storage scope. NEVER values.
 10. **Open Risks** — untested areas, credential gaps ("blocked by missing credentials"), flaky dependencies.
 
 ## 8. Step 7 — Knowledge Writeback and Summary
 
-1. New coverage patterns → `test-patterns.md`; account info already recorded in Step 5 → `login-and-user-switch.md`; append a `history.md` entry.
+1. New coverage patterns → `skills/test-patterns`; account info already recorded in Step 5 → `technical/login-and-user-switch`; append a `system/history` entry.
 2. Report a concise summary: coverage statistics, P0 case list, open risks, accounts still needed.
 
 ## 9. Success Criteria

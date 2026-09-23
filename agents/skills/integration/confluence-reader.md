@@ -41,11 +41,11 @@ confluence(operation="search", cql="ancestor=<ROOT-PAGE-ID> and type=page")
    - **Architecture / data anchors**: core services, key tables, config root causes affecting flow branches
    - **Test-related constraints**: environment-specific behaviors, data dependencies, time windows
 6. Write only verifiable, automation-valuable content: stable rules, state machines, key fields, accounts, permission boundaries. Without exact enum names or runtime evidence, mark as `inferred` / `partial`, never verified fact.
-7. Write results into the corresponding knowledge files (`context.md`, `glossary.md`, `page-map.md`, `test-patterns.md`, `permission-matrix.md`, `role-matrix.md`).
+7. Write results into the corresponding knowledge files (`domain/context`, `domain/glossary`, `technical/page-map`, `skills/test-patterns`, `technical/permission-matrix`, `domain/role-matrix`).
 
 ## Output Format
 
-Write to the corresponding `.md` files under `knowledge/`. On each update, append one line to `history.md` in this format:
+Write to the corresponding `.md` files under `knowledge/`. On each update, append one line to `system/history` in this format:
 
 ```
 - {date} | {page-title} | updated {knowledge files}
@@ -61,8 +61,8 @@ Write to the corresponding `.md` files under `knowledge/`. On each update, appen
 ## Recommended Batch Learning Order
 
 1. `context.md` first: main business flow, key roles, system boundaries.
-2. Then `glossary.md` / `page-map.md`: unify terminology and page entry points.
-3. Then `test-patterns.md`: convert flow rules into testable design constraints.
+2. Then `domain/glossary` / `technical/page-map`: unify terminology and page entry points.
+3. Then `skills/test-patterns`: convert flow rules into testable design constraints.
 4. Permission/role docs → `permission-matrix.md` / `role-matrix.md`.
 5. Architecture/ER/data-dictionary pages → merge stable service and table anchors into `context.md`.
 

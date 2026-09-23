@@ -1,6 +1,14 @@
 ---
 slug: "testing/test-data-setup"
 description: "Reuse, discover, verify, and write back test-data creation recipes so the next card does not rediscover them"
+triggers:
+  - "造测试数据"
+  - "创建测试数据"
+  - "准备测试数据"
+  - "造数"
+  - "test data"
+  - "data setup"
+  - "seed data"
 ---
 
 # Skill: Test Data Setup
@@ -14,13 +22,15 @@ through the UI in the course of the test.
 
 ## The Loop
 
-1. **Look up, don't rediscover.** Read `knowledge/skills/test-data-setup.md` (the Recipe Index). If
-   the need is indexed, execute the recorded recipe as-is — do not re-verify the channel or
-   re-probe the endpoint. `dataSetup.recipeRef` in the test design points at the recipe.
-2. **Discover once, cheapest channel first.** For an unindexed need, check `kong-map.md` /
-   `api-map.md` for an existing entry and take exactly one probe per channel, in this order:
-   - `test-support-api` — an API built for creating test state. Fastest; look for it in `api-map.md`.
-   - `product-api` — the product's own API via `api_request` (`endpoint_key` from `kong-map.md`).
+1. **Look up, don't rediscover.** Read the Recipe Index via
+   `knowledge_rw(operation="read", slug="skills/test-data-setup")` — knowledge slugs are paths under
+   the project `knowledge/` directory without `.md`. If the need is indexed, execute the recorded
+   recipe as-is — do not re-verify the channel or re-probe the endpoint. `dataSetup.recipeRef` in
+   the test design points at the recipe.
+2. **Discover once, cheapest channel first.** For an unindexed need, check `technical/kong-map` /
+   `technical/api-map` for an existing entry and take exactly one probe per channel, in this order:
+   - `test-support-api` — an API built for creating test state. Fastest; look for it in `technical/api-map`.
+   - `product-api` — the product's own API via `api_request` (`endpoint_key` from `technical/kong-map`).
    - `ui` — drive the real screen when no API path exists.
    - `db-fallback` — the self-adapt DB service (`integration/self-adapt-db-access`), justified in the design.
 3. **Verify with one real read.** A GET on the created object proves it exists — never verify by
@@ -32,7 +42,7 @@ through the UI in the course of the test.
    Record: purpose, channel, endpoint, required fields and constraints, preconditions, the verify
    read, the bulk shape, the idempotency key, cleanup, verification date and environment, source.
    A verified creation path is cross-requirement reusable, so the Knowledge Write Eligibility gate
-   (`knowledge/knowledge-manager`) accepts it. Append a `history.md` entry too.
+   (`knowledge/knowledge-manager`) accepts it. Append a `system/history` entry too.
 5. **Stop after two dead channels.** Record the need under `## Blocked / Known Gaps` with the reason
    and report the case as data-blocked. The record is the value — it stops the next card from
    burning the same search.
@@ -52,9 +62,9 @@ When a case needs many records, the cost is the *number of calls*, not the endpo
 
 | Learned | Goes to |
 |---|---|
-| How to create entity X (endpoint, payload, preconditions, verify read) | `test-data-setup.md` recipe |
-| An account/role/company needed by a case | `login-and-user-switch.md` Verified Accounts (non-secret metadata only) |
-| A need that could not be solved | `test-data-setup.md` `## Blocked / Known Gaps` |
+| How to create entity X (endpoint, payload, preconditions, verify read) | `skills/test-data-setup` recipe |
+| An account/role/company needed by a case | `technical/login-and-user-switch` Verified Accounts (non-secret metadata only) |
+| A need that could not be solved | `skills/test-data-setup` `## Blocked / Known Gaps` |
 | A one-off fixture with no reuse value | `tests/fixtures/` only — do not write it to knowledge |
 
 Never write credentials, tokens, or customer data into a recipe: reference the `secret_ref` /

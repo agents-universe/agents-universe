@@ -256,7 +256,8 @@ export interface KnowledgeItem {
   completeness_score: number
   tags: string[]
   word_count: number
-  knowledge_level: 'index' | 'root' | 'detail' | 'auto'
+  /** 'index' is a deprecated alias for 'root' (legacy rows only). */
+  knowledge_level: 'root' | 'detail' | 'auto' | 'index'
   parent_slug: string | null
   children_slugs: string[]
   summary: string

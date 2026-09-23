@@ -112,7 +112,7 @@ Slug format: "{category}/{filename-without-extension}"
 
 ### Hierarchy frontmatter fields
 
-- `knowledge_level`: `index` (always loaded, navigational map), `detail` (deferred, loaded on demand), `auto` (default — loaded if depth 0, deferred if depth > 0)
+- `knowledge_level`: `root` (always loaded, navigational map; the legacy value `index` is normalized to `root`), `detail` (deferred, loaded on demand), `auto` (default — loaded if depth 0, deferred when it declares a `parent`)
 - `parent`: slug of the parent index file
 - `children`: list of child slugs (declared in the index file)
 - `summary`: one-line description shown in deferred listings and children queries

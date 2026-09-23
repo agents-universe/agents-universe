@@ -106,6 +106,10 @@ async def list_knowledge(
         KnowledgeMetadata.is_archived == False,  # noqa: E712
     )
     if level:
+        # 'index' is the legacy alias for 'root' — accept it so old clients
+        # keep filtering correctly (indexer normalizes to 'root' on write).
+        if level == "index":
+            level = "root"
         query = query.where(KnowledgeMetadata.knowledge_level == level)
     if root_only:
         query = query.where(KnowledgeMetadata.parent_slug == None)  # noqa: E711

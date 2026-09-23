@@ -20,13 +20,24 @@ from typing import Any
 
 import frontmatter
 
-from ..knowledge.loader import MAX_FILE_SIZE
+from ..knowledge.loader import (
+    MAX_FILE_SIZE,
+    derive_summary,
+    dynamic_budget_error,
+)
 from ..paths import KNOWLEDGE_SLUG_RE, PathEscapeError, resolve_within
 from .base import Tool, ToolContext
 
 _log = logging.getLogger("agent_core.knowledge_rw")
 
 _SLUG_RE = KNOWLEDGE_SLUG_RE
+
+# Appended to every "invalid slug" error: the slug regex is ASCII-only by
+# design (path-traversal defense), and CJK-named files are the common mistake.
+_SLUG_HINT = (
+    " Slugs must be ASCII path segments; for a Chinese name keep the ASCII "
+    'slug/filename and put the name in frontmatter `title` (e.g. title: "API 详情").'
+)
 
 # Writes are capped in UTF-8 BYTES just under loader.MAX_FILE_SIZE (512 KB) so
 # a written file always loads back into context. A character-based cap would
@@ -153,7 +164,7 @@ class KnowledgeRWTool(Tool):
             return await self._op_load(params, knowledge_dir, context)
 
         elif operation == "unload":
-            return self._op_unload(params, context)
+            return await self._op_unload(params, context)
 
         elif operation == "refresh":
             return await self._op_refresh(params, knowledge_dir, context)
@@ -162,7 +173,7 @@ class KnowledgeRWTool(Tool):
             return self._op_status(context)
 
         elif operation == "children":
-            return self._op_children(params, context)
+            return await self._op_children(params, context)
 
         elif operation == "delete":
             return await self._op_delete(params, knowledge_dir, context)
@@ -200,6 +211,8 @@ class KnowledgeRWTool(Tool):
                     level = post.metadata.get("knowledge_level", "auto")
                     parent = post.metadata.get("parent", None)
                     children = post.metadata.get("children", [])
+                    if not summary:
+                        summary = derive_summary(post.content or "")
                 except Exception:
                     title = md_file.stem
                     summary = ""
@@ -213,6 +226,9 @@ class KnowledgeRWTool(Tool):
                     "summary": summary,
                     "parent_slug": parent,
                     "children_count": len(children) if isinstance(children, list) else 0,
+                    # A CJK/invalid slug cannot be read/written through this
+                    # tool — flag it so the agent renames instead of retrying.
+                    **({} if _SLUG_RE.match(slug) else {"status": "invalid_slug"}),
                 })
             return files
 
@@ -220,6 +236,8 @@ class KnowledgeRWTool(Tool):
         if root_only:
             files = [f for f in files if not f["parent_slug"]]
         for f in files:
+            if f.get("status") == "invalid_slug":
+                continue  # keep the rename signal; context status is meaningless for it
             f["status"] = self._get_slug_status(f["slug"], context)
         return {"files": files, "count": len(files)}
 
@@ -245,7 +263,7 @@ class KnowledgeRWTool(Tool):
             return {"error": "slug is required for read operation"}
         file_path = _safe_resolve(slug, knowledge_dir)
         if file_path is None:
-            return {"error": f"Invalid slug: {slug!r}"}
+            return {"error": f"Invalid slug: {slug!r}.{_SLUG_HINT}"}
         import logging
         _log = logging.getLogger("agent_core.knowledge_rw")
         # Log the slug only — avoid leaking host filesystem structure into logs
@@ -320,7 +338,7 @@ class KnowledgeRWTool(Tool):
         if not slug:
             return {"error": "slug is required for write operation"}
         if not _SLUG_RE.match(slug):
-            return {"error": f"Invalid slug format: {slug!r}. Use path-safe segments (letters, digits, '-', '_', '.') joined by slashes."}
+            return {"error": f"Invalid slug format: {slug!r}. Use ASCII path-safe segments (letters, digits, '-', '_', '.') joined by slashes." + _SLUG_HINT}
         # loader.MAX_FILE_SIZE (512 KB) silently drops oversized
         # files from context — cap writes (in UTF-8 bytes) below that so what
         # the agent writes is always loadable again.
@@ -364,26 +382,84 @@ class KnowledgeRWTool(Tool):
             }
 
         result = await asyncio.to_thread(_do_write)
+        result["indexed"] = False
+        if not result.get("changed"):
+            # Identical content: the index already reflects this file.
+            result["indexed"] = True
         if result.get("changed"):
+            # Hierarchy closure FIRST: the child's frontmatter `parent` must
+            # land in the parent's `children` before the child reindex runs,
+            # so a single-write flow leaves both rows consistent.
+            try:
+                meta = frontmatter.loads(content).metadata
+            except Exception:
+                meta = {}
+            parent_slug = meta.get("parent")
+            if parent_slug:
+                try:
+                    from agent_core.knowledge.index import sync_parent_children
+                    synced = await sync_parent_children(
+                        child_slug=slug,
+                        parent_slug=str(parent_slug),
+                        project_id=context.project_id,
+                        db_session=context.db_session,
+                        knowledge_dir=knowledge_dir,
+                    )
+                    if synced and context.project_context is not None:
+                        # Keep the in-memory parent entry's children list in
+                        # step so children/status answer without a reload.
+                        pctx = context.project_context
+                        pentry = pctx.deferred_entries.get(str(parent_slug)) or next(
+                            (e for e in pctx.loaded_entries if e.slug == str(parent_slug)),
+                            None,
+                        )
+                        if pentry is not None and slug not in pentry.children_slugs:
+                            pentry.children_slugs.append(slug)
+                except Exception:
+                    _log.warning(
+                        "Parent children sync failed: child=%s parent=%s project=%s",
+                        slug, parent_slug, context.project_id, exc_info=True,
+                    )
+                    result.setdefault(
+                        "warnings", [],
+                    ).append(f"Could not add {slug} to parent {parent_slug}'s children list.")
+
             # Update knowledge_metadata DB so completeness scores reflect the new content.
-            reindexed = False
             if context.db_session is not None:
                 try:
                     from agent_core.knowledge.index import reindex_one
-                    await reindex_one(
+                    reindex_result = await reindex_one(
                         fs_path=str(file_path),
                         project_id=context.project_id,
                         db_session=context.db_session,
                     )
-                    reindexed = True
+                    if reindex_result.get("error"):
+                        raise RuntimeError(reindex_result["error"])
+                    result["indexed"] = True
+                    for w in reindex_result.get("warnings") or []:
+                        result.setdefault("warnings", []).append(w)
                 except Exception:
                     _log.warning("Knowledge reindex failed for slug=%s project=%s", slug, context.project_id, exc_info=True)
+                    # A detail file without an index row is invisible to the
+                    # deferred list — the failure must be visible, not silent.
+                    result.setdefault("warnings", []).append(
+                        f"File written but knowledge index NOT updated for {slug} "
+                        "(reindex failed). Detail files missing an index row are "
+                        "invisible to the deferred list — run "
+                        'knowledge_rw(operation="write") again or reindex the project.'
+                    )
+            else:
+                result.setdefault("warnings", []).append(
+                    f"File written but knowledge index NOT updated for {slug} "
+                    "(no database session). Detail files missing an index row "
+                    "are invisible to the deferred list."
+                )
             # Full invalidate: the cached entries list is what feeds
             # deferred_entries/status on the next conversation, and
             # invalidate_slug only evicts content (which is never populated)
             # — a reindexed file would otherwise keep serving stale metadata
             # (title/summary/word_count) until process restart. Mirrors _op_delete.
-            if reindexed and context.knowledge_cache is not None:
+            if result["indexed"] and context.knowledge_cache is not None:
                 context.knowledge_cache.invalidate(context.project_id)
             # Notify the frontend so the knowledge progress bar updates in real time.
             if context.session is not None:
@@ -411,13 +487,43 @@ class KnowledgeRWTool(Tool):
             return {"error": "slug is required for delete operation"}
         file_path = _safe_resolve(slug, knowledge_dir)
         if file_path is None:
-            return {"error": f"Invalid slug: {slug!r}"}
+            return {"error": f"Invalid slug: {slug!r}.{_SLUG_HINT}"}
+
+        # Read the parent BEFORE unlinking so the parent's children list can
+        # be cleaned up symmetrically with the write-side sync.
+        parent_slug: str | None = None
+        if await asyncio.to_thread(file_path.exists):
+            try:
+                parent_slug = frontmatter.loads(
+                    await _read_knowledge_file(file_path)
+                ).metadata.get("parent") or None
+            except Exception:
+                parent_slug = None
 
         # Remove the file; a missing file is not an error — the DB row may
         # still be stale and needs cleaning up below.
         file_existed = await asyncio.to_thread(file_path.exists)
         if file_existed:
             await asyncio.to_thread(file_path.unlink)
+
+        # Symmetric hierarchy cleanup: drop this slug from the parent's
+        # children list (best-effort, never blocks the delete).
+        if parent_slug:
+            try:
+                from agent_core.knowledge.index import sync_parent_children
+                await sync_parent_children(
+                    child_slug=slug,
+                    parent_slug=str(parent_slug),
+                    project_id=context.project_id,
+                    db_session=context.db_session,
+                    knowledge_dir=knowledge_dir,
+                    add=False,
+                )
+            except Exception:
+                _log.warning(
+                    "Parent children cleanup failed: child=%s parent=%s project=%s",
+                    slug, parent_slug, context.project_id, exc_info=True,
+                )
 
         # Best-effort DB row deletion (never blocks success of the file delete).
         db_action = "skipped"
@@ -496,6 +602,52 @@ class KnowledgeRWTool(Tool):
 
         return result
 
+    async def _record_load_event(
+        self, context: ToolContext, slug: str, event_type: str, reason: str
+    ) -> bool:
+        """Persist a load/unload event so the load survives context rebuilds.
+
+        Returns True when the event row was written. Failure is non-fatal —
+        the in-memory load still works this turn; it just won't rehydrate on
+        the next one. The FK requires an existing knowledge_metadata row, so a
+        slug with no index row logs a warning and skips (self-consistency: an
+        unindexed slug cannot be discovered via deferred anyway).
+        """
+        if context.db_session is None or not context.conversation_id:
+            return False
+        try:
+            from sqlalchemy import text
+
+            row = (await context.db_session.execute(
+                text(
+                    "SELECT knowledge_id FROM knowledge_metadata "
+                    "WHERE slug = :slug AND (project_id = :pid OR project_id IS NULL) "
+                    "ORDER BY CASE WHEN project_id IS NULL THEN 0 ELSE 1 END"
+                ),
+                {"slug": slug, "pid": context.project_id},
+            )).first()
+            if row is None:
+                _log.warning(
+                    "load event skipped: no knowledge_metadata row for slug=%s "
+                    "(run knowledge_rw write/reindex so the entry is indexed)",
+                    slug,
+                )
+                return False
+            from api.models.knowledge import KnowledgeLoadEvent
+
+            context.db_session.add(KnowledgeLoadEvent(
+                knowledge_id=str(row[0]),
+                conversation_id=context.conversation_id,
+                event_type=event_type,
+                reason=reason,
+                turn_number=context.current_turn or 0,
+            ))
+            await context.db_session.commit()
+            return True
+        except Exception:
+            _log.warning("Failed to record %s event for slug=%s", event_type, slug, exc_info=True)
+            return False
+
     async def _op_load(self, params: dict, knowledge_dir: Path, context: ToolContext) -> dict:
         from agent_core.knowledge.loader import load_dynamic_entry
 
@@ -505,7 +657,7 @@ class KnowledgeRWTool(Tool):
 
         file_path = _safe_resolve(slug, knowledge_dir)
         if file_path is None:
-            return {"error": f"Invalid slug: {slug!r}"}
+            return {"error": f"Invalid slug: {slug!r}.{_SLUG_HINT}"}
 
         ctx = context.project_context
         if ctx is None:
@@ -548,20 +700,39 @@ class KnowledgeRWTool(Tool):
         except ValueError as e:
             return {"error": str(e)}
 
-        # Load into dynamic context
-        load_dynamic_entry(
-            ctx, slug, content,
-            context.current_turn,
-            task_id=context.current_task_id,
-        )
+        # Budget gate at entry: the dynamic region has no demote loop, so an
+        # unbounded series of loads would blow the request size.
+        budget = dynamic_budget_error(ctx, len(content.encode("utf-8")))
+        if budget:
+            return {"error": budget, "slug": slug}
+
+        # Capture the deferred entry BEFORE loading — load_dynamic_entry pops
+        # it out of deferred_entries, and the model wants the summary in the
+        # load result (otherwise it loaded blind).
+        entry = ctx.deferred_entries.get(slug)
+
+        # Load into dynamic context. NOT bound to the current task: a load
+        # must survive plan_task pipelines and turn boundaries until an
+        # explicit unload (events are rehydrated every turn).
+        load_dynamic_entry(ctx, slug, content, context.current_turn, task_id=None)
+
+        await self._record_load_event(context, slug, "load", "agent_request")
+
+        # The web UI listens for this to populate the dynamic-knowledge panel.
+        if context.session is not None:
+            try:
+                await context.session.emit("knowledge_dynamic_load", slug=slug)
+            except Exception:
+                _log.debug("knowledge_dynamic_load emit failed for slug=%s", slug, exc_info=True)
 
         return {
             "status": "loaded",
             "slug": slug,
-            "bound_to_task": context.current_task_id,
+            "summary": entry.summary if entry else "",
+            "bytes": len(content.encode("utf-8")),
         }
 
-    def _op_unload(self, params: dict, context: ToolContext) -> dict:
+    async def _op_unload(self, params: dict, context: ToolContext) -> dict:
         from agent_core.knowledge.loader import unload_dynamic_entry
 
         slug = params.get("slug")
@@ -575,6 +746,16 @@ class KnowledgeRWTool(Tool):
         removed = unload_dynamic_entry(ctx, slug)
         if not removed:
             return {"status": "not_loaded", "slug": slug}
+
+        await self._record_load_event(context, slug, "unload", "manual")
+
+        if context.session is not None:
+            try:
+                await context.session.emit(
+                    "knowledge_dynamic_unload", slugs=[slug], reason="manual"
+                )
+            except Exception:
+                _log.debug("knowledge_dynamic_unload emit failed for slug=%s", slug, exc_info=True)
         return {"status": "unloaded", "slug": slug}
 
     async def _op_refresh(self, params: dict, knowledge_dir: Path, context: ToolContext) -> dict:
@@ -639,26 +820,105 @@ class KnowledgeRWTool(Tool):
             "overflow": ctx.overflow_slugs,
         }
 
-    def _op_children(self, params: dict, context: ToolContext) -> dict:
+    async def _op_children(self, params: dict, context: ToolContext) -> dict:
         slug = params.get("slug")
         if not slug:
             return {"error": "slug is required for children operation"}
 
         ctx = context.project_context
-        if ctx is None:
-            return {"error": "No project context available"}
-
         children = []
-        all_entries = list(ctx.deferred_entries.values()) + ctx.loaded_entries
-        for entry in all_entries:
-            if entry.parent_slug == slug:
-                children.append({
-                    "slug": entry.slug,
-                    "title": entry.title,
-                    "summary": entry.summary,
-                    "depth": entry.depth,
-                    "has_children": bool(entry.children_slugs),
-                })
+        seen: set[str] = set()
+
+        def _add(entry) -> None:
+            if entry.slug in seen:
+                return
+            seen.add(entry.slug)
+            children.append({
+                "slug": entry.slug,
+                "title": entry.title,
+                "summary": entry.summary,
+                "depth": entry.depth,
+                "has_children": bool(entry.children_slugs),
+            })
+
+        # Tier 1: in-memory conversation context (deferred + static).
+        if ctx is not None:
+            for entry in list(ctx.deferred_entries.values()) + ctx.loaded_entries:
+                if entry.parent_slug == slug:
+                    _add(entry)
+
+        # Tier 2: DB — catches children loaded in other conversations or
+        # files whose entries never entered this context.
+        if context.db_session is not None:
+            try:
+                from sqlalchemy import text
+
+                rows = (await context.db_session.execute(
+                    text(
+                        "SELECT slug, title, summary, depth, children_slugs, fs_path "
+                        "FROM knowledge_metadata "
+                        "WHERE parent_slug = :pid_slug "
+                        "AND (project_id = :cur OR project_id IS NULL) "
+                        "AND is_archived = :archived"
+                    ),
+                    {"pid_slug": slug, "cur": context.project_id, "archived": False},
+                )).mappings().all()
+                import json as _json
+
+                for row in rows:
+                    from ..knowledge.loader import KnowledgeEntry
+                    _add(KnowledgeEntry(
+                        knowledge_id="",
+                        slug=row["slug"],
+                        title=row["title"] or row["slug"],
+                        fs_path=row["fs_path"] or "",
+                        category=(row["slug"] or "").split("/", 1)[0],
+                        cross_references=[],
+                        word_count=0,
+                        knowledge_level="detail",
+                        parent_slug=slug,
+                        children_slugs=_json.loads(row["children_slugs"] or "[]"),
+                        summary=row["summary"] or "",
+                        depth=int(row["depth"] or 0),
+                    ))
+            except Exception:
+                _log.warning("children DB lookup failed for slug=%s", slug, exc_info=True)
+
+        # Tier 3: disk — frontmatter `parent` is the source of truth when the
+        # index row is missing (reindex failure must not hide a child).
+        knowledge_dir = Path(context.knowledge_dir()).resolve()
+
+        def _disk_scan() -> list:
+            found = []
+            if not knowledge_dir.exists():
+                return found
+            for md_file in knowledge_dir.rglob("*.md"):
+                try:
+                    post = frontmatter.load(str(md_file))
+                except Exception:
+                    continue
+                if (post.metadata.get("parent") or None) != slug:
+                    continue
+                rel = str(md_file.relative_to(knowledge_dir).with_suffix("")).replace("\\", "/")
+                found.append((rel, post))
+            return found
+
+        for rel, post in await asyncio.to_thread(_disk_scan):
+            if rel in seen:
+                continue
+            from ..knowledge.loader import derive_summary
+
+            meta = post.metadata
+            seen.add(rel)
+            children.append({
+                "slug": rel,
+                "title": meta.get("title") or rel.rsplit("/", 1)[-1],
+                "summary": str(meta.get("summary") or derive_summary(post.content or "")),
+                "depth": 0,
+                "has_children": bool(meta.get("children")),
+            })
+
+        children.sort(key=lambda c: c["slug"])
         return {"parent_slug": slug, "children": children, "count": len(children)}
 
     # ------------------------------------------------------------------

@@ -35,9 +35,10 @@ with the same model as the current conversation.
 Two-tier loading when a project is selected. No embedding model, no vector search.
 1. **Primary files** (no `knowledge_level: detail` in frontmatter): read in full from disk,
    injected into context
-2. **Detail files** (`knowledge_level: detail`): indexed in DB — only metadata + summary exposed;
-   content loads on demand via `knowledge_rw load`, released when the associated task
-   completes or on explicit unload
+2. **Detail files** (`knowledge_level: detail`, or `auto` with a `parent`): indexed in DB — only
+   metadata + summary exposed; content loads on demand via `knowledge_rw load`. Loads persist
+   across turns (rehydrated from knowledge_load_events each turn) until an explicit
+   `knowledge_rw unload`
 Cross-references use `[[slug]]`, resolved to `knowledge_id` at index time.
 
 ### Tool Registry (tools/)

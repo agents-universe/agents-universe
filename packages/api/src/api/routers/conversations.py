@@ -77,6 +77,7 @@ def serialize_message(m: DbMessage) -> dict:
         "content": m.content or "",
         "agent_slug": m.agent_slug,
         "model_name": m.model_name,
+        "thinking": m.thinking or None,
         "tool_calls": tool_calls,
         "images": refs and refs.get("images") or None,
         "attachments": refs and refs.get("attachments") or None,

@@ -59,6 +59,25 @@ _AUTO_CONFIG_ID = "auto"
 # collected mid-await. The set self-cleans on completion.
 _background_tasks: set[asyncio.Task] = set()
 
+# Seconds of event silence before the heartbeat re-sends the current phase as
+# a turn_status frame. Module constant so tests can shrink it.
+_HEARTBEAT_S = 5.0
+
+# Persisted thinking cap: keep the head (framing) and the tail (conclusion),
+# mirroring DelegationTransport._SUMMARY_LIMIT's head+tail rationale.
+_THINKING_MAX_CHARS = 20_000
+_THINKING_HEAD = 12_000
+_THINKING_TAIL = 8_000
+
+
+def _cap_thinking(text: str) -> str | None:
+    """Cap a turn's accumulated thinking before it hits the messages row."""
+    if not text:
+        return None
+    if len(text) <= _THINKING_MAX_CHARS:
+        return text
+    return text[:_THINKING_HEAD] + "\n…\n" + text[-_THINKING_TAIL:]
+
 
 def _spawn_background(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
@@ -685,10 +704,15 @@ async def run_turn(
             # task_ids deferred by an in-flight injection (task mode) — the
             # reconcile must leave them pending for the agent's continuation.
             _deferred_task_ids: set[str] = set()
+            # Shared with the heartbeat task (created alongside forward_task):
+            # timestamp of the last forwarded event, so silence is measurable
+            # from outside forward_events' local scope.
+            _status_holder = {"last_event_ts": time.monotonic()}
 
             async def forward_events():
                 nonlocal _persist_guard, _inj_guard, _terminal_task_ids, _deferred_task_ids
                 _text_buf: str = ""
+                _thinking_buf: str = ""
                 _last_snap_ts = time.monotonic()
                 # Model that actually executed this turn (model_selected event
                 # carries the resolved model for auto routing, the chosen
@@ -704,6 +728,22 @@ async def run_turn(
                 _turn_error: str | None = None
 
                 async for event in session.events():
+                    # Heartbeat bookkeeping: any event resets the silence
+                    # window; phase-adjacent events update the mirror the
+                    # heartbeat and reconnect sync read. turn_status is the
+                    # authoritative phase source; the delta/tool mappings are
+                    # belt-and-braces for streams that predate it.
+                    _status_holder["last_event_ts"] = time.monotonic()
+                    if event.type == "turn_status" and event.data.get("phase"):
+                        session.current_turn_phase = str(event.data["phase"])
+                    elif event.type in ("tool_call_start", "tool_call_preparing"):
+                        session.current_turn_phase = "running_tool"
+                    elif event.type == "stream_delta" and event.data.get("delta"):
+                        session.current_turn_phase = "responding"
+                    if event.type == "thinking_delta":
+                        _thinking_buf += event.data.get("delta", "")
+                        session.current_streaming_thinking = _thinking_buf
+
                     # Forward to the client via the transport.  If no WS is
                     # connected (user switched away), the event is silently
                     # dropped - but DB persistence below still runs.
@@ -873,6 +913,7 @@ async def run_turn(
                                         error=_run_status == "failed",
                                         agent_slug=agent_config.slug,
                                         model_name=_model_name,
+                                        thinking=_cap_thinking(_thinking_buf),
                                     )
                                 )
                                 try:
@@ -917,10 +958,12 @@ async def run_turn(
                                     _log.warning("finish_run(stream_end) failed for %s", conversation_id, exc_info=True)
                             _turn_error = None
                             _text_buf = ""
+                            _thinking_buf = ""
                             _tool_calls_buf = []
                             _images_buf = []
                             _files_buf = []
                             session.current_streaming_text = ""
+                            session.current_streaming_thinking = ""
                             session.current_tool_calls = []
                         elif event.type == "user_message_injected":
                             # Persist the injected message BEFORE resolving the
@@ -1040,6 +1083,28 @@ async def run_turn(
 
             agent_task = asyncio.create_task(run_agent())
             forward_task = asyncio.create_task(forward_events())
+
+            # Heartbeat: when the event queue goes silent (long TTFT, a
+            # minutes-long tool, compression), re-send the current phase so
+            # the status line stays alive instead of looking like a dead
+            # socket. Reads the mirrors forward_events maintains — no
+            # interference with the session queue itself.
+            async def _turn_heartbeat() -> None:
+                while True:
+                    await asyncio.sleep(_HEARTBEAT_S)
+                    if time.monotonic() - _status_holder["last_event_ts"] < _HEARTBEAT_S:
+                        continue
+                    await _transport_send(
+                        transport,
+                        conversation_id,
+                        {
+                            "type": "turn_status",
+                            "phase": session.current_turn_phase,
+                            "heartbeat": True,
+                        },
+                    )
+
+            heartbeat_task = asyncio.create_task(_turn_heartbeat())
 
             # Wire abort: set flag AND cancel agent_task so the current await
             # (LLM stream or tool HTTP call) is interrupted immediately.
@@ -1181,6 +1246,11 @@ async def run_turn(
                             )
             except Exception:
                 _log.debug("forward_task cleanup exception for %s", conversation_id, exc_info=True)
+            finally:
+                # The turn's event stream is over — stop the heartbeat before
+                # the sweep/abort_ack tail below (idempotent; the outer
+                # finally backstops the error path).
+                heartbeat_task.cancel()
 
             # Abort or crash leaves task_plan rows stuck at pending/running:
             # agent-core's abort paths never emit a terminal event for the
@@ -1318,6 +1388,11 @@ async def run_turn(
                 _abort_watcher.cancel()
             except Exception:
                 _log.debug("Failed to cancel abort_task for %s", conversation_id)
+        # Same every-exit-path rule for the heartbeat (usually already
+        # cancelled after the forward drain; cancel is idempotent).
+        _hb_task = locals().get("heartbeat_task")
+        if _hb_task is not None and not _hb_task.done():
+            _hb_task.cancel()
         # Buffered injections must NOT be discarded here: a message sent in
         # the window after deregister_session (tokens update, commit,
         # agent.close) was buffered with an input_queued ack and no watchdog
@@ -1430,7 +1505,9 @@ async def _load_history(
     total_bytes = 0
     db_messages = []
     for m in reversed(raw_messages):  # newest → oldest
-        msg_bytes = len((m.content or "").encode("utf-8"))
+        msg_bytes = len((m.content or "").encode("utf-8")) + len(
+            (m.thinking or "").encode("utf-8")
+        )
         if total_bytes + msg_bytes > MAX_HISTORY_BYTES:
             break
         total_bytes += msg_bytes
@@ -1871,6 +1948,7 @@ async def _persist_assistant_message(
     files: list[dict] | None = None, *, interrupted: bool = False,
     error: bool = False,
     agent_slug: str | None = None, model_name: str | None = None,
+    thinking: str | None = None,
 ) -> None:
     """Save an assistant message to DB after stream_end."""
     import uuid as _uuid
@@ -1920,6 +1998,7 @@ async def _persist_assistant_message(
         # actual_model so an overlong model id cannot DataError the persist.
         model_name=(model_name or "")[:100] or None,
         tool_calls=tool_calls_json,
+        thinking=thinking or None,
         knowledge_refs=knowledge_refs_json,
         sequence_num=next_seq,
     )

@@ -22,20 +22,22 @@ _ALEMBIC_INI = Path(__file__).parent.parent / "alembic.ini"
 
 # URL → (markers that MUST appear, markers that MUST NOT appear).
 # The URLs are async (project convention); env.py maps them to sync drivers.
+# "thinking" pins the nullable messages.add_column through the offline branch
+# of every migration that guards on context.is_offline_mode().
 CASES = {
     "mssql": (
         "mssql+aioodbc://sa:pass@localhost/db?driver=ODBC+Driver+17+for+SQL+Server",
-        ["DF_agents_category", "NEWID()", "ALTER COLUMN category", "getutcdate()"],
+        ["DF_agents_category", "NEWID()", "ALTER COLUMN category", "getutcdate()", "thinking"],
         [],
     ),
     "postgresql": (
         "postgresql+asyncpg://u:p@localhost/db",
-        ["ALTER TABLE agents ALTER COLUMN category SET NOT NULL"],
+        ["ALTER TABLE agents ALTER COLUMN category SET NOT NULL", "thinking"],
         ["NEWID()", "DF_agents_category", "GETUTCDATE"],
     ),
     "mysql": (
         "mysql+aiomysql://u:p@localhost/db",
-        ["MODIFY category"],
+        ["MODIFY category", "thinking"],
         ["NEWID()", "ADD CONSTRAINT DF_", "INFORMATION_SCHEMA", "GETUTCDATE", "ALTER COLUMN"],
     ),
 }

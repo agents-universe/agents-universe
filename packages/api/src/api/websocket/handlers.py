@@ -100,7 +100,8 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
       {"type": "user_selection_response", "prompt_id": "...", "value": "..."}
 
     Message types TO client:
-      stream_delta, tool_call_start, tool_call_end, knowledge_loaded,
+      stream_delta, thinking_delta, thinking_end, turn_status,
+      tool_call_start, tool_call_end, knowledge_loaded,
       token_update, image_output, stream_end, error,
       complexity_assessed, context_usage, task_plan_created, task_started,
       task_progress, task_completed, task_failed, task_plan_revised,
@@ -190,6 +191,8 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
             await ws.send_json({
                 "type": "sync",
                 "streaming_text": existing_session.current_streaming_text,
+                "thinking": existing_session.current_streaming_thinking,
+                "phase": existing_session.current_turn_phase,
                 "tool_calls": existing_session.current_tool_calls,
                 "prompts": existing_session.pending_prompt_events(),
             })

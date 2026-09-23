@@ -79,6 +79,10 @@ class Message(Base):
     # legacy rows written before this column existed.
     model_name: Mapped[str | None] = mapped_column(String(100))
     tool_calls: Mapped[str | None] = mapped_column(UnicodeText)      # JSON
+    # Extended-thinking / reasoning text streamed before this reply (capped
+    # head+tail by the persist path). Plain text, not JSON; NULL for
+    # non-thinking replies and rows written before this column existed.
+    thinking: Mapped[str | None] = mapped_column(UnicodeText)
     knowledge_refs: Mapped[str | None] = mapped_column(UnicodeText)  # JSON
     token_count: Mapped[int | None] = mapped_column(Integer)
     sequence_num: Mapped[int] = mapped_column(Integer, nullable=False)

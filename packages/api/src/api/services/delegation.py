@@ -58,6 +58,14 @@ _log = logging.getLogger("agents_universe.ws")
 #: conversation's authoritative loaded-files list, so a child's load would
 #: overwrite the parent's. ``knowledge_updated`` carries no payload (the client
 #: re-fetches), which makes it safe to forward.
+#:
+#: ``turn_status`` IS forwarded: while the parent blocks on the delegate tool
+#: call, the child's phase frames (and its heartbeat re-sends) are the only
+#: visibility into the nested turn, and a phase string carries no state that
+#: could clobber the parent's bubble/plan/tokens. ``thinking_delta`` /
+#: ``thinking_end`` stay OUT — the child's reasoning must not enter the
+#: parent's streaming bubble (same rationale as ``stream_delta`` being
+#: captured but not forwarded); the child persists its own thinking row.
 _FORWARDED_EVENTS = frozenset({
     "user_selection_required",
     "user_selection_cancelled",
@@ -66,6 +74,7 @@ _FORWARDED_EVENTS = frozenset({
     "knowledge_updated",
     "knowledge_dynamic_load",
     "knowledge_dynamic_unload",
+    "turn_status",
 })
 
 #: Characters of the child's streamed reply kept as the summary handed back to

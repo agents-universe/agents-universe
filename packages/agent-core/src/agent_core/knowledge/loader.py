@@ -47,6 +47,17 @@ def _is_log_role(content: str) -> bool:
         return False
 
 
+# Canonical log slugs. `knowledge_role: log` is the general mechanism, but a
+# rewrite can drop the frontmatter (the skill's format example long showed the
+# body alone) — the loader must still keep these files out of every context
+# tier by slug alone.
+_LOG_SLUGS = frozenset({"system/history"})
+
+
+def _is_log_slug(slug: str | None) -> bool:
+    return slug in _LOG_SLUGS
+
+
 def _normalize_knowledge_level(level: str) -> str:
     """Normalize frontmatter knowledge_level: the legacy 'index' means 'root'."""
     return "root" if level == "index" else level
@@ -176,6 +187,10 @@ async def load_project_context(
         failure must not make an entry vanish). Agent loads content on demand
         via knowledge_rw load.
 
+    Log files (knowledge_role: log, or a canonical log slug like
+    system/history) join NEITHER tier: no static content, no deferred listing.
+    They stay reachable through an explicit knowledge_rw read/load.
+
     When conversation_id is given, previously loaded detail files are
     rehydrated from knowledge_load_events — a load persists across turns
     until an explicit unload.
@@ -188,10 +203,11 @@ async def load_project_context(
 
     # --- Tier 1: Load primary files directly from disk ---
     deferred_disk: list[KnowledgeEntry] = []
+    log_slugs: set[str] = set()
     if knowledge_dir:
         kdir = Path(knowledge_dir)
         if kdir.exists():
-            primary_entries, overflow_entries, deferred_disk = await _load_primary_from_disk(
+            primary_entries, overflow_entries, deferred_disk, log_slugs = await _load_primary_from_disk(
                 kdir, knowledge_filter, project_id=project_id
             )
             for entry, content in primary_entries:
@@ -214,6 +230,11 @@ async def load_project_context(
         entries = [e for e in entries if _matches_filter(e.slug, e.category, knowledge_filter)]
 
     for entry in entries:
+        if _is_log_slug(entry.slug) or entry.slug in log_slugs:
+            # Log files (knowledge_role: log / canonical log slug): the index
+            # row exists for cross-references, but the file joins neither
+            # context tier — the agent reads it on demand via knowledge_rw.
+            continue
         # Current indexes contain detail files only. Keep this compatibility path
         # for callers/tests backed by older caches that still contain primary rows.
         if knowledge_dir is None and entry.knowledge_level != "detail":
@@ -494,7 +515,9 @@ def update_context_file(result: KnowledgeContextResult, slug: str, new_content: 
     anyway (context rebuild), leaving a stale full-text copy behind the
     summary-only deferred row.
     """
-    if _is_log_role(new_content):
+    if _is_log_slug(slug) or _is_log_role(new_content):
+        # Update log: never touches the static region. The slug guard also
+        # catches a rewrite that dropped the `knowledge_role: log` frontmatter.
         return
     if slug in result.dynamically_loaded:
         result.dynamically_loaded[slug] = new_content
@@ -590,18 +613,21 @@ async def _load_primary_from_disk(
     list[tuple[KnowledgeEntry, str]],
     list[KnowledgeEntry],
     list[KnowledgeEntry],
+    set[str],
 ]:
     """Scan knowledge_dir for primary files (non-detail) and return entries with content.
 
-    Returns (loaded, overflow, deferred): loaded entries carry full content;
-    overflow entries are oversized primary files registered for discovery;
-    deferred entries are detail / auto+parent files held back from the static
-    region (disk fallback when the DB row is missing, so a failed reindex
-    cannot make an entry vanish).
+    Returns (loaded, overflow, deferred, log_slugs): loaded entries carry full
+    content; overflow entries are oversized primary files registered for
+    discovery; deferred entries are detail / auto+parent files held back from
+    the static region (disk fallback when the DB row is missing, so a failed
+    reindex cannot make an entry vanish); log_slugs are knowledge_role: log /
+    canonical log files that must join NEITHER tier.
     """
     results: list[tuple[KnowledgeEntry, str]] = []
     overflows: list[KnowledgeEntry] = []
     deferred: list[KnowledgeEntry] = []
+    log_slugs: set[str] = set()
 
     def _scan() -> tuple[
         list[tuple[Path, str, dict, str]],
@@ -641,6 +667,12 @@ async def _load_primary_from_disk(
                     md_path, slug,
                 )
                 continue
+            # Slug-level log guard before the read: an update log must never
+            # reach either context tier, and a rewrite may have dropped the
+            # `knowledge_role: log` frontmatter the check below relies on.
+            if _is_log_slug(slug):
+                log_slugs.add(slug)
+                continue
             try:
                 if md_path.stat().st_size > MAX_FILE_SIZE:
                     # Oversized file: read the head (frontmatter region) so we
@@ -668,6 +700,7 @@ async def _load_primary_from_disk(
                 continue
             meta = post.metadata
             if meta.get("knowledge_role") == "log":
+                log_slugs.add(slug)
                 continue
             # Deferred-tier files (detail, or auto with a parent) are scanned
             # but their body never joins the static region.
@@ -718,9 +751,10 @@ async def _load_primary_from_disk(
             post = None
         meta = post.metadata if post is not None else {}
         body = post.content if post is not None else head
-        if meta.get("knowledge_role") == "log":
-            continue
         slug = _slug_of(md_path)
+        if meta.get("knowledge_role") == "log" or _is_log_slug(slug):
+            log_slugs.add(slug)
+            continue
         category = meta.get("category") or slug.split("/")[0]
         if knowledge_filter and not _matches_filter(slug, category, knowledge_filter):
             continue
@@ -802,7 +836,7 @@ async def _load_primary_from_disk(
         ))
 
     results.sort(key=lambda x: (_category_sort_key(x[0].category), x[0].slug))
-    return results, overflows, deferred
+    return results, overflows, deferred, log_slugs
 
 
 def _entry_base_dir(

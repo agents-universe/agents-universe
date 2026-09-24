@@ -57,7 +57,7 @@ To initialize a project knowledge directory, use `filesystem(operation="create_d
 | `domain/service-policies` | Service policies and the "not provided" list — the authoritative anti-hallucination fact source | When policies, scope, or rules change |
 | `domain/escalation-rules` | Escalation triggers, human channels/contacts, handoff requirements, service metric targets | When channels, SLA, or targets change |
 | `skills/support-scripts` | Customer-service reply templates: openers, answer structure, closers, sensitive scenarios | When scripts are optimized |
-| `system/history` | Knowledge update log | Append on every change |
+| `system/history` | Knowledge update log (`knowledge_role: log` — never auto-loaded into context) | Append on every change |
 
 ## Knowledge Sources
 
@@ -140,6 +140,7 @@ Knowledge files can be organized into a parent/child tree with three levels:
 - **Root/index files** (`knowledge_level: root`): Always loaded at project start. Navigational maps pointing to detail files. Body stays under the 500-word limit (Maintenance Rules). The legacy frontmatter value `index` is normalized to `root` at index time — write `root`.
 - **Detail files** (`knowledge_level: detail`): Deferred — loaded on-demand via `knowledge_rw(operation="load", slug="...")`. In-depth content.
 - **Auto files** (`knowledge_level: auto`): Default. Loaded at depth 0 (no parent); deferred with a parent at depth > 0 (existing files that only declare `parent` without `knowledge_level: detail` are deferred automatically — no bulk frontmatter rewrite needed).
+- **Log files** (`knowledge_role: log`, e.g. `system/history`): a separate frontmatter axis — never enters the automatic context at all (neither loaded nor listed as deferred). Append in place; read on demand via `knowledge_rw(operation="read", slug="...")`. Keep this frontmatter on every rewrite.
 
 Maximum hierarchy depth: 5 levels.
 
@@ -297,7 +298,16 @@ A refresh that only updates `technical/api-map` without touching detail files is
 
 ## `system/history` Format
 
+Keep the frontmatter on every rewrite — `knowledge_role: log` keeps the update log out of the automatic context load (the loader also guards the canonical slug `system/history` itself, but do not rely on that):
+
 ```markdown
+---
+category: system
+slug: system/history
+title: Knowledge Update Log
+knowledge_role: log
+---
+
 ## Update Log
 
 - 2026-05-15 | confluence:12345 | Updated context.md, glossary.md

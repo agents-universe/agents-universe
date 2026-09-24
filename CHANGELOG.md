@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **更新日志 `system/history` 默认不再进入上下文** - 该文件在 Tier-1 被 `knowledge_role: log` 跳过不假，但索引行仍落进 Tier-2 的 `deferred_entries`，每次对话的「Available Detail Knowledge」提示表都带着它；更糟的是 knowledge-manager 的范文只教正文格式，智能体重写时丢掉 frontmatter 后整个更新日志正文会当普通主文件灌进静态区。现 loader 增加 slug 级兜底（`system/history` 无论 frontmatter 如何都进不了任一上下文层），Tier-1 扫描到的 log 文件（含超大文件路径）一并从 deferred 表剔除，`update_context_file` 按 slug+role 双判守门，`knowledge_rw list` 对该 slug 显示 `log` 状态而非误导性的 `unindexed`；knowledge-manager 范文补回 frontmatter 并在层级概念、参考表写明规则，tool-reference 同步。显式 `knowledge_rw read` / `load` 不受影响
+
 ## [1.5.0] - 2026-09-24
 
 ### 新增

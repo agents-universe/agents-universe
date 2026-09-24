@@ -22,6 +22,7 @@ import frontmatter
 
 from ..knowledge.loader import (
     MAX_FILE_SIZE,
+    _is_log_slug,
     derive_summary,
     dynamic_budget_error,
 )
@@ -1017,6 +1018,10 @@ class KnowledgeRWTool(Tool):
             return "loaded"
         if slug in ctx.dynamically_loaded:
             return "dynamic"
+        if _is_log_slug(slug):
+            # Excluded from deferred_entries by the loader — say why instead
+            # of reporting "unindexed" (the index row exists).
+            return "log"
         if slug in ctx.deferred_entries:
             return "deferred"
         if slug in ctx.overflow_slugs:

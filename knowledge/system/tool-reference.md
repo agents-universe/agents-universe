@@ -116,6 +116,7 @@ Slug format: "{category}/{filename-without-extension}"
 - `parent`: slug of the parent index file
 - `children`: list of child slugs (declared in the index file)
 - `summary`: one-line description shown in deferred listings and children queries
+- `knowledge_role: log`: update-log files (e.g. `system/history`) — never enter the automatic context (not loaded, not listed as deferred); append in place, access with read/load on demand
 
 ## sql_query
 

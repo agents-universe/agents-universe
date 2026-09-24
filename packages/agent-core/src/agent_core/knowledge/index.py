@@ -603,7 +603,14 @@ async def reindex_one(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    completeness = compute_completeness(str(path), days_since, inbound_count)
+    # Pass the BOM-stripped content: without it compute_completeness
+    # re-reads the file raw — a BOM hides the `---` frontmatter block from
+    # python-frontmatter (empty metadata, FM lines scored as body text), so
+    # this entry point stored a different score than index_directory for
+    # the same file. content= also pins hash and score to one read.
+    completeness = compute_completeness(
+        str(path), days_since, inbound_count, content=content
+    )
 
     result = await db_session.execute(
         select(KnowledgeMetadata).where(

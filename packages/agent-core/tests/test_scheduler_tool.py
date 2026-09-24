@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import DateTime, String, Unicode, UnicodeText
+from sqlalchemy import DateTime, String, Unicode, UnicodeText, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -284,6 +284,72 @@ class TestListGetUpdate:
         )
         assert enabled["enabled"] is True
         assert enabled["next_run_at"] is not None
+
+    async def test_update_does_not_revalidate_unchanged_conversation(self, sched_env):
+        """The stored conversation was validated when it was bound and the
+        runtime re-checks it against created_by at fire time; the model
+        requires the task to outlive it. Re-validating the stored value on
+        every update made any edit fail once the conversation was
+        soft-deleted (mirror of the REST fix in routers/schedules.py)."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        conv = Conversation(project_id="p1", user_id="u1", status="active")
+        session.add(conv)
+        await session.commit()
+        created = await _create(
+            tool, context, script_id=str(script.script_id),
+            conversation_id=str(conv.conversation_id),
+        )
+        assert created["success"] is True, created
+
+        conv.status = "deleted"
+        await session.commit()
+
+        result = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "cron_expr": "*/30 * * * *",
+        }, context)
+        assert result.get("success") is True, result
+        assert result["cron_expr"] == "*/30 * * * *"
+        assert result["conversation_id"] == str(conv.conversation_id)
+
+        # An EXPLICIT rebind to someone else's conversation must still fail.
+        other = Conversation(project_id="p1", user_id="someone-else", status="active")
+        session.add(other)
+        await session.commit()
+        rebound = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "conversation_id": str(other.conversation_id),
+        }, context)
+        assert "conversation" in rebound.get("error", "").lower(), rebound
+
+    async def test_update_rejects_env_larger_than_column(self, sched_env):
+        """env_json is Unicode(2000): create caps the serialized size, but
+        update wrote json.dumps(env) straight through — a dozen 500-char
+        values overflowed the column and MSSQL raised DataError at commit."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        created = await _create(tool, context, script_id=str(script.script_id))
+
+        big_env = {f"APP_{i:02d}": "x" * 500 for i in range(6)}
+        result = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "env": big_env,
+        }, context)
+        assert "error" in result, result
+        assert "env" in result["error"].lower()
+
+        row = (
+            await session.execute(
+                select(ScheduledTask).where(
+                    ScheduledTask.schedule_id == created["schedule_id"]
+                )
+            )
+        ).scalar_one()
+        assert row.env_json is None
 
     async def test_delete_removes_task(self, sched_env):
         tool, context, session, _ = sched_env

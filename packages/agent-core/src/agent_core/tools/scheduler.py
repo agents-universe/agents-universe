@@ -420,9 +420,19 @@ class SchedulerTool(Tool):
         )
         if target_error:
             return target_error
-        conv_error = await self._check_conversation(context, conversation_id)
-        if conv_error:
-            return conv_error
+        # Only an EXPLICITLY CHANGED conversation_id is re-validated: the
+        # stored one was validated when it was bound, the runtime re-checks
+        # it against created_by at fire time, and the model requires the task
+        # to outlive a soft-deleted conversation — re-validating the stored
+        # value here made every edit fail once it was deleted (mirror of
+        # routers/schedules.py::_validate_target).
+        if (
+            params.get("conversation_id") is not None
+            and params.get("conversation_id") != row.conversation_id
+        ):
+            conv_error = await self._check_conversation(context, conversation_id)
+            if conv_error:
+                return conv_error
 
         if params.get("name") is not None:
             name = str(params["name"]).strip()
@@ -438,7 +448,12 @@ class SchedulerTool(Tool):
             env = params["env"] or {}
             if not isinstance(env, dict):
                 return {"error": "env must be an object of APP_* string values"}
-            row.env_json = json.dumps(env) if env else None
+            env_json = json.dumps(env) if env else None
+            # env_json is Unicode(2000) — an uncapped dump overflowed the
+            # column and strict dialects (MSSQL) raised DataError at commit.
+            if env_json and len(env_json) > _ENV_MAX:
+                return {"error": f"env is too large (max {_ENV_MAX} characters as JSON)"}
+            row.env_json = env_json
 
         row.target_type = target_type
         row.script_id = script_id if target_type == "script" else None

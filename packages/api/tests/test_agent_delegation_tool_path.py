@@ -203,6 +203,10 @@ async def test_the_tool_call_lands_in_a_real_delegated_turn(
     assert result["agent_name"] == "Helper Bot"
     assert result["summary"] == "child reply"
     assert result["message_id"] == child_msg_id
+    # The delegation tool card renders output.duration_ms — a completed run
+    # must carry it or the card silently drops the duration line.
+    assert isinstance(result.get("duration_ms"), int)
+    assert result["duration_ms"] >= 0
     # The list tool from the same registry sees the child and not the parent.
     listed = registry["list_agents"].execute(
         {}, SimpleNamespace(

@@ -371,6 +371,7 @@ async def run_delegated_turn(
         })
         return _result(
             "error", slug, agent_name=display_name,
+            duration_ms=int((time.monotonic() - started) * 1000),
             error=f"The delegated turn failed ({type(exc).__name__}).",
         )
     finally:
@@ -403,6 +404,7 @@ async def run_delegated_turn(
         summary=transport.summary,
         message_id=transport.message_id,
         tokens_used=transport.tokens_used,
+        duration_ms=duration_ms,
         error=transport.error,
     )
     if status == "timeout":
@@ -436,6 +438,7 @@ def _result(
     summary: str = "",
     message_id: str | None = None,
     tokens_used: int = 0,
+    duration_ms: int | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     """Build the tool result handed back to the delegating agent.
@@ -451,6 +454,11 @@ def _result(
         "summary": summary,
         "tokens_used": tokens_used,
     }
+    if duration_ms is not None:
+        # Surfaced on the delegation tool card (ToolCallCard reads
+        # output.duration_ms) — a result that never measured (early refusals)
+        # omits it so the card skips the field instead of showing 0s.
+        out["duration_ms"] = duration_ms
     if message_id:
         out["message_id"] = message_id
     if error:

@@ -41,25 +41,30 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
         token = request_id_var.set(request_id)
         start = time.perf_counter()
 
+        # The var may only be reset AFTER the summary line below: both
+        # formatters read it at format time, and resetting first shipped
+        # every non-exception access line without its request_id (the error
+        # path logs inside the except, before the reset, so it always had it).
         try:
-            response = await call_next(request)
-        except Exception:
+            try:
+                response = await call_next(request)
+            except Exception:
+                duration_ms = round((time.perf_counter() - start) * 1000, 1)
+                _log.error(
+                    "HTTP %s %s -> unhandled exception (%.1fms)",
+                    request.method, request.url.path, duration_ms,
+                    exc_info=True,
+                )
+                raise
+
             duration_ms = round((time.perf_counter() - start) * 1000, 1)
-            _log.error(
-                "HTTP %s %s -> unhandled exception (%.1fms)",
-                request.method, request.url.path, duration_ms,
-                exc_info=True,
+            _log.log(
+                self._access_level(request, response),
+                "HTTP %s %s -> %d (%.1fms)",
+                request.method, request.url.path, response.status_code, duration_ms,
             )
-            raise
+
+            response.headers["X-Request-Id"] = request_id
+            return response
         finally:
             request_id_var.reset(token)
-
-        duration_ms = round((time.perf_counter() - start) * 1000, 1)
-        _log.log(
-            self._access_level(request, response),
-            "HTTP %s %s -> %d (%.1fms)",
-            request.method, request.url.path, response.status_code, duration_ms,
-        )
-
-        response.headers["X-Request-Id"] = request_id
-        return response

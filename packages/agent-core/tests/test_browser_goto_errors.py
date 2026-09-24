@@ -80,6 +80,32 @@ async def test_failed_goto_reports_navigation_error_not_ssrf(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_failed_goto_on_a_page_with_history_still_reports_error(monkeypatch):
+    """A failed goto keeps page.url at the PREVIOUS page, not about:blank —
+    the post-hoc SSRF check then passes on the old http(s) URL and the
+    fall-through returned a success-shaped result (previous title/url,
+    status None, no error key), so the agent kept reading the stale page."""
+    page = FakePage(
+        url="http://site.test/",
+        goto_error=RuntimeError("net::ERR_NAME_NOT_RESOLVED"),
+    )
+    ctx = make_context(page)
+
+    async def _ensure_browser(self):
+        return object()
+
+    monkeypatch.setattr(ToolContext, "ensure_browser", _ensure_browser)
+
+    result = await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://does-not-exist.invalid/"}, ctx
+    )
+    assert "error" in result, result
+    assert "Navigation failed" in result["error"]
+    assert "ERR_NAME_NOT_RESOLVED" in result["error"]
+    assert "SSRF" not in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_goto_defaults_to_domcontentloaded(monkeypatch):
     """Playwright's 'load' default waits on every subresource; one stalled
     beacon on a slow network spends the whole timeout while the DOM is ready."""

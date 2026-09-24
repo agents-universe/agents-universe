@@ -400,9 +400,9 @@ class BrowserPlaywrightTool(Tool):
                     # saw (e.g. 302 → http://169.254.169.254). Re-run the
                     # literal check against the FINAL URL — only when the
                     # navigation actually landed on an http(s) page: a failed
-                    # goto leaves page.url at about:blank, whose scheme check
-                    # raised SSRFError and reported every DNS/connection
-                    # failure as "blocked by SSRF protection".
+                    # goto on a fresh page leaves page.url at about:blank,
+                    # whose scheme check raised SSRFError and reported every
+                    # DNS/connection failure as "blocked by SSRF protection".
                     if final_url.startswith(("http://", "https://")):
                         try:
                             _check_browser_url(final_url)
@@ -416,7 +416,12 @@ class BrowserPlaywrightTool(Tool):
                             context._browser_page = None
                             _forget_page(owner, page)
                             return {"error": f"URL blocked by SSRF protection: {e}"}
-                    elif goto_error:
+                    if goto_error:
+                        # Unconditional: when the page already had an http(s)
+                        # history, a failed goto keeps page.url on the PREVIOUS
+                        # page — the SSRF check above passes on that stale URL,
+                        # so an elif never fired and the tool returned a
+                        # success-shaped result describing the old document.
                         result: dict[str, Any] = {"error": f"Navigation failed: {goto_error}"}
                         if failed_requests:
                             result["failed_requests"] = failed_requests

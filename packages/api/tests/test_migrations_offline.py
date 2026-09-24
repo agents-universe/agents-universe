@@ -60,6 +60,13 @@ def test_chain_compiles_offline(dialect: str, monkeypatch: pytest.MonkeyPatch, c
     get_settings.cache_clear()
     cfg = Config(str(_ALEMBIC_INI))
     cfg.set_main_option("script_location", str(_ALEMBIC_INI.parent / "alembic"))
+    # Without this guard env.py runs fileConfig(alembic.ini) with capsys
+    # active: alembic's console handler binds to capsys's temporary stderr,
+    # pytest closes that stream at fixture teardown, and from then on EVERY
+    # root log emit fails — logging.handleError dumps the raw chained
+    # exception (credentials included) to stderr. Same guard as
+    # api.main._run_migrations / conftest.
+    cfg.attributes["configure_logger"] = False
     try:
         command.upgrade(cfg, "head", sql=True)
     finally:

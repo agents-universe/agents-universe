@@ -33,6 +33,12 @@ from alembic.config import Config  # noqa: E402
 _ALEMBIC_INI = Path(__file__).parent.parent / "alembic.ini"
 _ALEMBIC_CFG = Config(str(_ALEMBIC_INI))
 _ALEMBIC_CFG.set_main_option("script_location", str(_ALEMBIC_INI.parent / "alembic"))
+# Same guard as api.main._run_migrations: without it env.py runs
+# fileConfig(alembic.ini), which REPLACES the app's root handlers with
+# alembic's WARN/stderr console handler — every subsequent app log goes to
+# the wrong place (and a console handler later bound to a closed capture
+# stream turns every emit into a "--- Logging error ---" dump).
+_ALEMBIC_CFG.attributes["configure_logger"] = False
 
 
 @pytest.fixture(scope="session", autouse=True)

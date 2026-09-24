@@ -149,6 +149,14 @@ def test_english_data_setup_request_activates_test_data_setup():
     assert "testing/test-data-setup" in slugs
 
 
+def test_single_record_order_request_activates_test_data_setup():
+    """Natural phrasing with a noun between 造/创建 and 测试数据 — the E2E
+    probe message. The bare 造测试数据 trigger is not a substring of it."""
+    reg = _skill_registry()
+    slugs = [s.slug for s in reg.matching_triggers("帮我造一条测试订单数据")]
+    assert "testing/test-data-setup" in slugs
+
+
 def test_writeback_request_activates_knowledge_manager():
     reg = _skill_registry()
     slugs = [s.slug for s in reg.matching_triggers("把这次学到的写回知识")]

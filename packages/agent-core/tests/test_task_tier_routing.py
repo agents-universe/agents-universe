@@ -76,7 +76,9 @@ def _task(complexity: str | None) -> dict:
 
 async def _run_task(agent: Agent, session: _DrainingSession, task: dict) -> dict:
     agent._task_plan = [task]
-    agent._build_task_messages = lambda messages, pid, title: messages  # type: ignore[method-assign]
+    agent._build_task_messages = (  # type: ignore[method-assign]
+        lambda messages, pid, title, dependency_results=None: messages
+    )
     agent._run_task_loop = AsyncMock(return_value="done")  # type: ignore[method-assign]
     result = await agent._execute_single_task(
         task, None, session, [Message(role="user", content="hi")], [], "cfg-mid", "plan-tool-1"
@@ -164,3 +166,59 @@ async def test_task_completed_still_emitted(fake_provider_factory, session):
     result = await _run_task(agent, session, _task("low"))
     assert result["status"] == "completed"
     assert [e[0] for e in session.events_emitted].count("task_completed") == 1
+
+
+# ── dependency-results passthrough and task timeout ─────────────────────
+
+
+async def test_execute_single_task_forwards_dependency_results(
+    fake_provider_factory, session,
+):
+    """_execute_single_task must hand dependency summaries to the prompt
+    builder — the whole point of the injection is that the task model sees
+    them, not just the scheduler."""
+    agent = _make_agent()
+    task = _task(None)
+    agent._task_plan = [task]
+    seen: dict = {}
+
+    def _capture(messages, pid, title, dependency_results=None):
+        seen["dependency_results"] = dependency_results
+        return messages
+
+    agent._build_task_messages = _capture  # type: ignore[method-assign]
+    agent._run_task_loop = AsyncMock(return_value="done")  # type: ignore[method-assign]
+    deps = [("Probe the API", "POST /posts -> 201 id=101")]
+    result = await agent._execute_single_task(
+        task, None, session, [Message(role="user", content="hi")],
+        [], "cfg-mid", "plan-tool-1", dependency_results=deps,
+    )
+    await asyncio.sleep(0.01)
+    assert result["status"] == "completed"
+    assert seen["dependency_results"] == deps
+
+
+async def test_task_timeout_honors_env_budget(
+    fake_provider_factory, session, monkeypatch,
+):
+    """A slow task must fail with the configured budget's seconds in the
+    error (previously hardcoded 300 -> 'Task timed out (5 min)') instead of
+    cutting slow-thinking models off at 5 minutes."""
+    monkeypatch.setenv("AGENT_TASK_TIMEOUT_SECONDS", "1")
+    agent = _make_agent()
+    task = _task(None)
+    agent._task_plan = [task]
+
+    async def _never_finishes(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    agent._run_task_loop = _never_finishes  # type: ignore[method-assign]
+    result = await agent._execute_single_task(
+        task, None, session, [Message(role="user", content="hi")],
+        [], "cfg-mid", "plan-tool-1",
+    )
+    await asyncio.sleep(0.01)
+    assert result["status"] == "failed"
+    assert result["summary"] == "[TIMEOUT] Task task-1"
+    failed = [e for e in session.events_emitted if e[0] == "task_failed"]
+    assert failed and failed[0][1]["error"] == "Task timed out (1s)"

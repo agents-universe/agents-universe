@@ -174,8 +174,14 @@ class OpenAIProvider(LLMProvider):
         Agent configs default max_tokens to 128000; gpt-4o-class models cap
         output at 16384 and reject the raw value with a 400. Reasoning
         models accept large max_completion_tokens and are left untouched.
+        GLM is exempt too: thinking there is server-side and cannot be
+        disabled, so the gpt-4o ceiling left no budget for reasoning plus
+        content and truncated agentic turns before any output (the endpoint
+        accepts 128000 — verified against the system-default deployment).
         """
         if self._is_reasoning_model():
+            return max_tokens
+        if re.match(r"^glm[-_]?\d", self._model.lower()):
             return max_tokens
         return min(max_tokens, MAX_OUTPUT_RESERVE)
 

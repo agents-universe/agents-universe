@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -56,6 +57,22 @@ from .tools.base import Tool, ToolContext
 from .tools.registry import build_tool_registry
 
 _log = logging.getLogger("agent_core.agent")
+
+
+def _task_timeout_seconds() -> int:
+    """Per-task execution budget in seconds (AGENT_TASK_TIMEOUT_SECONDS).
+
+    Read at call time so deployments can tune without a code change. The
+    previous hardcoded 300s cut slow-thinking models off mid-iteration and
+    cascade-skipped every dependent task.
+    """
+    raw = os.environ.get("AGENT_TASK_TIMEOUT_SECONDS", "")
+    try:
+        value = int(raw) if raw else 600
+    except ValueError:
+        _log.warning("AGENT_TASK_TIMEOUT_SECONDS is not an integer, using default")
+        return 600
+    return max(1, value)
 
 # Upper bound on accumulated streamed tool-call arguments (chars) to avoid
 # unbounded memory growth from a runaway stream.
@@ -383,14 +400,31 @@ class Agent:
 
     @staticmethod
     def _build_task_messages(
-        messages: list[Message], plan_tool_id: str, task_title: str
+        messages: list[Message],
+        plan_tool_id: str,
+        task_title: str,
+        dependency_results: list[tuple[str, str]] | None = None,
     ) -> list[Message]:
         """Fork a valid tool-result history for execution of one planned task.
 
         The outer loop cannot append its final plan summary until every task has
         finished. The nested task request must nevertheless acknowledge the
         enclosing plan_task call before adding its task-specific user message.
+
+        `dependency_results` carries (title, summary) for each completed
+        dependency — without it a dependent task re-derives facts its
+        predecessor already proved (e.g. re-probing an API that answered 201).
         """
+        task_content = f"Execute this task: {task_title}"
+        if dependency_results:
+            deps_block = "\n\n".join(
+                f"### Completed dependency: {title}\n{summary}"
+                for title, summary in dependency_results
+            )
+            task_content = (
+                "Results from previously completed dependency tasks:\n\n"
+                f"{deps_block}\n\n{task_content}"
+            )
         return messages + [
             Message(
                 role="tool",
@@ -401,7 +435,7 @@ class Agent:
                 tool_call_id=plan_tool_id,
                 name="plan_task",
             ),
-            Message(role="user", content=f"Execute this task: {task_title}"),
+            Message(role="user", content=task_content),
         ]
 
     @staticmethod
@@ -1739,9 +1773,15 @@ class Agent:
                     await session.emit("task_skipped", task_id=task_id, error="Aborted")
                     return
                 try:
+                    dep_results = [
+                        (task_map[dep]["title"], task_results[dep])
+                        for dep in sorted(deps.get(task_id, set()))
+                        if dep in task_results
+                    ]
                     result = await self._execute_single_task(
                         task_map[task_id], provider, session, messages,
                         tool_defs, config_id, plan_tool_id,
+                        dependency_results=dep_results,
                     )
                 except Exception as e:
                     # A crash must not leave the task stuck at "running" with
@@ -1850,6 +1890,7 @@ class Agent:
         tool_defs: list[ToolDefinition],
         config_id: str,
         plan_tool_id: str,
+        dependency_results: list[tuple[str, str]] | None = None,
     ) -> dict:
         """Execute one planned task. Returns {task_id, status, summary}."""
         from .knowledge.loader import unload_by_task
@@ -1884,7 +1925,9 @@ class Agent:
             **progress,
         )
 
-        task_messages = self._build_task_messages(messages, plan_tool_id, task["title"])
+        task_messages = self._build_task_messages(
+            messages, plan_tool_id, task["title"], dependency_results
+        )
         task_history, pending_task_tool_ids = self._history_tool_call_summary(task_messages)
         _log.info(
             "task execution starting: task_id=%s plan_tool_id=%s provider=%s messages=%d history=%s pending_tool_call_ids=%s",
@@ -1910,14 +1953,15 @@ class Agent:
                 except Exception:
                     _log.debug("Failed to close per-task db session", exc_info=True)
 
+        timeout_s = _task_timeout_seconds()
         try:
-            async with asyncio.timeout(300):
+            async with asyncio.timeout(timeout_s):
                 full_text = await self._run_task_loop(
                     task_messages, tool_defs, task_provider, session,
                     task_id=task_id, turn=turn, task_tool_ctx=task_tool_ctx,
                 )
         except TimeoutError:
-            error_text = "Task timed out (5 min)"
+            error_text = f"Task timed out ({timeout_s}s)"
             await session.emit("task_failed", task_id=task_id, error=error_text)
             await self._emit_task_stream_end(session, task_tool_ctx, task_id)
             for tp in self._task_plan:

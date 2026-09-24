@@ -63,6 +63,53 @@ def test_task_message_history_has_no_pending_plan_tool_call():
     assert pending_tool_ids == []
 
 
+def test_task_messages_without_dependencies_keep_exact_prompt():
+    """The no-deps shape is the historical contract (plan ack + bare title)."""
+    messages = [Message(role="user", content="Implement the feature"), _plan_call()]
+
+    task_messages = Agent._build_task_messages(messages, "call_plan", "Update the API", None)
+
+    assert task_messages[-1].content == "Execute this task: Update the API"
+
+
+def test_task_messages_inject_completed_dependency_results():
+    """A dependent task must see its predecessor's summary — otherwise it
+    re-derives already-proven facts (e.g. re-probes an API answered 201)."""
+    messages = [Message(role="user", content="Implement the feature"), _plan_call()]
+
+    task_messages = Agent._build_task_messages(
+        messages,
+        "call_plan",
+        "Write the recipe back",
+        dependency_results=[("Probe the API", "POST /posts -> 201 id=101")],
+    )
+
+    assert [message.role for message in task_messages] == ["user", "assistant", "tool", "user"]
+    content = task_messages[-1].content
+    assert "### Completed dependency: Probe the API" in content
+    assert "POST /posts -> 201 id=101" in content
+    assert content.endswith("Execute this task: Write the recipe back")
+
+
+def test_task_timeout_seconds_env_override(monkeypatch):
+    from agent_core.agent import _task_timeout_seconds
+
+    monkeypatch.delenv("AGENT_TASK_TIMEOUT_SECONDS", raising=False)
+    assert _task_timeout_seconds() == 600
+
+    monkeypatch.setenv("AGENT_TASK_TIMEOUT_SECONDS", "120")
+    assert _task_timeout_seconds() == 120
+
+    # Garbage falls back to the default instead of raising at dispatch time.
+    monkeypatch.setenv("AGENT_TASK_TIMEOUT_SECONDS", "soon")
+    assert _task_timeout_seconds() == 600
+
+    # Nonsensical but parseable values are floored at 1s, never 0/negative
+    # (asyncio.timeout(0) would fire before the first iteration).
+    monkeypatch.setenv("AGENT_TASK_TIMEOUT_SECONDS", "0")
+    assert _task_timeout_seconds() == 1
+
+
 def test_task_message_history_preserves_other_pending_tool_calls():
     messages = [
         Message(role="user", content="Implement the feature"),

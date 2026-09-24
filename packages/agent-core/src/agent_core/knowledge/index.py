@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import sys
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ import frontmatter
 
 from .loader import derive_summary
 from .scorer import compute_completeness
+
+_log = logging.getLogger("agent_core.knowledge.index")
 
 _CROSS_REF_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _STALE_DAYS = 90

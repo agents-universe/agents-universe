@@ -238,3 +238,40 @@ async def test_children_from_disk_when_index_missing(tmp_path):
     assert result["count"] == 1
     assert result["children"][0]["slug"] == "technical/api/billing"
     assert result["children"][0]["summary"] == "billing endpoints"
+
+
+async def test_parent_reindex_failure_warns_without_raising(tmp_path, caplog):
+    """The parent-reindex failure handler logs via module `_log` — a missing
+    logger turned every warning path into NameError (surfacing only when a
+    probe forced reindex_one to fail). The parent file must still count as
+    synced: its frontmatter is the source of truth, the row catches up later.
+    """
+    import logging
+
+    import agent_core.knowledge.index as index_mod
+
+    kdir = tmp_path / "knowledge"
+    parent = _write_parent(kdir)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("forced parent reindex failure")
+
+    real = index_mod.reindex_one
+    index_mod.reindex_one = _boom
+    try:
+        from agent_core.knowledge.index import sync_parent_children
+
+        with caplog.at_level(logging.WARNING, logger="agent_core.knowledge.index"):
+            synced = await sync_parent_children(
+                child_slug="technical/api/orders",
+                parent_slug="technical/api-map",
+                project_id="p1",
+                db_session=object(),  # non-None → reindex branch runs
+                knowledge_dir=kdir,
+            )
+    finally:
+        index_mod.reindex_one = real
+
+    assert synced is True
+    assert "technical/api/orders" in parent.read_text(encoding="utf-8")
+    assert any("reindex of parent" in r.message for r in caplog.records)

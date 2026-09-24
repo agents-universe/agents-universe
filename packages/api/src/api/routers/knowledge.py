@@ -56,6 +56,10 @@ def _rehydrate_frontmatter(old_content: str, new_body: str) -> str:
     frontmatter (or one that failed to parse) is written verbatim, matching
     what GET surfaced.
     """
+    # A UTF-8 BOM hides the `---` block from python-frontmatter: metadata
+    # would look absent and the merge would fall through to the body-only
+    # write — wiping the frontmatter GET had stripped into that body.
+    old_content = old_content.lstrip("﻿")
     try:
         post = _fm.loads(old_content)
     except Exception:
@@ -303,10 +307,16 @@ async def get_knowledge(
             stat = await asyncio.to_thread(fs_path.stat)
             if stat.st_size > _MAX_READ_SIZE:
                 raise HTTPException(status_code=413, detail="Knowledge file too large to read")
-            raw = await asyncio.to_thread(fs_path.read_text, "utf-8")
+            # Strip the BOM so the `---` block parses — otherwise GET hands
+            # the whole file (frontmatter included) to the editor as content.
+            raw = (await asyncio.to_thread(fs_path.read_text, "utf-8")).lstrip("﻿")
             try:
                 post = _fm.loads(raw)
-                content = post.content if post.content.strip() else raw
+                # Fall back to raw ONLY when nothing parsed as frontmatter:
+                # an FM file with an empty body would otherwise send its own
+                # frontmatter to the editor as "body", and rehydrating that
+                # nests a second copy of the frontmatter on save.
+                content = post.content if post.content.strip() or post.metadata else raw
             except Exception:
                 content = raw
         return {
@@ -334,11 +344,17 @@ async def get_knowledge(
     if stat.st_size > _MAX_READ_SIZE:
         raise HTTPException(status_code=413, detail="Knowledge file too large to read")
 
-    raw = await asyncio.to_thread(file_path.read_text, "utf-8")
+    # Strip the BOM so the `---` block parses — otherwise GET hands the
+    # whole file (frontmatter included) to the editor as content.
+    raw = (await asyncio.to_thread(file_path.read_text, "utf-8")).lstrip("﻿")
     try:
         post = _fm.loads(raw)
         meta = post.metadata
-        content = post.content if post.content.strip() else raw
+        # Fall back to raw ONLY when nothing parsed as frontmatter: an FM
+        # file with an empty body would otherwise send its own frontmatter
+        # to the editor as "body", and rehydrating that nests a second copy
+        # of the frontmatter on save.
+        content = post.content if post.content.strip() or post.metadata else raw
     except Exception:
         meta = {}
         content = raw

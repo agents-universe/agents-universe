@@ -1,6 +1,7 @@
 """Playwright browser tool — headless Chromium automation."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -720,7 +721,17 @@ class BrowserPlaywrightTool(Tool):
 
             elif operation == "evaluate":
                 script = params.get("script", "")
-                result = await page.evaluate(script)
+                # page.evaluate has no timeout of its own and the agent loop
+                # awaits tool.execute with no global timeout — a script that
+                # never resolves would hang the whole turn. The clamp matches
+                # every other operation's.
+                timeout_ms = _clamp_timeout(params.get("timeout", 30000))
+                try:
+                    result = await asyncio.wait_for(
+                        page.evaluate(script), timeout=timeout_ms / 1000
+                    )
+                except TimeoutError:
+                    return {"error": f"Evaluate timed out after {timeout_ms}ms"}
                 # evaluate returns whatever the page produces — a
                 # `return document.documentElement.outerHTML` script can yield
                 # multi-MB payloads straight into the LLM context. Cap it the

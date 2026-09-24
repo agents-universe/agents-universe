@@ -269,6 +269,12 @@ class SqlQueryTool(Tool):
                     db_session=context.db_session,
                 )
                 await context.db_session.commit()
+                # The cached entries feed deferred_entries/status on the next
+                # conversation — a reindex that lands without eviction keeps
+                # serving stale metadata until process restart. Mirrors
+                # knowledge_rw and the REST reindex endpoints.
+                if context.knowledge_cache is not None:
+                    context.knowledge_cache.invalidate(context.project_id)
                 return {"success": True, "stats": stats}
             except Exception as e:
                 _log.warning("reindex_knowledge (full) failed: %s", e, exc_info=True)
@@ -290,6 +296,10 @@ class SqlQueryTool(Tool):
                 db_session=context.db_session,
             )
             await context.db_session.commit()
+            # Same eviction as the full path; an error result means
+            # reindex_one wrote nothing, so the cache is still accurate.
+            if "error" not in result and context.knowledge_cache is not None:
+                context.knowledge_cache.invalidate(context.project_id)
             return result
         except Exception as e:
             _log.warning("reindex_knowledge (single) failed for %s: %s", fs_path, e, exc_info=True)

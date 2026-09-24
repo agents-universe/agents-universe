@@ -46,6 +46,7 @@ _MIME_EXT = {
     "image/svg+xml": "svg",
 }
 
+from ._http import _header_value_problem
 from ._media import media_url
 from .base import Tool, ToolContext
 from ._mcp_catalog import load_mcp_servers, sanitize_slug
@@ -102,24 +103,6 @@ def _validate_mcp_url(url: str, allowed_hosts: list[str] | None, allow_private: 
 # ---------------------------------------------------------------------------
 # Header / secret resolution
 # ---------------------------------------------------------------------------
-
-
-def _header_value_problem(value: str) -> str | None:
-    """Why *value* cannot be sent as an HTTP header value, or None if it can.
-
-    httpx/h11 reject an illegal value by echoing it back ("Illegal header
-    value b'...'") — for a rendered secret that message IS the credential,
-    and it would reach the connection warnings and the /mcp/servers/{id}/test
-    response (format_exc-style chains carry it too). Validate before the
-    transport ever sees the value; the caller's error names only the header.
-    Non-ASCII fails anyway (httpx encodes str values as ascii) and its
-    UnicodeEncodeError quotes the offending character.
-    """
-    if not value.isascii():
-        return "contains a non-ASCII character"
-    if any(ch != "\t" and ord(ch) < 0x20 for ch in value):
-        return "contains a control character (a pasted trailing newline, perhaps)"
-    return None
 
 
 async def _resolve_auth_headers(context: ToolContext, cfg: dict[str, Any]) -> dict[str, str]:

@@ -24,8 +24,15 @@ _KEY_LEN = 32
 class ToolAuthError(Exception):
     """Raised when a required token is missing or decryption fails."""
 
-    def __init__(self, service_key: str, detail: str = ""):
+    def __init__(self, service_key: str, detail: str = "", *, message: str | None = None):
         self.service_key = service_key
+        if message is not None:
+            # The token exists but cannot be used as-is (e.g. a pasted
+            # trailing newline in a header value) — the default
+            # "Token not configured" prefix would tell the user the
+            # opposite, so the caller supplies the full message.
+            super().__init__(message)
+            return
         msg = f"Token not configured: '{service_key}'. Ask the user to add it in Settings → Integrations."
         if detail:
             msg += f" ({detail})"

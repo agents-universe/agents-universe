@@ -11,7 +11,7 @@ import httpx
 
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_secret, get_secret_optional
-from ._http import ensure_http_client
+from ._http import _header_value_problem, ensure_http_client
 from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
@@ -201,6 +201,19 @@ class KongTool(Tool):
         if not token:
             _log.warning("kong.execute: token resolution failed for key=%r env=%r project_id=%r", token_key, env, context.project_id)
             return {"error": f"Kong token '{token_key}' 未配置且用户未提供。请在项目密钥中配置后重试。"}
+
+        # The token goes into x-api-key verbatim; h11 echoes an illegal
+        # value back ("Illegal header value b'...'") — the echo IS the
+        # credential, and except Exception below returns `{e}` raw to the
+        # LLM and the log. Refuse before the transport sees it.
+        problem = _header_value_problem(token)
+        if problem:
+            return {
+                "error": (
+                    f"Kong token '{token_key}' {problem} — "
+                    "re-save the stored secret without it"
+                )
+            }
 
         path = params.get("path", "")
         base = (

@@ -157,6 +157,37 @@ async def test_http_error_body_redacts_credential(caplog):
     assert "ATATT-secret-token-999" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_bearer_token_with_control_char_is_refused_without_echoing(caplog):
+    """A stored bearer token with a pasted trailing newline must be refused
+    at header construction. h11 rejects an illegal value by echoing it back
+    ("Illegal header value b'...'") — the echo IS the credential, and it
+    would reach execute()'s exc_info warning and the tool error result."""
+    class _Ctx:
+        user_id = "u1"
+        secret_key = "test-secret-key"
+
+        def cfg(self, key, default=None):
+            return {
+                "ATLASSIAN_BASE_URL": "https://jira.example.com",
+                "ATLASSIAN_AUTH_TYPE": "bearer",
+            }.get(key, default)
+
+    bad = "ATATT-with-newline\n"
+    with patch("agent_core.tools.jira.get_token", return_value=bad), \
+         patch("agent_core.tools.jira.get_token_optional", return_value="agent@example.com"):
+        result = await JiraTool().execute(
+            {"operation": "get_issue", "issue_key": "DDM-1"},
+            _Ctx(),
+        )
+
+    assert "error" in result
+    assert "Authorization" in result["error"]
+    assert "control character" in result["error"]
+    assert "ATATT-with-newline" not in result["error"]
+    assert "ATATT-with-newline" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # add_attachment size caps
 # ---------------------------------------------------------------------------

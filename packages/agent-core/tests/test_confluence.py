@@ -135,6 +135,38 @@ async def test_http_error_body_redacts_credential(caplog):
     assert "ATATT-secret-token-888" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_bearer_token_with_control_char_is_refused_without_echoing(caplog):
+    """Same as jira: a stored bearer token with a pasted trailing newline
+    must be refused at header construction — h11 echoes an illegal value
+    back ("Illegal header value b'...'"), which IS the credential, into
+    execute()'s exc_info warning and the tool error result."""
+    from unittest.mock import patch
+
+    class _Ctx:
+        user_id = "u1"
+        secret_key = "test-secret-key"
+
+        def cfg(self, key, default=None):
+            return {
+                "CONFLUENCE_BASE_URL": "https://conf.example.com",
+                "ATLASSIAN_AUTH_TYPE": "bearer",
+            }.get(key, default)
+
+    bad = "ATATT-with-newline\n"
+    with patch("agent_core.tools.confluence.get_token_optional", return_value=bad):
+        result = await ConfluenceTool().execute(
+            {"operation": "get_pages", "page_ids": ["1"]},
+            _Ctx(),
+        )
+
+    assert "error" in result
+    assert "Authorization" in result["error"]
+    assert "control character" in result["error"]
+    assert "ATATT-with-newline" not in result["error"]
+    assert "ATATT-with-newline" not in caplog.text
+
+
 class _MinimalCtx:
     """Minimal stand-in for execute(): _build_client is patched."""
 

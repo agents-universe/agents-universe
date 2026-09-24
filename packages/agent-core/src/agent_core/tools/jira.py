@@ -12,7 +12,7 @@ import httpx
 
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token, get_token_optional
-from ._http import ensure_http_client
+from ._http import _header_value_problem, ensure_http_client
 from .shell import redact_secrets
 from ._wiki import markdown_to_wiki
 
@@ -238,6 +238,21 @@ class JiraTool(Tool):
             raise ToolAuthError("jira", "ATLASSIAN_BASE_URL is not configured — set it in Settings → Integrations → Jira")
         jira_path = context.cfg("JIRA_BASE_PATH")
         auth_type = context.cfg("ATLASSIAN_AUTH_TYPE", "basic")
+        if auth_type == "bearer":
+            # Basic mode base64-absorbs control characters; bearer puts the
+            # token on the wire verbatim, and h11 echoes an illegal value
+            # back ("Illegal header value b'...'") — which IS the credential,
+            # into execute()'s exc_info warning. Validate before the transport
+            # ever sees it; the message names only the header.
+            problem = _header_value_problem(f"Bearer {token}")
+            if problem:
+                raise ToolAuthError(
+                    "jira",
+                    message=(
+                        f"Jira Authorization header {problem} — "
+                        "re-save the stored token without it"
+                    ),
+                )
         http = ensure_http_client(context, target_url=base_url)
         return _JiraClient(
             api_token=token, email=email,

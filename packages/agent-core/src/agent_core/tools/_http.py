@@ -15,6 +15,24 @@ from ._ssrf import SSRFError, resolve_and_validate, validate_url, validate_redir
 _DEFAULT_TIMEOUT = 60.0
 
 
+def _header_value_problem(value: str) -> str | None:
+    """Why *value* cannot be sent as an HTTP header value, or None if it can.
+
+    httpx/h11 reject an illegal value by echoing it back ("Illegal header
+    value b'...'") — for a rendered secret that message IS the credential,
+    and it would reach connection warnings, tool error results, and test
+    endpoint responses (format_exc-style chains carry it too). Validate
+    before the transport ever sees the value; the caller's error names only
+    the header. Non-ASCII fails anyway (httpx encodes str values as ascii)
+    and its UnicodeEncodeError quotes the offending character.
+    """
+    if not value.isascii():
+        return "contains a non-ASCII character"
+    if any(ch != "\t" and ord(ch) < 0x20 for ch in value):
+        return "contains a control character (a pasted trailing newline, perhaps)"
+    return None
+
+
 def _should_bypass_proxy(target_url: str, no_proxy: str) -> bool:
     """Check if target_url matches any entry in the NO_PROXY list."""
     if not no_proxy or not target_url:

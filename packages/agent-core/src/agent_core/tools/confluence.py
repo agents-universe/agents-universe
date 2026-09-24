@@ -13,7 +13,7 @@ import httpx
 
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token, get_token_optional
-from ._http import ensure_http_client
+from ._http import _header_value_problem, ensure_http_client
 from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
@@ -163,6 +163,19 @@ class ConfluenceTool(Tool):
             raise ToolAuthError("confluence", "ATLASSIAN_BASE_URL is not configured — set it in Settings → Integrations → Jira/Confluence")
         conf_path = context.cfg("CONFLUENCE_BASE_PATH")
         auth_type = context.cfg("ATLASSIAN_AUTH_TYPE", "basic")
+        if auth_type == "bearer":
+            # Same as jira: bearer sends the token verbatim and h11 echoes an
+            # illegal value back — the echo IS the credential, into execute()'s
+            # exc_info warning. Basic mode is base64-safe and skips this.
+            problem = _header_value_problem(f"Bearer {token}")
+            if problem:
+                raise ToolAuthError(
+                    "confluence",
+                    message=(
+                        f"Confluence Authorization header {problem} — "
+                        "re-save the stored token without it"
+                    ),
+                )
         http = ensure_http_client(context, target_url=base_url)
         return _ConfluenceClient(
             api_token=token, email=email,

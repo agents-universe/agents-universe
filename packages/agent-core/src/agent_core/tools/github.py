@@ -11,7 +11,7 @@ import httpx
 
 from .base import Tool, ToolContext
 from ._auth import ToolAuthError, get_token
-from ._http import ensure_http_client
+from ._http import _header_value_problem, ensure_http_client
 from .shell import redact_secrets
 
 _log = logging.getLogger(__name__)
@@ -127,6 +127,19 @@ class GitHubTool(Tool):
                     ),
                 }
             return {"error": str(e)}
+
+        # h11 echoes an illegal header value back ("Illegal header value
+        # b'...'") — the echo IS the credential, and this tool's except
+        # Exception returns `{e}` to the LLM AND logs it with exc_info.
+        # Refuse before the transport sees the value; never echo it here.
+        problem = _header_value_problem(f"token {token}")
+        if problem:
+            return {
+                "error": (
+                    f"GitHub Authorization header {problem} — "
+                    "re-save the stored Git token without it"
+                )
+            }
 
         base_url = context.cfg("GIT_BASE_URL").rstrip("/")
         if not base_url:

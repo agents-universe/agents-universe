@@ -249,6 +249,31 @@ async def test_http_error_body_redacts_token(caplog):
     assert "ghp_secret-token-123456" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_token_with_control_char_is_refused_without_echoing(caplog):
+    """A stored Git token with a pasted trailing newline must be refused
+    before headers are built. h11 echoes an illegal value back ("Illegal
+    header value b'...'") — the echo IS the credential, and this tool's
+    except Exception returns `{e}` raw to the LLM and logs it with exc_info."""
+    bad = "ghp_with-newline\n"
+
+    async def _bad_token(context, service_key):
+        return bad
+
+    ctx = _FakeCtx(AsyncMock())
+    with patch("agent_core.tools.github.get_token", _bad_token):
+        result = await GitHubTool().execute(
+            {"operation": "is_starred", "repository": "team/service"},
+            ctx,
+        )
+
+    assert "error" in result
+    assert "Authorization" in result["error"]
+    assert "control character" in result["error"]
+    assert "ghp_with-newline" not in result["error"]
+    assert "ghp_with-newline" not in caplog.text
+
+
 def _check(name: str, status: str, conclusion) -> dict:
     return {
         "name": name,

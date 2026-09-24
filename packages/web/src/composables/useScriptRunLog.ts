@@ -52,9 +52,12 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
     runError.value = null
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}${apiBase}/ws/script-runs/${runId}`)
-    ws.onmessage = (e) => {
-      if (!alive || activeRunId.value !== runId) return
+    const myWs = new WebSocket(`${proto}://${location.host}${apiBase}/ws/script-runs/${runId}`)
+    ws = myWs
+    myWs.onmessage = (e) => {
+      // ws !== myWs: a superseded socket must not write into the buffer its
+      // replacement now owns (same-run reconnect keeps runId identical).
+      if (!alive || ws !== myWs || activeRunId.value !== runId) return
       let msg: { type?: string; level?: string; text?: string; log?: string; status?: string; exit_code?: number | null }
       try {
         msg = JSON.parse(e.data as string) as typeof msg
@@ -80,8 +83,12 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
       }
       pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
     }
-    ws.onclose = () => {
-      if (!alive || activeRunId.value !== runId) return
+    myWs.onclose = () => {
+      // Identity guard: reconnecting to the SAME run resets the shared
+      // wsFinished before the old socket's close event lands — without
+      // ws !== myWs the stale close passed the runId check and pushed a
+      // "connection lost" error into the new connection's fresh buffer.
+      if (!alive || ws !== myWs || activeRunId.value !== runId) return
       // Close after the done frame is the normal end of a run. Only a close
       // WITHOUT done means the connection dropped before the server reported
       // the outcome — the run may still be executing server-side.

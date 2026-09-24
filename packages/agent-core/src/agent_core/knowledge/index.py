@@ -251,7 +251,6 @@ async def index_directory(
                     summary=pf["summary"],
                     depth=pf["depth"],
                 )
-                db_session.add(km)
                 # flush per-file inside a SAVEPOINT. A concurrent
                 # index_directory/reindex_one can INSERT the same (project_id,
                 # slug) between our SELECT and this flush — with the unique
@@ -259,8 +258,13 @@ async def index_directory(
                 # without SAVEPOINT the whole batch would be left unusable.
                 # On a lost race, re-fetch the winner's row and fall through
                 # to the update branch instead of aborting the batch.
+                # add() must sit INSIDE the savepoint: an object added before
+                # it survives ROLLBACK TO SAVEPOINT as pending, so the next
+                # flush re-raises the same IntegrityError outside any
+                # savepoint and aborts the batch anyway.
                 try:
                     async with db_session.begin_nested():
+                        db_session.add(km)
                         await db_session.flush()
                     stats["created"] += 1
                 except IntegrityError:
@@ -633,13 +637,16 @@ async def reindex_one(
             summary=summary_val,
             depth=depth_val,
         )
-        db_session.add(km)
         # SAVEPOINT-guarded flush — a concurrent index_directory/
         # reindex_one may INSERT this slug between our SELECT and flush
         # (unique constraint on project_id+slug). On a lost race, re-fetch
-        # the winner's row and take the update branch below.
+        # the winner's row and take the update branch below. add() sits
+        # INSIDE the savepoint: an object added before it survives
+        # ROLLBACK TO SAVEPOINT as pending and re-raises the same
+        # IntegrityError on the next flush, outside any savepoint.
         try:
             async with db_session.begin_nested():
+                db_session.add(km)
                 await db_session.flush()
             created = True
         except IntegrityError:

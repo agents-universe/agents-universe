@@ -146,8 +146,20 @@ async def _validate_target(
     prompt: str | None,
     conversation_id: str | None,
     require_conversation: bool,
+    validate_conversation: bool = True,
+    conversation_owner_id: str | None = None,
 ) -> None:
-    """Reject a task whose target could never run (fail at author time)."""
+    """Reject a task whose target could never run (fail at author time).
+
+    ``validate_conversation`` is turned off for values the client did not just
+    change: a stored conversation was validated when it was bound, the runtime
+    re-checks it against ``created_by`` at fire time (scheduled fires never
+    reach this function), and the model requires the task to outlive a deleted
+    conversation — re-validating it here only made PATCH/run-now fail for the
+    owner after a soft-delete and for any teammate at all. When validating an
+    explicit rebind, the owner is ``conversation_owner_id`` (the task creator,
+    who the runtime will check), defaulting to the requester at create time.
+    """
     from api.paths import resolve_project_fs_path
     from api.services.agent_sync import resolve_agent_definition_path
 
@@ -201,20 +213,42 @@ async def _validate_target(
         raise HTTPException(status_code=422, detail=f"Unknown target type: {target_type}")
 
     if conversation_id:
-        conv = (
-            await db.execute(
-                select(Conversation).where(
-                    Conversation.conversation_id == conversation_id,
-                    Conversation.project_id == project.project_id,
-                    Conversation.user_id == current_user.user_id,
-                    Conversation.status == "active",
+        if validate_conversation:
+            conv = (
+                await db.execute(
+                    select(Conversation).where(
+                        Conversation.conversation_id == conversation_id,
+                        Conversation.project_id == project.project_id,
+                        Conversation.user_id
+                        == (conversation_owner_id or current_user.user_id),
+                        Conversation.status == "active",
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        if conv is None:
-            raise HTTPException(status_code=422, detail="Target conversation not found")
+            ).scalar_one_or_none()
+            if conv is None:
+                raise HTTPException(status_code=422, detail="Target conversation not found")
     elif require_conversation:
         raise HTTPException(status_code=422, detail="conversation_id is required")
+
+
+def _env_json(env: dict[str, str] | None) -> str | None:
+    """Serialize env for the Unicode(2000) column, refusing overflow.
+
+    Caps mirror the column widths (MSSQL DataError on overflow → 500); the
+    entry count cap on the request model does not bound key/value sizes, and
+    the fire-time value cap never runs at author time. Measure the exact
+    bytes that will be stored (json.dumps with the same default serialization
+    as the write sites).
+    """
+    if not env:
+        return None
+    raw = json.dumps(env)
+    if len(raw) > 2000:
+        raise HTTPException(
+            status_code=422,
+            detail=f"env serializes to {len(raw)} chars (max 2000); shrink the keys/values",
+        )
+    return raw
 
 
 @router.get("/projects/{project_id}/schedules")
@@ -287,7 +321,7 @@ async def create_schedule(
         spec_slug=body.spec_slug,
         agent_slug=body.agent_slug,
         prompt=body.prompt,
-        env_json=json.dumps(body.env) if body.env else None,
+        env_json=_env_json(body.env),
         conversation_id=body.conversation_id,
         cron_expr=body.cron_expr,
         timezone=body.timezone,
@@ -338,6 +372,15 @@ async def update_schedule(
     _validated_timezone(timezone)
     if validate_cron(cron_expr) is not None:
         raise HTTPException(status_code=422, detail=validate_cron(cron_expr))
+    # Validate env before touching the row so an overflow 422s cleanly.
+    new_env_json = _env_json(body.env) if body.env is not None else None
+    # Only an explicitly-changed conversation is re-validated — and against
+    # the task creator, whose user_id the fire-time check uses (a requester
+    # rebinding to their own conversation would 422 at every fire).
+    rebind = (
+        body.conversation_id is not None
+        and body.conversation_id != task.conversation_id
+    )
     await _validate_target(
         db, project, current_user,
         target_type=target_type,
@@ -347,6 +390,8 @@ async def update_schedule(
         prompt=prompt,
         conversation_id=conversation_id,
         require_conversation=target_type == "agent",
+        validate_conversation=rebind,
+        conversation_owner_id=str(task.created_by) if rebind else None,
     )
 
     if body.name is not None:
@@ -359,7 +404,7 @@ async def update_schedule(
     task.agent_slug = agent_slug if target_type == "agent" else None
     task.prompt = prompt if target_type == "agent" else None
     if body.env is not None:
-        task.env_json = json.dumps(body.env) if body.env else None
+        task.env_json = new_env_json
     task.conversation_id = conversation_id
     task.cron_expr = cron_expr
     task.timezone = timezone
@@ -406,6 +451,10 @@ async def run_schedule_now(
         prompt=task.prompt,
         conversation_id=task.conversation_id,
         require_conversation=False,
+        # The runtime validates against target.created_by and fails the run
+        # cleanly; scheduled fires never revalidate either — author-time
+        # rechecking here only 422'd a manual run after a soft-delete.
+        validate_conversation=False,
     )
     try:
         run_id = await spawn_run(request.app, schedule_id, trigger="manual")

@@ -191,6 +191,32 @@ class TestCreate:
             )
         assert resp.status_code == 422
 
+    async def test_rejects_env_larger_than_column(self, client, db, make_project):
+        """env_json is Unicode(2000); 16 keys × 500-char values serializes to
+        ~8KB. The fire-time value cap never runs at author time, so without a
+        serialized-size check MSSQL raises DataError → 500 (SQLite stores it
+        silently and breaks later reads)."""
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+        big_env = {f"K{i:02d}": "x" * 250 for i in range(16)}  # ~4.3KB JSON
+
+        resp = await client.post(
+            f"/api/projects/{project.project_id}/schedules",
+            json=_body(project, script_id=str(script.script_id), env=big_env),
+        )
+        assert resp.status_code == 422, resp.text
+
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(project, script_id=str(script.script_id)),
+            )
+        ).json()
+        resp = await client.patch(
+            f"/api/schedules/{created['schedule_id']}", json={"env": big_env}
+        )
+        assert resp.status_code == 422, resp.text
+
 
 class TestUpdate:
     async def test_patch_cron_recomputes_next_run(self, client, db, make_project):
@@ -242,6 +268,84 @@ class TestUpdate:
         assert resp.status_code == 200
         assert resp.json()["name"] == "renamed"
         assert resp.json()["script_id"] == str(script.script_id)
+
+    async def test_owner_can_disable_after_conversation_deleted(
+        self, client, db, make_project
+    ):
+        """The stored conversation is not re-validated on a cron/enabled PATCH
+        — the model says the task must outlive a deleted conversation, and the
+        owner must still be able to disable it after soft-deleting the
+        conversation (hard delete only exists via project cascade)."""
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(
+                    project, target_type="agent", agent_slug="tech-lead",
+                    prompt="go", conversation_id=str(conv.conversation_id),
+                ),
+            )
+        ).json()
+        conv.status = "deleted"
+        await db.commit()
+
+        resp = await client.patch(
+            f"/api/schedules/{created['schedule_id']}", json={"enabled": False}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enabled"] is False
+
+    async def test_teammate_can_patch_task_bound_to_owners_conversation(
+        self, client, db, make_project, as_user
+    ):
+        """Only authorize_project gates PATCH — the requester is not the task
+        owner. Re-validating the stored conversation against the requester's
+        user_id made every teammate PATCH 422 (only DELETE worked)."""
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(
+                    project, target_type="agent", agent_slug="tech-lead",
+                    prompt="go", conversation_id=str(conv.conversation_id),
+                ),
+            )
+        ).json()
+
+        async with as_user("teammate"):
+            resp = await client.patch(
+                f"/api/schedules/{created['schedule_id']}", json={"enabled": False}
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enabled"] is False
+
+    async def test_explicit_rebind_still_validates_conversation(
+        self, client, db, make_project
+    ):
+        """An explicitly-changed conversation_id keeps create-time semantics:
+        it must be the task owner's own active conversation."""
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(
+                    project, target_type="agent", agent_slug="tech-lead",
+                    prompt="go", conversation_id=str(conv.conversation_id),
+                ),
+            )
+        ).json()
+        foreign = await _make_conversation(
+            db, str(project.project_id), user_id="someone-else"
+        )
+
+        resp = await client.patch(
+            f"/api/schedules/{created['schedule_id']}",
+            json={"conversation_id": str(foreign.conversation_id)},
+        )
+        assert resp.status_code == 422, resp.text
 
 
 class TestDeleteAndRuns:
@@ -342,6 +446,35 @@ class TestRunNow:
         monkeypatch.setattr("api.services.scheduled_runs.spawn_run", fake_spawn)
         resp = await client.post(f"/api/schedules/{created['schedule_id']}/run")
         assert resp.status_code == 409
+
+    async def test_run_now_skips_author_time_conversation_recheck(
+        self, client, db, make_project, monkeypatch
+    ):
+        """run-now revalidated the stored conversation as the requester even
+        though the runtime validates against target.created_by (and scheduled
+        fires never call _validate_target) — after a soft-delete the owner's
+        manual run 422'd instead of spawning."""
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(
+                    project, target_type="agent", agent_slug="tech-lead",
+                    prompt="go", conversation_id=str(conv.conversation_id),
+                ),
+            )
+        ).json()
+        conv.status = "deleted"
+        await db.commit()
+
+        async def fake_spawn(app, schedule_id, *, trigger):
+            return "run-9"
+
+        monkeypatch.setattr("api.services.scheduled_runs.spawn_run", fake_spawn)
+        resp = await client.post(f"/api/schedules/{created['schedule_id']}/run")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["run_id"] == "run-9"
 
 
 class TestPreview:

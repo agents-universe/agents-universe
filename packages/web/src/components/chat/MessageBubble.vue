@@ -6,22 +6,25 @@
       <span class="message-role">{{ roleLabel }}</span>
       <span
         v-if="collabAgentLabel"
-        class="collab-agent-badge"
+        class="badge badge--green collab-agent-badge"
         :title="collabBadgeTitle"
-      >{{ collabAgentLabel }}</span>
+      >
+        <Bot v-if="message.role === 'assistant'" :size="10" />
+        {{ collabAgentLabel }}
+      </span>
       <!-- The model that actually produced this reply (auto routing resolves
       one per turn; explicit selection stores the chosen model id). -->
       <span
         v-if="message.modelName"
-        class="model-name-badge"
+        class="badge badge--violet"
         :title="t('messageBubble.modelUsed')"
       >{{ message.modelName }}</span>
       <span
         v-if="message.modelTier"
-        class="model-tier-badge"
+        class="badge badge--accent"
         :title="t('messageBubble.modelTierTitle')"
       >{{ message.modelTier }}</span>
-      <span v-if="message.interrupted" class="interrupted-badge" :title="t('messageBubble.interruptedTitle')">{{ t('messageBubble.interrupted') }}</span>
+      <span v-if="message.interrupted" class="badge badge--amber" :title="t('messageBubble.interruptedTitle')">{{ t('messageBubble.interrupted') }}</span>
       <!-- new Date(ts).toISOString() threw RangeError on invalid/
       missing timestamps (locally recovered messages can lack one) and broke
       the whole message tree. relativeTime already guards null/invalid. -->
@@ -125,10 +128,10 @@
           :href="withApi(lightboxImg.url)"
           :download="lightboxImg.alt || 'image'"
         >{{ t('messageBubble.download') }}</a>
-        <button @click="zoomIn">+</button>
+        <button title="Zoom in" @click="zoomIn"><ZoomIn :size="16" /></button>
         <button @click="resetZoom">1:1</button>
-        <button @click="zoomOut">−</button>
-        <button @click="closeLightbox">✕</button>
+        <button title="Zoom out" @click="zoomOut"><ZoomOut :size="16" /></button>
+        <button title="Close" @click="closeLightbox"><X :size="16" /></button>
       </div>
     </div>
   </Teleport>
@@ -137,7 +140,7 @@
 <script setup lang="ts">
 import { computed, ref, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Download } from 'lucide-vue-next'
+import { Bot, Download, X, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import { renderMarkdown } from '@/utils/markdown'
 import { relativeTime } from '@/utils/time'
 import { withApi } from '@/utils/basePath'
@@ -162,7 +165,7 @@ const collabAgentLabel = computed(() => {
   if (props.message.role !== 'assistant' && slug === agentStore.currentAgent?.slug) return null
   const label = agentStore.agents.find((a) => a.slug === slug)?.label ?? slug
   return props.message.role === 'assistant'
-    ? `🤖 ${label}`
+    ? label
     : `${t('messageBubble.sentTo')} ${label}`
 })
 

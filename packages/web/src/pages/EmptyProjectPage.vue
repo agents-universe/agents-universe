@@ -50,7 +50,9 @@
       </div>
     </div>
 
-    <CreateProjectDialog v-if="showCreate" @close="showCreate = false" />
+    <Transition name="modal">
+      <CreateProjectDialog v-if="showCreate" @close="showCreate = false" />
+    </Transition>
   </div>
 </template>
 

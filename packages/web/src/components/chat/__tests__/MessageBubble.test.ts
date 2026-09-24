@@ -33,17 +33,17 @@ describe('MessageBubble — attribution badge', () => {
 
   it('badges an assistant reply from the CURRENT agent (always attributed)', () => {
     const wrapper = bubble({ role: 'assistant', agentSlug: 'project-owner' })
-    expect(wrapper.find('.collab-agent-badge').text()).toBe('🤖 Product Owner')
+    expect(wrapper.find('.collab-agent-badge').text()).toContain('Product Owner')
   })
 
   it('badges an assistant reply from a mentioned agent', () => {
     const wrapper = bubble({ role: 'assistant', agentSlug: 'tech-lead' })
-    expect(wrapper.find('.collab-agent-badge').text()).toBe('🤖 Tech Lead')
+    expect(wrapper.find('.collab-agent-badge').text()).toContain('Tech Lead')
   })
 
   it('falls back to the slug when the agent is unknown to the store', () => {
     const wrapper = bubble({ role: 'assistant', agentSlug: 'mystery-agent' })
-    expect(wrapper.find('.collab-agent-badge').text()).toBe('🤖 mystery-agent')
+    expect(wrapper.find('.collab-agent-badge').text()).toContain('mystery-agent')
   })
 
   it('shows no badge when agentSlug is missing (legacy rows)', () => {
@@ -58,6 +58,6 @@ describe('MessageBubble — attribution badge', () => {
 
   it('badges a user turn @-mentioned to another agent with "sent to"', () => {
     const wrapper = bubble({ role: 'user', agentSlug: 'tech-lead' })
-    expect(wrapper.find('.collab-agent-badge').text()).toBe('发送给 Tech Lead')
+    expect(wrapper.find('.collab-agent-badge').text()).toContain('发送给 Tech Lead')
   })
 })

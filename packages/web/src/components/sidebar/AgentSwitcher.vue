@@ -7,8 +7,9 @@
       </button>
     </div>
 
-    <div v-if="favoritesStore.resolvedFavoriteAgents.length === 0" class="empty-hint">
-      {{ t('sidebar.agents.emptyHint') }}
+    <div v-if="favoritesStore.resolvedFavoriteAgents.length === 0" class="empty-hint empty-state">
+      <span class="empty-state-icon"><Bot :size="16" /></span>
+      <span>{{ t('sidebar.agents.emptyHint') }}</span>
     </div>
     <div
       v-for="agent in favoritesStore.resolvedFavoriteAgents"
@@ -75,14 +76,16 @@
       </div>
     </Teleport>
 
-    <AgentPickerDialog v-if="showPicker" @close="showPicker = false" />
+    <Transition name="modal">
+      <AgentPickerDialog v-if="showPicker" @close="showPicker = false" />
+    </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus } from 'lucide-vue-next'
+import { Bot, Plus } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'

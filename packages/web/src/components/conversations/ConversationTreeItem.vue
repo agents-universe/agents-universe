@@ -30,7 +30,7 @@
       <button class="conv-tree-rename-btn" :title="t('conversations.renameTitle')" @click.stop="startRename">
         <Pencil :size="12" />
       </button>
-      <button class="conv-tree-delete-btn" :title="t('conversations.deleteTitle')" @click.stop="emit('delete')">🗑</button>
+      <button class="conv-tree-delete-btn" :title="t('conversations.deleteTitle')" @click.stop="emit('delete')"><Trash2 :size="12" /></button>
     </div>
 
     <div v-if="isExpanded && tasks.length" class="conv-tree-tasks">
@@ -42,7 +42,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { ChevronDown, ChevronRight, Pencil } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { relativeTime } from '@/utils/time'
 import type { ConversationItem, AgentTask } from '@/types'

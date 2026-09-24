@@ -78,12 +78,14 @@
       </div>
     </div>
 
-    <KnowledgeFileViewer
-      v-if="viewerSlug"
-      :key="viewerSlug"
-      :slug="viewerSlug"
-      @close="viewerSlug = null"
-    />
+    <Transition name="modal">
+      <KnowledgeFileViewer
+        v-if="viewerSlug"
+        :key="viewerSlug"
+        :slug="viewerSlug"
+        @close="viewerSlug = null"
+      />
+    </Transition>
   </div>
 </template>
 

@@ -61,8 +61,9 @@
             </button>
             </div>
           </template>
-          <div v-if="filteredAgents.length === 0" class="picker-empty">
-            {{ t('agentPicker.noMatches') }}
+          <div v-if="filteredAgents.length === 0" class="picker-empty empty-state">
+            <span class="empty-state-icon"><SearchX :size="16" /></span>
+            <span>{{ t('agentPicker.noMatches') }}</span>
           </div>
         </div>
 
@@ -84,7 +85,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Star, Search, X, RotateCcw } from 'lucide-vue-next'
+import { Bot, Star, Search, SearchX, X, RotateCcw } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'

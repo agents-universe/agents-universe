@@ -88,12 +88,14 @@
 
       <template v-if="!rightCollapsed">
         <ContextMeter />
-        <component
-          :is="panelComponent"
-          :key="activeTab"
-          v-bind="panelProps"
-          @new-conversation="handleNewConversation"
-        />
+        <Transition name="route-fade" mode="out-in">
+          <component
+            :is="panelComponent"
+            :key="activeTab"
+            v-bind="panelProps"
+            @new-conversation="handleNewConversation"
+          />
+        </Transition>
       </template>
     </aside>
   </div>

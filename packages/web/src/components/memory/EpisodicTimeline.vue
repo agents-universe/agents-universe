@@ -1,7 +1,10 @@
 <template>
   <div class="memory-section">
     <div class="section-label">{{ t('memoryPanels.episodic') }}</div>
-    <div v-if="!memoryStore.episodes.length" class="memory-empty">{{ t('memoryPanels.noEpisodes') }}</div>
+    <div v-if="!memoryStore.episodes.length" class="memory-empty empty-state">
+      <span class="empty-state-icon"><History :size="16" /></span>
+      <span>{{ t('memoryPanels.noEpisodes') }}</span>
+    </div>
     <div
       v-for="ep in memoryStore.episodes"
       :key="ep.episode_id"
@@ -34,7 +37,7 @@
 <script setup lang="ts">
 import { reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { ChevronDown, ChevronUp, History } from 'lucide-vue-next'
 import { useMemoryStore } from '@/stores/memory'
 import { relativeTime } from '@/utils/time'
 

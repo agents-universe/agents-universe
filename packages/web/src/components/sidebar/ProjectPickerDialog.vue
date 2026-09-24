@@ -65,8 +65,9 @@
               <Trash2 :size="14" />
             </button>
           </div>
-          <div v-if="filteredProjects.length === 0" class="picker-empty">
-            {{ t('projectPicker.noMatches') }}
+          <div v-if="filteredProjects.length === 0" class="picker-empty empty-state">
+            <span class="empty-state-icon"><SearchX :size="16" /></span>
+            <span>{{ t('projectPicker.noMatches') }}</span>
           </div>
         </div>
 
@@ -107,26 +108,30 @@
     </div>
   </Teleport>
 
-  <DeleteProjectDialog
-    v-if="deletingProject"
-    :project="deletingProject"
-    @close="deletingProject = null"
-    @deleted="onProjectDeleted"
-  />
+  <Transition name="modal">
+    <DeleteProjectDialog
+      v-if="deletingProject"
+      :project="deletingProject"
+      @close="deletingProject = null"
+      @deleted="onProjectDeleted"
+    />
+  </Transition>
 
-  <ProjectSettingsDialog
-    v-if="settingsProject"
-    :project="settingsProject"
-    @close="settingsProject = null"
-    @changed="projectStore.refreshProjects()"
-  />
+  <Transition name="modal">
+    <ProjectSettingsDialog
+      v-if="settingsProject"
+      :project="settingsProject"
+      @close="settingsProject = null"
+      @changed="projectStore.refreshProjects()"
+    />
+  </Transition>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Folder, FolderHeart, Star, Search, Plus, X, Trash2, Settings } from 'lucide-vue-next'
+import { Folder, FolderHeart, Star, Search, SearchX, Plus, X, Trash2, Settings } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
 import { projectsApi } from '@/api/projects'

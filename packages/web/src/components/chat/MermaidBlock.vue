@@ -19,10 +19,10 @@
         <div ref="fsEl" class="mermaid-modal-svg" v-html="svgHtml" />
       </div>
       <div class="mermaid-modal-controls">
-        <button @click="zoomIn">+</button>
+        <button title="Zoom in" @click="zoomIn"><ZoomIn :size="16" /></button>
         <button @click="resetZoom">{{ scaleLabel }}</button>
-        <button @click="zoomOut">−</button>
-        <button @click="fullscreen = false">✕</button>
+        <button title="Zoom out" @click="zoomOut"><ZoomOut :size="16" /></button>
+        <button title="Close" @click="fullscreen = false"><X :size="16" /></button>
       </div>
     </div>
   </Teleport>
@@ -39,6 +39,7 @@ let mermaidRenderSeq = 0
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { X, ZoomIn, ZoomOut } from 'lucide-vue-next'
 
 const props = defineProps<{ code: string }>()
 

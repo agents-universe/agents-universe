@@ -8,8 +8,9 @@
     </div>
 
     <div class="project-list">
-      <div v-if="favoritesStore.resolvedFavoriteProjects.length === 0" class="empty-hint">
-        {{ t('sidebar.projects.emptyHint') }}
+      <div v-if="favoritesStore.resolvedFavoriteProjects.length === 0" class="empty-hint empty-state">
+        <span class="empty-state-icon"><Folder :size="16" /></span>
+        <span>{{ t('sidebar.projects.emptyHint') }}</span>
       </div>
       <div
         v-for="project in favoritesStore.resolvedFavoriteProjects"
@@ -24,7 +25,9 @@
       </div>
     </div>
 
-    <ProjectPickerDialog v-if="showPicker" @close="showPicker = false" />
+    <Transition name="modal">
+      <ProjectPickerDialog v-if="showPicker" @close="showPicker = false" />
+    </Transition>
   </div>
 </template>
 

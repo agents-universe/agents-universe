@@ -2,7 +2,7 @@
   <div class="conv-tree">
     <div class="conv-tree-header">
       <span class="conv-tree-header-title">{{ t('conversations.historyTitle') }}</span>
-      <button class="conv-tree-new-btn" :title="t('conversations.newConversation')" @click="onNewConversation">+</button>
+      <button class="conv-tree-new-btn" :title="t('conversations.newConversation')" @click="onNewConversation"><Plus :size="14" /></button>
     </div>
 
     <div class="conv-tree-search-wrapper">
@@ -25,8 +25,9 @@
     </div>
 
     <div v-if="error" class="conv-tree-error">{{ error }}</div>
-    <div v-if="!conversations.length" class="conv-tree-empty">
-      {{ isSearching ? t('conversations.noMatches') : t('conversations.empty') }}
+    <div v-if="!conversations.length" class="conv-tree-empty empty-state">
+      <span class="empty-state-icon"><MessageSquare :size="16" /></span>
+      <span>{{ isSearching ? t('conversations.noMatches') : t('conversations.empty') }}</span>
     </div>
     <div v-else class="conv-tree-list">
       <ConversationTreeItem
@@ -50,7 +51,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, X } from 'lucide-vue-next'
+import { MessageSquare, Plus, Search, X } from 'lucide-vue-next'
 import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
 import { conversationsApi } from '@/api/conversations'

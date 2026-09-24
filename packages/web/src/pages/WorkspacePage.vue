@@ -9,7 +9,7 @@
         </button>
       </div>
       <div v-if="error" class="workspace-error">{{ error }}</div>
-      <div v-if="loadingRoot && !nodes.length" class="workspace-loading">
+      <div v-if="loadingRoot && !nodes.length" class="workspace-loading skeleton">
         <Loader2 :size="16" class="spin" />
       </div>
       <FileTree
@@ -18,7 +18,10 @@
         @select="onSelect"
         @toggle="onToggle"
       />
-      <div v-else-if="!loadingRoot" class="workspace-empty">{{ t('workspace.emptyTree') }}</div>
+      <div v-else-if="!loadingRoot" class="workspace-empty empty-state">
+        <span class="empty-state-icon"><FolderTree :size="16" /></span>
+        <span>{{ t('workspace.emptyTree') }}</span>
+      </div>
     </div>
 
     <!-- Right: content -->
@@ -113,8 +116,9 @@
       </template>
 
       <!-- Empty -->
-      <div v-else class="workspace-empty-content">
-        {{ t('workspace.selectHint') }}
+      <div v-else class="workspace-empty-content empty-state">
+        <span class="empty-state-icon"><FileText :size="16" /></span>
+        <span>{{ t('workspace.selectHint') }}</span>
       </div>
     </div>
   </div>
@@ -124,7 +128,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide-vue-next'
+import { FileText, FolderTree, Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
 import { scriptsApi } from '@/api/scripts'
 import { workspaceApi } from '@/api/workspace'

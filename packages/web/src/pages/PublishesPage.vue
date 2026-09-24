@@ -155,6 +155,7 @@
 
     <!-- Create modal -->
     <Teleport to="body">
+      <Transition name="modal">
       <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
         <div class="modal-dialog publish-create-modal">
           <div class="modal-header">
@@ -211,6 +212,7 @@
           </div>
         </div>
       </div>
+      </Transition>
     </Teleport>
   </div>
 </template>

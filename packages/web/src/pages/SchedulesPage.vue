@@ -146,6 +146,7 @@
 
     <!-- Create / edit dialog -->
     <Teleport to="body">
+      <Transition name="modal">
       <div v-if="showForm" class="modal-overlay" @click.self="closeForm">
         <div class="modal-dialog schedule-form-modal">
           <div class="modal-header">
@@ -276,10 +277,12 @@
           </div>
         </div>
       </div>
+      </Transition>
     </Teleport>
 
     <!-- Live log drawer -->
     <Teleport to="body">
+      <Transition name="modal">
       <div v-if="logOpen" class="modal-overlay" @click.self="closeLogDrawer">
         <div class="modal-dialog schedule-log-modal">
           <div class="modal-header">
@@ -316,6 +319,7 @@
           </div>
         </div>
       </div>
+      </Transition>
     </Teleport>
   </div>
 </template>

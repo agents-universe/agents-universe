@@ -2,7 +2,7 @@
   <div class="memory-section">
     <div class="section-label">
       {{ t('memoryPanels.personal') }}
-      <button class="icon-btn" :title="t('memoryPanels.addTitle')" @click="showAdd = true">+</button>
+      <button class="icon-btn" :title="t('memoryPanels.addTitle')" @click="showAdd = true"><Plus :size="14" /></button>
     </div>
 
     <div v-if="showAdd" class="memory-add-form">
@@ -15,7 +15,10 @@
     </div>
 
     <div v-if="error" class="memory-error">{{ error }}</div>
-    <div v-if="!memoryStore.personalMemories.length" class="memory-empty">{{ t('memoryPanels.noPersonal') }}</div>
+    <div v-if="!memoryStore.personalMemories.length" class="memory-empty empty-state">
+      <span class="empty-state-icon"><Brain :size="16" /></span>
+      <span>{{ t('memoryPanels.noPersonal') }}</span>
+    </div>
     <div
       v-for="mem in memoryStore.personalMemories"
       :key="mem.memory_id"
@@ -24,7 +27,7 @@
       <p class="personal-memory-content">{{ mem.content }}</p>
       <div class="personal-memory-meta">
         <span v-for="tag in mem.tags" :key="tag" class="memory-tag">{{ tag }}</span>
-        <button class="icon-btn memory-archive" :title="t('memoryPanels.archiveTitle')" @click="archive(mem.memory_id)">🗑</button>
+        <button class="icon-btn memory-archive" :title="t('memoryPanels.archiveTitle')" @click="archive(mem.memory_id)"><Trash2 :size="14" /></button>
       </div>
     </div>
   </div>
@@ -33,6 +36,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Brain, Plus, Trash2 } from 'lucide-vue-next'
 import { useMemoryStore } from '@/stores/memory'
 import { useProjectStore } from '@/stores/project'
 import { memoriesApi } from '@/api/memories'

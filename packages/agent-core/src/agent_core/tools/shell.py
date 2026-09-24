@@ -70,6 +70,23 @@ def redact_proxy_credentials(text: str, proxy_url: str) -> str:
     return _redact(text, proxy_url)
 
 
+def _redact_env_proxies(text: str, env: dict[str, str]) -> str:
+    """Mask credentialed proxy URLs that npm's stderr may quote.
+
+    ensure_node_deps logs stderr at WARNING and returns it to two callers —
+    the shell tool (which redacts again on the return path, too late for the
+    log line) and the API script executor (which stores it in the run log) —
+    so the scrub happens here, where the subprocess env that carried the
+    credential is still in scope. Values without a password are ignored by
+    redact_proxy_credentials; over-redaction of the rest is the accepted
+    trade (garbled diagnostics never leak).
+    """
+    for value in env.values():
+        if "@" in value:
+            text = redact_proxy_credentials(text, value)
+    return text
+
+
 def _default_timeout(command: str) -> int:
     """Default tool timeout for *command* — see _PLAYWRIGHT_RUN_TIMEOUT."""
     return _PLAYWRIGHT_RUN_TIMEOUT if _PLAYWRIGHTISH_CMD.search(command) else _TIMEOUT
@@ -537,7 +554,13 @@ async def ensure_node_deps(
             terminate_process_tree(proc)
             await proc.wait()
             raise
-        return proc.returncode, stderr.decode(errors="replace")[:_MAX_OUTPUT]
+        # Redact before truncation: this text is logged at WARNING (below)
+        # and returned to callers that surface it verbatim. npm quotes the
+        # proxy it failed to reach, and both callers' env carries the
+        # credentialed URL.
+        return proc.returncode, _redact_env_proxies(
+            stderr.decode(errors="replace"), env
+        )[:_MAX_OUTPUT]
 
     returncode, stderr_text = await _run_install(install_cmd)
     if returncode in (None, -1):

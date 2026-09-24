@@ -361,6 +361,54 @@ async def test_install_error_output_is_redacted():
         assert "install failed" in result["error"]
 
 
+@pytest.mark.asyncio
+async def test_shell_branch_spawns_child_in_its_own_session(monkeypatch):
+    """POSIX takes the create_subprocess_shell branch (_SHELL_ARGS is None
+    there). terminate_process_tree killpgs the child's process group on
+    timeout/abort — without start_new_session the child shares the SERVER's
+    group, so SIGKILL takes the whole API server down with it."""
+    monkeypatch.setattr(shell_module, "_SHELL_ARGS", None)
+    monkeypatch.setattr(shell_module, "spawn_in_new_session", lambda: {"start_new_session": True})
+    captured: dict = {}
+
+    def capture(cmd, **kwargs):
+        captured.update(kwargs)
+        raise OSError("stop before running")
+
+    with patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=capture):
+        result = await shell_module.ShellTool().execute(
+            {"command": "echo hi"}, make_context()
+        )
+
+    assert "error" in result
+    assert captured.get("start_new_session") is True
+
+
+@pytest.mark.asyncio
+async def test_npm_install_branch_spawns_child_in_its_own_session(monkeypatch, tmp_path):
+    pkg_dir = Path(tmp_path) / "proj" / "tests"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "package.json").write_text(
+        '{"name": "p", "scripts": {"test": "playwright test"}}', encoding="utf-8"
+    )
+    monkeypatch.setattr(shell_module, "_SHELL_ARGS", None)
+    monkeypatch.setattr(shell_module, "spawn_in_new_session", lambda: {"start_new_session": True})
+    captured: dict = {}
+
+    def capture(cmd, **kwargs):
+        captured.update(kwargs)
+        raise OSError("stop before running")
+
+    with patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=capture):
+        result = await shell_module.ShellTool().execute(
+            {"command": "npm run test:x", "cwd": "tests"},
+            make_context(project_fs_path=str(Path(tmp_path) / "proj")),
+        )
+
+    assert "error" in result
+    assert captured.get("start_new_session") is True
+
+
 # ---------------------------------------------------------------------------
 # Cross-project isolation: command validation + runtime python guard
 # ---------------------------------------------------------------------------

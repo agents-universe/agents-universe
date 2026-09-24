@@ -514,9 +514,14 @@ async def ensure_node_deps(
                     **spawn_in_new_session(),
                 )
             else:
+                # Same own-session guarantee as the exec branch: on POSIX this
+                # shell branch is the one that runs, and without it the child
+                # stays in the SERVER's process group — terminate_process_tree's
+                # killpg on timeout/abort would SIGKILL uvicorn itself.
                 proc = await asyncio.create_subprocess_shell(
                     cmd, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
+                    **spawn_in_new_session(),
                 )
         except OSError as exc:
             _log.warning("Failed to start npm dependency install in %s: %s", pkg_dir, exc)
@@ -743,12 +748,16 @@ class ShellTool(Tool):
                     **spawn_in_new_session(),
                 )
             else:
+                # Own session on POSIX (this branch IS the POSIX branch):
+                # without it the child shares the server's process group and
+                # the timeout handler's killpg would SIGKILL uvicorn itself.
                 proc = await asyncio.create_subprocess_shell(
                     command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env=env,
+                    **spawn_in_new_session(),
                 )
         except OSError as exc:
             return {"error": f"Failed to start shell command: {exc}"}

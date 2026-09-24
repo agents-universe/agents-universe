@@ -7,6 +7,11 @@ export const useProjectSecretsStore = defineStore('projectSecrets', () => {
   const secrets = ref<ProjectSecret[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  // Bumped by reset() so mounted views can tell "cleared on purpose" from
+  // "cleared while MY load for the current project was in flight" — the
+  // deferred project-switch reset() invalidates the panel's load, and without
+  // a re-trigger nothing ever refetched (empty panel until a WS event).
+  const resetToken = ref(0)
 
   // Seq guard: rapid project A→B switching fires overlapping load()s — a
   // stale response for A must not overwrite the current project's list.
@@ -63,7 +68,8 @@ export const useProjectSecretsStore = defineStore('projectSecrets', () => {
     // previous project would still match its seq and write the old project's
     // secret list into the freshly reset store.
     loadSeq++
+    resetToken.value++
   }
 
-  return { secrets, loading, error, load, create, update, remove, reset }
+  return { secrets, loading, error, resetToken, load, create, update, remove, reset }
 })

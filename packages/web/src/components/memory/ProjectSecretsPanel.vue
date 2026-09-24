@@ -67,6 +67,15 @@ watch(projectId, (id) => {
   }
 }, { immediate: true })
 
+// setCurrentProject() defers projectSecrets.reset() behind a dynamic
+// import().then, so on a project switch this watcher's load(newId) starts
+// FIRST and the deferred reset then bumps loadSeq, discarding its response —
+// an empty panel with no retry. Re-load after every reset that still has a
+// project; reset() with no project must not re-enter (it would loop).
+watch(() => store.resetToken, () => {
+  if (projectId.value) store.load(projectId.value)
+})
+
 async function handleAdd() {
   if (!projectId.value || !newKey.value.service_key || !newKey.value.value) return
   try {

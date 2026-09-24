@@ -558,6 +558,10 @@ async def run_turn(
                 token_budget=conv.token_budget,
                 tokens_used=conv.tokens_used,
                 prompt_sink=delegation.parent_session if nested else None,
+                # Headless runs still get a session (events, injections), but
+                # prompt gates must fail fast instead of waiting for an answer
+                # no client will ever send.
+                interactive=interactive,
             )
 
             # Register session so conversation_ws can route user_selection_response messages

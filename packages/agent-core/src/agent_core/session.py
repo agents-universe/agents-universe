@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator
 
 
 @dataclass
@@ -34,6 +34,15 @@ class UserSelectionTimeoutError(RuntimeError):
 
 class UserSelectionAbortedError(RuntimeError):
     """The run was aborted while a prompt was pending."""
+
+
+class UserSelectionUnavailableError(RuntimeError):
+    """The run is non-interactive, so nobody could ever answer a prompt.
+
+    Subclasses RuntimeError for the same reason as UserSelectionTimeoutError:
+    every safety gate that catches RuntimeError around request_user_selection
+    degrades to its deny/error path unchanged.
+    """
 
 
 @dataclass
@@ -69,6 +78,7 @@ class ConversationSession:
         token_budget: int = 128000,
         tokens_used: int = 0,
         prompt_sink: "ConversationSession | None" = None,
+        interactive: bool = True,
     ) -> None:
         self.conversation_id = conversation_id
         self.project_id = project_id
@@ -97,6 +107,11 @@ class ConversationSession:
         # the conversation's *registered* session. Prompts therefore register
         # on the sink (the top-level session) and record their owning session,
         # so answering one also lifts that session's prompt pause.
+        # Whether a client is attached that can answer prompts. False for
+        # headless runs (scheduled tasks, published agents): the session is
+        # still built and registered, but no user_selection_response can
+        # ever arrive.
+        self.interactive = interactive
         self._prompt_sink: ConversationSession | None = prompt_sink
         self._prompt_owners: dict[str, ConversationSession] = {}
         # Interactive-prompt ledger, keyed by a caller-supplied signature
@@ -376,13 +391,26 @@ class ConversationSession:
         title / message : str | None
             Optional display overrides for the prompt dialog.
 
-        Raises UserSelectionTimeoutError on timeout and
-        UserSelectionAbortedError when the run is aborted; both subclass
-        RuntimeError.
+        Raises UserSelectionTimeoutError on timeout,
+        UserSelectionAbortedError when the run is aborted, and
+        UserSelectionUnavailableError when the run is non-interactive;
+        all subclass RuntimeError.
         """
+        store = self._prompt_store()
+        # Headless runs (scheduled tasks, published agents) build and register
+        # a session, but no client is attached — nobody can ever answer, so
+        # waiting out the 120–300 s timeout only stalls the turn. The
+        # ANSWERER's interactivity decides: prompts register on the sink
+        # store, so a delegated turn under a headless parent is refused too,
+        # while an interactive parent still answers its delegates' prompts.
+        if not store.interactive:
+            raise UserSelectionUnavailableError(
+                "interactive prompts are disabled in this run — the agent is "
+                "operating unattended; do not ask the user for input, pick "
+                "the safe default and continue"
+            )
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
-        store = self._prompt_store()
         store._pending_prompts[prompt_id] = fut
         if store is not self:
             store._prompt_owners[prompt_id] = self

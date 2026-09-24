@@ -6,10 +6,13 @@ so the two storage scopes behave identically for git / jira / confluence.
 """
 from __future__ import annotations
 
+import logging
 import traceback
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 
 async def test_service_token(
@@ -36,11 +39,21 @@ async def test_service_token(
 
         Jira/Confluence gateways echo the credential in 401 bodies ("Bad
         credentials: <token>") — returning that verbatim to the client prints
-        the key it just submitted. Same rule as api_keys.py / tokens.py.
+        the key it just submitted. httpx/h11 render an illegal header value
+        as a bytes repr, where a key with a control character appears escaped
+        (\\n, \\xe4), so that form is masked too. Same rule as api_keys.py /
+        tokens.py.
         """
         for secret in secrets:
-            if secret:
-                text = text.replace(secret, "[REDACTED]")
+            if not secret:
+                continue
+            text = text.replace(secret, "[REDACTED]")
+            try:
+                escaped = repr(secret.encode("utf-8"))[2:-1]
+            except Exception:
+                escaped = ""
+            if escaped and escaped != secret:
+                text = text.replace(escaped, "[REDACTED]")
         return text
 
     email = ""  # bound in the jira/confluence branches; referenced by _redact in except
@@ -99,10 +112,17 @@ async def test_service_token(
             return {"ok": True, "provider": provider, "note": "saved"}
 
     except Exception as exc:
-        traceback.print_exc()
         # str(exc) can embed the submitted credential ("Incorrect API key
-        # provided: sk-...") — never return it raw.
-        return {"ok": False, "provider": provider, "error": _redact(str(exc) or "Token test failed", plain, email) or "Token test failed"}
+        # provided: sk-...") — never return it raw, and never print the raw
+        # traceback either: the same message is in the stack, and print_exc
+        # bypasses the log pipeline entirely. Log the redacted form, the
+        # same rule api_keys.py / tokens.py already follow.
+        error = _redact(str(exc) or "Token test failed", plain, email) or "Token test failed"
+        logger.error(
+            "Token test failed for %s: %s",
+            service_key, _redact(traceback.format_exc(), plain, email),
+        )
+        return {"ok": False, "provider": provider, "error": error}
 
 
 async def _resolve_atlassian_email(db, user_id: str, project_id: str | None, cfg) -> str | None:

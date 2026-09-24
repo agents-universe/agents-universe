@@ -104,11 +104,30 @@ def _validate_mcp_url(url: str, allowed_hosts: list[str] | None, allow_private: 
 # ---------------------------------------------------------------------------
 
 
+def _header_value_problem(value: str) -> str | None:
+    """Why *value* cannot be sent as an HTTP header value, or None if it can.
+
+    httpx/h11 reject an illegal value by echoing it back ("Illegal header
+    value b'...'") — for a rendered secret that message IS the credential,
+    and it would reach the connection warnings and the /mcp/servers/{id}/test
+    response (format_exc-style chains carry it too). Validate before the
+    transport ever sees the value; the caller's error names only the header.
+    Non-ASCII fails anyway (httpx encodes str values as ascii) and its
+    UnicodeEncodeError quotes the offending character.
+    """
+    if not value.isascii():
+        return "contains a non-ASCII character"
+    if any(ch != "\t" and ord(ch) < 0x20 for ch in value):
+        return "contains a control character (a pasted trailing newline, perhaps)"
+    return None
+
+
 async def _resolve_auth_headers(context: ToolContext, cfg: dict[str, Any]) -> dict[str, str]:
     """Build HTTP headers for the MCP server connection.
 
     Resolves the secret via project_secrets / user_tokens and renders it into
-    the configured header.  Plaintext is never logged.
+    the configured header.  Plaintext is never logged — including through the
+    transport's own error messages, so every value is validated here first.
     """
     headers: dict[str, str] = {}
 
@@ -118,7 +137,11 @@ async def _resolve_auth_headers(context: ToolContext, cfg: dict[str, Any]) -> di
             raise ValueError(
                 f"Sensitive header {name!r} in MCP server config - use auth.secret_ref instead"
             )
-        headers[str(name)] = str(value)
+        rendered = str(value)
+        problem = _header_value_problem(rendered)
+        if problem:
+            raise ValueError(f"Header {name!r} in MCP server config {problem}")
+        headers[str(name)] = rendered
 
     auth = cfg.get("auth") or {}
     auth_type = (auth.get("type") or "none").lower()
@@ -146,7 +169,16 @@ async def _resolve_auth_headers(context: ToolContext, cfg: dict[str, Any]) -> di
     else:
         raise ValueError(f"Unsupported auth type: {auth_type!r}")
 
-    headers[header_name] = template.format(secret=secret_value)
+    rendered = template.format(secret=secret_value)
+    problem = _header_value_problem(rendered)
+    if problem:
+        # Never echo `rendered`: for a bad secret it contains the credential,
+        # which is exactly what the transport's own error would print.
+        raise ValueError(
+            f"Secret rendered into header {header_name!r} {problem} — "
+            "re-save the stored secret without it"
+        )
+    headers[header_name] = rendered
     return headers
 
 

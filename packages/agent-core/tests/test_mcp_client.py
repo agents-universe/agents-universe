@@ -17,7 +17,9 @@ from agent_core.tools.mcp_client import (
     McpConnectionManager,
     McpProxyTool,
     McpServerSession,
+    _header_value_problem,
     _matches_any,
+    _resolve_auth_headers,
     _validate_mcp_url,
     attach_mcp_tools,
 )
@@ -119,6 +121,49 @@ def test_matches_any_no_match():
 
 def test_matches_any_empty_patterns():
     assert _matches_any("anything", []) is False
+
+
+def test_header_value_problem_rejects_only_what_httpx_rejects():
+    """The validation must accept everything httpx would send (tab, printable
+    ASCII, DEL) and reject what it fails on (CR/LF and friends, non-ASCII)."""
+    assert _header_value_problem("Bearer sk-abc123") is None
+    assert _header_value_problem("a\tb") is None
+    assert _header_value_problem("sk-abc\n") is not None       # pasted newline
+    assert _header_value_problem("a\rb") is not None
+    assert _header_value_problem("ключ") is not None           # non-ASCII
+
+
+@pytest.mark.asyncio
+async def test_rendered_secret_with_control_char_fails_without_echoing_it(monkeypatch):
+    """h11 rejects an illegal header by quoting it back ("Illegal header value
+    b'...'") — for a rendered secret that message IS the credential, and it
+    would reach the connection warnings and the /test endpoint response. The
+    pre-flight check must fail first, naming only the header."""
+    import agent_core.tools._auth as _auth
+
+    secret = "s3cret-pasted-with-newline\n"
+
+    async def _fake_token(context, service_key):
+        return secret
+
+    monkeypatch.setattr(_auth, "get_token", _fake_token)
+    cfg = {"auth": {"type": "bearer", "secret_ref": "mcp:demo", "secret_scope": "user"}}
+
+    with pytest.raises(ValueError) as excinfo:
+        await _resolve_auth_headers(_make_context(), cfg)
+
+    msg = str(excinfo.value)
+    assert "s3cret" not in msg                      # not even the bare part
+    assert "control character" in msg
+    assert "Authorization" in msg
+
+
+@pytest.mark.asyncio
+async def test_config_header_with_control_char_fails_cleanly():
+    cfg = {"headers": {"X-Team": "line1\nline2"}}
+    with pytest.raises(ValueError) as excinfo:
+        await _resolve_auth_headers(_make_context(), cfg)
+    assert "X-Team" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

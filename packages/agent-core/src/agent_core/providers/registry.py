@@ -29,7 +29,9 @@ def get_provider(provider_key: str, credentials: dict[str, Any]) -> LLMProvider:
     Credential keys per provider:
       anthropic:     api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
       openai:        api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
-      azure_openai:  api_key, endpoint, deployment, api_version (opt), model (opt)
+      azure_openai:  api_key, endpoint, api_version (opt), model (opt — also the
+                     Azure deployment name; there is no separate deployment key,
+                     and a stray one in credentials is silently ignored)
       google_gemini: api_key, model, base_url (opt), url_mode (opt: base_url|full_url)
     All providers additionally accept context_window (opt: per-config override
     for the name-matched default; None = auto-match by model name),

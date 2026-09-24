@@ -178,7 +178,10 @@ def _anthropic_row(base_url: str | None, url_mode: str = "base_url") -> AsyncMoc
     return db
 
 
-def _capture_client(captured: list):
+def _capture_client(captured: list, body: dict | None = None):
+    if body is None:
+        body = {"content": [{"type": "text", "text": '{"summary": "ok"}'}]}
+
     class _CaptureAsyncClient:
         def __init__(self, *a, **k):
             pass
@@ -193,9 +196,7 @@ def _capture_client(captured: list):
             captured.append((url, headers, json))
             resp = MagicMock()
             resp.status_code = 200
-            resp.json.return_value = {
-                "content": [{"type": "text", "text": '{"summary": "ok"}'}]
-            }
+            resp.json.return_value = body
             return resp
 
     return _CaptureAsyncClient
@@ -256,3 +257,51 @@ async def test_summary_anthropic_full_url_posts_base_as_is(monkeypatch):
     assert headers["Authorization"] == f"Bearer {CLEAN_KEY}"
     assert "x-api-key" not in headers
     assert payload["anthropic_version"] == "bedrock-2023-05-31"
+
+
+async def test_summary_legacy_gemini_key_defaults_to_a_gemini_model(monkeypatch):
+    """A pre-migration google_gemini key with no user_tier_models row must get
+    a gemini default model — pre-fix the table returned "gpt-4o-mini" (an
+    OpenAI id) and the summary request 404'd on the Gemini API."""
+    # A developer .env may set a system-default model, which would shadow the
+    # legacy path this test exercises.
+    monkeypatch.setattr(
+        "api.config.get_settings",
+        lambda: SimpleNamespace(
+            system_default_model_id="",
+            system_default_base_url="",
+            system_default_api_key="",
+            llm_ssl_verify=True,
+        ),
+    )
+    cfg_result = MagicMock()
+    cfg_result.scalar_one_or_none.return_value = None
+    key_result = MagicMock()
+    key_result.scalar_one_or_none.return_value = SimpleNamespace(
+        provider="google_gemini",
+        encrypted_value=encrypt(CLEAN_KEY, USER_ID),
+    )
+    tier_result = MagicMock()
+    tier_result.scalar_one_or_none.return_value = None
+    db = AsyncMock()
+    db.execute.side_effect = [cfg_result, key_result, tier_result]
+
+    captured: list = []
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        _capture_client(
+            captured,
+            body={
+                "candidates": [
+                    {"content": {"parts": [{"text": '{\"summary\": \"ok\"}'}]}}
+                ]
+            },
+        ),
+    )
+
+    out = await _call_llm_for_summary("transcript", USER_ID, db)
+
+    assert out == {"summary": "ok"}
+    url = captured[0][0]
+    assert "gemini-2.5-flash" in url
+    assert "gpt-4o-mini" not in url

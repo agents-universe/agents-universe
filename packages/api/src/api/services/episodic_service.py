@@ -350,9 +350,13 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
 
 
 def _default_model(provider: str) -> str:
+    # Every provider gets one of ITS OWN model ids — handing gemini an
+    # OpenAI id makes the Gemini API 404 every request. ("azure_openai"
+    # is skipped before this table is consulted; there is no bare "azure"
+    # provider key.)
     defaults = {
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
-        "azure": "gpt-4o-mini",
+        "google_gemini": "gemini-2.5-flash",
     }
     return defaults.get(provider, "gpt-4o-mini")

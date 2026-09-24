@@ -880,3 +880,14 @@ async def test_compress_total_timeout_502(client, db, make_project, monkeypatch)
     )
     rows = result.scalars().all()
     assert len(rows) == 20
+
+
+def test_default_model_returns_provider_native_ids():
+    """_default_model must hand each provider one of ITS OWN model ids —
+    pre-fix "google_gemini" fell through to "gpt-4o-mini" and every legacy
+    gemini compression/summary request 404'd on the Gemini API."""
+    from api.services.compression import _default_model
+
+    assert _default_model("google_gemini") == "gemini-2.5-flash"
+    assert _default_model("anthropic").startswith("claude-")
+    assert _default_model("openai").startswith("gpt-")

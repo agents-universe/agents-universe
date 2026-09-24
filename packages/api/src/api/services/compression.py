@@ -274,9 +274,13 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
 
 
 def _default_model(provider: str) -> str:
+    # Every provider gets one of ITS OWN model ids — handing gemini an
+    # OpenAI id makes the Gemini API 404 every request. ("azure_openai"
+    # raises before this table is consulted.)
     defaults = {
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
+        "google_gemini": "gemini-2.5-flash",
     }
     return defaults.get(provider, "gpt-4o-mini")
 

@@ -730,6 +730,68 @@ async def test_mode_switch_rebuilds_not_fast_path(repo: Path, tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_no_fast_path_when_head_unresolvable(tmp_path: Path):
+    """" means HEAD could not be resolved (no git, worktree, empty repo) —
+    _manual_head_sha says "rebuild instead". The stored head_sha is "" too,
+    so comparing them would accept the fast path forever: edits that keep the
+    file *set* unchanged never reach the graph."""
+    repo = tmp_path / "plain_tree"
+    repo.mkdir()
+    (repo / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    first = await _build(repo, tmp_path)
+    assert first["status"] == "built"
+    assert first["head"] == ""
+
+    (repo / "a.py").write_text(
+        "def a():\n    return 2\n\ndef b():\n    return 3\n", encoding="utf-8"
+    )
+    from agent_core.knowledge.graph import parser as _parser_mod
+    with patch(
+        "agent_core.knowledge.graph.builder.parse_file",
+        wraps=_parser_mod.parse_file,
+    ) as parse:
+        second = await _build(repo, tmp_path)  # force=False — head still ""
+    assert second["status"] == "built"
+    assert parse.call_count == 1
+    assert parse.call_args[0][1] == "a.py"
+
+
+@pytest.mark.asyncio
+async def test_path_escaping_repo_via_link_skipped(tmp_path: Path):
+    """resolve() follows symlinks/junctions: a walked path whose resolved
+    target lies outside the checkout must never be hashed — otherwise the
+    external file's symbols land in graph.json (leak), and a link at a
+    device file (/dev/zero) hashes forever while holding the build lock."""
+    repo = tmp_path / "escape_repo"
+    repo.mkdir()
+    (repo / "real.py").write_text("def real():\n    return 1\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.py").write_text("def sneaky():\n    return 1\n", encoding="utf-8")
+    try:
+        (repo / "sub").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        # Windows without symlink privilege: a junction needs none and
+        # resolve() follows it exactly like a symlink; os.walk descends
+        # into both (islink is False for junctions).
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(repo / "sub"))
+        except Exception:
+            pytest.skip("symlink/junction creation unavailable")
+
+    # no .git -> ls-files fails -> os.walk fallback, which lists sub/evil.py
+    summary = await _build(repo, tmp_path)
+    assert summary["status"] == "built"
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    node_ids = {n.id for n in graph.nodes}
+    assert "f:real.py" in node_ids
+    assert not any("evil" in nid for nid in node_ids), "outside file leaked into the graph"
+
+
+@pytest.mark.asyncio
 async def test_report_renders(repo: Path, tmp_path: Path, grammars):
     await _build(repo, tmp_path)
     graph = load_cached(tmp_path / "kg")

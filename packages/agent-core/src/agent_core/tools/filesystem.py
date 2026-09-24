@@ -267,6 +267,14 @@ class FilesystemTool(Tool):
         target = (base / rel_path).resolve()
         if not target.is_relative_to(base):
             return {"error": f"Access denied: path {rel_path!r} is outside project scope"}
+        # The raw-path .git guard above is bypassed by a workspace symlink
+        # (hooks -> .git/hooks, preserved by some clones): the literal path
+        # has no .git component, but resolve() follows the link into .git —
+        # re-check the RESOLVED components or the write lands in .git/hooks.
+        if operation in ("write_file", "delete_file", "create_dir"):
+            _git_resolved = target.relative_to(base).parts
+            if any(part.lower() == ".git" for part in _git_resolved):
+                return {"error": ".git 目录为只读：hooks/config 会被 git 在后续命令中执行，请写到项目其他位置"}
 
         if operation == "read_file":
             parent = target.parent

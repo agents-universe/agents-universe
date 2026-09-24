@@ -141,6 +141,14 @@ async def run_git(
             if sys.platform != "win32":
                 askpass.chmod(0o700)
         except OSError as exc:
+            # delete=False left the file on disk and the finally below only
+            # wraps the subprocess block — clean up here or every failed
+            # helper write leaks a git-askpass-* temp file.
+            if askpass is not None:
+                try:
+                    askpass.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return _dependency_missing(f"Could not create Git credential helper: {exc}")
         env.update(
             GIT_ASKPASS=str(askpass),

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_core.tools.base import ToolContext
 from agent_core.tools.filesystem import FilesystemTool
 
@@ -229,6 +231,46 @@ async def test_write_into_git_rejected(tmp_path):
         _ctx(proj, fw),
     )
     assert result.get("content") == "[core]"
+
+
+async def test_write_through_symlink_into_git_rejected(tmp_path):
+    """A workspace symlink (hooks -> .git/hooks, preserved by some git
+    clones) bypasses the raw-path .git guard: the literal path has no .git
+    component, resolve() follows the link into .git, and the write installs a
+    hook git executes unvalidated on later commands. The guard must run on
+    the RESOLVED path too."""
+    proj = tmp_path / "proj"
+    fw = tmp_path / "fw"
+    _mkdir(proj / ".git" / "hooks", fw)
+    try:
+        (proj / "hooks").symlink_to(proj / ".git" / "hooks", target_is_directory=True)
+    except OSError:
+        # Windows without SeCreateSymbolicLinkPrivilege: a junction needs no
+        # privilege and resolve() follows it exactly like a symlink.
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(str(proj / ".git" / "hooks"), str(proj / "hooks"))
+        except Exception:
+            pytest.skip("symlink/junction creation unavailable")
+
+    tool = FilesystemTool()
+    result = await tool.execute(
+        {"operation": "write_file", "path": "hooks/pre-commit", "content": "#!/bin/sh\n"},
+        _ctx(proj, fw),
+    )
+    assert "error" in result and ".git" in result["error"]
+    assert not (proj / ".git" / "hooks" / "pre-commit").exists()
+
+    # delete through the same symlink must be refused too
+    hook = proj / ".git" / "hooks" / "pre-push"
+    hook.write_text("x", encoding="utf-8")
+    result = await tool.execute(
+        {"operation": "delete_file", "path": "hooks/pre-push"},
+        _ctx(proj, fw),
+    )
+    assert "error" in result and ".git" in result["error"]
+    assert hook.exists()
 
 
 # --- Definition checks ------------------------------------------------------

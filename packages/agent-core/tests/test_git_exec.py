@@ -66,6 +66,45 @@ async def test_windows_helper_answers_the_password_prompt(tmp_path, capture_env,
 
 
 @pytest.mark.asyncio
+async def test_askpass_helper_is_unlinked_when_its_write_fails(tmp_path, monkeypatch):
+    """NamedTemporaryFile(delete=False) leaves the file behind, and the only
+    unlink runs in the finally around the subprocess — an OSError while
+    writing/chmod'ing the helper returns early, leaking the temp file on
+    every failure."""
+    import tempfile as _tempfile_mod
+
+    real_ntf = _tempfile_mod.NamedTemporaryFile
+    created: list[str] = []
+
+    def _failing_ntf(*args, **kwargs):
+        real = real_ntf(*args, **kwargs)
+        created.append(real.name)
+
+        class _FailingHelper:
+            name = real.name
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                real.close()
+                return False
+
+            def write(self, *_a, **_k):
+                raise OSError("disk full")
+
+        return _FailingHelper()
+
+    monkeypatch.setattr(_git_exec.tempfile, "NamedTemporaryFile", _failing_ntf)
+
+    result = await run_git(_CLONE, tmp_path, token="ghp-x")
+
+    assert result["error"] == "dependency_missing"
+    assert created, "helper file was never created"
+    assert not Path(created[0]).exists(), "askpass helper leaked on the OSError path"
+
+
+@pytest.mark.asyncio
 async def test_env_argument_replaces_the_default_environment(tmp_path, capture_env):
     await run_git(["status"], tmp_path, env={"PATH": "/usr/bin", "GIT_ALLOW_PROTOCOL": "https"})
 

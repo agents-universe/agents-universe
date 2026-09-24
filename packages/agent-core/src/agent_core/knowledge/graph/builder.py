@@ -272,6 +272,11 @@ async def build_repo_graph(
     existing = load_repo_graph(kg_dir)
     if (
         not force
+        # "" = HEAD unresolvable (no git / worktree / empty repo). The stored
+        # head_sha is "" too and would compare equal — the fast path must
+        # rebuild instead (see _manual_head_sha) or content edits with an
+        # unchanged file set never reach the graph.
+        and head
         and existing is not None
         and existing.repo.head_sha == head
         and state.tracked_only == (not include_untracked)
@@ -291,9 +296,25 @@ async def build_repo_graph(
 
     counters: dict[str, Any] = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
     failed_reasons: dict[str, int] = {}
+    repo_resolved = repo.resolve()
 
     async def _handle(rel: str) -> None:
-        path = (repo / rel).resolve()
+        # resolve() follows symlinks/junctions: a walked path can leave the
+        # checkout (external files' symbols would land in graph.json) or land
+        # on a device file (/dev/zero hashes forever while holding the build
+        # lock — st_size is 0 there, so parse_file's size guard misses it).
+        # Hash only regular files still inside the repo — the same rule
+        # knowledge/loader.py applies (inlined; this module must not import
+        # the tools package).
+        try:
+            path = (repo / rel).resolve()
+            contained = path.is_relative_to(repo_resolved) and path.is_file()
+        except OSError:
+            contained = False
+        if not contained:
+            counters["skipped"] += 1
+            state.files.pop(rel, None)
+            return
         try:
             sha = await asyncio.to_thread(file_sha256, path)
         except OSError:  # deleted between ls-files and read — skip

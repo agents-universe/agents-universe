@@ -136,10 +136,17 @@ async def _send_turn_error(transport: Transport | None, conversation_id: str, da
     message is dead and the error would be lost — the UI on the new connection
     would stay "processing" forever. The transport targets the live connection
     (or returns False when nobody is connected).
+
+    ``terminal: True`` tells the client this error ENDED the turn (no
+    stream_end follows — the claim was released without starting), so it may
+    wind down streaming state. Handlers-side errors (stale prompt_id, no
+    active session, access rechecks) leave the turn running and must NOT
+    carry the flag, nor must mid-turn failures, which pair with a
+    ``stream_message_id`` and their own stream_end.
     """
     if transport is None:
         return
-    await transport.send(conversation_id, data)
+    await transport.send(conversation_id, {**data, "terminal": True})
 
 
 async def run_turn(

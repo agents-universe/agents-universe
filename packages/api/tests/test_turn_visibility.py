@@ -125,6 +125,31 @@ async def test_transport_forwards_turn_status_drops_thinking():
     assert transport.status == "ok"
 
 
+@pytest.mark.asyncio
+async def test_send_turn_error_marks_the_frame_terminal(frames):
+    """Early turn-death errors carry ``terminal: True``.
+
+    Nothing streams after them (the claim was released without a
+    stream_end), so the client needs the flag to wind down streaming state —
+    whereas handlers-side errors that leave the turn running must NOT settle
+    the client's live buffer.
+    """
+    from api.services.agent_turn import _ManagerTransport, _send_turn_error
+
+    payload = {"type": "error", "message": "Conversation not found"}
+
+    class _Ws:
+        async def send_json(self, _data):
+            pass
+
+    await _send_turn_error(_ManagerTransport(_Ws()), "c1", payload)
+
+    errors = [f for f in frames if f.get("type") == "error"]
+    assert errors == [{"type": "error", "message": "Conversation not found", "terminal": True}]
+    # the caller's dict is not mutated (call sites pass inline literals)
+    assert "terminal" not in payload
+
+
 # ── persistence + REST serialization ─────────────────────────────────────
 
 

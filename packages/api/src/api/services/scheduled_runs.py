@@ -309,6 +309,16 @@ async def _run_script_target(target: _Target) -> _Outcome:
                 return _Outcome("failed", None, "Playwright specs are scheduled as target_type=playwright")
             content, script_type = script.content, script.script_type
 
+            # Resolve the workspace BEFORE the run row exists. A row created
+            # and then abandoned at "pending" never reaches a terminal state
+            # (no startup sweep settles script runs) and blocks project
+            # deletion forever — project_deletion counts pending/running
+            # ScriptRuns as live work.
+            try:
+                project_fs = await resolve_project_fs_path(target.project_id, db)
+            except Exception as exc:  # noqa: BLE001
+                return _Outcome("failed", None, f"Cannot resolve workspace: {exc}")
+
             run = ScriptRun(
                 script_id=target.script_id,
                 triggered_by=target.created_by,
@@ -318,11 +328,6 @@ async def _run_script_target(target: _Target) -> _Outcome:
             db.add(run)
             await db.commit()
             script_run_id = str(run.run_id)
-
-            try:
-                project_fs = await resolve_project_fs_path(target.project_id, db)
-            except Exception as exc:  # noqa: BLE001
-                return _Outcome("failed", None, f"Cannot resolve workspace: {exc}", script_run_id)
 
         await execute_script(
             script_run_id, content, script_type, target.created_by, project_fs
@@ -382,6 +387,16 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
             except Exception as exc:  # noqa: BLE001
                 return _Outcome("failed", None, f"Could not prepare the Playwright anchor: {exc}")
 
+            # Workspace and spec validation BEFORE the run row exists — same
+            # no-phantom-pending rule as the script target: a row abandoned
+            # at "pending" never reaches a terminal state (no startup sweep
+            # settles script runs) and blocks project deletion forever.
+            try:
+                project_fs = await resolve_project_fs_path(target.project_id, db)
+                _resolve_playwright_spec(project_fs, target.spec_slug)
+            except Exception as exc:  # noqa: BLE001 - 404 HTTPException when missing
+                return _Outcome("failed", None, str(exc))
+
             run = ScriptRun(
                 script_id=anchor_id,
                 triggered_by=target.created_by,
@@ -395,12 +410,6 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
             db.add(run)
             await db.commit()
             script_run_id = str(run.run_id)
-
-            try:
-                project_fs = await resolve_project_fs_path(target.project_id, db)
-                _resolve_playwright_spec(project_fs, target.spec_slug)
-            except Exception as exc:  # noqa: BLE001 - 404 HTTPException when missing
-                return _Outcome("failed", None, str(exc), script_run_id)
 
         await _execute_playwright(
             script_run_id, target.spec_slug, request_env, target.created_by, project_fs

@@ -188,6 +188,93 @@ class TestSpawnRun:
             await scheduled_runs.spawn_run(None, "nope", trigger="manual")
 
 
+class TestTargetStartFailureLeavesNoPhantomRun:
+    """A target that fails before execution must not leave a ScriptRun row
+    at "pending".
+
+    project_deletion counts pending/running ScriptRuns as live work (409),
+    and no startup sweep settles script runs — a row created and then
+    abandoned never reaches a terminal state, so the project can never be
+    deleted.
+    """
+
+    async def test_script_workspace_failure_creates_no_run_row(
+        self, db, make_project, monkeypatch
+    ):
+        import api.paths as paths
+        from api.models.script import AutomationScript, ScriptRun
+
+        project = await make_project()
+        script = AutomationScript(
+            project_id=str(project.project_id),
+            name="echo",
+            script_type="python",
+            content="print(1)",
+        )
+        db.add(script)
+        await db.commit()
+        await db.refresh(script)
+
+        task = await _task(
+            db, str(project.project_id),
+            script_id=str(script.script_id),
+        )
+
+        async def _gone(*args, **kwargs):
+            raise RuntimeError("workspace gone")
+
+        monkeypatch.setattr(paths, "resolve_project_fs_path", _gone)
+
+        outcome = await scheduled_runs._run_script_target(
+            scheduled_runs._Target(task)
+        )
+        assert outcome.status == "failed"
+        assert "Cannot resolve workspace" in (outcome.error or "")
+
+        runs = (
+            await db.execute(
+                select(ScriptRun).where(ScriptRun.script_id == str(script.script_id))
+            )
+        ).scalars().all()
+        assert runs == []
+
+    async def test_playwright_spec_failure_creates_no_run_row(
+        self, db, make_project, monkeypatch
+    ):
+        import uuid as _uuid
+
+        from api.models.script import ScriptRun
+        from api.routers import scripts as scripts_router
+
+        project = await make_project()
+        slug = f"phantom-{_uuid.uuid4().hex[:8]}"
+        task = await _task(
+            db, str(project.project_id),
+            target_type="playwright",
+            spec_slug=slug,
+        )
+
+        def _missing(*args, **kwargs):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Spec not found")
+
+        monkeypatch.setattr(scripts_router, "_resolve_playwright_spec", _missing)
+
+        outcome = await scheduled_runs._run_playwright_target(
+            scheduled_runs._Target(task)
+        )
+        assert outcome.status == "failed"
+        assert outcome.script_run_id is None
+
+        runs = (
+            await db.execute(
+                select(ScriptRun).where(ScriptRun.spec_slug == slug)
+            )
+        ).scalars().all()
+        assert runs == []
+
+
 class TestStartStop:
     async def test_disabled_by_settings(self, monkeypatch):
         from api.config import get_settings

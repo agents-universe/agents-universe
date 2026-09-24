@@ -58,6 +58,29 @@ from .api_request import _is_sensitive_header, _is_private_ip, _redact_sensitive
 
 _MAX_TOOL_NAME_LEN = 64
 _MAX_DESCRIPTION_LEN = 1024
+
+
+def _detect_mcp_major() -> int:
+    try:
+        from importlib.metadata import version
+
+        return int(version("mcp").split(".")[0])
+    except Exception:  # pragma: no cover — package metadata always present in practice
+        return 2  # pyproject pins mcp>=2.0.0
+
+
+_MCP_MAJOR = _detect_mcp_major()
+
+
+def _read_timeout_value(seconds: float) -> float | timedelta:
+    """Shape ``read_timeout_seconds`` for the installed SDK major.
+
+    mcp 2.x forwards the value straight into ``anyio.fail_after`` — a
+    timedelta there raises ``float + timedelta`` TypeError, failing EVERY
+    tool call. mcp 1.x calls ``.total_seconds()`` on the value instead, so a
+    bare float breaks installs still running 1.x.
+    """
+    return seconds if _MCP_MAJOR >= 2 else timedelta(seconds=seconds)
 _MAX_TOOLS_PER_SERVER = 64
 _CALL_TIMEOUT_HARD_CAP = 300
 
@@ -202,9 +225,13 @@ class McpServerSession:
 
     async def start(self) -> None:
         """Spawn the background connection task and wait for readiness."""
+        # Coerce BEFORE create_task: a malformed option must fail here, not
+        # after the _run task exists — the task would connect unattended,
+        # _connect_one would skip registration (success path only), and
+        # close_all() could never reach it to shut it down.
+        timeout = float(self.cfg.get("connect_timeout_seconds", 10))
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(self._run())
-        timeout = float(self.cfg.get("connect_timeout_seconds", 10))
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=timeout)
         except TimeoutError:
@@ -287,7 +314,19 @@ class McpServerSession:
                     timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT),
                     verify=self._ssl_verify,
                 ) as probe:
-                    resp = await probe.get(current)
+                    # Stream the probe: a plain .get() reads the FULL body,
+                    # and an SSE endpoint's stream never ends — the probe
+                    # would hang until start()'s connect timeout killed the
+                    # whole connect, making every SSE server unreachable.
+                    # Status + headers only, then aclose without touching
+                    # the body.
+                    req = probe.build_request("GET", current)
+                    resp = await probe.send(req, stream=True)
+                    try:
+                        status = resp.status_code
+                        location = resp.headers.get("location")
+                    finally:
+                        await resp.aclose()
             except Exception as exc:
                 # Probe failures (405 on GET-only endpoints, TLS, etc.) must
                 # not break the real connect — return the last validated URL
@@ -296,9 +335,8 @@ class McpServerSession:
                 # fail closed because the real client uses follow_redirects=False.
                 _log.debug("MCP redirect probe for %r failed: %s", current, exc)
                 return current, headers
-            if resp.status_code not in (301, 302, 303, 307, 308):
+            if status not in (301, 302, 303, 307, 308):
                 return current, headers
-            location = resp.headers.get("location")
             if not location:
                 return current, headers
             next_url = urljoin(current, location)
@@ -394,7 +432,8 @@ class McpServerSession:
         The SDK's ``call_tool`` takes ``read_timeout_seconds`` natively; pass it
         so the request is timed out at the protocol layer (no orphaned in-flight
         request ids from hard-cancelling the coroutine).  ``wait_for`` remains
-        only as a backstop with a small margin.
+        only as a backstop with a small margin.  The value is shaped for the
+        installed SDK major (2.x: float seconds; 1.x: timedelta).
         """
         if self._session is None:
             raise McpConnectError(f"MCP server {self.slug!r}: session not active")
@@ -404,7 +443,7 @@ class McpServerSession:
         )
         return await asyncio.wait_for(
             self._session.call_tool(
-                name, arguments, read_timeout_seconds=timedelta(seconds=timeout)
+                name, arguments, read_timeout_seconds=_read_timeout_value(timeout)
             ),
             timeout=timeout + 10,
         )
@@ -645,7 +684,7 @@ class McpProxyTool(Tool):
         try:
             result = await session.call_tool(self._orig_tool_name, params or None)
         except TimeoutError:
-            return {"error": f"MCP tool call timed out"}
+            return {"error": "MCP tool call timed out"}
         except Exception as exc:
             _log.warning("MCP tool %s failed: %s", self._name, exc, exc_info=True)
             return {"error": str(exc)[:500]}

@@ -251,6 +251,39 @@ async def test_proxy_tool_execute_timeout():
 
 
 @pytest.mark.asyncio
+async def test_call_tool_timeout_shape_feeds_anyio_fail_after(monkeypatch):
+    """mcp 2.x (the pyproject pin) forwards read_timeout_seconds straight
+    into ``anyio.fail_after(opts["timeout"])`` — a timedelta lands there as
+    ``float + timedelta`` TypeError, so every MCP tool call dies with
+    "unsupported operand type(s) for +: 'float' and 'datetime.timedelta'".
+    mcp 1.x instead calls ``.total_seconds()``, so the value must be shaped
+    for the INSTALLED major version."""
+    import anyio
+
+    from agent_core.tools import mcp_client as mod
+
+    # raising=False: pre-fix the module has no such attr — the test must
+    # fail on the TypeError below, not on the monkeypatch itself.
+    monkeypatch.setattr(mod, "_MCP_MAJOR", 2, raising=False)
+    session = McpServerSession(
+        "s", {"url": "https://x.example.com/mcp", "transport": "streamable_http"}, {}
+    )
+
+    async def sdk_call_tool(name, arguments, read_timeout_seconds=None):
+        # 2.x consumption shape: dispatcher does fail_after(opts["timeout"]).
+        with anyio.fail_after(read_timeout_seconds):
+            pass
+        return read_timeout_seconds
+
+    fake = MagicMock()
+    fake.call_tool = sdk_call_tool
+    session._session = fake
+
+    result = await session.call_tool("echo", {"text": "hi"})
+    assert isinstance(result, float), result
+
+
+@pytest.mark.asyncio
 async def test_proxy_tool_execute_no_session():
     tool = _make_mcp_tool()
     manager = MagicMock()
@@ -456,6 +489,33 @@ async def test_unknown_transport_fails_fast():
     await session.close()
 
 
+@pytest.mark.asyncio
+async def test_start_coerces_timeout_before_spawning_connect_task():
+    """float(connect_timeout_seconds) must run BEFORE create_task.
+
+    A malformed option (reachable — options are free-form JSON/YAML with no
+    validation) used to raise AFTER the _run task was already spawned; the
+    exception escaped start() before the try/except cancel handlers existed,
+    _connect_one returned without registering the session (registration
+    happens only on success), so close_all() never saw it — each turn leaked
+    another live connection + task nothing ever shuts down.
+    """
+    session = McpServerSession(
+        "srv",
+        {"url": "https://srv.example.com/mcp", "connect_timeout_seconds": "not-a-number"},
+        {},
+    )
+    try:
+        with pytest.raises(ValueError):
+            await session.start()
+        assert session._task is None
+    finally:
+        # If the ordering is broken (task exists), cancel it so the
+        # pre-fix failure doesn't leave a connecting task dangling.
+        if session._task is not None:
+            session._task.cancel()
+
+
 # ---------------------------------------------------------------------------
 # Integration test: real MCP server via streamable_http
 # ---------------------------------------------------------------------------
@@ -650,6 +710,17 @@ async def test_integration_specific_server(mcp_test_server, mcp_registry):
 # ---------------------------------------------------------------------------
 
 
+class _FakeResp:
+    """Probe response: status/headers only — aclose without a body read."""
+
+    def __init__(self, status_code: int, headers: dict):
+        self.status_code = status_code
+        self.headers = headers
+
+    async def aclose(self):
+        pass
+
+
 class _FakeProbe:
     """One redirect probe client: returns the next canned response."""
 
@@ -662,8 +733,51 @@ class _FakeProbe:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, url):
+    def build_request(self, method, url):
+        return MagicMock(method=method, url=url)
+
+    async def send(self, request, stream=False):
+        assert stream is True, "probe must stream — reading the body hangs on SSE"
         return self._responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_resolve_final_url_never_reads_response_body(monkeypatch):
+    """The probe used to call ``client.get()``, which reads the FULL body —
+    an SSE endpoint's stream never ends, so every probe hung until the
+    connect timeout (10s default) cancelled the whole connect, making SSE
+    (and any streamable server answering GET with a live stream) unreachable.
+    Probe with send(stream=True): status and headers, then aclose."""
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+
+    class EndlessGetProbe:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def build_request(self, method, url):
+            return MagicMock(method=method, url=url)
+
+        async def send(self, request, stream=False):
+            assert stream is True, "probe must stream — reading the body hangs on SSE"
+            return _FakeResp(200, {})
+
+        async def get(self, url):
+            await asyncio.sleep(3600)  # endless SSE body
+
+    with patch("httpx2.AsyncClient", lambda **kwargs: EndlessGetProbe()):
+        session = McpServerSession(
+            "srv",
+            {"url": "https://sse.example.com/mcp", "allowed_hosts": ["sse.example.com"]},
+            {},
+        )
+        final_url, _headers = await asyncio.wait_for(
+            session._resolve_final_url("https://sse.example.com/mcp"), timeout=2
+        )
+
+    assert final_url == "https://sse.example.com/mcp"
 
 
 @pytest.mark.asyncio
@@ -673,8 +787,8 @@ async def test_resolve_final_url_strips_sensitive_headers_cross_origin(monkeypat
     Authorization/Cookie pair — and the caller gets the stripped headers."""
     monkeypatch.delenv("SSRF_ENABLED", raising=False)
     responses = [
-        MagicMock(status_code=302, headers={"location": "https://target.example.com/mcp"}),
-        MagicMock(status_code=200, headers={}),
+        _FakeResp(302, {"location": "https://target.example.com/mcp"}),
+        _FakeResp(200, {}),
     ]
 
     def _fake_client(**kwargs):
@@ -701,8 +815,8 @@ async def test_resolve_final_url_strips_sensitive_headers_cross_origin(monkeypat
 async def test_resolve_final_url_keeps_headers_on_same_origin_redirect(monkeypatch):
     monkeypatch.delenv("SSRF_ENABLED", raising=False)
     responses = [
-        MagicMock(status_code=302, headers={"location": "https://origin.example.com/v2/mcp"}),
-        MagicMock(status_code=200, headers={}),
+        _FakeResp(302, {"location": "https://origin.example.com/v2/mcp"}),
+        _FakeResp(200, {}),
     ]
 
     def _fake_client(**kwargs):
@@ -729,7 +843,7 @@ async def test_resolve_final_url_blocks_unvalidated_redirect_target(monkeypatch)
     """A redirect to a host outside allowed_hosts must fail closed."""
     monkeypatch.delenv("SSRF_ENABLED", raising=False)
     responses = [
-        MagicMock(status_code=302, headers={"location": "https://evil.example.com/mcp"}),
+        _FakeResp(302, {"location": "https://evil.example.com/mcp"}),
     ]
 
     def _fake_client(**kwargs):

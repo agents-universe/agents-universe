@@ -25,7 +25,7 @@ from ..sandbox import (
     _check_assignment,
     _dollar_vars,
     _find_heredoc_start,
-    _skip_subst_parens,
+    ends_with_continuation,
     has_unclosed_quote,
     python_guard_env,
     spawn_in_new_session,
@@ -437,7 +437,12 @@ class CodeExecutorTool(Tool):
         # validated when its assignment line passed (_check_simple rejects
         # `..` and absolute paths), so carrying the name forward is safe.
         assigned: set[str] = set()
-        for line_num, line in enumerate(code.splitlines(), 1):
+        lines = code.splitlines()
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            line_num = idx + 1
+            idx += 1
             if in_heredoc:
                 if line.strip() == heredoc_delim:
                     in_heredoc = False
@@ -451,9 +456,17 @@ class CodeExecutorTool(Tool):
                 # and safe to skip.
                 if not heredoc_quoted:
                     # Single quotes are plain characters in a heredoc body —
-                    # $(...) inside them still executes, so scan them.
+                    # $(...) inside them still executes, so scan them. bash
+                    # joins backslash-newline in an unquoted body too (and a
+                    # continuation target is not delimiter-checked), so merge
+                    # continuation lines before the scan: `$(cat \` + the
+                    # `/etc/passwd)` line must be checked as one substitution.
+                    body = line
+                    while ends_with_continuation(body) and idx < len(lines):
+                        body = body[:-1] + lines[idx]
+                        idx += 1
                     reason = CodeExecutorTool._validate_substitutions(
-                        line, buffer_start, project_root, single_quotes_literal=False
+                        body, buffer_start, project_root, single_quotes_literal=False
                     )
                     if reason:
                         return reason

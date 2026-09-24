@@ -365,7 +365,9 @@ def test_split_logical_lines_newline_is_a_separator():
 def test_split_logical_lines_joins_open_quotes_and_continuations():
     # A quoted string may span lines; a trailing backslash joins the next line.
     assert split_logical_lines('echo "a\nb"') == [('echo "a\nb"', False)]
-    assert split_logical_lines("ls \\\n  -la") == [("ls \\\n  -la", False)]
+    # bash removes the backslash-newline pair entirely; keeping it made
+    # shlex emit a literal "\n" token that dodged the path checks.
+    assert split_logical_lines("ls \\\n  -la") == [("ls   -la", False)]
 
 
 def test_split_logical_lines_flags_heredoc_body():

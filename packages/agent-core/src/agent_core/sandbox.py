@@ -397,6 +397,40 @@ def _find_heredoc_start(line: str) -> tuple[str, bool] | None:
     return None
 
 
+def ends_with_continuation(text: str) -> bool:
+    """True when *text* ends with a backslash that escapes the newline.
+
+    Quote-aware: inside single quotes the backslash is literal data and the
+    newline stays part of the string; at top level and inside double quotes
+    ``\\`` + newline is a line continuation bash removes. An even number of
+    trailing backslashes means the last one is itself escaped (``a\\\\`` →
+    literal ``a\\``, no continuation).
+    """
+    if not text.endswith("\\"):
+        return False
+    in_single = in_double = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+        if ch == "\\":
+            if i == n - 1:
+                # Escape opener at EOL — it would eat the newline.
+                return True
+            i += 2  # the escaped character (incl. backslash/quote) is data
+            continue
+        if ch == "'":
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        i += 1
+    return False
+
+
 def split_logical_lines(command: str) -> list[tuple[str, bool]]:
     """Split *command* into logical lines: ``[(text, is_heredoc_body), ...]``.
 
@@ -407,14 +441,21 @@ def split_logical_lines(command: str) -> list[tuple[str, bool]]:
     Callers must therefore validate each logical line as its own command.
 
     Physical lines whose quotes are still open (a quoted string may span
-    lines) and lines ending in an escaped newline (``\\`` continuation, where
-    bash joins the lines into one command) are merged. Heredoc bodies are
-    flagged: bash feeds them to the command's stdin as data, not commands —
-    though an unquoted body still runs command substitution, which callers
-    check on the whole command.
+    lines) and lines ending in a continuation backslash are merged. A
+    continuation merge REMOVES the backslash-newline pair the way bash does —
+    keeping them made shlex glue a literal newline into the next token
+    (``"\\n../x"`` starts with a newline, so it is neither ``..`` nor
+    absolute) and the path checks waved ``cat \\`` + ``../sibling/.env``
+    through while bash ran the escape. Heredoc bodies are flagged: bash feeds
+    them to the command's stdin as data, not commands — though an unquoted
+    body still runs command substitution, which callers check on the whole
+    command.
     """
     out: list[tuple[str, bool]] = []
     buffer = ""
+    # Why the buffer is pending: a continuation join drops the backslash
+    # + newline; a quote-span join keeps the newline (it is string data).
+    buffer_continued = False
     heredoc_delim: str | None = None
     for raw in command.split("\n"):
         if heredoc_delim is not None:
@@ -422,12 +463,19 @@ def split_logical_lines(command: str) -> list[tuple[str, bool]]:
             if raw.strip() == heredoc_delim:
                 heredoc_delim = None
             continue
-        candidate = f"{buffer}\n{raw}" if buffer else raw
-        trailing_backslashes = len(candidate) - len(candidate.rstrip("\\"))
+        if buffer:
+            if buffer_continued:
+                candidate = buffer[:-1] + raw
+            else:
+                candidate = f"{buffer}\n{raw}"
+        else:
+            candidate = raw
         # has_unclosed_quote only reports quote errors; a line ending in an
-        # odd number of backslashes escapes the newline instead (shlex raises
-        # "No escaped character"), joining the next line into this command.
-        if has_unclosed_quote(candidate) or trailing_backslashes % 2:
+        # unquoted/single-quote-external backslash escapes the newline
+        # instead (shlex raises "No escaped character"), joining the next
+        # line into this command.
+        if has_unclosed_quote(candidate) or ends_with_continuation(candidate):
+            buffer_continued = ends_with_continuation(candidate)
             buffer = candidate
             continue
         buffer = ""
@@ -436,9 +484,14 @@ def split_logical_lines(command: str) -> list[tuple[str, bool]]:
         if heredoc is not None:
             heredoc_delim = heredoc[0]
     if buffer:
-        # Unclosed quote at end of input — emitted as-is so validation fails
-        # closed rather than silently dropping the tail.
-        out.append((buffer, False))
+        if buffer_continued:
+            # bash drops a dangling continuation at end of input and runs
+            # what is there (`printf 'echo hi \' | bash` prints `hi`).
+            out.append((buffer[:-1], False))
+        else:
+            # Unclosed quote at end of input — emitted as-is so validation
+            # fails closed rather than silently dropping the tail.
+            out.append((buffer, False))
     return out
 
 

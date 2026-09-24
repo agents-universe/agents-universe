@@ -246,21 +246,46 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=settings.llm_ssl_verify) as client:
             if provider == "anthropic":
-                anthropic_url = (custom_base_url or "https://api.anthropic.com").rstrip("/")
-                resp = await client.post(
-                    f"{anthropic_url}/v1/messages",
-                    headers={
+                from urllib.parse import urlsplit
+                base = (custom_base_url or "https://api.anthropic.com").rstrip("/")
+                # Mirror the runtime provider (anthropic_claude._is_gateway):
+                # the official host speaks /v1/messages with x-api-key; a
+                # custom base_url is a Bedrock-compatible corporate gateway —
+                # Bearer token, the bedrock anthropic_version, model in the
+                # URL path (or the URL as-is under url_mode=full_url). Exact
+                # hostname match, like _do_test: a lookalike domain must not
+                # receive the plaintext key as x-api-key.
+                is_direct = urlsplit(base).hostname == "api.anthropic.com"
+                url_mode = getattr(config_row, "url_mode", "base_url")
+                user_content = f"Summarize this conversation:\n\n{transcript}"
+                if is_direct:
+                    url = f"{base}/v1/messages"
+                    headers = {
                         "x-api-key": api_key,
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
-                    },
-                    json={
+                    }
+                    payload = {
                         "model": model,
                         "max_tokens": 500,
                         "system": EPISODIC_SYSTEM_PROMPT,
-                        "messages": [{"role": "user", "content": f"Summarize this conversation:\n\n{transcript}"}],
-                    },
-                )
+                        "messages": [{"role": "user", "content": user_content}],
+                    }
+                else:
+                    # Gateway payload carries no "model" key — the model lives
+                    # in the URL path (runtime _gateway_payload does the same).
+                    url = base if url_mode == "full_url" else f"{base}/model/{model}/invoke"
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "content-type": "application/json",
+                    }
+                    payload = {
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 500,
+                        "system": EPISODIC_SYSTEM_PROMPT,
+                        "messages": [{"role": "user", "content": user_content}],
+                    }
+                resp = await client.post(url, headers=headers, json=payload)
                 content_path = ("content", 0, "text")
             elif provider == "azure_openai":
                 if not custom_base_url:

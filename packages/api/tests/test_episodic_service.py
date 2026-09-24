@@ -152,3 +152,107 @@ async def test_summary_accepts_a_clean_key(monkeypatch, caplog):
 
     assert out == {"summary": "ok"}
     assert "control character" not in caplog.text
+
+
+# --- anthropic dialect: gateway vs official host vs full_url -----------------
+# The runtime provider (anthropic_claude), the connectivity test
+# (model_configs._do_test) and the token test (tokens.py) all treat a custom
+# anthropic base_url as a Bedrock-compatible gateway: Bearer auth and
+# /model/{model}/invoke. The episodic summary must speak the same dialect or
+# every summary against a corporate gateway fails.
+
+
+def _anthropic_row(base_url: str | None, url_mode: str = "base_url") -> AsyncMock:
+    row = SimpleNamespace(
+        provider="anthropic",
+        model_id="claude-haiku-4-5-20251001",
+        base_url=base_url,
+        url_mode=url_mode,
+        encrypted_key=encrypt(CLEAN_KEY, USER_ID),
+        user_id=USER_ID,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    db = AsyncMock()
+    db.execute.return_value = result
+    return db
+
+
+def _capture_client(captured: list):
+    class _CaptureAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None, **k):
+            captured.append((url, headers, json))
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "content": [{"type": "text", "text": '{"summary": "ok"}'}]
+            }
+            return resp
+
+    return _CaptureAsyncClient
+
+
+async def test_summary_anthropic_gateway_posts_invoke_with_bearer(monkeypatch):
+    """Custom base_url → Bedrock-style gateway: {base}/model/{model}/invoke +
+    Bearer. Pre-fix it posted {base}/v1/messages with x-api-key and every
+    summary against a gateway 404'd/401'd."""
+    captured: list = []
+    monkeypatch.setattr("httpx.AsyncClient", _capture_client(captured))
+
+    out = await _call_llm_for_summary(
+        "transcript", USER_ID, _anthropic_row("https://gateway.example.com")
+    )
+
+    assert out == {"summary": "ok"}
+    url, headers, payload = captured[0]
+    assert url == "https://gateway.example.com/model/claude-haiku-4-5-20251001/invoke"
+    assert headers["Authorization"] == f"Bearer {CLEAN_KEY}"
+    assert "x-api-key" not in headers
+    assert payload["anthropic_version"] == "bedrock-2023-05-31"
+    # The gateway takes the model from the URL path (runtime _gateway_payload
+    # omits the key too).
+    assert "model" not in payload
+
+
+async def test_summary_anthropic_official_host_posts_v1_messages(monkeypatch):
+    """No custom base_url → official host keeps /v1/messages + x-api-key."""
+    captured: list = []
+    monkeypatch.setattr("httpx.AsyncClient", _capture_client(captured))
+
+    out = await _call_llm_for_summary("transcript", USER_ID, _anthropic_row(None))
+
+    assert out == {"summary": "ok"}
+    url, headers, payload = captured[0]
+    assert url == "https://api.anthropic.com/v1/messages"
+    assert headers["x-api-key"] == CLEAN_KEY
+    assert "Authorization" not in headers
+    assert payload["model"] == "claude-haiku-4-5-20251001"
+
+
+async def test_summary_anthropic_full_url_posts_base_as_is(monkeypatch):
+    """url_mode=full_url → POST the base URL as-is with Bearer, like the
+    runtime's _gateway_complete."""
+    captured: list = []
+    monkeypatch.setattr("httpx.AsyncClient", _capture_client(captured))
+
+    out = await _call_llm_for_summary(
+        "transcript",
+        USER_ID,
+        _anthropic_row("https://gateway.example.com/bedrock", url_mode="full_url"),
+    )
+
+    assert out == {"summary": "ok"}
+    url, headers, payload = captured[0]
+    assert url == "https://gateway.example.com/bedrock"
+    assert headers["Authorization"] == f"Bearer {CLEAN_KEY}"
+    assert "x-api-key" not in headers
+    assert payload["anthropic_version"] == "bedrock-2023-05-31"

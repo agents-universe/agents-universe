@@ -832,6 +832,16 @@ export const useConversationStore = defineStore('conversation', () => {
       rt.thinkingOpen = false
       rt.isThinking = false
       rt.streamingStartTime = null
+      // The snapshot above already carries the media and the terminal tool
+      // cards — leaving them buffered lets _finalizeTurnIfIdle's residual
+      // push re-send the same images/files in a second bubble, and finished
+      // cards would ride into the next turn's snapshot. Only live cards
+      // (running/preparing) can still change, so only they stay.
+      rt.streamingImages = []
+      rt.streamingFiles = []
+      rt.activeToolCalls = rt.activeToolCalls.filter(
+        (tc) => tc.status === 'running' || tc.status === 'preparing',
+      )
       _updateStreamingFlag(id, true)
       _clearDraft(id)
     } else if (opts?.interrupted) {

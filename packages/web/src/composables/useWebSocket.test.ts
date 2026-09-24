@@ -345,3 +345,76 @@ describe('token_update context occupancy', () => {
     expect(store.contextWindow).toBe(64_000)
   })
 })
+
+describe('useWebSocket error frame settlement', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('turn-alive errors keep streaming state and only add the bubble', () => {
+    // handlers.py answers stale/duplicate requests (no pending prompt, no
+    // active session, access recheck) WHILE THE TURN KEEPS RUNNING —
+    // clearing streaming state here wiped the live turn's content and
+    // stopped the Stop button while the agent was still producing output.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+    fire(ws, { type: 'stream_delta', delta: 'partial answer' })
+
+    fire(ws, { type: 'error', message: 'No pending prompt for that prompt_id' })
+
+    expect(store.streamingContent).toBe('partial answer')
+    expect(store.isStreaming).toBe(true)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].isError).toBe(true)
+    expect(store.messages[0].content).toContain('No pending prompt')
+  })
+
+  it('terminal errors still settle the turn', () => {
+    // Early turn-death errors (agent_turn._send_turn_error: validation
+    // failures before the session starts) flag `terminal` — nothing will
+    // ever stream again, so the runtime must wind down or the Stop button
+    // spins forever and pending injections stay stuck.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+    fire(ws, { type: 'stream_delta', delta: 'partial' })
+
+    fire(ws, { type: 'error', message: 'No model configured.', terminal: true })
+
+    expect(store.isStreaming).toBe(false)
+    expect(store.streamingContent).toBe('')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].isError).toBe(true)
+  })
+
+  it('errors carrying stream_message_id settle and dedupe the paired stream_end', () => {
+    // Mid-turn failures (agent_turn run_turn crash path) send an error with
+    // stream_message_id immediately followed by a stream_end for the same
+    // id — the settlement must happen on the error, and the stream_end must
+    // not push a second bubble for the same message.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+    fire(ws, { type: 'stream_delta', delta: 'partial' })
+
+    fire(ws, { type: 'error', message: 'Provider exploded.', stream_message_id: 'e1' })
+    expect(store.isStreaming).toBe(false)
+    expect(store.messages).toHaveLength(1)
+
+    fire(ws, { type: 'stream_end', message_id: 'e1' })
+    expect(store.messages).toHaveLength(1)
+  })
+})

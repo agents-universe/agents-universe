@@ -301,6 +301,46 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.isStreaming).toBe(false)
   })
 
+  it('main stream_end with parallel tasks drains snapshotted media and finished cards', () => {
+    // The snapshot copies images/attachments/terminal cards into the message;
+    // the live buffers must be drained with it. Left in place, the task's
+    // stream_end residual push (_finalizeTurnIfIdle) re-sends the same
+    // media in a second bubble, and finished cards ride along into the next
+    // turn's snapshot.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('report ready', undefined, 'conv-a')
+    store.addStreamingImages([{ id: 'i1', url: '/api/media/p/c/shot.png', alt: 'shot' }], 'conv-a')
+    store.addStreamingFiles([{
+      id: 'f1',
+      url: '/api/media/p/c/report.csv',
+      name: 'report.csv',
+      media_type: 'text/csv',
+      size: 42,
+    }], 'conv-a')
+    store.addToolCall({ callId: 'tc-1', tool: 'shell', input: {}, status: 'running' }, 'conv-a')
+    store.completeToolCall('tc-1', { exit_code: 0 }, 'done', 'conv-a')
+    // a parallel task keeps the turn alive after the main stream_end
+    store.appendDelta('task text', 'task-1', 'conv-a')
+
+    store.pushStreamingMessage('assistant-1', undefined, false, 'conv-a')
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].images).toHaveLength(1)
+    expect(store.messages[0].attachments).toHaveLength(1)
+    expect(store.messages[0].toolCalls).toHaveLength(1)
+    // drained with the snapshot — nothing left for a residual push
+    expect(store.streamingImages).toHaveLength(0)
+    expect(store.activeToolCalls).toHaveLength(0)
+
+    // The task's stream_end must not produce a second bubble re-sending
+    // the same image/attachment.
+    store.finalizeStreaming('assistant-2', 'task-1', 'conv-a')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].images).toHaveLength(1)
+    expect(store.messages[0].attachments).toHaveLength(1)
+  })
+
   it('task round winds down when the last task completes', () => {
     // Mid-run-injection sequence: a task's stream_end can arrive BEFORE its
     // task_completed (the agent emits them in that order) — at stream_end the
@@ -426,6 +466,34 @@ describe('conversation store - per-conversation runtime', () => {
 
     // …and the server's final stream_end finds nothing new to render.
     store.pushStreamingMessage('assistant-1', undefined, false, 'conv-a')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].id.startsWith('abort-')).toBe(true)
+  })
+
+  it('server stream_end after Stop on a parallel-task turn pushes no blank duplicate', () => {
+    // Stop snapshots the turn (text + done card) while a task buffer keeps
+    // the runtime alive. The server's terminal stream_end then finds the
+    // done card still in activeToolCalls ('done' is not error/interrupted,
+    // so noFreshTools is false) and pushes a text-less bubble repeating the
+    // card — the abort bubble already carries it.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addToolCall({
+      callId: 'tc-1',
+      tool: 'shell',
+      input: {},
+      status: 'running',
+      taskId: 'task-1',
+    }, 'conv-a')
+    store.completeToolCall('tc-1', { exit_code: 0 }, 'done', 'conv-a')
+    store.appendDelta('task text', 'task-1', 'conv-a')
+
+    store.abortStreaming('工具调用已停止', 'conv-a')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].toolCalls).toHaveLength(1)
+
+    // The server's final stream_end must be skipped as a duplicate.
+    store.finalizeStreaming('assistant-1', undefined, 'conv-a')
     expect(store.messages).toHaveLength(1)
     expect(store.messages[0].id.startsWith('abort-')).toBe(true)
   })

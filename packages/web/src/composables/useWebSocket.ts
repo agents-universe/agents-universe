@@ -683,16 +683,27 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       }
       case 'error': {
         const messageId = (msg.stream_message_id as string) ?? `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        entry.terminalMessageId = messageId
-        // A server-side error settles the turn: injections still pending were
-        // never consumed — surface the failure on each optimistic message
-        // instead of leaving the entry stuck in pendingInjected forever.
-        conv.rejectAllPendingInjected('服务器错误，消息未处理', convId)
-        conv.clearStreamingState(convId)
-        // Turn-level error: any prompt awaiting user input can never be
-        // answered (the session is gone) — clear them so a zombie dialog
-        // doesn't linger.
-        conv.clearPendingPrompts(convId)
+        // Only errors that ENDED the turn settle the runtime:
+        // - `terminal` marks agent_turn's early turn-death errors (claim
+        //   released, no stream_end will ever come — without settling, the
+        //   Stop button spins forever and pending injections stay stuck);
+        // - `stream_message_id` marks mid-turn failures paired with their
+        //   own stream_end (terminalMessageId dedupes it below).
+        // Handlers-side errors (stale prompt_id, no active session, access
+        // recheck) leave the turn running — wiping streaming state there
+        // killed the live turn's content while the agent kept producing.
+        const terminal = msg.terminal === true || msg.stream_message_id != null
+        if (terminal) {
+          entry.terminalMessageId = messageId
+          // Injections still pending were never consumed — surface the
+          // failure on each optimistic message instead of leaving the entry
+          // stuck in pendingInjected forever.
+          conv.rejectAllPendingInjected('服务器错误，消息未处理', convId)
+          conv.clearStreamingState(convId)
+          // Any prompt awaiting user input can never be answered (the
+          // session is gone) — clear them so a zombie dialog doesn't linger.
+          conv.clearPendingPrompts(convId)
+        }
         conv.addMessage({
           id: messageId,
           role: 'assistant',

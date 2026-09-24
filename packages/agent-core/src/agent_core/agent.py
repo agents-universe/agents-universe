@@ -1598,7 +1598,12 @@ class Agent:
                         elif op in ("load", "unload", "refresh", "delete", "purge"):
                             # delete/purge remove files or index rows — the
                             # prompt's knowledge listing must be rebuilt or the
-                            # agent keeps reasoning about deleted files.
+                            # agent keeps reasoning about deleted files. The
+                            # static cache embeds ctx.loaded_content verbatim,
+                            # and the rebuild the dirty flag triggers RETURNS
+                            # that cache while it is set — dirty alone would
+                            # re-serve the deleted file's content.
+                            self._invalidate_static_cache()
                             self._mark_prompt_dirty()
 
                     if tool_name == "memory_rw":
@@ -2393,6 +2398,10 @@ class Agent:
                             self._mark_prompt_dirty()
                             await session.emit("knowledge_updated")
                     elif op in ("load", "unload", "refresh", "delete", "purge"):
+                        # Same as the chat loop: dirty alone rebuilds from the
+                        # stale static cache — drop it so deleted/refreshed
+                        # knowledge actually leaves the prompt.
+                        self._invalidate_static_cache()
                         self._mark_prompt_dirty()
 
                 if tool_name == "memory_rw":

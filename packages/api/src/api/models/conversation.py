@@ -44,6 +44,11 @@ class Conversation(Base):
     status: Mapped[str] = mapped_column(String(50), default="active")
     token_budget: Mapped[int] = mapped_column(Integer, default=128000)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    # Last turn's context occupancy and the model window that reported it —
+    # what the frontend context meter restores after a reload. Nullable: NULL
+    # until the conversation's first completed LLM call.
+    context_tokens: Mapped[int | None] = mapped_column(Integer)
+    context_window: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

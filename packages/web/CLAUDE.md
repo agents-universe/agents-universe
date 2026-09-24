@@ -74,7 +74,7 @@ Pinia stores in `stores/`. **不要用 Vue provide/inject** 做跨面板状态�
 
 ## Token Meter
 
-`ContextMeter.vue` 读取 `conversationStore` 的 `tokensUsed/tokenBudget`。颜色阈值：
+`ContextMeter.vue` 读取 `conversationStore` 的 `contextTokens / (contextWindow ?? tokenBudget)` —— 展示**当前上下文占用 / provider 窗口**，不是累计消耗。数据来自 `token_update` 事件的 `context_tokens/context_window` 字段（每轮由 provider usage 上报），刷新后从会话的 `context_tokens/context_window` 列恢复。`tokensUsed/tokenBudget` 保留为计费镜像（生命周期累计，只增不减），表盘不读它。颜色阈值：
 - < 75%: 蓝色
 - 75–90%: 琥珀色
 - > 90%: 红色

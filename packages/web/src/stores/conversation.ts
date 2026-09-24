@@ -70,6 +70,12 @@ interface ConversationRuntime {
   streamingStartTime: number | null
   tokensUsed: number
   tokenBudget: number
+  /** Latest provider-reported context occupancy (prompt+completion of the
+   *  last request) — the meter numerator. */
+  contextTokens: number
+  /** Context window of the model that last reported usage; null until the
+   *  first turn reports. */
+  contextWindow: number | null
   contextUsage: ContextUsage | null
   tasks: AgentTask[]
   loadedKnowledge: string[]
@@ -107,6 +113,8 @@ function createRuntime(): ConversationRuntime {
     streamingStartTime: null,
     tokensUsed: 0,
     tokenBudget: 128000,
+    contextTokens: 0,
+    contextWindow: null,
     contextUsage: null,
     tasks: [],
     loadedKnowledge: [],
@@ -182,6 +190,8 @@ export const useConversationStore = defineStore('conversation', () => {
   const streamingStartTime = computed(() => activeRuntime.value?.streamingStartTime ?? null)
   const tokensUsed = computed(() => activeRuntime.value?.tokensUsed ?? 0)
   const tokenBudget = computed(() => activeRuntime.value?.tokenBudget ?? 128000)
+  const contextTokens = computed(() => activeRuntime.value?.contextTokens ?? 0)
+  const contextWindow = computed(() => activeRuntime.value?.contextWindow ?? null)
   const contextUsage = computed(() => activeRuntime.value?.contextUsage ?? null)
   const tasks = computed(() => activeRuntime.value?.tasks ?? [])
   const loadedKnowledge = computed(() => activeRuntime.value?.loadedKnowledge ?? [])
@@ -1036,6 +1046,12 @@ export const useConversationStore = defineStore('conversation', () => {
     rt.tokenBudget = budget
   }
 
+  function setContextOccupancy(tokens: number, window: number | null, targetId?: string) {
+    const rt = ensureRuntime(targetId ?? activeId.value!)
+    rt.contextTokens = tokens
+    rt.contextWindow = window
+  }
+
   function setContextUsage(usage: ContextUsage, targetId?: string) {
     const rt = ensureRuntime(targetId ?? activeId.value!)
     rt.contextUsage = usage
@@ -1307,6 +1323,8 @@ export const useConversationStore = defineStore('conversation', () => {
     streamingStartTime,
     tokensUsed,
     tokenBudget,
+    contextTokens,
+    contextWindow,
     contextUsage,
     tasks,
     loadedKnowledge,
@@ -1350,6 +1368,7 @@ export const useConversationStore = defineStore('conversation', () => {
     rejectInjected,
     rejectAllPendingInjected,
     setTokens,
+    setContextOccupancy,
     setContextUsage,
     setTasks,
     updateTask,

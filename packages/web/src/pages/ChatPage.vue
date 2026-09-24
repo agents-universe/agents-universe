@@ -109,6 +109,11 @@ async function loadLatestConversation() {
       if (latest.tokens_used != null && latest.token_budget != null) {
         convStore.setTokens(latest.tokens_used, latest.token_budget, latest.conversation_id)
       }
+      convStore.setContextOccupancy(
+        latest.context_tokens ?? 0,
+        latest.context_window ?? null,
+        latest.conversation_id,
+      )
       if (convStore.conversationId === latest.conversation_id) convStore.setTasks(tasks, latest.conversation_id)
     }
   } catch (e) {
@@ -246,6 +251,9 @@ async function startChat() {
     // runtime's budget (or the 128k default) would otherwise stick forever,
     // showing the wrong ContextMeter on non-default budgets.
     convStore.setTokens(0, data.token_budget, data.conversation_id)
+    // Fresh conversation: no occupancy yet — the meter falls back to the
+    // token_budget denominator until the first turn reports the real window.
+    convStore.setContextOccupancy(0, null, data.conversation_id)
   } catch (e) {
     // Same stale-response guard as loadLatestConversation: the failure must
     // only surface on the empty state it belongs to.

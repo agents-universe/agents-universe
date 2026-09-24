@@ -172,6 +172,11 @@ async function selectConversation(conv: ConversationItem) {
   // already carries them and the previous conversation's runtime would
   // otherwise keep showing stale usage.
   convStore.setTokens(conv.tokens_used, conv.token_budget, conv.conversation_id)
+  convStore.setContextOccupancy(
+    conv.context_tokens ?? 0,
+    conv.context_window ?? null,
+    conv.conversation_id,
+  )
   try {
     const [msgs, tasks, latestRun] = await Promise.all([
       conversationsApi.getMessages(conv.conversation_id),

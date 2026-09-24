@@ -1320,10 +1320,17 @@ async def run_turn(
 
             from sqlalchemy import update
             tokens_delta = session.tokens_used - conv.tokens_used
+            values: dict = {"tokens_used": Conversation.tokens_used + tokens_delta}
+            # Only write occupancy when a provider actually reported usage —
+            # a turn that died before any LLM call must not zero the values
+            # the frontend restored for the meter.
+            if session.context_window is not None:
+                values["context_tokens"] = session.context_tokens
+                values["context_window"] = session.context_window
             await db.execute(
                 update(Conversation)
                 .where(Conversation.conversation_id == conversation_id)
-                .values(tokens_used=Conversation.tokens_used + tokens_delta)
+                .values(**values)
             )
             await db.commit()
 

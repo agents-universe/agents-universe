@@ -38,9 +38,16 @@ export const conversationsApi = {
     apiFetch<CompressResult>(`/api/conversations/${enc(conversationId)}/compress`, { method: 'POST' }),
 
   getLatest: (projectId: string, agentSlug: string) =>
-    apiFetch<{ conversation_id: string; tokens_used: number; token_budget: number } | null>(
-      `/api/projects/${enc(projectId)}/conversations/latest?agent_slug=${enc(agentSlug)}`,
-    ),
+    apiFetch<
+      | {
+          conversation_id: string
+          tokens_used: number
+          token_budget: number
+          context_tokens?: number | null
+          context_window?: number | null
+        }
+      | null
+    >(`/api/projects/${enc(projectId)}/conversations/latest?agent_slug=${enc(agentSlug)}`),
 
   create: (projectId: string, agentSlug: string | null) =>
     apiFetch<{ conversation_id: string; project_id: string; token_budget: number }>(

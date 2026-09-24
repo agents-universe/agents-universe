@@ -5,7 +5,7 @@
         <Gauge :size="11" />
         {{ t('contextMeter.label') }}
       </span>
-      <span class="context-meter-fraction">{{ tokensUsed.toLocaleString() }} / {{ tokenBudget.toLocaleString() }}</span>
+      <span class="context-meter-fraction">{{ occupancy.toLocaleString() }} / {{ limit.toLocaleString() }}</span>
     </div>
     <div class="context-meter-track">
       <div
@@ -31,9 +31,13 @@ import { useConversationStore } from '@/stores/conversation'
 const { t } = useI18n()
 const convStore = useConversationStore()
 
-const tokensUsed = computed(() => convStore.tokensUsed)
-const tokenBudget = computed(() => convStore.tokenBudget)
-const pct = computed(() => tokenBudget.value ? (tokensUsed.value / tokenBudget.value) * 100 : 0)
+// Meter shows current context occupancy vs the provider window (falls back
+// to the conversation budget before the first turn reports the real window).
+// tokensUsed/tokenBudget are the billing ledger and are intentionally not
+// read here — a cumulative counter overflows any window almost immediately.
+const occupancy = computed(() => convStore.contextTokens)
+const limit = computed(() => convStore.contextWindow ?? convStore.tokenBudget)
+const pct = computed(() => limit.value ? (occupancy.value / limit.value) * 100 : 0)
 
 const fillClass = computed(() => {
   if (pct.value > 90) return 'fill-red'

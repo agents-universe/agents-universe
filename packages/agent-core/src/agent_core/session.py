@@ -75,6 +75,12 @@ class ConversationSession:
         self.user_id = user_id
         self.token_budget = token_budget
         self.tokens_used = tokens_used
+        # Occupancy of the LATEST provider request (prompt+completion of the
+        # last usage chunk) — what the context meter displays. Distinct from
+        # the lifetime billing ledger `tokens_used`.
+        self.context_tokens: int = 0
+        # Window of the model that last reported usage (None until first call).
+        self.context_window: int | None = None
 
         self._event_queue: asyncio.Queue[SessionEvent | None] = asyncio.Queue(maxsize=1000)
         self._closed = False

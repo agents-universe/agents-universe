@@ -1191,3 +1191,37 @@ describe('conversation store - thinking trace and turn phases', () => {
     expect(store.isStreaming).toBe(false)
   })
 })
+
+describe('setContextOccupancy', () => {
+  it('stores occupancy on the active runtime', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setContextOccupancy(18_400, 200_000)
+    expect(store.contextTokens).toBe(18_400)
+    expect(store.contextWindow).toBe(200_000)
+  })
+
+  it('with targetId isolates occupancy per runtime', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-b')
+    // Restore path writes a background conversation's figures before its
+    // runtime is activated — setContextOccupancy must create it.
+    store.setContextOccupancy(9_000, 128_000, 'conv-a')
+    expect(store.contextTokens).toBe(0)
+    store.startConversation('conv-a')
+    expect(store.contextTokens).toBe(9_000)
+    expect(store.contextWindow).toBe(128_000)
+    // Switching back must not leak conv-a's occupancy.
+    store.startConversation('conv-b')
+    expect(store.contextTokens).toBe(0)
+    expect(store.contextWindow).toBeNull()
+  })
+
+  it('accepts a null window (meter falls back to tokenBudget)', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setContextOccupancy(0, null)
+    expect(store.contextTokens).toBe(0)
+    expect(store.contextWindow).toBeNull()
+  })
+})

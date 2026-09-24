@@ -1328,7 +1328,18 @@ class Agent:
                                 prompt_tokens=chunk.usage.get("prompt_tokens", 0),
                                 completion_tokens=chunk.usage.get("completion_tokens", 0),
                             )
-                            await session.emit("token_update", used=session.tokens_used, budget=session.token_budget)
+                            session.context_tokens = (
+                                chunk.usage.get("prompt_tokens", 0)
+                                + chunk.usage.get("completion_tokens", 0)
+                            )
+                            session.context_window = provider.context_window
+                            await session.emit(
+                                "token_update",
+                                used=session.tokens_used,
+                                budget=session.token_budget,
+                                context_tokens=session.context_tokens,
+                                context_window=session.context_window,
+                            )
                 except Exception as api_err:
                     err_type = type(api_err).__name__
                     err_msg = (
@@ -2182,7 +2193,18 @@ class Agent:
                                 prompt_tokens=chunk.usage.get("prompt_tokens", 0),
                                 completion_tokens=chunk.usage.get("completion_tokens", 0),
                             )
-                        await session.emit("token_update", used=session.tokens_used, budget=session.token_budget)
+                        session.context_tokens = (
+                            chunk.usage.get("prompt_tokens", 0)
+                            + chunk.usage.get("completion_tokens", 0)
+                        )
+                        session.context_window = provider.context_window
+                        await session.emit(
+                            "token_update",
+                            used=session.tokens_used,
+                            budget=session.token_budget,
+                            context_tokens=session.context_tokens,
+                            context_window=session.context_window,
+                        )
             except Exception as api_err:
                 _log.error(
                     "task provider.stream() failed: task_id=%s provider=%s messages=%d pending_tool_call_ids=%s error=%s",

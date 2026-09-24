@@ -274,3 +274,74 @@ describe('useWebSocket thinking and turn_status dispatch', () => {
     expect(store.isStreaming).toBe(true)
   })
 })
+
+describe('token_update context occupancy', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('sets occupancy when the payload carries context fields', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, {
+      type: 'token_update',
+      used: 120_000,
+      budget: 128_000,
+      context_tokens: 18_400,
+      context_window: 200_000,
+    })
+
+    expect(store.tokensUsed).toBe(120_000)
+    expect(store.contextTokens).toBe(18_400)
+    expect(store.contextWindow).toBe(200_000)
+  })
+
+  it('legacy payload without context fields leaves occupancy untouched', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.setContextOccupancy(5_000, 100_000)
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'token_update', used: 42_000, budget: 128_000 })
+
+    // Billing still updates; the meter keeps its last known occupancy.
+    expect(store.tokensUsed).toBe(42_000)
+    expect(store.contextTokens).toBe(5_000)
+    expect(store.contextWindow).toBe(100_000)
+  })
+
+  it('routes occupancy to a background conversation via convId', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-b')
+    // Background connection: the socket's convId (not the message body)
+    // decides which runtime receives the figures.
+    const { ws } = mount('conv-a')
+
+    fire(ws, {
+      type: 'token_update',
+      used: 1_000,
+      budget: 128_000,
+      context_tokens: 700,
+      context_window: 64_000,
+    })
+
+    expect(store.contextTokens).toBe(0)
+    store.startConversation('conv-a')
+    expect(store.contextTokens).toBe(700)
+    expect(store.contextWindow).toBe(64_000)
+  })
+})

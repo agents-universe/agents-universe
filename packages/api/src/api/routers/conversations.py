@@ -149,11 +149,15 @@ async def get_latest_conversation(
         return None
     # Token figures ride along so a page reload restores the ContextMeter
     # immediately — the client has no other cheap source (token_update
-    # events only fire while a run is active).
+    # events only fire while a run is active). context_* carry last turn's
+    # occupancy/window for the meter fraction; tokens_used/token_budget
+    # remain the billing mirror.
     return {
         "conversation_id": str(conv.conversation_id),
         "tokens_used": conv.tokens_used,
         "token_budget": conv.token_budget,
+        "context_tokens": conv.context_tokens,
+        "context_window": conv.context_window,
     }
 
 
@@ -270,6 +274,8 @@ async def list_conversations(
             "agent_slug": row.agent_slug,
             "token_budget": row.Conversation.token_budget,
             "tokens_used": row.Conversation.tokens_used,
+            "context_tokens": row.Conversation.context_tokens,
+            "context_window": row.Conversation.context_window,
             "message_count": row.message_count,
             "active_task_count": row.active_task_count,
             "total_task_count": row.total_task_count,
@@ -549,10 +555,16 @@ async def token_usage(
     conversation_id: str,
     conversation: Conversation = Depends(authorize_conversation),
 ):
+    # Percent reflects context occupancy (meter semantics), not the lifetime
+    # billing ledger — tokens_used/token_budget stay in the payload for compat.
+    occupancy = conversation.context_tokens or 0
+    window = conversation.context_window or conversation.token_budget
     return {
         "tokens_used": conversation.tokens_used,
         "token_budget": conversation.token_budget,
-        "percent": round(conversation.tokens_used / conversation.token_budget * 100, 1) if conversation.token_budget else 0,
+        "context_tokens": conversation.context_tokens,
+        "context_window": conversation.context_window,
+        "percent": round(occupancy / window * 100, 1) if window else 0,
     }
 
 

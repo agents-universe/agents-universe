@@ -329,6 +329,9 @@ export interface ConversationItem {
   agent_slug: string | null
   token_budget: number
   tokens_used: number
+  /** Last turn's context occupancy / model window (nullable until first run). */
+  context_tokens?: number | null
+  context_window?: number | null
   message_count: number
   active_task_count: number
   total_task_count: number

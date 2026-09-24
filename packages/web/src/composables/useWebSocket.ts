@@ -479,6 +479,15 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         break
       case 'token_update':
         conv.setTokens(msg.used as number, msg.budget as number, convId)
+        // Newer servers piggyback context occupancy on the same event; a
+        // legacy payload without the fields leaves the meter untouched.
+        if (msg.context_tokens != null) {
+          conv.setContextOccupancy(
+            msg.context_tokens as number,
+            (msg.context_window as number | null) ?? null,
+            convId,
+          )
+        }
         break
       case 'knowledge_loaded':
         conv.setLoadedKnowledge((msg.files ?? msg.slugs) as string[], convId)

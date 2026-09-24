@@ -127,6 +127,9 @@ async def test_compress_llm_failure_leaves_history_intact(client, db, make_proje
         async def complete(self, messages, tools=None):
             raise RuntimeError("llm down")
 
+        def scrub(self, text):
+            return text
+
     async def _failing_resolve(db_, user_id):
         return FailingProvider()
 
@@ -142,6 +145,81 @@ async def test_compress_llm_failure_leaves_history_intact(client, db, make_proje
     )
     rows = result.scalars().all()
     assert len(rows) == 20
+
+
+@pytest.mark.asyncio
+async def test_compress_llm_failure_log_scrubs_provider_key(
+    client, db, make_project, monkeypatch, caplog
+):
+    """The 502 path logs the traceback via provider.scrub, never exc_info —
+    SDK/h11 errors echo the key back and would otherwise land in the log."""
+    import logging as _logging
+
+    project = await make_project()
+    conv = await _seed_conversation(db, project, message_count=20)
+
+    import api.services.compression as compression_service
+
+    bad = "sk-compress-api-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+
+    class KeyEchoProvider:
+        async def complete(self, messages, tools=None):
+            raise RuntimeError(f"Illegal header value b'Bearer {escaped}'")
+
+        def secret_values(self):
+            return [bad]
+
+        def scrub(self, text):
+            from agent_core.tools._http import redact_secret
+            for v in self.secret_values():
+                text = redact_secret(text, v)
+            return text
+
+    async def _resolve(db_, user_id):
+        return KeyEchoProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    with caplog.at_level(_logging.DEBUG):
+        resp = await client.post(f"/api/conversations/{conv.conversation_id}/compress")
+
+    assert resp.status_code == 502
+    assert bad not in caplog.text
+    assert escaped not in caplog.text
+    assert "[REDACTED]" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_compress_bad_key_returns_400_not_500(client, db, make_project, monkeypatch):
+    """get_provider refuses a header-unsafe API key with a clean ValueError.
+    compress_conversation must turn it into an actionable 400 — pre-fix it
+    escaped compress_once uncaught and the router 500'd."""
+    project = await make_project()
+    conv = await _seed_conversation(db, project, message_count=20)
+
+    import api.services.compression as compression_service
+
+    async def _bad_key_resolve(db_, user_id):
+        raise ValueError(
+            "API key for provider 'openai' contains a control character "
+            "(a pasted trailing newline, perhaps) — re-save it in Settings → "
+            "AI Models without it"
+        )
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _bad_key_resolve)
+
+    resp = await client.post(f"/api/conversations/{conv.conversation_id}/compress")
+    assert resp.status_code == 400
+    assert "control character" in resp.json()["detail"]
+
+    # Nothing was rewritten: the failure happened before any row was touched.
+    result = await db.execute(
+        DbMessage.__table__.select().where(
+            DbMessage.conversation_id == str(conv.conversation_id)
+        )
+    )
+    assert len(result.scalars().all()) == 20
 
 
 @pytest.mark.asyncio
@@ -750,6 +828,9 @@ async def test_compress_chunk_failure_leaves_history_intact(client, db, make_pro
                 raise RuntimeError("chunk 2 failed")
             return SimpleNamespace(message=SimpleNamespace(content="ok"))
 
+        def scrub(self, text):
+            return text
+
     async def _resolve(db_, user_id):
         return FlakyProvider()
 
@@ -780,6 +861,9 @@ async def test_compress_total_timeout_502(client, db, make_project, monkeypatch)
         async def complete(self, messages, tools=None):
             await asyncio.sleep(1.0)
             return SimpleNamespace(message=SimpleNamespace(content="late"))
+
+        def scrub(self, text):
+            return text
 
     async def _resolve(db_, user_id):
         return HangingProvider()

@@ -35,8 +35,18 @@ class JiraClient:
     @property
     def _headers(self) -> dict[str, str]:
         if self.auth_type == "bearer":
+            # h11 rejects an illegal header value by echoing it back — the echo
+            # IS the token and would surface in the logged traceback of the
+            # caller's exception handler. Refuse; the message names no secret.
+            from agent_core.tools._http import _header_value_problem
+            problem = _header_value_problem(self.api_token)
+            if problem:
+                raise ValueError(
+                    f"Jira Authorization header {problem} — re-save the stored token without it"
+                )
             auth = f"Bearer {self.api_token}"
         else:
+            # base64 absorbs control characters — basic auth cannot echo.
             cred = base64.b64encode(f"{self.email}:{self.api_token}".encode()).decode()
             auth = f"Basic {cred}"
         return {

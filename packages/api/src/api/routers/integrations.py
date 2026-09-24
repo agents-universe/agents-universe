@@ -137,6 +137,27 @@ async def _get_user_token_and_base_url(
             status_code=400,
             detail=f"Stored token is corrupted — delete and re-save it: {service_key}",
         )
+    # Header placements echo an illegal value back via h11 ("Illegal header
+    # value b'...'"), and _external_error logs the raw exception (exc_info) —
+    # the echo IS the token. Refuse before any outbound call. base64 basic
+    # auth absorbs control characters, so only header-bound tokens are checked;
+    # jira:email is always base64, and unknown service keys validate too.
+    from agent_core.tools._http import _header_value_problem
+    from api.config import get_settings as _get_settings
+    in_header = not (
+        service_key == "jira:email"
+        or (
+            service_key in ("jira", "confluence")
+            and _get_settings().atlassian_auth_type == "basic"
+        )
+    )
+    if in_header:
+        problem = _header_value_problem(plain)
+        if problem:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{service_key} token {problem} — re-save it without it",
+            )
     return plain, base_url
 
 

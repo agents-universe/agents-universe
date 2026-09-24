@@ -110,3 +110,86 @@ async def test_kong_proxy_success_body_keeps_content(client, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"status": 200, "body": {"data": "hello world"}}
+
+
+async def test_kong_proxy_refuses_header_unsafe_token(client, monkeypatch):
+    """A pasted trailing newline makes the stored token illegal as a header
+    value; h11 would echo it back into _external_error's exc_info. The token
+    resolver must refuse with an actionable 400 before any outbound call —
+    pre-fix the fake gateway answered 200 and the token went out verbatim."""
+    key = "kong-key-bad\n"
+    resp = await client.put("/api/tokens/kong:dev", json={"value": key})
+    assert resp.status_code == 200
+
+    fake = _FakeAsyncClient(_json_response(200, {"data": "ok"}))
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: fake)
+
+    resp = await client.post(
+        "/api/integrations/kong/request",
+        json={"method": "GET", "path": "/some/api", "env": "dev"},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "control character" in detail
+    assert key not in detail
+    assert "kong-key-bad" not in detail
+
+
+# ── client header construction ───────────────────────────────────────────
+
+
+def test_jira_client_refuses_header_unsafe_token_in_bearer_mode():
+    """Bearer puts the raw token in the Authorization header — _headers must
+    raise before h11 can echo the value back into the logged traceback."""
+    import pytest
+
+    from api.services.jira_client import JiraClient
+
+    bad = "ATATT-bad-newline\n"
+    client = JiraClient(api_token=bad, auth_type="bearer")
+    with pytest.raises(ValueError) as excinfo:
+        _ = client._headers
+    msg = str(excinfo.value)
+    assert "control character" in msg
+    assert bad not in msg
+    assert "ATATT-bad" not in msg
+
+    # basic auth base64-encodes the pair — control characters cannot echo.
+    ok = JiraClient(api_token=bad, email="user@example.com", auth_type="basic")
+    headers = ok._headers
+    assert headers["Authorization"].startswith("Basic ")
+
+
+def test_confluence_client_refuses_header_unsafe_token_in_bearer_mode():
+    import pytest
+
+    from api.services.confluence_client import ConfluenceClient
+
+    bad = "ATATT-bad-newline\n"
+    client = ConfluenceClient(api_token=bad, auth_type="bearer")
+    with pytest.raises(ValueError) as excinfo:
+        _ = client._headers
+    msg = str(excinfo.value)
+    assert "control character" in msg
+    assert bad not in msg
+    assert "ATATT-bad" not in msg
+
+    ok = ConfluenceClient(api_token=bad, email="user@example.com", auth_type="basic")
+    headers = ok._headers
+    assert headers["Authorization"].startswith("Basic ")
+
+
+def test_git_client_refuses_header_unsafe_token():
+    """GitClient always sends the raw token (Authorization: token <t>)."""
+    import pytest
+
+    from api.services.git_client import GitClient
+
+    bad = "ghp-bad-newline\n"
+    client = GitClient(token=bad, base_url="https://git.example.com")
+    with pytest.raises(ValueError) as excinfo:
+        _ = client._headers
+    msg = str(excinfo.value)
+    assert "control character" in msg
+    assert bad not in msg
+    assert "ghp-bad" not in msg

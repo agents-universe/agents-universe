@@ -108,6 +108,30 @@ async def test_provider_error_returns_none(fake_registry):
     assert result is None
 
 
+async def test_provider_error_log_scrubs_the_configured_key(fake_registry, caplog):
+    """The failure log must be formatted + scrubbed, never exc_info: SDK and
+    h11 errors echo the api_key back ("Illegal header value b'...'") and the
+    credentials dict holds the key in scope."""
+    import logging
+
+    bad = "sk-complexity-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+    provider = FakeProvider(
+        error=RuntimeError(f"Illegal header value b'Bearer {escaped}'")
+    )
+    fake_registry(provider)
+    env = _env(provider)
+    env["credentials"] = {"cfg": {"api_key": bad}}
+
+    with caplog.at_level(logging.DEBUG):
+        result = await complexity.classify_complexity(_make_db(), "conv-1", "hi", **env)
+
+    assert result is None
+    assert bad not in caplog.text
+    assert escaped not in caplog.text
+    assert "[REDACTED]" in caplog.text
+
+
 async def test_timeout_returns_none(fake_registry, monkeypatch):
     monkeypatch.setattr(complexity, "_CLASSIFY_TIMEOUT", 0.05)
     provider = FakeProvider(reply="high", delay=0.5)

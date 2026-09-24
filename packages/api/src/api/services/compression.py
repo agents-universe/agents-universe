@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import traceback
 
 from sqlalchemy import delete as sa_delete, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -441,7 +442,15 @@ async def compress_conversation(
     if not early_lines:
         raise CompressionError(409, "会话没有可压缩的内容。")
 
-    provider = await _resolve_provider(db, user_id)
+    try:
+        provider = await _resolve_provider(db, user_id)
+    except CompressionError:
+        raise
+    except ValueError as e:
+        # get_provider refuses header-unsafe API keys (and unknown providers)
+        # with a clean ValueError — surface it as an actionable 400 instead of
+        # an unhandled 500. The message never contains the key itself.
+        raise CompressionError(400, str(e)) from e
 
     # Fail-safe: a manual compression is destructive — never delete the early
     # rows if the summary could not be produced. Summarization runs
@@ -452,7 +461,13 @@ async def compress_conversation(
         if not summary:
             summary = "Previous conversation context unavailable."
     except Exception:
-        _log.warning("Manual compression failed for conversation %s", conversation_id, exc_info=True)
+        # No exc_info: provider exceptions echo the key back (SDK auth errors,
+        # h11's "Illegal header value b'...'"). Format + scrub instead.
+        _log.warning(
+            "Manual compression failed for conversation %s: %s",
+            conversation_id,
+            provider.scrub(traceback.format_exc()),
+        )
         raise CompressionError(502, "压缩失败，请重试。")
 
     # Persist under the conversation row lock (serializes sequence_num

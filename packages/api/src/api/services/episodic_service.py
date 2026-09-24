@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -223,6 +224,20 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
             _p = urlparse(custom_base_url)
             resolve_and_validate(_p.hostname, _p.port or (443 if _p.scheme == "https" else 80))
 
+    # Same gate as routers/model_configs.py `_do_test`: the decrypted key goes
+    # into a header verbatim, and h11 rejects an illegal value by echoing it
+    # back — the except-branch below would then log it via exc_info. Refuse
+    # before the request; the episode is skipped (fire-and-forget) and the
+    # message names no secret.
+    from agent_core.tools._http import _header_value_problem
+    problem = _header_value_problem(api_key)
+    if problem:
+        _log.warning(
+            "Model API key %s — re-save it in Settings → AI Models without it",
+            problem,
+        )
+        return None
+
     messages_payload = [
         {"role": "system", "content": EPISODIC_SYSTEM_PROMPT},
         {"role": "user", "content": f"Summarize this conversation:\n\n{transcript}"},
@@ -299,7 +314,13 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
         _log.warning("Failed to parse episodic LLM response: %s", e)
         return None
     except Exception:
-        _log.warning("HTTP error during episodic generation", exc_info=True)
+        # No exc_info: transport/SDK exceptions echo the key back. Format +
+        # scrub (raw and bytes-repr escaped forms) instead. api_key is in scope.
+        from agent_core.tools._http import redact_secret
+        _log.warning(
+            "HTTP error during episodic generation: %s",
+            redact_secret(traceback.format_exc(), api_key),
+        )
         return None
 
 

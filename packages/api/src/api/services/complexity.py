@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import traceback
 
 _log = logging.getLogger("agents_universe.complexity")
 
@@ -109,7 +110,14 @@ async def classify_complexity(
         return None
     except Exception:
         # Key revoked, provider error, network failure — never block the turn.
-        _log.debug("Complexity pre-classification failed for conversation=%s", conversation_id, exc_info=True)
+        # No exc_info: provider exceptions echo the api_key back (SDK auth
+        # errors, h11's "Illegal header value b'...'"). Format + scrub instead.
+        from agent_core.tools._http import redact_secret
+        _log.debug(
+            "Complexity pre-classification failed for conversation=%s: %s",
+            conversation_id,
+            redact_secret(traceback.format_exc(), merged.get("api_key")),
+        )
         return None
     finally:
         await provider.close()

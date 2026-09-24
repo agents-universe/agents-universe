@@ -35,6 +35,15 @@ class GitClient:
 
     @property
     def _headers(self) -> dict[str, str]:
+        # The token goes into the header verbatim; h11 rejects an illegal
+        # value by echoing it back — the echo IS the credential. Refuse; the
+        # message names no secret.
+        from agent_core.tools._http import _header_value_problem
+        problem = _header_value_problem(self.token)
+        if problem:
+            raise ValueError(
+                f"Git Authorization header {problem} — re-save the stored token without it"
+            )
         return {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json",

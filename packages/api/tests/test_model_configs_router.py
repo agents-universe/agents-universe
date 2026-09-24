@@ -344,3 +344,81 @@ async def test_test_endpoint_does_not_leak_api_key(client, monkeypatch):
     assert key not in str(body)
     assert "leakme" not in str(body)
     assert "[REDACTED]" in str(body)
+
+
+class _ProtocolErrorAsyncClient:
+    """httpx.AsyncClient stand-in whose request raises the h11 echo of a key.
+
+    h11 rejects an illegal header value by echoing it back verbatim —
+    "Illegal header value b'...'" — and for a header-held api_key that echo
+    IS the credential.
+    """
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer sk-h11-echo\\n'")
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _LeakyAsyncClient:
+    """httpx.AsyncClient stand-in whose request raises an error quoting the key."""
+
+    def __init__(self, key, *a, **k):
+        self.key = key
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **k):
+        raise RuntimeError(f"upstream rejected Authorization: Bearer {self.key}")
+
+
+async def test_test_endpoint_refuses_header_unsafe_key(monkeypatch, caplog):
+    """A pasted trailing newline makes the key illegal as a header value.
+    _do_test must refuse before the request, with a message that names the
+    problem but never the key itself — pre-fix it reached h11, which echoed
+    the whole key into the logged traceback."""
+    import logging
+
+    from api.routers.model_configs import _do_test
+
+    key = "sk-h11-echo\n"
+    escaped = repr(key.encode("utf-8"))[2:-1]
+    monkeypatch.setattr("httpx.AsyncClient", _ProtocolErrorAsyncClient)
+
+    with caplog.at_level(logging.DEBUG):
+        result = await _do_test("openai", "gpt-4o", key, None)
+
+    assert result["ok"] is False
+    assert "control character" in result["error"]
+    assert key not in result["error"]
+    assert escaped not in result["error"]
+    # Nothing was logged — and if something was, it must not carry the key.
+    assert key not in caplog.text
+    assert escaped not in caplog.text
+
+
+async def test_test_endpoint_exception_log_scrubs_the_key(monkeypatch, caplog):
+    """Transport exceptions can quote the key back (SDK auth errors do).
+    The failure log must be formatted + scrubbed instead of exc_info."""
+    import logging
+
+    from api.routers.model_configs import _do_test
+
+    key = "sk-exception-log-echo"
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: _LeakyAsyncClient(key))
+
+    with caplog.at_level(logging.DEBUG):
+        result = await _do_test("openai", "gpt-4o", key, None)
+
+    assert result["ok"] is False
+    assert result["error"] == "Connection test failed"
+    assert key not in caplog.text
+    assert "[REDACTED]" in caplog.text

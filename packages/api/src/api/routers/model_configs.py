@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -72,11 +73,11 @@ def _redact_key(text: str, key: str) -> str:
     Providers echo the credential back in 401 bodies ("Incorrect API key
     provided: sk-...", "invalid x-api-key: <key>") — returning that verbatim
     to the client prints the key it just submitted. Same rule as
-    api_keys.py / tokens.py / integrations.py.
+    api_keys.py / tokens.py / integrations.py; redact_secret also matches
+    the bytes-repr escaped form that h11 and tracebacks quote.
     """
-    if key:
-        text = text.replace(key, "[REDACTED]")
-    return text
+    from agent_core.tools._http import redact_secret
+    return redact_secret(text, key)
 
 
 def _validate_url_mode(value: str | None) -> str | None:
@@ -430,6 +431,17 @@ async def test_model_config(
 
 async def _do_test(provider: str, model_id: str, api_key: str, base_url: str | None, url_mode: str = "base_url") -> dict:
     settings = get_settings()
+    # The key goes into an HTTP header verbatim (Bearer / x-api-key / api-key).
+    # h11 rejects an illegal value by echoing it back ("Illegal header value
+    # b'...'") — that echo IS the credential, and the except-branch below would
+    # log it via exc_info. Refuse before the request; the message names no secret.
+    from agent_core.tools._http import _header_value_problem
+    problem = _header_value_problem(api_key) if api_key else None
+    if problem:
+        return {
+            "ok": False,
+            "error": f"API key {problem} — re-save it in Settings → AI Models without it",
+        }
     try:
         import httpx
         ssl_verify = settings.llm_ssl_verify
@@ -513,5 +525,10 @@ async def _do_test(provider: str, model_id: str, api_key: str, base_url: str | N
     except SSRFError as e:
         return {"ok": False, "error": f"Blocked URL: {e}"}
     except Exception:
-        _log.warning("Model config connection test failed", exc_info=True)
+        # No exc_info: SDK/transport exceptions echo the key back, and this
+        # route takes it straight from the request body. Format + scrub instead.
+        _log.warning(
+            "Model config connection test failed: %s",
+            _redact_key(traceback.format_exc(), api_key),
+        )
         return {"ok": False, "error": "Connection test failed"}

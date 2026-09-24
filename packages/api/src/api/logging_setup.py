@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -121,8 +120,14 @@ class WebSocketLifecycleFilter(logging.Filter):
 
 def setup_logging() -> None:
     """Configure root logger. Call once from create_app()."""
-    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    log_format = os.environ.get("LOG_FORMAT", "json")
+    # Settings merges process env AND the .env file; reading os.environ here
+    # alone left LOG_LEVEL/LOG_FORMAT in .env silently ignored (.env.example
+    # documents both, and the Settings fields existed with no other reader).
+    from .config import get_settings
+
+    cfg = get_settings()
+    log_level = cfg.log_level.upper()
+    log_format = cfg.log_format
 
     root = logging.getLogger()
     root.setLevel(log_level)

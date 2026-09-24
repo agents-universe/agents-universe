@@ -22,6 +22,7 @@ import fnmatch
 import logging
 import re
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -321,7 +322,8 @@ class McpServerSession:
             timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
             verify=self._ssl_verify,
         ) as http_client:
-            async with streamable_http_client(url, http_client=http_client) as (read, write):
+            # MCP 2.0 yields a third element (session-id getter); ignore it.
+            async with streamable_http_client(url, http_client=http_client) as (read, write, _get_session_id):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     self._session = session
@@ -386,7 +388,9 @@ class McpServerSession:
             _CALL_TIMEOUT_HARD_CAP,
         )
         return await asyncio.wait_for(
-            self._session.call_tool(name, arguments, read_timeout_seconds=timeout),
+            self._session.call_tool(
+                name, arguments, read_timeout_seconds=timedelta(seconds=timeout)
+            ),
             timeout=timeout + 10,
         )
 

@@ -416,6 +416,25 @@ async def test_unknown_transport_fails_fast():
 # ---------------------------------------------------------------------------
 
 
+def _streamable_http_asgi(server):
+    """Wrap a low-level MCP Server in a streamable-http Starlette app.
+
+    The MCP 2.0 SDK dropped ``Server.streamable_http_app()``; the session
+    manager + ASGI handler combination below is what FastMCP now does
+    internally.
+    """
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+    session_manager = StreamableHTTPSessionManager(app=server)
+    return Starlette(
+        routes=[Route("/mcp", endpoint=StreamableHTTPASGIApp(session_manager))],
+        lifespan=lambda _app: session_manager.run(),
+    )
+
+
 @pytest.fixture
 async def mcp_test_server():
     """Start a real MCP streamable-http server on a random port."""
@@ -429,51 +448,53 @@ async def mcp_test_server():
     port = sock.getsockname()[1]
     sock.close()
 
-    async def on_list_tools(ctx, params=None):
-        return types.ListToolsResult(tools=[
+    server = Server("test-mcp-server")
+
+    @server.list_tools()
+    async def list_tools():
+        return [
             types.Tool(
                 name="echo",
                 description="Echo back the input text",
-                input_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+                inputSchema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
             ),
             types.Tool(
                 name="adder",
                 description="Add two numbers",
-                input_schema={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]},
+                inputSchema={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]},
             ),
             types.Tool(
                 name="delete_thing",
                 description="Delete something destructive",
-                input_schema={"type": "object", "properties": {"id": {"type": "string"}}},
-                annotations=types.ToolAnnotations(destructive_hint=True),
+                inputSchema={"type": "object", "properties": {"id": {"type": "string"}}},
+                annotations=types.ToolAnnotations(destructiveHint=True),
             ),
-        ])
+        ]
 
-    async def on_call_tool(ctx, params):
-        name = params.name
-        args = params.arguments or {}
+    @server.call_tool()
+    async def call_tool(name, arguments):
+        args = arguments or {}
         if name == "echo":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=args.get("text", ""))],
-                is_error=False,
+                isError=False,
             )
         if name == "adder":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(args.get("a", 0) + args.get("b", 0)))],
-                is_error=False,
+                isError=False,
             )
         if name == "delete_thing":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=f"Deleted {args.get('id', '?')}")],
-                is_error=False,
+                isError=False,
             )
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
-            is_error=True,
+            isError=True,
         )
 
-    server = Server("test-mcp-server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
-    app = server.streamable_http_app()
+    app = _streamable_http_asgi(server)
 
     import uvicorn
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")

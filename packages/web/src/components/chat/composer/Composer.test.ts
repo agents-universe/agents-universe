@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { EditorView } from '@codemirror/view'
 import Composer from './Composer.vue'
 import { ApiError } from '@/api/client'
-import { AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
+import { AUTO_MODEL_CONFIG_ID, useAgentStore } from '@/stores/agent'
+import type { ModelConfig } from '@/types'
 
 // Hoisted mutable state so tests can seed modelConfigs per-case. The real
 // store is a Pinia setup store; a plain singleton keeps the same shape.
@@ -17,10 +18,18 @@ const agentState = vi.hoisted(() => ({
   currentAgent: null,
 }))
 
-vi.mock('@/stores/agent', () => ({
-  AUTO_MODEL_CONFIG_ID: 'auto',
-  useAgentStore: () => agentState,
-}))
+vi.mock('@/stores/agent', async () => {
+  const { reactive } = await import('vue')
+  // One cached proxy (reactive() memoizes per target): the real store is a
+  // Pinia setup store, and Composer's watcher only re-fires on reactive
+  // changes — tests must mutate through useAgentStore() or the raw object
+  // would bypass the proxy's set trap and never trigger it.
+  const store = reactive(agentState)
+  return {
+    AUTO_MODEL_CONFIG_ID: 'auto',
+    useAgentStore: () => store,
+  }
+})
 
 const mediaMock = vi.hoisted(() => ({ upload: vi.fn() }))
 vi.mock('@/api/media', () => ({
@@ -138,5 +147,68 @@ describe('Composer auto model option', () => {
     await wrapper.find('.submit-btn').trigger('click')
     const payload = wrapper.emitted('submit')![0][0] as { config_id?: string }
     expect(payload.config_id).toBe(AUTO_MODEL_CONFIG_ID)
+  })
+})
+
+describe('Composer selection hydration on page load', () => {
+  let wrapper: VueWrapper | undefined
+
+  /** The component only reads config_id/model_id/is_system from each row. */
+  function seedConfigs(rows: Array<Pick<ModelConfig, 'config_id' | 'model_id' | 'is_system'>>) {
+    useAgentStore().modelConfigs = rows as unknown as ModelConfig[]
+  }
+
+  beforeEach(() => {
+    // A full page reload: the store selection starts null and the configs
+    // list is empty until onMounted's fetchModelConfigs resolves. Mutations
+    // go through the proxy — raw-object writes bypass reactivity.
+    const store = useAgentStore()
+    store.modelConfigs = []
+    store.selectedConfigId = null
+    agentState.setSelectedConfigId.mockClear()
+    wrapper = undefined
+  })
+
+  afterEach(() => {
+    // A live watcher from this test must not react to the next test's
+    // store mutations and skew its spy assertions.
+    wrapper?.unmount()
+    wrapper = undefined
+  })
+
+  it('does not persist a selection before configs load', async () => {
+    // The immediate watcher fires during setup with only the 'auto' sentinel
+    // in options. Selecting it went through setSelectedConfigId → localStorage,
+    // destroying the saved real config id before fetch could restore it — the
+    // next message silently sent config_id 'auto' instead of the chosen model.
+    wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+
+    expect(agentState.setSelectedConfigId).not.toHaveBeenCalled()
+  })
+
+  it('adopts a restored store selection once configs arrive', async () => {
+    wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+
+    // fetchModelConfigs resolved: configs land and the restored selection
+    // with them — the watcher must take the store value, not re-persist.
+    seedConfigs([{ config_id: 'm1', model_id: 'gpt-4o', is_system: false }])
+    useAgentStore().selectedConfigId = 'm1'
+    await nextTick()
+
+    expect(agentState.setSelectedConfigId).not.toHaveBeenCalled()
+    const pills = wrapper.findAll('.provider-pill')
+    expect(pills[1].classes()).toContain('active')
+  })
+
+  it('selects the first real model when nothing was saved', async () => {
+    wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+
+    seedConfigs([{ config_id: 'm1', model_id: 'gpt-4o', is_system: false }])
+    await nextTick()
+
+    expect(agentState.setSelectedConfigId).toHaveBeenCalledWith('m1')
   })
 })

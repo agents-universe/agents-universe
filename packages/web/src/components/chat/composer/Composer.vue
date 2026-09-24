@@ -253,10 +253,13 @@ watch(
       selectedConfigId.value = storeConfigId
     } else if (!selectedConfigId.value || !opts.some((opt) => opt.id === selectedConfigId.value)) {
       // Never auto-select the "auto" sentinel: new users keep the first real
-      // model (status quo) until they opt into auto.
+      // model (status quo) until they opt into auto. Selecting opts[0] when
+      // the sentinel is the only option would ALSO run on the immediate fire
+      // (configs still unfetched, store selection still null) — and
+      // selectConfig persists to localStorage, clobbering the saved config id
+      // before fetchModelConfigs can restore it. So: no options → no selection.
       const fallback = opts.find((opt) => opt.id !== AUTO_MODEL_CONFIG_ID)
       if (fallback) selectConfig(fallback.id)
-      else if (opts[0]) selectConfig(opts[0].id)
     }
   },
   { immediate: true },

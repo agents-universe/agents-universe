@@ -153,12 +153,13 @@ const props = defineProps<{ message: Message }>()
 const { t } = useI18n()
 const agentStore = useAgentStore()
 
-// Badge label for an @-mention turn involving a different agent than the
-// conversation's current agent. Assistants carry "answered by X", users carry
-// "sent to X"; default turns stay unbadged on both sides.
+// Attribution badge: assistant replies always show which agent produced them
+// (even the conversation's current agent); user messages only badge
+// "sent to X" on @-mention turns routed to a different agent.
 const collabAgentLabel = computed(() => {
   const slug = props.message.agentSlug
-  if (!slug || slug === agentStore.currentAgent?.slug) return null
+  if (!slug) return null
+  if (props.message.role !== 'assistant' && slug === agentStore.currentAgent?.slug) return null
   const label = agentStore.agents.find((a) => a.slug === slug)?.label ?? slug
   return props.message.role === 'assistant'
     ? `🤖 ${label}`

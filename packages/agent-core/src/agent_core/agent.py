@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -53,10 +54,28 @@ from .providers.base import LLMProvider, Message, StopReason, ToolDefinition
 from .providers.registry import get_provider
 from .session import ConversationSession, UserInputEntry
 from .skills.registry import SkillRegistry
+from .tools._http import redact_secret
 from .tools.base import Tool, ToolContext
 from .tools.registry import build_tool_registry
 
 _log = logging.getLogger("agent_core.agent")
+
+
+def _scrub_credentials(text: str, credentials: dict[str, Any] | None) -> str:
+    """Mask every configured API key in *text* before it reaches a sink.
+
+    Provider/SDK exceptions echo what they rejected — h11 quotes the whole
+    Authorization header ("Illegal header value b'...'"), auth errors quote
+    the key — and the error boundaries below send the string to the UI, the
+    log, and (via task_failed) the DB. Raw + escaped-bytes replacement, same
+    rule as the token/api-key routers' ``_redact_key``.
+    """
+    if not text or not credentials:
+        return text
+    for creds in credentials.values():
+        if isinstance(creds, dict):
+            text = redact_secret(text, creds.get("api_key"))
+    return text
 
 
 def _task_timeout_seconds() -> int:
@@ -695,8 +714,15 @@ class Agent:
                     trimmed.pop(0)
                 history = system_msgs + trimmed
         except Exception as e:
-            _log.warning("History compression failed, using full history: %s", e, exc_info=True)
-            await session.emit("warning", message=f"History compression failed, using full history: {e}")
+            _log.warning(
+                "History compression failed, using full history: %s",
+                _scrub_credentials(traceback.format_exc(), self._credentials),
+            )
+            await session.emit(
+                "warning",
+                message=f"History compression failed, using full history: "
+                        f"{_scrub_credentials(str(e), self._credentials)}",
+            )
 
         # 6. Build messages (attachments make user content a multimodal part list)
         provider = self._get_provider(config_id)
@@ -1341,9 +1367,13 @@ class Agent:
                                 context_window=session.context_window,
                             )
                 except Exception as api_err:
+                    # SDK/h11 exceptions echo the credential ("Incorrect API
+                    # key provided: sk-...", "Illegal header value b'...'") —
+                    # scrub before the string reaches the emitted event or the
+                    # log (exc_info would print the raw exception too).
                     err_type = type(api_err).__name__
                     err_msg = (
-                        f"LLM API error: {api_err}\n"
+                        f"LLM API error: {_scrub_credentials(str(api_err), self._credentials)}\n"
                         f"  model={provider.model_name}, iteration={iteration}, "
                         f"messages={len(messages)}, error_type={err_type}"
                     )
@@ -1355,8 +1385,7 @@ class Agent:
                         iteration,
                         len(messages),
                         pending_tool_ids,
-                        api_err,
-                        exc_info=True,
+                        _scrub_credentials(traceback.format_exc(), self._credentials),
                     )
                     await session.emit("error", message=err_msg)
                     await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
@@ -1798,14 +1827,22 @@ class Agent:
                     # A crash must not leave the task stuck at "running" with
                     # its dependents forever undispatchable (gather with
                     # return_exceptions=True would silently swallow it).
-                    _log.error("Task %s crashed: %s", task_id, e, exc_info=True)
+                    # Scrub the whole traceback: the exception's __cause__
+                    # chain can still carry a raw provider error even when
+                    # its own message was scrubbed at the raise site.
+                    scrubbed = _scrub_credentials(str(e), self._credentials)
+                    _log.error(
+                        "Task %s crashed: %s",
+                        task_id,
+                        _scrub_credentials(traceback.format_exc(), self._credentials),
+                    )
                     for tp in self._task_plan:
                         if tp["id"] == task_id:
                             tp["status"] = "failed"
-                            tp["error"] = f"Execution error: {e}"[:500]
+                            tp["error"] = f"Execution error: {scrubbed}"[:500]
                             break
                     self._mark_prompt_dirty()
-                    await session.emit("task_failed", task_id=task_id, error=f"Execution error: {e}"[:500])
+                    await session.emit("task_failed", task_id=task_id, error=f"Execution error: {scrubbed}"[:500])
                     failed.add(task_id)
                     task_results[task_id] = f"[FAILED] {task_map[task_id]['title']}"
                     await _cascade_skip(task_id)
@@ -2206,17 +2243,21 @@ class Agent:
                             context_window=session.context_window,
                         )
             except Exception as api_err:
+                # Same scrub rule as the main loop: the message is raised
+                # into _execute_and_finish, which persists it to agent_tasks
+                # and emits task_failed — and the chained exception below
+                # would otherwise put the raw text into any traceback log.
+                scrubbed_tb = _scrub_credentials(traceback.format_exc(), self._credentials)
                 _log.error(
                     "task provider.stream() failed: task_id=%s provider=%s messages=%d pending_tool_call_ids=%s error=%s",
                     task_id,
                     provider.model_name,
                     len(messages),
                     pending_tool_ids,
-                    api_err,
-                    exc_info=True,
+                    scrubbed_tb,
                 )
                 raise RuntimeError(
-                    f"LLM API error: {api_err}\n"
+                    f"LLM API error: {_scrub_credentials(str(api_err), self._credentials)}\n"
                     f"  task_id={task_id}, model={provider.model_name}, "
                     f"messages={len(messages)}, error_type={type(api_err).__name__}"
                 ) from api_err

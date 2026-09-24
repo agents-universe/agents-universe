@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import traceback
 from functools import lru_cache
 
 from .providers.base import LLMProvider, Message, ToolDefinition
@@ -487,7 +488,16 @@ async def compress_history(
         # transient summarization failure (429/5xx/network) must not replace
         # the early history with a placeholder. Skip compression this turn;
         # the next turn retries with the full history intact.
-        _log.warning("History summarization failed, skipping compression: %s", e, exc_info=True)
+        if provider.secret_values():
+            # exc_info would print the raw exception, and provider errors can
+            # echo the api_key (SDK auth errors quote it; h11 quoted it before
+            # get_provider refused header-unsafe keys). Format + scrub instead.
+            _log.warning(
+                "History summarization failed, skipping compression: %s",
+                provider.scrub(traceback.format_exc()),
+            )
+        else:
+            _log.warning("History summarization failed, skipping compression: %s", e, exc_info=True)
         return messages
 
     return build_summary_pair(summary) + recent

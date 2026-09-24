@@ -33,6 +33,26 @@ def _header_value_problem(value: str) -> str | None:
     return None
 
 
+def redact_secret(text: str, secret: str | None) -> str:
+    """Replace *secret* in *text* with ``[REDACTED]``.
+
+    Both the raw value and its bytes-repr escaped form are matched: h11 and
+    tracebacks quote values via repr, so a pasted trailing newline appears
+    there as a literal backslash-n that a raw substring replace would miss.
+    Same rule as the ``_redact_key`` helpers in the token/api-key routers.
+    """
+    if not text or not secret:
+        return text
+    text = text.replace(secret, "[REDACTED]")
+    try:
+        escaped = repr(secret.encode("utf-8"))[2:-1]
+    except Exception:
+        return text
+    if escaped and escaped != secret:
+        text = text.replace(escaped, "[REDACTED]")
+    return text
+
+
 def _should_bypass_proxy(target_url: str, no_proxy: str) -> bool:
     """Check if target_url matches any entry in the NO_PROXY list."""
     if not no_proxy or not target_url:

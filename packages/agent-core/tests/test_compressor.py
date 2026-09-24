@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from agent_core.compressor import (
     MAX_OUTPUT_RESERVE,
@@ -122,12 +123,48 @@ async def test_compress_keeps_full_history_when_summarization_fails():
 
     provider = AsyncMock()
     provider.complete.side_effect = RuntimeError("transient 429")
+    provider.secret_values = Mock(return_value=[])
 
     result = await compress_history(messages, token_budget=100, provider=provider)
 
     # Same list object returned: nothing compressed, nothing dropped
     assert result is messages
     assert len(result) == len(messages)
+
+
+async def test_compress_summarization_failure_redacts_provider_key(caplog):
+    """The summarization exception is logged with exc_info when the provider
+    holds no secret — with a key it must be formatted and scrubbed instead,
+    in both raw and bytes-repr escaped forms (SDK auth errors and h11 both
+    echo the credential back)."""
+    bad = "sk-compress-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+
+    messages: list[Message] = []
+    for i in range(10):
+        messages.append(_message("user", f"user payload {i} " * 12))
+        messages.append(_assistant_with_call(i))
+        messages.append(_tool_response(i))
+
+    provider = AsyncMock()
+    provider.complete.side_effect = RuntimeError(
+        f"Illegal header value b'Bearer {escaped}'"
+    )
+    provider.secret_values = Mock(return_value=[bad])
+    # The log must carry provider.scrub's output instead of exc_info's raw
+    # traceback — the marker proves the routing, the real scrub is covered
+    # by test_provider_credential_validation.
+    provider.scrub = Mock(return_value="History summarization failed: [REDACTED]")
+
+    with caplog.at_level(logging.WARNING):
+        result = await compress_history(messages, token_budget=100, provider=provider)
+
+    # Soft failure: history untouched.
+    assert result is messages
+    assert provider.scrub.call_count == 1
+    assert bad not in caplog.text
+    assert escaped not in caplog.text
+    assert "[REDACTED]" in caplog.text
 
 
 def test_compression_budget_reserves_capped_output():

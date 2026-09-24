@@ -44,6 +44,20 @@ def get_provider(provider_key: str, credentials: dict[str, Any]) -> LLMProvider:
         raise ValueError(
             f"Unknown LLM provider: {provider_key!r}. Available: {list(_PROVIDER_LOADERS)}"
         )
+    api_key = credentials.get("api_key")
+    if isinstance(api_key, str) and api_key:
+        # The key goes into an HTTP header verbatim (x-api-key / Bearer /
+        # api-key). h11 rejects an illegal value by echoing it back
+        # ("Illegal header value b'...'") — that echo IS the credential, and
+        # it would surface in stream error messages, logs and task_failed
+        # rows. Refuse construction; the message names no secret.
+        from ..tools._http import _header_value_problem
+        problem = _header_value_problem(api_key)
+        if problem:
+            raise ValueError(
+                f"API key for provider {provider_key!r} {problem} — "
+                "re-save it in Settings → AI Models without it"
+            )
     try:
         cls = loader()
     except ImportError as e:

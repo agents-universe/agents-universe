@@ -165,3 +165,25 @@ class LLMProvider(ABC):
 
     async def close(self) -> None:
         """Release any held resources (HTTP clients, connections). Safe to call multiple times."""
+
+    def secret_values(self) -> list[str]:
+        """Credential values this provider puts on the wire.
+
+        Every concrete provider stores its key as ``_api_key``. Provider
+        exceptions (SDK auth errors, h11's header rejection) can embed the
+        key, so callers that log exception text run it through :meth:`scrub`
+        first — tokens are never logged (CLAUDE.md token-security rule).
+        """
+        key = getattr(self, "_api_key", None)
+        return [key] if isinstance(key, str) and key else []
+
+    def scrub(self, text: str) -> str:
+        """Replace every :meth:`secret_values` entry in *text* with ``[REDACTED]``.
+
+        Matches the raw value and the bytes-repr escaped form h11/tracebacks
+        quote — see :func:`agent_core.tools._http.redact_secret`.
+        """
+        from ..tools._http import redact_secret
+        for value in self.secret_values():
+            text = redact_secret(text, value)
+        return text

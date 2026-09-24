@@ -10,6 +10,7 @@ tasks by their stable titles and map titles -> UUIDs via agent._task_plan.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -605,3 +606,58 @@ async def test_close_on_full_queue_keeps_task_skipped_event():
     assert drained[-1] is None
     types = [e.type for e in drained[:-1]]
     assert types == ["task_skipped", "stream_end"], f"task_skipped must survive, got {types}"
+
+
+# ── Credential scrubbing on the crash path ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_task_crash_scrubs_credential_from_log_and_task_failed(caplog):
+    """A crashed task logs the traceback, persists the error into the plan
+    and emits task_failed — all three must be scrubbed. The provider
+    exception's cause chain (h11's "Illegal header value b'...'") is the
+    credential itself and would otherwise land in the log and the DB."""
+    bad = "sk-task-crash-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+
+    agent = _make_agent()
+    agent._credentials = {"cfg1": {"api_key": bad}}
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+
+    async def _boom(task, *args, **kwargs):
+        raise RuntimeError(f"Illegal header value b'Bearer {escaped}'")
+
+    with _patch_execute(agent, _boom):
+        with caplog.at_level(logging.ERROR):
+            await agent._run_task_mode(
+                _make_plan_args([("a", [])]),
+                provider=MagicMock(),
+                session=session,
+                messages=[],
+                tool_defs=[],
+                config_id="cfg1",
+                plan_tool_id="call_plan",
+            )
+    await session.stop_drainer()
+
+    assert bad not in caplog.text
+    assert escaped not in caplog.text
+    assert "REDACTED" in caplog.text
+
+    failed = [d for t, d in session.events_emitted if t == "task_failed"]
+    assert failed, "the crashed task must emit task_failed"
+    err = failed[0]["error"]
+    assert "REDACTED" in err
+    assert bad not in err
+    assert escaped not in err
+
+    for tp in agent._task_plan:
+        if tp["title"] == "Task a":
+            assert tp["status"] == "failed"
+            assert "REDACTED" in tp.get("error", "")
+            assert bad not in tp.get("error", "")
+            assert escaped not in tp.get("error", "")
+            break
+    else:
+        pytest.fail("Task a missing from the normalized plan")

@@ -59,6 +59,9 @@ class OpenAIProvider(LLMProvider):
     """OpenAI via the openai SDK."""
 
     def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None, ssl_verify: bool = False, url_mode: str = "base_url", context_window: int | None = None, thinking_enabled: bool | None = None, reasoning_effort: str | None = None) -> None:
+        # Kept for secret_values()/scrub() — the SDK holds its own copy but
+        # exposes no accessor, and exception text must be redactable.
+        self._api_key = api_key
         kwargs: dict = {"api_key": api_key}
         if base_url:
             b = base_url.rstrip("/")
@@ -353,6 +356,8 @@ class AzureOpenAIProvider(OpenAIProvider):
             raise ValueError("Azure OpenAI requires an endpoint")
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("Azure OpenAI endpoint must be an HTTP or HTTPS URL with a hostname")
+        # Same _api_key contract as OpenAIProvider (no super().__init__ here).
+        self._api_key = api_key
         self._client = AsyncAzureOpenAI(
             api_key=api_key,
             azure_endpoint=base,

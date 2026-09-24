@@ -456,10 +456,10 @@ class KnowledgeRWTool(Tool):
                     "are invisible to the deferred list."
                 )
             # Full invalidate: the cached entries list is what feeds
-            # deferred_entries/status on the next conversation, and
-            # invalidate_slug only evicts content (which is never populated)
-            # — a reindexed file would otherwise keep serving stale metadata
-            # (title/summary/word_count) until process restart. Mirrors _op_delete.
+            # deferred_entries/status on the next conversation (cached
+            # per-file content is never populated) — a reindexed file would
+            # otherwise keep serving stale metadata (title/summary/word_count)
+            # until process restart. Mirrors _op_delete.
             if result["indexed"] and context.knowledge_cache is not None:
                 context.knowledge_cache.invalidate(context.project_id)
             # Notify the frontend so the knowledge progress bar updates in real time.
@@ -549,8 +549,9 @@ class KnowledgeRWTool(Tool):
 
             unload_dynamic_entry(ctx, slug)
 
-        # Full invalidate: invalidate_slug only evicts cached content, while
-        # the stale entries list is what feeds deferred_entries next time.
+        # Full invalidate: the stale entries list is what feeds
+        # deferred_entries next time (cached per-file content is never
+        # populated, so per-slug eviction would be a no-op).
         if context.knowledge_cache is not None:
             context.knowledge_cache.invalidate(context.project_id)
 

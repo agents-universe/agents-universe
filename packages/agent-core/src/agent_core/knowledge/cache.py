@@ -67,15 +67,6 @@ class KnowledgeCache:
         self._store.pop(project_id, None)
         _log.debug("Knowledge cache invalidated for project %s", project_id)
 
-    def invalidate_slug(self, project_id: str, slug: str) -> None:
-        """Evict a single file's cached content so it is re-read on next access."""
-        cached = self._store.get(project_id)
-        if cached is None:
-            return
-        if slug in cached.content:
-            del cached.content[slug]
-            _log.debug("Knowledge cache entry evicted: %s / %s", project_id, slug)
-
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

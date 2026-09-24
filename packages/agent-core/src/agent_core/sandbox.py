@@ -144,13 +144,6 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # own venv and invoked via its console script. Only the COMMAND token is
 # exempt from the absolute-path rule; its arguments pass every path check.
 _ALLOWED_ABSOLUTE_COMMANDS = frozenset({"/opt/semgrep-venv/bin/semgrep"})
-# command-substitution payloads inside DATA-command args are
-# executed for real — extracted for recursive validation. Single-level;
-# nested substitutions keep their outer content validated via the path
-# checks on the containing argument.
-_SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
-
-
 def _skip_subst_parens(text: str, start: int) -> int | None:
     """Index of the `)` closing a $(...) region at *start* (points past the
     `$(`). Nested parens count depth; a `)` inside a quoted string does not
@@ -500,9 +493,9 @@ def _check_all_substitutions(
 ) -> str | None:
     """Validate command-substitution payloads at EVERY nesting level.
 
-    _SUBST_RE only captures the INNERMOST $(...) — bash executes the full
-    nested chain, so `echo "$(cat $(echo /etc/passwd))"` reads host files
-    unless each layer is validated on its own. Every layer is validated as
+    A single-level capture only gets the INNERMOST $(...) — bash executes
+    the full nested chain, so `echo "$(cat $(echo /etc/passwd))"` reads host
+    files unless each layer is validated on its own. Every layer is validated as
     its own command, with its inner substitutions still in place — the token
     checks then see a substitution in a path position of the outer layer
     (`cat $(echo /etc/passwd)` resolves to `cat $` → rejected).
@@ -758,8 +751,8 @@ def validate_command(
     temp = Path(tempfile.gettempdir()).resolve()
 
     # Every substitution payload — at every nesting level — must pass
-    # validation as its own command. _SUBST_RE alone misses the OUTER layers
-    # of nested $(...), which bash still executes (echo "$(cat $(echo
+    # validation as its own command. A single-level scan misses the OUTER
+    # layers of nested $(...), which bash still executes (echo "$(cat $(echo
     # /etc/passwd))" reads host files if the outer `cat ...` layer is never
     # checked). Runs on the whole command so unquoted heredoc bodies (which
     # execute substitutions) are covered too.

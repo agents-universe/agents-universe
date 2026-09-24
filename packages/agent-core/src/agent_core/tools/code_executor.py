@@ -55,11 +55,6 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # to an unvalidated absolute path. Optional single-letter flags are consumed
 # (`declare -p`, `readonly -a`).
 _ASSIGN_PREFIX_RE = re.compile(r"^(?:export|local|declare|typeset|readonly)(?:\s+-[A-Za-z]+)*\s+")
-# Command substitution payloads: $(...) or backticks. These execute when bash
-# runs the line — they must never appear un-validated in skipped regions
-# (unquoted heredoc bodies, assignment values).
-_SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
-
 # Scheme prefix of a proxy URL. The userinfo is peeled off with this instead of
 # urlparse because a scheme-less "user:pass@host:port" parses as scheme="user"
 # and the credential would be missed entirely.

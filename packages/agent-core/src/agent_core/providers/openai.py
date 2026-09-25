@@ -33,8 +33,6 @@ def _context_window(model: str) -> int:
         version = tuple(int(part) for part in glm_ver.group(1).split("."))
         if version >= (5, 3):
             return 1_000_000
-    if "gemini-2.5" in m or "gemini-3" in m:
-        return 1_000_000
     if "gemini" in m:
         return 1_000_000
     # gpt-4o, gpt-4-turbo, gpt-4o-mini, etc.

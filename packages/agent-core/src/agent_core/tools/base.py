@@ -272,6 +272,10 @@ class ToolContext:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "MYSQL_PWD",
         "PGPASSWORD",
+        # SSH agent socket — owning the path lets code sign with the host
+        # user's keys (e.g. git push via forwarded agent auth), the same
+        # capability class the rest of this list strips.
+        "SSH_AUTH_SOCK",
     })
 
     def safe_env(self, *, extra: dict[str, str] | None = None) -> dict[str, str]:

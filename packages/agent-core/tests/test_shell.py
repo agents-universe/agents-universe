@@ -155,6 +155,16 @@ def test_build_env_merges_extra_after_safe_env(monkeypatch):
     assert "_AGENT_EXEC_ALLOWLIST" in env_no_extra
 
 
+def test_safe_env_strips_ssh_agent_socket(monkeypatch):
+    """SSH_AUTH_SOCK lets code sign with the host user's keys (git push over
+    forwarded agent auth) — the same capability class as the credential keys
+    the deny lists already strip. Neither the prefix nor the suffix rules
+    cover it (it starts with SSH_ and ends in SOCK)."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent-placeholder.sock")
+    env = make_context().safe_env()
+    assert "SSH_AUTH_SOCK" not in env
+
+
 def test_build_env_normalizes_proxy_env(monkeypatch):
     """_build_env runs the shared proxy_env() normalization (parity with
     code_executor): one resolved URL in all four HTTP(S) spellings, a stale

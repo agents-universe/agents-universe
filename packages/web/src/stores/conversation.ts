@@ -906,29 +906,6 @@ export const useConversationStore = defineStore('conversation', () => {
     pushStreamingMessage(messageId, undefined, false, id, opts)
   }
 
-  function failStreaming(messageId: string, errorMessage: string, targetId?: string) {
-    const id = targetId ?? activeId.value!
-    const rt = ensureRuntime(id)
-    for (const tc of rt.activeToolCalls) {
-      if (tc.status === 'running' || tc.status === 'preparing') {
-        tc.output = { error: errorMessage }
-        tc.status = 'error'
-      }
-    }
-    if (rt.streamingContent || rt.streamingThinking || Object.keys(rt.streamingByTask).length > 0 || rt.activeToolCalls.length > 0 || rt.streamingImages.length > 0 || rt.streamingFiles.length > 0) {
-      pushStreamingMessage(messageId, rt.streamingContent || errorMessage, true, id)
-    } else {
-      rt.messages.push({
-        id: messageId || `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        role: 'assistant',
-        content: errorMessage,
-        isError: true,
-        timestamp: Date.now(),
-      })
-      stopStreaming(id)
-    }
-  }
-
   function abortStreaming(reason = '工具调用已停止', targetId?: string) {
     const id = targetId ?? activeId.value!
     const rt = ensureRuntime(id)
@@ -1358,7 +1335,6 @@ export const useConversationStore = defineStore('conversation', () => {
     stopStreaming,
     clearStreamingState,
     pushStreamingMessage,
-    failStreaming,
     abortStreaming,
     setConversationId,
     startConversation,

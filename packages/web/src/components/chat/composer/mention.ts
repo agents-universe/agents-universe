@@ -24,7 +24,20 @@ export function resolveMentionAgent(
   content: string,
   mentioned: MentionedAgent[],
 ): MentionResolution {
-  const valid = mentioned.filter((a) => content.includes(`@${a.label}`))
+  const valid = mentioned.filter((a) => {
+    // The mapping dies when its literal text is gone — but a bare substring
+    // test keeps it alive for a longer hand-typed handle that merely starts
+    // with the label ("@Roberta" would preserve a deleted "@Rob"). The
+    // occurrence only counts when the label ends at a boundary.
+    const at = `@${a.label}`
+    let idx = content.indexOf(at)
+    while (idx !== -1) {
+      const next = content[idx + at.length]
+      if (next === undefined || !/[\w-]/.test(next)) return true
+      idx = content.indexOf(at, idx + 1)
+    }
+    return false
+  })
   const slugs = [...new Set(valid.map((a) => a.slug))]
   if (slugs.length > 1) return { error: 'multiple' }
   return slugs[0] ? { agentSlug: slugs[0] } : { agentSlug: undefined }

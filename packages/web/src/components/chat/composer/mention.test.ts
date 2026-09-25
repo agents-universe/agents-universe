@@ -33,6 +33,20 @@ describe('resolveMentionAgent', () => {
     expect(resolveMentionAgent('@数据分析专家 先看，@数据分析专家 再确认', mentioned))
       .toEqual({ agentSlug: 'data-analyst' })
   })
+
+  it('drops a mapping whose label only survives inside a longer handle', () => {
+    // The popup-inserted "@Rob" was deleted; the hand-typed "@Roberta"
+    // must not keep Rob's mapping alive through a substring match.
+    const rob = [{ slug: 'rob', label: 'Rob' }]
+    expect(resolveMentionAgent('@Roberta 你是谁', rob))
+      .toEqual({ agentSlug: undefined })
+  })
+
+  it('keeps a mapping when the label ends at a non-word boundary', () => {
+    const rob = [{ slug: 'rob', label: 'Rob' }]
+    expect(resolveMentionAgent('@Rob 看下这个', rob)).toEqual({ agentSlug: 'rob' })
+    expect(resolveMentionAgent('@Rob，看下这个', rob)).toEqual({ agentSlug: 'rob' })
+  })
 })
 
 describe('MentionPopup - agents only', () => {

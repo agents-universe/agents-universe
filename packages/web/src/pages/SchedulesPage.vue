@@ -648,6 +648,10 @@ function applyPreset(event: Event) {
 // Debounced "next three fire times" preview — the backend owns cron parsing,
 // so the dialog never has to guess whether an expression is valid.
 let previewTimer: ReturnType<typeof setTimeout> | null = null
+// Monotonic request token: only the newest request may apply its result —
+// an older in-flight preview (or its error) landing late must not overwrite
+// a newer one, and the expr-only equality check missed timezone changes.
+let previewSeq = 0
 watch(
   () => [form.cron_expr, form.timezone] as const,
   () => {
@@ -656,16 +660,23 @@ watch(
     previewTimer = setTimeout(async () => {
       const pid = projectId.value
       const expr = form.cron_expr.trim()
+      const tz = form.timezone
       if (!pid || !expr) return
+      const seq = ++previewSeq
+      const stillCurrent = () =>
+        seq === previewSeq && expr === form.cron_expr.trim() && tz === form.timezone
       try {
-        const result = await schedulesApi.preview(pid, expr, form.timezone)
-        if (expr === form.cron_expr.trim()) {
+        const result = await schedulesApi.preview(pid, expr, tz)
+        if (stillCurrent()) {
           preview.value = result
           previewError.value = ''
         }
       } catch (e) {
-        preview.value = null
-        previewError.value = e instanceof Error ? e.message : t('scheduledTasks.invalidCron')
+        // Same guard as success: a stale failure must not clear a newer preview.
+        if (stillCurrent()) {
+          preview.value = null
+          previewError.value = e instanceof Error ? e.message : t('scheduledTasks.invalidCron')
+        }
       }
     }, 400)
   },

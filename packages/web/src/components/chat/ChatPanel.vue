@@ -268,6 +268,9 @@ const scrollSignature = computed(() => [
   convStore.activeToolCalls.map((c) =>
     `${c.callId}:${c.status}:${c.output ? 1 : 0}`,
   ).join('|'),
+  // The reasoning block grows the same way streamingContent does — without
+  // it the viewport stays put while thinking text streams below the fold.
+  `${convStore.thinkingOpen ? 1 : 0}:${convStore.streamingThinking.length}`,
   convStore.pendingPrompts.length,
 ].join('§'))
 

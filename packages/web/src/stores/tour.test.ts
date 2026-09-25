@@ -126,4 +126,49 @@ describe('tour store', () => {
     await store.skip()
     await flush()
   })
+
+  it('stop cancels the in-flight advance so an immediate restart shows its first step', async () => {
+    const store = useTourStore()
+    store.start(0, fakeRouter())
+    await store.next() // welcome → project-cta (no project yet)
+    const walking = store.next() // advanceTo(create-project-form): waitFor pending
+    store.stop()
+    expect(store.isActive).toBe(false)
+
+    // Restart must claim the advance slot — pre-fix the dead transition's
+    // `advancing` flag swallowed it and welcome never came back.
+    store.start(0, fakeRouter())
+    expect(store.stepIndex).toBe(0)
+
+    // The zombie's wait times out and must abort without touching the
+    // restarted tour (no background step change, no self-completion).
+    await vi.advanceTimersByTimeAsync(9000)
+    await walking
+    expect(store.stepIndex).toBe(0)
+    expect(mockPatch).not.toHaveBeenCalled()
+
+    await store.skip()
+    await flush()
+  })
+
+  it('prev walks back over steps the forward pass would never show', async () => {
+    const projectStore = useProjectStore()
+    projectStore.setCurrentProject({ project_id: 'p-1' } as never)
+    projectStore.setProjects([{ project_id: 'p-1' }] as never)
+
+    const store = useTourStore()
+    store.start(0, fakeRouter('/projects/p-1/chat'))
+    await store.next()
+    expect(store.stepIndex).toBe(4) // chat-composer
+
+    // Steps 1–3 are condition-gated on having NO project (and
+    // project-created additionally on coming from the create form) — a bare
+    // stepIndex-- landed on 3, whose overlay anchors/conditions don't hold.
+    // The only eligible step before 4 is welcome (0).
+    store.prev()
+    expect(store.stepIndex).toBe(0)
+
+    await store.skip()
+    await flush()
+  })
 })

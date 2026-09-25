@@ -1,5 +1,4 @@
-import { apiFetch, ApiError } from './client'
-import { withApi } from '@/utils/basePath'
+import { apiFetch, apiFetchRaw, ApiError } from './client'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -135,15 +134,11 @@ export const publishApi = {
 
   /** Abort the running turn of an embedded publish. */
   abortSession: async (publishId: string, token: string): Promise<{ aborted: boolean }> => {
-    const res = await fetch(
-      withApi(`/api/p/${publishId}/session/abort`),
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      },
-    )
+    const res = await apiFetchRaw(`/api/p/${publishId}/session/abort`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
     if (!res.ok) throw new ApiError(res.status, `${res.status} ${res.statusText}`)
     return await res.json()
   },
@@ -159,15 +154,11 @@ export const publishApi = {
     message: string,
     onDelta?: (delta: string) => void,
   ): Promise<string> => {
-    const res = await fetch(
-      withApi(`/api/p/${publishId}/session/run`),
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, message }),
-      },
-    )
+    const res = await apiFetchRaw(`/api/p/${publishId}/session/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, message }),
+    })
     if (!res.ok || !res.body) {
       let detail = `${res.status} ${res.statusText}`
       let code: string | undefined

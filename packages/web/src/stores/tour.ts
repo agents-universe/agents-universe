@@ -28,6 +28,10 @@ export const useTourStore = defineStore('tour', () => {
   let stopPromise: Promise<void> | null = null
   let stopResolve: (() => void) | null = null
   let advancing = false
+  // Bumped by stop() so an in-flight advanceTo aborts at its next checkpoint
+  // instead of finishing in the background (route pushes and even completeTour
+  // after the user closed the tour).
+  let tourGen = 0
 
   function setServerState(prefs: UserPreferences) {
     completed.value = prefs.onboarding_completed
@@ -62,8 +66,27 @@ export const useTourStore = defineStore('tour', () => {
   }
 
   function prev() {
-    if (!isActive.value) return
-    stepIndex.value = Math.max(0, stepIndex.value - 1)
+    if (!isActive.value || advancing) return
+    let index = stepIndex.value - 1
+    // Walk back over steps the forward pass would never have shown (mobile
+    // skips, unmet or sequence-bound conditions) — landing on one renders an
+    // overlay whose anchors/conditions don't hold. No eligible step back:
+    // stay put rather than show a broken one.
+    while (index >= 0) {
+      const step = TOUR_STEPS[index]
+      if (step.skipOnMobile && isMobile()) {
+        index--
+        continue
+      }
+      // Same context the forward pass gives it: the step being left.
+      const prevStepId = TOUR_STEPS[stepIndex.value]?.id ?? null
+      if (step.condition && !step.condition({ prevStepId })) {
+        index--
+        continue
+      }
+      break
+    }
+    if (index >= 0) stepIndex.value = index
   }
 
   /** Skip the rest of the tour — marks the user as onboarded. */
@@ -91,7 +114,13 @@ export const useTourStore = defineStore('tour', () => {
 
   function stop() {
     if (!isActive.value) return
+    tourGen += 1 // cancel the in-flight advanceTo, if any
     isActive.value = false
+    // The zombie loop checks the generation before touching these — and an
+    // immediate start() must be able to claim the slot right away instead
+    // of being swallowed by the dead transition's flags.
+    advancing = false
+    waiting.value = false
     uninstallKeydown()
     unlockBodyScroll()
     const resolve = stopResolve
@@ -105,8 +134,11 @@ export const useTourStore = defineStore('tour', () => {
     if (advancing) return
     advancing = true
     waiting.value = true
+    const gen = tourGen
+    const aborted = () => gen !== tourGen
     try {
       while (index < TOUR_STEPS.length) {
+        if (aborted()) return
         const step = TOUR_STEPS[index]
         if (step.skipOnMobile && isMobile()) {
           console.warn(`tour: skipping "${step.id}" — mobile layout`)
@@ -134,7 +166,9 @@ export const useTourStore = defineStore('tour', () => {
             continue
           }
           await activeRouter.push(path)
+          if (aborted()) return
           const reached = await waitForRoute(path, () => activeRouter!.currentRoute.value.path)
+          if (aborted()) return
           if (!reached) {
             console.warn(`tour: skipping "${step.id}" — route "${path}" never became current`)
             index++
@@ -143,23 +177,31 @@ export const useTourStore = defineStore('tour', () => {
         }
         if (step.action) {
           await step.action({ router: activeRouter!, projectId: currentProjectId() })
+          if (aborted()) return
         }
         if (step.waitFor) {
           const el = await waitForSelector(step.waitFor)
+          if (aborted()) return
           if (!el) {
             console.warn(`tour: skipping "${step.id}" — "${step.waitFor}" never appeared`)
             index++
             continue
           }
         }
+        if (aborted()) return
         stepIndex.value = index
         return
       }
       // Advanced past the last step → the tour is over.
+      if (aborted()) return
       await finish()
     } finally {
-      waiting.value = false
-      advancing = false
+      // stop() already reset the flags for a possible restart; a zombie of a
+      // past generation must never clobber the replacement loop's state.
+      if (!aborted()) {
+        waiting.value = false
+        advancing = false
+      }
     }
   }
 

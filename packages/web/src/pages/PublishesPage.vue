@@ -351,7 +351,8 @@ async function createKey(p: PublishItem) {
     const item: PublishKeyCreateResult = res
     keysByPublish[p.publish_id] = [item, ...(keysByPublish[p.publish_id] ?? [])]
     pendingKeys[p.publish_id] = item.key
-    freshKeys[p.publish_id] = true
+    // freshKeys deliberately NOT set here: the badge reads "key copied" and
+    // may only light up after the copy succeeds (see copyKey).
   } catch (e) {
     message.ok = false
     message.text = e instanceof Error ? e.message : t('publishesPage.keyCreateFailed')
@@ -381,7 +382,9 @@ async function copyKey(publishId: string) {
   try {
     await navigator.clipboard.writeText(key)
     delete pendingKeys[publishId]
-    freshKeys[publishId] = false
+    // The badge's label is "key copied" — light it only now, when the copy
+    // actually happened (it used to show from creation and vanish here).
+    freshKeys[publishId] = true
     message.ok = true
     message.text = t('publishesPage.keyCopied')
   } catch {

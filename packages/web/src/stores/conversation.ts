@@ -1113,7 +1113,10 @@ export const useConversationStore = defineStore('conversation', () => {
     const rt = runtimes.get(id)
     if (!rt) return
     for (const pending of [...rt.pendingInjected]) {
-      rejectInjected(pending.content, message, id)
+      // Pass the entry's serverId: an ACKed injection (serverId stamped by
+      // input_queued) never matches the content-against-null fallback, so
+      // without it the rejected entry stays pending forever.
+      rejectInjected(pending.content, message, id, pending.serverId)
     }
   }
 

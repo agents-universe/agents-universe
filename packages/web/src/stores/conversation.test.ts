@@ -778,6 +778,31 @@ describe('conversation store - per-conversation runtime', () => {
     ])
   })
 
+  it('rejectAllPendingInjected settles acked entries too', () => {
+    // A turn-level WS error rejects everything still pending. An entry the
+    // server already ACKed (serverId stamped by input_queued) never matches
+    // the content-against-null fallback — without passing its serverId the
+    // entry stays pending forever and never receives the failure notice.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({
+      id: 'opt-1',
+      role: 'user',
+      content: 'typed while running',
+      timestamp: 1,
+    })
+    store.registerInjectedMessage('opt-1', 'typed while running', 'conv-a')
+    store.markInputQueued('srv-1', 'typed while running', 'conv-a')
+    expect(store.pendingInjected).toEqual([
+      { optimisticId: 'opt-1', content: 'typed while running', serverId: 'srv-1' },
+    ])
+
+    store.rejectAllPendingInjected('服务器错误，消息未处理', 'conv-a')
+
+    expect(store.pendingInjected).toEqual([])
+    expect(store.messages[0].content).toContain('服务器错误，消息未处理')
+  })
+
   it('loadHistory drops stale local messages older than the history tail', () => {
     // Compression replaced old rows with a summary line — stale local copies
     // from before the summary must not resurrect alongside it.

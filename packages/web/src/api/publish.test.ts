@@ -74,6 +74,24 @@ describe('publishApi.runSession', () => {
       .rejects.toThrowError('该会话已有一轮运行')
   })
 
+  it('routes a 401 to the login like every other apiFetch', async () => {
+    // runSession used to use bare fetch, bypassing the client's 401 policy —
+    // an expired session on the embedded page errored forever instead of
+    // bouncing back to SSO login.
+    vi.stubGlobal('location', { href: '' })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ detail: 'Not authenticated' }),
+    }))
+
+    await expect(publishApi.runSession('p1', 'tok', 'hello'))
+      .rejects.toMatchObject({ status: 401 })
+    expect(window.location.href).toContain('/auth/login')
+    vi.unstubAllGlobals()
+  })
+
   it('skips malformed frames without aborting the stream', async () => {
     const delta = { type: 'stream_delta', delta: 'ok' }
     const frames = [

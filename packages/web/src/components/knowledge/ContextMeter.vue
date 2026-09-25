@@ -40,8 +40,10 @@ const limit = computed(() => convStore.contextWindow ?? convStore.tokenBudget)
 const pct = computed(() => limit.value ? (occupancy.value / limit.value) * 100 : 0)
 
 const fillClass = computed(() => {
+  // Thresholds are the documented ones: <75 blue, 75–90 amber, >90 red —
+  // exactly 75% is amber, so the amber branch is inclusive at 75.
   if (pct.value > 90) return 'fill-red'
-  if (pct.value > 75) return 'fill-amber'
+  if (pct.value >= 75) return 'fill-amber'
   return 'fill-blue'
 })
 </script>

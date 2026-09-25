@@ -69,3 +69,20 @@ export async function apiFetch<T>(url: string, options?: RequestInit, expectedSt
 
   return res.json() as Promise<T>
 }
+
+/**
+ * fetch with apiFetch's auth policy but WITHOUT consuming the body — for
+ * streaming responses (the publish SSE turn) that must be read incrementally.
+ * The 401→login redirect used to live only in apiFetch, so a session expiring
+ * mid-stream left the embedded page erroring instead of bouncing to SSO.
+ */
+export async function apiFetchRaw(url: string, options?: RequestInit): Promise<Response> {
+  const res = await fetch(withApi(url), {
+    ...options,
+    credentials: 'include',
+  })
+  if (res.status === 401 && url !== '/api/me') {
+    redirectToLogin()
+  }
+  return res
+}

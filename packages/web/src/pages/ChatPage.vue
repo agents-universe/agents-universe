@@ -61,7 +61,9 @@ import { closeAllConnections } from '@/composables/useWebSocket'
 import {
   invalidateLatestConversation,
   isCurrentLatestSeq,
+  latestLoading,
   nextLatestSeq,
+  releaseLatestSeq,
 } from '@/composables/useLatestConversation'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import AgentCapabilitiesCard from '@/components/chat/AgentCapabilitiesCard.vue'
@@ -72,7 +74,11 @@ const { t } = useI18n()
 const convStore = useConversationStore()
 const agentStore = useAgentStore()
 
-const loading = ref(false)
+// Owned by the seq composable: every invalidator (AppLayout's new-chat,
+// the conversation tree's cross-agent pick) releases it, not just claims
+// whose seq stayed current — a page-local flag stuck true forever when its
+// run was discarded without a successor.
+const loading = latestLoading
 // A dead project URL (typed by hand, deleted project, stale tab) makes both
 // getLatest and create 404; without this the page shows a clickable button
 // that does nothing, silently.
@@ -85,10 +91,9 @@ async function loadLatestConversation() {
   if (convStore.conversationId) return
   if (!projectId.value || !agentSlug.value) return
 
-  const seq = nextLatestSeq()
+  const seq = nextLatestSeq() // also claims the shared loading flag
   const pid = projectId.value
   const slug = agentSlug.value
-  loading.value = true
   loadError.value = null
   try {
     const latest = await conversationsApi.getLatest(pid, slug)
@@ -125,7 +130,7 @@ async function loadLatestConversation() {
       : t('chatPage.loadFailed')
     console.error('Failed to load latest conversation', e)
   } finally {
-    if (isCurrentLatestSeq(seq)) loading.value = false
+    releaseLatestSeq(seq)
   }
 }
 
@@ -207,11 +212,10 @@ watch(projectId, () => {
 function handleNewConversation() {
   closeAllConnections()
   convStore.reset()
+  // Also releases the shared loading flag, so the in-flight load abandoned
+  // here can't leave startChat() bailing on `loading` (the empty state would
+  // spin forever with no conversation).
   invalidateLatestConversation()
-  // The in-flight load is now abandoned: its `finally` skips the reset on the
-  // seq mismatch, so clear the flag here. Otherwise startChat() below bails
-  // on `loading` and the empty state spins forever with no conversation.
-  loading.value = false
   loadError.value = null
   pendingNew = true
   pendingNewPid = projectId.value
@@ -239,9 +243,8 @@ async function startChat() {
   // can land after a project/agent switch reset everything. Without the seq
   // check, project A's new conversation overwrites the (now active) B
   // conversation and every message goes to the wrong project.
-  const seq = nextLatestSeq()
+  const seq = nextLatestSeq() // also claims the shared loading flag
   const pid = projectId.value
-  loading.value = true
   loadError.value = null
   try {
     const data = await conversationsApi.create(pid, agentSlug.value)
@@ -263,7 +266,7 @@ async function startChat() {
       : t('chatPage.createFailed')
     console.error('Failed to start conversation', e)
   } finally {
-    if (isCurrentLatestSeq(seq)) loading.value = false
+    releaseLatestSeq(seq)
   }
 }
 </script>

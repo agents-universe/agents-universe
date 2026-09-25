@@ -161,6 +161,45 @@ describe('PublishesPage', () => {
     expect(row.find('button.danger').exists()).toBe(true)
   })
 
+  it('shows the copied badge only after the copy succeeds', async () => {
+    // The badge reads "密钥已复制" — showing it from key CREATION claimed an
+    // action the user hadn't taken, and it vanished exactly when they did it.
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      publishApi.list.mockResolvedValue([makePublish()])
+      publishApi.createKey.mockResolvedValue({
+        key_id: 'k-1',
+        name: 'prod',
+        key: 'pua_plaintext',
+        key_hint: 'ext',
+        is_active: true,
+        created_at: '2026-09-08T00:00:00Z',
+        revoked_at: null,
+      })
+      const wrapper = mount(PublishesPage)
+      await flushPromises()
+
+      const input = wrapper.find('.publish-key-name-input')
+      await input.setValue('prod')
+      await input.trigger('keydown.enter')
+      await flushPromises()
+
+      // Created but not copied: raw key row shows, the badge must not.
+      expect(wrapper.find('.publish-copy-once').exists()).toBe(true)
+      expect(wrapper.find('.publish-fresh-key').exists()).toBe(false)
+
+      await wrapper.find('.publish-copy-btn').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('.publish-fresh-key').exists()).toBe(true)
+      expect(writeText).toHaveBeenCalledWith('pua_plaintext')
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor)
+      else delete (navigator as { clipboard?: unknown }).clipboard
+    }
+  })
+
   it('copies an absolute (origin-prefixed) page link', async () => {
     // The copied link must open when pasted anywhere — not a root-relative
     // path that only works in the current tab.

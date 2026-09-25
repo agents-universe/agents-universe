@@ -49,6 +49,12 @@ describe('ContextMeter', () => {
     expect(red.wrapper.find('.context-meter-fill').classes()).toContain('fill-red')
   })
 
+  it('exactly 75% is amber — the documented 75–90 band is inclusive at 75', async () => {
+    const boundary = setup(150_000, 200_000)
+    await nextTick()
+    expect(boundary.wrapper.find('.context-meter-fill').classes()).toContain('fill-amber')
+  })
+
   it('renders the context_usage breakdown row when present', async () => {
     const { wrapper, convStore } = setup(10_000, 200_000)
     convStore.setContextUsage(

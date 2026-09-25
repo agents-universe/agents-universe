@@ -73,7 +73,9 @@ def _parse_field(
             raise CronError(f"empty {name} entry in {text!r}")
 
         step = 1
+        stepped = False
         if "/" in part:
+            stepped = True
             part, _, step_text = part.partition("/")
             if not step_text.strip().isdigit() or int(step_text) == 0:
                 raise CronError(f"invalid step in {name} field: {raw!r}")
@@ -90,8 +92,9 @@ def _parse_field(
                 raise CronError(f"inverted range in {name} field: {part!r}")
         else:
             start = _int_field(part, name, lo, hi)
-            # Vixie treats ``a/n`` as ``a-max/n``; a bare value stays single.
-            end = hi if step > 1 else start
+            # Vixie treats ``a/n`` as ``a-max/n`` — the slash alone marks the
+            # open-ended range, even for n=1; a bare value stays single.
+            end = hi if stepped else start
 
         values.update(range(start, end + 1, step))
 

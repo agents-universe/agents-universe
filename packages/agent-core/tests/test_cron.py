@@ -58,6 +58,20 @@ class TestFieldExpansion:
             2026, 3, 4, 10, 25
         )
 
+    def test_explicit_step_one_stays_open_ended(self):
+        # ``30/1`` means 30-59 — the slash itself marks the open-ended
+        # Vixie range, even when the step is 1; a bare ``30`` stays single.
+        assert next_run_at("30/1 * * * *", "UTC", _utc(2026, 3, 4, 10, 31)) == _utc(
+            2026, 3, 4, 10, 32
+        )
+        assert next_run_at("30/1 * * * *", "UTC", _utc(2026, 3, 4, 10, 59)) == _utc(
+            2026, 3, 4, 11, 30
+        )
+        # A bare value with no slash is unaffected — still just :30.
+        assert next_run_at("30 * * * *", "UTC", _utc(2026, 3, 4, 10, 31)) == _utc(
+            2026, 3, 4, 11, 30
+        )
+
     def test_list(self):
         expr = "0,30 9,18 * * *"
         assert next_run_at(expr, "UTC", _utc(2026, 3, 4, 9, 0)) == _utc(2026, 3, 4, 9, 30)

@@ -225,7 +225,7 @@ async def execute_run(app, run_id: str) -> None:
 
 
 class _Outcome:
-    __slots__ = ("status", "summary", "error", "script_run_id")
+    __slots__ = ("status", "summary", "error", "script_run_id", "reply_persisted")
 
     def __init__(
         self,
@@ -233,11 +233,16 @@ class _Outcome:
         summary: str | None = None,
         error: str | None = None,
         script_run_id: str | None = None,
+        reply_persisted: bool = False,
     ) -> None:
         self.status = status
         self.summary = summary
         self.error = error
         self.script_run_id = script_run_id
+        # True when the kernel already wrote this run's message into the
+        # target conversation (agent targets) — delivery must then only
+        # nudge the socket, or the reply shows up twice.
+        self.reply_persisted = reply_persisted
 
 
 async def _finalize_failure(run_id: str, message: str) -> None:
@@ -484,10 +489,24 @@ async def _run_agent_target(app, target: _Target) -> _Outcome:
             manager.release_turn(conversation_id)
 
         async with AsyncSessionLocal() as db:
-            text = await _last_reply(db, conversation_id, transport)
+            text, errored = await _last_reply(db, transport)
+        if transport.error:
+            # A turn-level error event means this run failed, whatever the
+            # history holds — scoring it from the latest assistant row would
+            # report the PREVIOUS turn's reply as this run's result.
+            return _Outcome(
+                "failed", None, transport.error, reply_persisted=bool(text)
+            )
+        if errored:
+            # The turn persisted its own failure notice (refusal, content
+            # filter, empty output) — a message row exists, but the run failed.
+            return _Outcome(
+                "failed", None, (text or "The agent failed")[:_ERROR_CAP],
+                reply_persisted=True,
+            )
         if not text:
-            return _Outcome("failed", None, transport.error or "The agent produced no reply")
-        return _Outcome("completed", text[:_SUMMARY_CAP])
+            return _Outcome("failed", None, "The agent produced no reply")
+        return _Outcome("completed", text[:_SUMMARY_CAP], reply_persisted=True)
     finally:
         sem.release()
 
@@ -527,30 +546,37 @@ async def _resolve_conversation(db, target: _Target) -> str | None:
     return conversation_id
 
 
-async def _last_reply(db, conversation_id: str, transport: _NullTransport) -> str:
-    """Content of the assistant message this turn persisted."""
+async def _last_reply(db, transport: _NullTransport) -> tuple[str, bool]:
+    """``(content, is_failure_notice)`` of the assistant message THIS turn persisted.
+
+    Only the id carried by this turn's stream_end counts: a failed turn sends
+    either no stream_end at all or a synthetic id that was never written to
+    messages, and falling back to the conversation's latest assistant row
+    would score the run completed with the previous turn's reply.
+    """
     from api.models.conversation import Message as DbMessage
 
     message_id = (transport.stream_end or {}).get("message_id")
-    if message_id:
-        content = (
-            await db.execute(
-                select(DbMessage.content).where(DbMessage.message_id == message_id)
-            )
-        ).scalar_one_or_none()
-        if content:
-            return content
-    return (
+    if not message_id:
+        return "", False
+    row = (
         await db.execute(
-            select(DbMessage.content)
-            .where(
-                DbMessage.conversation_id == conversation_id,
-                DbMessage.role == "assistant",
+            select(DbMessage.content, DbMessage.knowledge_refs).where(
+                DbMessage.message_id == message_id
             )
-            .order_by(DbMessage.sequence_num.desc())
-            .limit(1)
         )
-    ).scalar_one_or_none() or ""
+    ).one_or_none()
+    if row is None:
+        return "", False
+    content, refs_json = row
+    errored = False
+    if refs_json:
+        try:
+            parsed = json.loads(refs_json)
+        except (TypeError, ValueError):
+            parsed = None
+        errored = bool(parsed.get("error")) if isinstance(parsed, dict) else False
+    return content or "", errored
 
 
 def _script_summary(
@@ -602,11 +628,14 @@ def _status_label(status: str) -> str:
 # ── Result delivery ──────────────────────────────────────────────────────────
 
 async def deliver_result(target: _Target, outcome: _Outcome) -> None:
-    """Append the run summary to the task's conversation as an assistant message.
+    """Deliver the run result to the task's conversation as an assistant message.
 
-    Deliberately silent on every failure path: a deleted or busy conversation
-    must not fail the run itself. The turn claim serializes the insert against
-    a live user turn so sequence numbers cannot interleave.
+    When the kernel already persisted this run's message (agent targets,
+    ``outcome.reply_persisted``) only the socket is nudged — appending the
+    summary again would post the reply twice. Deliberately silent on every
+    failure path: a deleted or busy conversation must not fail the run itself.
+    The turn claim serializes the insert against a live user turn so sequence
+    numbers cannot interleave.
     """
     if not target.conversation_id:
         return
@@ -631,6 +660,20 @@ async def deliver_result(target: _Target, outcome: _Outcome) -> None:
                 target.schedule_id,
             )
             return
+
+    if outcome.reply_persisted:
+        # The message row is already in the history; open sockets still need
+        # the refresh signal (nothing else sends one for a headless turn).
+        try:
+            await manager.send(
+                target.conversation_id, {"type": "conversation_updated"}
+            )
+        except Exception:  # noqa: BLE001 - delivery is best-effort
+            _log.exception(
+                "Could not notify scheduled result for schedule %s",
+                target.schedule_id,
+            )
+        return
 
     claimed = False
     for _ in range(5):

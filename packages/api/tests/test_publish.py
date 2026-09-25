@@ -376,6 +376,39 @@ async def test_stream_keeps_a_claim_retook_during_turn_cleanup(
     assert len(releases) == 1
 
 
+async def test_stream_surfaces_a_run_that_crashes_before_any_frame(
+    client, db, make_project, monkeypatch, caplog
+):
+    """A run task that raises before sending stream_end must not end the
+    SSE stream in silence, and its exception must be retrieved — otherwise
+    asyncio logs it as an unhandled task error when the task is collected."""
+    import logging
+
+    publish, _ = await _make_publish(db, make_project)
+    plain, _ = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...e"))
+    await db.commit()
+
+    async def _boom(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        raise RuntimeError("kernel exploded")
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _boom)
+
+    with caplog.at_level(logging.ERROR, logger="agents_universe.publish"):
+        async with client.stream(
+            "POST", f"/api/p/{publish.publish_id}/stream",
+            headers={"Authorization": f"Bearer {plain}"},
+            json={"message": "hi"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = ""
+            async for line in resp.aiter_lines():
+                body += line
+
+    assert '"type": "error"' in body
+    assert "publish run task failed" in caplog.text
+
+
 async def test_abort_endpoint(client, db, make_project):
     """A body-less abort stays compatible and never creates a conversation row."""
     publish, _ = await _make_publish(db, make_project)

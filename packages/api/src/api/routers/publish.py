@@ -464,7 +464,22 @@ async def publish_stream(
 
     task = asyncio.create_task(_run())
 
+    def _consume_run_exception(t: asyncio.Task) -> None:
+        # Retrieve the exception so asyncio never reports "Task exception
+        # was never retrieved" when the task is collected, and log it here
+        # — the SSE stream may already be closed by the time the unwinding
+        # task raises. Retrieval is idempotent, so the drain can also read
+        # t.exception() for its error frame.
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            _log.error("publish run task failed", exc_info=exc)
+
+    task.add_done_callback(_consume_run_exception)
+
     async def _drain():
+        saw_terminal = False
         try:
             while True:
                 try:
@@ -472,6 +487,7 @@ async def publish_stream(
                     yield sse_format(evt)
                     if evt.get("type") == "stream_end":
                         # Terminal frame; the task may still be unwinding.
+                        saw_terminal = True
                         break
                 except asyncio.TimeoutError:
                     if task.done():
@@ -479,9 +495,18 @@ async def publish_stream(
             # Flush anything left after the terminal event / task end.
             while not stream.queue.empty():
                 try:
-                    yield sse_format(stream.queue.get_nowait())
+                    evt = stream.queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
+                if evt.get("type") == "stream_end":
+                    saw_terminal = True
+                yield sse_format(evt)
+            # A run that crashed before any terminal frame would otherwise
+            # end the stream in silence — tell the client. (task.exception()
+            # also marks it retrieved; the done callback logs it either way.)
+            if not saw_terminal and task.done() and not task.cancelled():
+                if task.exception() is not None:
+                    yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
         except asyncio.CancelledError:
             # Client disconnected — stop the run rather than leak it.
             manager.signal_abort(conversation)
@@ -791,22 +816,47 @@ async def post_publish_session_run(
 
     task = asyncio.create_task(_run())
 
+    def _consume_run_exception(t: asyncio.Task) -> None:
+        # Retrieve the exception so asyncio never reports "Task exception
+        # was never retrieved" when the task is collected, and log it here
+        # — the SSE stream may already be closed by the time the unwinding
+        # task raises. Retrieval is idempotent, so the drain can also read
+        # t.exception() for its error frame.
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            _log.error("publish run task failed", exc_info=exc)
+
+    task.add_done_callback(_consume_run_exception)
+
     async def _drain():
+        saw_terminal = False
         try:
             while True:
                 try:
                     evt = await asyncio.wait_for(stream.queue.get(), timeout=0.5)
                     yield sse_format(evt)
                     if evt.get("type") == "stream_end":
+                        saw_terminal = True
                         break
                 except asyncio.TimeoutError:
                     if task.done():
                         break
             while not stream.queue.empty():
                 try:
-                    yield sse_format(stream.queue.get_nowait())
+                    evt = stream.queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
+                if evt.get("type") == "stream_end":
+                    saw_terminal = True
+                yield sse_format(evt)
+            # A run that crashed before any terminal frame would otherwise
+            # end the stream in silence — tell the client. (task.exception()
+            # also marks it retrieved; the done callback logs it either way.)
+            if not saw_terminal and task.done() and not task.cancelled():
+                if task.exception() is not None:
+                    yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
         except asyncio.CancelledError:
             manager.signal_abort(conversation)
             task.cancel()

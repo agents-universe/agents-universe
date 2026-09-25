@@ -72,14 +72,25 @@ class GitClient:
         if head:
             params["head"] = head
 
+        # GitHub's list-pulls endpoint has no author/reviewer query params —
+        # the filters below run client-side, so reading a single page would
+        # hide every matching PR beyond it. Walk pages until a short page
+        # (or the cap) says there is no more.
+        max_pages = 10
+        prs: list[dict] = []
         async with httpx.AsyncClient(timeout=self.timeout, verify=self.ssl_verify) as client:
-            resp = await client.get(
-                f"{self.api_url}/repos/{owner}/{repo}/pulls",
-                headers=self._headers,
-                params=params,
-            )
-            resp.raise_for_status()
-            prs = resp.json()
+            for page in range(1, max_pages + 1):
+                params["page"] = page
+                resp = await client.get(
+                    f"{self.api_url}/repos/{owner}/{repo}/pulls",
+                    headers=self._headers,
+                    params=params,
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                prs.extend(batch)
+                if len(batch) < per_page:
+                    break
 
         if author:
             prs = [pr for pr in prs if pr.get("user", {}).get("login", "").lower() == author.lower()]

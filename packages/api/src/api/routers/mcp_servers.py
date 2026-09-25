@@ -97,7 +97,13 @@ def _apply_body(row: MCPServer, body: MCPServerBody) -> None:
     """
     provided = body.model_fields_set
     row.slug = body.slug.strip()
-    row.name = body.name or row.slug
+    # name is optional in the schema: only overwrite a stored display name
+    # when the client actually sent it — a partial PUT that omits name must
+    # not silently reset it to the slug.
+    if "name" in provided:
+        row.name = body.name or row.slug
+    if row.name is None:
+        row.name = row.slug
     if "description" in provided:
         row.description = body.description
     if "transport" in provided:

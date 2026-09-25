@@ -201,6 +201,28 @@ async def test_update_preserves_fields_the_client_omits(client, db):
     assert row.headers is not None and "X-Team" in row.headers
 
 
+async def test_update_omitting_name_keeps_the_stored_display_name(client):
+    """name is optional in the body — a PUT that leaves it out must not reset
+    a customized display name to the slug."""
+    resp = await _create(client, name="Fancy Display")
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    assert created["name"] == "Fancy Display"
+
+    resp = await client.put(
+        f"/api/mcp/servers/{created['server_id']}",
+        json={
+            "slug": created["slug"],
+            "url": "https://mcp.example.com/mcp",
+            "transport": "auto",
+            "auth_type": "none",
+            "enabled": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Fancy Display"
+
+
 async def test_update_missing_404(client):
     resp = await client.put(
         "/api/mcp/servers/nope",

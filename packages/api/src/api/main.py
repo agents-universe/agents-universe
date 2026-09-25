@@ -90,12 +90,14 @@ async def _run_migrations() -> None:
             return
         except Exception:
             log.warning(
-                "Auto-migration attempt %d/3 failed; retrying in %ds",
+                "Auto-migration attempt %d/3 failed",
                 attempt + 1,
-                2 * (attempt + 1),
                 exc_info=True,
             )
-            await asyncio.sleep(2 * (attempt + 1))
+            # Sleep only between attempts — after the last failure a delay
+            # would just stall startup before the final warning.
+            if attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
     log.warning("Auto-migration failed after retries; database may need manual upgrade")
 
 

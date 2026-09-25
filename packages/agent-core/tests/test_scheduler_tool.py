@@ -262,10 +262,14 @@ class TestListGetUpdate:
         result = await tool.execute({
             "operation": "update",
             "schedule_id": created["schedule_id"],
-            "cron_expr": "*/30 * * * *",
+            # NOT */30: during the half hour before the original 0 9 cron's
+            # 09:00 fire, */30's next run IS 09:00 too, so the recomputed
+            # value legitimately equals the old one and the inequality below
+            # fails for 30 minutes every day. 0 10 never collides with 0 9.
+            "cron_expr": "0 10 * * *",
         }, context)
         assert result["success"] is True
-        assert result["cron_expr"] == "*/30 * * * *"
+        assert result["cron_expr"] == "0 10 * * *"
         assert result["next_run_at"] != created["next_run_at"]
 
     async def test_enable_disable_round_trip(self, sched_env):

@@ -85,6 +85,15 @@ async def compress_once(
         async with _compress_guard:
             if _compress_inflight.get(key) is future:
                 del _compress_inflight[key]
+        # The leader re-raises the failure above (scrubbed warning + HTTP
+        # error), so this future's exception is already surfaced — yet an
+        # unwaited future logs it as an asyncio ERROR when collected, and
+        # that formatter prints the exception WITH its chained context,
+        # where provider errors still echo the API key unscrubbed. Mark it
+        # retrieved: followers that shielded the future still receive it;
+        # only the duplicate unscrubbed log stops firing.
+        if future.done() and not future.cancelled():
+            future.exception()
 
 
 
@@ -472,7 +481,10 @@ async def compress_conversation(
             conversation_id,
             provider.scrub(traceback.format_exc()),
         )
-        raise CompressionError(502, "压缩失败，请重试。")
+        # from None: the chained provider exception carries the raw key, and
+        # format_exception follows __context__ by default — the scrub above
+        # only covers THIS log line, not any downstream formatter.
+        raise CompressionError(502, "压缩失败，请重试。") from None
 
     # Persist under the conversation row lock (serializes sequence_num
     # assignment, same pattern as websocket/handlers.py). The status filter

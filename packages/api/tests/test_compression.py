@@ -191,6 +191,103 @@ async def test_compress_llm_failure_log_scrubs_provider_key(
 
 
 @pytest.mark.asyncio
+async def test_compress_failure_future_never_logs_the_raw_key(
+    client, db, make_project, monkeypatch, caplog
+):
+    """compress_once parks the failure on a future only followers await; with
+    none, asyncio logs 'Future exception was never retrieved' when the future
+    is collected — formatting the exception WITH its chained provider error,
+    which still carries the key past the scrub. The leader must mark it
+    retrieved: gc.collect() below surfaces exactly that log pre-fix."""
+    import gc
+    import logging as _logging
+
+    project = await make_project()
+    conv = await _seed_conversation(db, project, message_count=20)
+
+    import api.services.compression as compression_service
+
+    bad = "sk-compress-api-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+
+    class KeyEchoProvider:
+        async def complete(self, messages, tools=None):
+            raise RuntimeError(f"Illegal header value b'Bearer {escaped}'")
+
+        def secret_values(self):
+            return [bad]
+
+        def scrub(self, text):
+            from agent_core.tools._http import redact_secret
+            for v in self.secret_values():
+                text = redact_secret(text, v)
+            return text
+
+    async def _resolve(db_, user_id):
+        return KeyEchoProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    with caplog.at_level(_logging.DEBUG):
+        resp = await client.post(f"/api/conversations/{conv.conversation_id}/compress")
+        assert resp.status_code == 502
+        # The future is reachable only through the traceback cycle it forms
+        # with its own exception — collect it now so the log fires in-test.
+        gc.collect()
+
+    assert "Future exception was never retrieved" not in caplog.text
+    assert bad not in caplog.text
+    assert escaped not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_compress_failure_error_does_not_chain_to_the_provider_error(
+    db, make_project, monkeypatch
+):
+    """format_exception follows __context__ by default, and the provider
+    error still carries the key there — the 502 CompressionError must be
+    raised with its context suppressed so no downstream formatter (a log, a
+    debugger, asyncio's never-retrieved handler) can print it."""
+    import traceback as _traceback
+
+    from api.services.compression import CompressionError, compress_once
+
+    project = await make_project()
+    conv = await _seed_conversation(db, project, message_count=20)
+
+    import api.services.compression as compression_service
+
+    bad = "sk-compress-api-leakme\n"
+    escaped = repr(bad.encode("utf-8"))[2:-1]
+
+    class KeyEchoProvider:
+        async def complete(self, messages, tools=None):
+            raise RuntimeError(f"Illegal header value b'Bearer {escaped}'")
+
+        def secret_values(self):
+            return [bad]
+
+        def scrub(self, text):
+            from agent_core.tools._http import redact_secret
+            for v in self.secret_values():
+                text = redact_secret(text, v)
+            return text
+
+    async def _resolve(db_, user_id):
+        return KeyEchoProvider()
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve)
+
+    with pytest.raises(CompressionError) as excinfo:
+        await compress_once(db, str(conv.conversation_id), "test-user")
+
+    assert excinfo.value.status_code == 502
+    formatted = "".join(_traceback.format_exception(excinfo.value))
+    assert bad not in formatted
+    assert escaped not in formatted
+
+
+@pytest.mark.asyncio
 async def test_compress_bad_key_returns_400_not_500(client, db, make_project, monkeypatch):
     """get_provider refuses a header-unsafe API key with a clean ValueError.
     compress_conversation must turn it into an actionable 400 — pre-fix it

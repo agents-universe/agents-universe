@@ -61,6 +61,38 @@ def _mk_key(publish_id: str):
     return plain, hash_publish_key(plain)
 
 
+def _record_turn_ownership(monkeypatch):
+    """Record every release_turn and mark when the run task unwinds.
+
+    The SSE drain returns as soon as stream_end is yielded — the run
+    task's finally may not have run yet — so the run semaphore (released
+    last in that finally) is swapped for a marker the test can await
+    before counting releases.
+    """
+    import api.routers.publish as publish_router
+    from api.websocket.manager import manager
+
+    releases: list[str] = []
+    unwound: list[str] = []
+    real_release = manager.release_turn
+
+    def _release(conversation_id: str) -> None:
+        releases.append(conversation_id)
+        real_release(conversation_id)
+
+    monkeypatch.setattr(manager, "release_turn", _release)
+
+    class _MarkerSemaphore:
+        async def acquire(self) -> bool:
+            return True
+
+        def release(self) -> None:
+            unwound.append("yes")
+
+    monkeypatch.setattr(publish_router, "_publish_semaphore", _MarkerSemaphore())
+    return releases, unwound
+
+
 # ── key hashing / auth helpers ─────────────────────────────────────────────
 
 
@@ -298,6 +330,50 @@ async def test_stream_creates_publish_conversation_and_runs(
     assert conv.publish_id == str(publish.publish_id)
     assert conv.thread_id == "default"
     assert conv.viewer_id is None
+
+
+async def test_stream_keeps_a_claim_retook_during_turn_cleanup(
+    client, db, make_project, monkeypatch
+):
+    """_run's finally must not release a claim re-taken after run_turn's
+    own release — that claim belongs to the new owner (a user message
+    arriving while the agent closes), and dropping it opens the
+    conversation to a second concurrent turn."""
+    import asyncio
+
+    publish, _ = await _make_publish(db, make_project)
+    plain, _ = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=hash_publish_key(plain), key_hint="...z"))
+    await db.commit()
+    releases, unwound = _record_turn_ownership(monkeypatch)
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        # The kernel's finally: release, then await agent.close() — during
+        # that window a new message claims the turn.
+        from api.websocket.manager import manager
+        manager.release_turn(conversation_id)
+        assert await manager.claim_turn(conversation_id)
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    async with client.stream(
+        "POST", f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hello world"},
+    ) as resp:
+        assert resp.status_code == 200
+        async for _line in resp.aiter_lines():
+            pass
+
+    for _ in range(200):
+        if unwound:
+            break
+        await asyncio.sleep(0.005)
+    assert unwound, "run task never unwound"
+    # Exactly one release: the kernel's own. A second would be the caller
+    # discarding the re-taken claim.
+    assert len(releases) == 1
 
 
 async def test_abort_endpoint(client, db, make_project):
@@ -542,6 +618,43 @@ async def test_session_run_streams_under_publisher(
     assert captured["agent_id"] == publish.agent_slug
 
 
+async def test_session_run_keeps_a_claim_retook_during_turn_cleanup(
+    client, db, make_project, as_user, monkeypatch
+):
+    """The viewer run task has the same no-double-release rule as the
+    API-key stream: a claim re-taken while the kernel closes must survive
+    the caller's finally."""
+    import asyncio
+
+    publish, _ = await _make_publish(db, make_project)
+    token = _make_viewer_token(str(publish.publish_id), "test-user")
+    releases, unwound = _record_turn_ownership(monkeypatch)
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        from api.websocket.manager import manager
+        manager.release_turn(conversation_id)
+        assert await manager.claim_turn(conversation_id)
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    async with as_user("test-user"):
+        async with client.stream(
+            "POST", f"/api/p/{publish.publish_id}/session/run",
+            json={"token": token, "message": "ping"},
+        ) as resp:
+            assert resp.status_code == 200
+            async for _line in resp.aiter_lines():
+                pass
+
+    for _ in range(200):
+        if unwound:
+            break
+        await asyncio.sleep(0.005)
+    assert unwound, "run task never unwound"
+    assert len(releases) == 1
+
+
 async def test_session_run_bad_token(client, db, make_project, as_user):
     publish, _ = await _make_publish(db, make_project)
     async with as_user("test-user"):
@@ -761,6 +874,10 @@ async def test_stream_thread_partitions(client, db, make_project, monkeypatch):
         seen.append(conversation_id)
         await transport.send(conversation_id, {"type": "stream_delta", "delta": "hi"})
         await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+        # Mirror the kernel's finally: run_turn owns the claim release —
+        # the caller's _run no longer does it for us.
+        from api.websocket.manager import manager
+        manager.release_turn(conversation_id)
 
     monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
 

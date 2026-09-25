@@ -469,24 +469,25 @@ async def _run_agent_target(app, target: _Target) -> _Outcome:
         if not await manager.claim_turn(conversation_id):
             # A human is mid-turn in that conversation — do not interleave.
             return _Outcome("skipped", None, "Conversation is busy with another turn")
-        try:
-            manager.ensure_abort_event(conversation_id)
-            manager.reset_abort(conversation_id)
-            transport = _NullTransport()
-            await run_turn(
-                conversation_id,
-                ws=SimpleNamespace(app=app),
-                msg={
-                    "content": f"[定时任务 · {target.name}]\n{target.prompt or ''}".strip(),
-                    "agent_id": target.agent_slug,
-                },
-                user_id=target.created_by,
-                transport=transport,
-                interactive=False,
-                actor_user_id=target.created_by,
-            )
-        finally:
-            manager.release_turn(conversation_id)
+        # No release_turn here: run_turn's own finally releases the claim
+        # before its final await (agent.close), and a claim re-taken during
+        # that window belongs to its new owner — a caller-side release would
+        # discard the new owner's claim mid-turn.
+        manager.ensure_abort_event(conversation_id)
+        manager.reset_abort(conversation_id)
+        transport = _NullTransport()
+        await run_turn(
+            conversation_id,
+            ws=SimpleNamespace(app=app),
+            msg={
+                "content": f"[定时任务 · {target.name}]\n{target.prompt or ''}".strip(),
+                "agent_id": target.agent_slug,
+            },
+            user_id=target.created_by,
+            transport=transport,
+            interactive=False,
+            actor_user_id=target.created_by,
+        )
 
         async with AsyncSessionLocal() as db:
             text, errored = await _last_reply(db, transport)

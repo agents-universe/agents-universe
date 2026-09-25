@@ -341,3 +341,29 @@ class TestAgentTargetOutcome:
         await db.refresh(run)
         assert run.status == "completed"
         assert run.summary == "fresh reply"
+
+    async def test_does_not_release_a_claim_the_turn_handed_over(
+        self, db, make_project, monkeypatch, manager_calls
+    ):
+        """The caller must not release the claim after run_turn returns.
+
+        run_turn's own finally releases before its last await
+        (agent.close); a user message re-takes the claim during that
+        window, and an extra caller-side release would discard the new
+        owner's claim mid-turn.
+        """
+        project = await make_project()
+        conv, target = await self._setup(db, project, monkeypatch)
+
+        async def fake_run_turn(conversation_id, **kwargs):
+            # What the kernel's finally does: release, then await close —
+            # during that window a WebSocket message claims the turn.
+            manager.release_turn(conversation_id)
+            assert await manager.claim_turn(conversation_id)
+
+        self._patch_run(monkeypatch, fake_run_turn)
+        await scheduled_runs._run_agent_target(None, target)
+
+        # Exactly one release — the kernel's. A second entry would mean the
+        # caller dropped the re-taken claim.
+        assert manager_calls["release"] == [str(conv.conversation_id)]

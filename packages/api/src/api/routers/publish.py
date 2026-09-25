@@ -456,7 +456,10 @@ async def publish_stream(
                 actor_user_id=publish.owner_id,
             )
         finally:
-            manager.release_turn(conversation)
+            # No release_turn: run_turn's own finally released the claim
+            # before its final await (agent.close), and a claim re-taken
+            # during that window belongs to its new owner — releasing again
+            # would drop it mid-turn. Only the slot goes back here.
             _publish_semaphore.release()
 
     task = asyncio.create_task(_run())
@@ -780,7 +783,10 @@ async def post_publish_session_run(
                 actor_user_id=publish.owner_id,
             )
         finally:
-            manager.release_turn(conversation)
+            # No release_turn: run_turn's own finally released the claim
+            # before its final await (agent.close), and a claim re-taken
+            # during that window belongs to its new owner — releasing again
+            # would drop it mid-turn. Only the slot goes back here.
             _publish_semaphore.release()
 
     task = asyncio.create_task(_run())

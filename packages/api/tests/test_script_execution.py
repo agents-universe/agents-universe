@@ -420,3 +420,46 @@ async def test_execute_playwright_skips_the_probe_without_app_base_url(
     )
 
     assert (await _reload_run(run_id)).status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_settles_stranded_script_runs(client, db, make_project):
+    """A hard kill (SIGKILL/OOM) skips the executor's CancelledError handler,
+    leaving ScriptRun rows pending/running forever — nothing else can settle
+    them, and project deletion 409s on them permanently. The startup sweep
+    must fail them the way the scheduler sweep settles ScheduledTaskRun."""
+    from api.routers.scripts import startup_sweep
+
+    project = await make_project("sweep-scripts")
+    script = AutomationScript(
+        project_id=str(project.project_id),
+        name="sweep-target",
+        script_type="python",
+        content="pass",
+    )
+    db.add(script)
+    await db.commit()
+    await db.refresh(script)
+
+    stranded_pending = ScriptRun(script_id=script.script_id, status="pending")
+    stranded_running = ScriptRun(script_id=script.script_id, status="running")
+    finished = ScriptRun(
+        script_id=script.script_id, status="completed", exit_code=0
+    )
+    db.add_all([stranded_pending, stranded_running, finished])
+    await db.commit()
+
+    settled = await startup_sweep(db)
+
+    # >= 2: other tests may leave their own pending/running rows behind in the
+    # shared DB; this test only owns the two rows it created.
+    assert settled >= 2
+    await db.refresh(stranded_pending)
+    await db.refresh(stranded_running)
+    await db.refresh(finished)
+    for stranded in (stranded_pending, stranded_running):
+        assert stranded.status == "failed"
+        assert stranded.exit_code == -1
+        assert "restart" in (stranded.stderr_log or "")
+        assert stranded.completed_at is not None
+    assert finished.status == "completed"

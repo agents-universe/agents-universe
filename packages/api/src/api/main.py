@@ -189,6 +189,18 @@ async def lifespan(app: FastAPI):
                 )
         except Exception:
             log.exception("Scheduled task sweep failed")
+        # Script/Playwright runs stranded by a hard kill stay pending/running
+        # forever (the executor's cancel handler never ran) and block project
+        # deletion — settle them like every other in-flight row above.
+        from .routers.scripts import startup_sweep as _script_sweep
+        try:
+            _stranded_runs = await _script_sweep(sweep_db)
+            if _stranded_runs:
+                log.info(
+                    "Settled %d stranded script runs to failed", _stranded_runs
+                )
+        except Exception:
+            log.exception("Script run sweep failed")
 
     app.state.knowledge_cache = KnowledgeCache()
 

@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_core.scripts.runner import (
@@ -55,6 +55,30 @@ _stream_subprocess = stream_subprocess
 _persist_run_log = persist_run_log
 _sandbox_env = sandbox_env
 _new_log_tail = new_log_tail
+
+
+async def startup_sweep(db: AsyncSession) -> int:
+    """Settle script runs left pending/running by a dead process.
+
+    A hard kill (SIGKILL / OOM / container kill) skips the executor's
+    CancelledError handler that persists the terminal state, and no endpoint
+    can move those rows — a stranded "running" ScriptRun blocks project
+    deletion forever. Same single-replica assumption as the scheduler's
+    sweep; called once from the lifespan startup block.
+    """
+    result = await db.execute(
+        update(ScriptRun)
+        .where(ScriptRun.status.in_(("pending", "running")))
+        .values(
+            status="failed",
+            stderr_log="Interrupted by server restart",
+            exit_code=-1,
+            completed_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.commit()
+    return result.rowcount or 0
+
 
 # Playwright phase budgets: browser preflight and the test run itself (the
 # dependency install budget lives inside agent-core's ensure_node_deps). Their

@@ -207,7 +207,7 @@ def ensure_http_client(context: ToolContext, target_url: str = "") -> httpx.Asyn
         context.http_client = owner.http_client
         return owner.http_client
 
-    proxy = context.cfg("HTTPS_PROXY") or os.environ.get("https_proxy")
+    proxy = context.proxy_url()
     owner.http_client = httpx.AsyncClient(
         verify=ssl_verify,
         timeout=_DEFAULT_TIMEOUT,

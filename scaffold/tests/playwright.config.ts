@@ -7,6 +7,31 @@ import { defineConfig, devices } from '@playwright/test';
 //   PW_RETRIES=1   retry a failure (a known-flaky target; off by default)
 const serial = process.env.PW_SERIAL === '1';
 
+// Chromium started by @playwright/test ignores the HTTP(S)_PROXY env vars, so
+// the platform proxy must be handed to the browser explicitly (the same rule
+// the agent-side Playwright tooling documents). Credentials are split out of
+// the URL because the `server` field takes a host, not a URL, and localhost
+// always bypasses — the suite's own APP_BASE_URL is on this machine.
+const proxyServer = process.env.HTTPS_PROXY || process.env.HTTP_PROXY ||
+  process.env.https_proxy || process.env.http_proxy || '';
+const proxyNo = process.env.NO_PROXY || process.env.no_proxy || '';
+const proxyBypass = proxyNo ? `localhost,127.0.0.1,${proxyNo}` : 'localhost,127.0.0.1';
+const proxy = (() => {
+  if (!proxyServer) return undefined;
+  try {
+    const u = new URL(proxyServer);
+    if (!u.host) return { server: proxyServer, bypass: proxyBypass };
+    return {
+      server: `${u.protocol}//${u.host}`,
+      ...(u.username ? { username: decodeURIComponent(u.username) } : {}),
+      ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
+      bypass: proxyBypass,
+    };
+  } catch {
+    return { server: proxyServer, bypass: proxyBypass };
+  }
+})();
+
 export default defineConfig({
   testDir: './generated',
   timeout: 60_000,
@@ -28,6 +53,7 @@ export default defineConfig({
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
     acceptDownloads: true,
+    ...(proxy ? { proxy } : {}),
   },
   projects: [
     {

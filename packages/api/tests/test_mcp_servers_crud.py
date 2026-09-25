@@ -277,30 +277,19 @@ async def mcp_test_server_url():
     port = sock.getsockname()[1]
     sock.close()
 
-    server = Server("test-server")
-
-    @server.list_tools()
-    async def list_tools():
-        return [
-            types.Tool(name="echo", description="Echo", inputSchema={
+    async def on_list_tools(ctx, params=None):
+        return types.ListToolsResult(tools=[
+            types.Tool(name="echo", description="Echo", input_schema={
                 "type": "object", "properties": {"text": {"type": "string"}},
             }),
-            types.Tool(name="adder", description="Add", inputSchema={
+            types.Tool(name="adder", description="Add", input_schema={
                 "type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
             }),
-            types.Tool(name="delete_thing", description="Delete", inputSchema={"type": "object"}),
-        ]
+            types.Tool(name="delete_thing", description="Delete", input_schema={"type": "object"}),
+        ])
 
-    from starlette.applications import Starlette
-    from starlette.routing import Route
-    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-
-    session_manager = StreamableHTTPSessionManager(app=server)
-    app = Starlette(
-        routes=[Route("/mcp", endpoint=StreamableHTTPASGIApp(session_manager))],
-        lifespan=lambda _app: session_manager.run(),
-    )
+    server = Server("test-server", on_list_tools=on_list_tools)
+    app = server.streamable_http_app()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server_instance = uvicorn.Server(config)
 

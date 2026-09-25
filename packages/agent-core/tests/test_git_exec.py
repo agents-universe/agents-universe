@@ -124,6 +124,39 @@ def test_safe_git_env_strips_credential_like_keys(monkeypatch):
     assert env["PATH"] == "/usr/bin"
 
 
+@pytest.mark.asyncio
+async def test_default_env_normalizes_proxy_spellings(tmp_path, capture_env, monkeypatch):
+    """git's libcurl reads ALL_PROXY too — an inherited value the platform
+    never resolved would route git somewhere the browser tool never goes,
+    and an empty placeholder breaks its URI parsing."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://host-proxy.example.com:8080")
+    monkeypatch.setenv("ALL_PROXY", "socks5://stale.example.com:1080")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+
+    await run_git(["status"], tmp_path)
+
+    assert capture_env["HTTPS_PROXY"] == "http://host-proxy.example.com:8080"
+    assert capture_env["HTTP_PROXY"] == "http://host-proxy.example.com:8080"
+    assert capture_env["https_proxy"] == "http://host-proxy.example.com:8080"
+    assert capture_env["http_proxy"] == "http://host-proxy.example.com:8080"
+    assert "ALL_PROXY" not in capture_env and "all_proxy" not in capture_env
+    assert capture_env["NO_PROXY"] == "localhost,127.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_env_is_not_renormalized(tmp_path, capture_env, monkeypatch):
+    """skill_source hands run_git an env already normalized through
+    ToolContext.proxy_env — re-normalizing could replace the settings-resolved
+    proxy with a different process-env one."""
+    monkeypatch.setenv("https_proxy", "http://env-proxy.example.com:8080")
+    custom = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://caller-proxy.example.com:8080"}
+
+    await run_git(["status"], tmp_path, env=custom)
+
+    assert capture_env["HTTPS_PROXY"] == "http://caller-proxy.example.com:8080"
+    assert capture_env["PATH"] == "/usr/bin"
+
+
 def test_sanitize_output_masks_only_the_token():
     assert _sanitize_output("fatal: bad creds abc123", "abc123") == "fatal: bad creds ***"
     assert _sanitize_output("nothing to mask", None) == "nothing to mask"

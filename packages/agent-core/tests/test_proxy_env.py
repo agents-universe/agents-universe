@@ -118,6 +118,67 @@ def test_proxy_env_without_proxy_scrubs_placeholders_and_keeps_no_proxy():
 
 
 # ---------------------------------------------------------------------------
+# Context-less callers (script runs, git subprocesses, ensure_http_client)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_proxy_env_resolves_from_process_env(monkeypatch):
+    """Script runs and git subprocesses have no ToolContext — they normalize
+    the four spellings from the process environment alone, with the same
+    ALL_PROXY drop and NO_PROXY keep as the context path."""
+    from agent_core.tools.base import apply_proxy_env, resolve_proxy_url
+
+    monkeypatch.setenv("https_proxy", "http://lower.example.com:8080")
+    monkeypatch.setenv("ALL_PROXY", _HOST_PROXY)
+    env = {"ALL_PROXY": _HOST_PROXY, "NO_PROXY": "localhost"}
+
+    assert resolve_proxy_url() == "http://lower.example.com:8080"
+    assert apply_proxy_env(env) is env
+    assert [env[key] for key in _PROXY_KEYS] == ["http://lower.example.com:8080"] * 4
+    assert "ALL_PROXY" not in env
+    assert env["NO_PROXY"] == "localhost"
+
+
+def test_script_sandbox_env_normalizes_proxy(monkeypatch):
+    """QA Playwright runs and scheduler script targets build their env here —
+    a stale inherited ALL_PROXY or an empty placeholder must not leak through."""
+    from agent_core.scripts.runner import sandbox_env
+
+    monkeypatch.setenv("https_proxy", "http://lower.example.com:8080")
+    monkeypatch.setenv("ALL_PROXY", _HOST_PROXY)
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+
+    env = sandbox_env()
+
+    assert [env[key] for key in _PROXY_KEYS] == ["http://lower.example.com:8080"] * 4
+    assert "ALL_PROXY" not in env and "all_proxy" not in env
+    assert env["NO_PROXY"] == "localhost,127.0.0.1"
+    assert "PATH" in env  # still a usable subprocess environment
+
+
+def test_ensure_http_client_falls_to_the_http_proxy_rung(monkeypatch):
+    """The Python HTTP tools used to read only HTTPS_PROXY; a deployment that
+    sets only HTTP_PROXY proxied the shell and browser but not web_fetch /
+    api_request — every rung of the shared ladder must apply here too."""
+    from agent_core.tools import _http
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    ctx = make_context(settings={"HTTP_PROXY": "http://http-rung.example.com:8080"})
+    captured: dict = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(_http.httpx, "AsyncClient", _Recorder)
+
+    client = _http.ensure_http_client(ctx, "https://target.example.com/")
+
+    assert client is not None
+    assert captured.get("proxy") == "http://http-rung.example.com:8080"
+
+
+# ---------------------------------------------------------------------------
 # redact_proxy_credentials()
 # ---------------------------------------------------------------------------
 

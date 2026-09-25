@@ -8,6 +8,58 @@ from typing import Any, Callable
 
 _log = logging.getLogger("agent_core.tools")
 
+# Every spelling that can route HTTP(S) traffic through a proxy. The four
+# HTTP(S) ones always carry the resolved URL; the ALL_PROXY spellings are
+# dropped because nothing in this codebase resolves them — a value that
+# only the host environment knows would route code_executor somewhere the
+# browser tool never goes.
+_PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+_PROXY_ENV_STALE_KEYS = ("ALL_PROXY", "all_proxy")
+
+
+def resolve_proxy_url(injected: dict[str, str] | None = None) -> str:
+    """Resolved outbound proxy — one precedence for every networked channel.
+
+    The injected per-turn settings win over the process environment, HTTPS
+    before HTTP (uppercase env rides the same rungs, lowercase is the last
+    resort). NO_PROXY is deliberately not resolved here — subprocesses
+    inherit it untouched so main.py's bypass list (localhost + the LLM
+    hosts) keeps working. Empty means "no proxy".
+    """
+    import os
+    injected = injected or {}
+    return (
+        (injected.get("HTTPS_PROXY") or os.environ.get("HTTPS_PROXY"))
+        or (injected.get("HTTP_PROXY") or os.environ.get("HTTP_PROXY"))
+        or os.environ.get("https_proxy")
+        or os.environ.get("http_proxy")
+        or ""
+    )
+
+
+def apply_proxy_env(env: dict[str, str], url: str | None = None) -> dict[str, str]:
+    """Normalize proxy variables in a subprocess environment, in place.
+
+    With ``url`` omitted the proxy is resolved from the process environment
+    alone (for context-less callers such as script runs). Replaces whatever
+    the child would have inherited with the resolved proxy so sandboxed code
+    (and any Playwright it launches by env-reading libraries) reaches the
+    network exactly like the browser tool does. With no resolved proxy every
+    spelling is removed — that doubles as the empty-.env-placeholder scrub
+    (an empty proxy value breaks URI parsers in native tooling). NO_PROXY
+    survives untouched.
+    """
+    if url is None:
+        url = resolve_proxy_url()
+    for key in _PROXY_ENV_KEYS:
+        if url:
+            env[key] = url
+        else:
+            env.pop(key, None)
+    for key in _PROXY_ENV_STALE_KEYS:
+        env.pop(key, None)
+    return env
+
 
 class Tool(ABC):
     """Abstract base for all agent tools."""
@@ -230,23 +282,8 @@ class ToolContext:
         return os.environ.get(key, default)
 
     def proxy_url(self) -> str:
-        """Resolved outbound proxy — one precedence for every networked channel.
-
-        Mirrors the browser launch: the injected setting wins, then HTTP_PROXY,
-        then the lowercase spellings Python clients look at (uppercase env
-        values ride the cfg() fallback on the first two rungs). Empty means
-        "no proxy". NO_PROXY is deliberately not resolved here — subprocesses
-        inherit it untouched so main.py's bypass list (localhost + the LLM
-        hosts) keeps working.
-        """
-        import os
-        return (
-            self.cfg("HTTPS_PROXY")
-            or self.cfg("HTTP_PROXY")
-            or os.environ.get("https_proxy")
-            or os.environ.get("http_proxy")
-            or ""
-        )
+        """Resolved outbound proxy — see resolve_proxy_url for the precedence."""
+        return resolve_proxy_url(self.integration_settings)
 
     # Env-var keys to strip when building subprocess environments for tools
     # that pass env to LLM-generated code (code_executor, shell).  Matches by
@@ -299,13 +336,10 @@ class ToolContext:
             env.update(extra)
         return env
 
-    # Every spelling that can route HTTP(S) traffic through a proxy. The four
-    # HTTP(S) ones always carry the resolved URL; the ALL_PROXY spellings are
-    # dropped because nothing in this codebase resolves them — a value that
-    # only the host environment knows would route code_executor somewhere the
-    # browser tool never goes.
-    _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
-    _PROXY_ENV_STALE_KEYS = ("ALL_PROXY", "all_proxy")
+    # Every spelling that can route HTTP(S) traffic through a proxy (shared
+    # with the module-level helpers above).
+    _PROXY_ENV_KEYS = _PROXY_ENV_KEYS
+    _PROXY_ENV_STALE_KEYS = _PROXY_ENV_STALE_KEYS
 
     def proxy_env(self, env: dict[str, str]) -> dict[str, str]:
         """Normalize proxy variables in a subprocess environment, in place.
@@ -318,15 +352,7 @@ class ToolContext:
         in native tooling; the shell tool does the same for its own children).
         NO_PROXY survives untouched.
         """
-        url = self.proxy_url()
-        for key in self._PROXY_ENV_KEYS:
-            if url:
-                env[key] = url
-            else:
-                env.pop(key, None)
-        for key in self._PROXY_ENV_STALE_KEYS:
-            env.pop(key, None)
-        return env
+        return apply_proxy_env(env, self.proxy_url())
 
     @property
     def conversation_media_dir(self) -> str:

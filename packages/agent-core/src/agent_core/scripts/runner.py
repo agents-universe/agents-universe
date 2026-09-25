@@ -98,10 +98,14 @@ def script_slot_guard() -> asyncio.Semaphore:
 
 def sandbox_env() -> dict[str, str]:
     """os.environ minus credential-like keys (the same deny lists
-    ToolContext.safe_env applies to LLM-generated code)."""
+    ToolContext.safe_env applies to LLM-generated code), with the proxy
+    spellings normalized the way every other networked channel normalizes
+    them (resolved URL in all four spellings, ALL_PROXY and empty
+    placeholders dropped) so a script or QA run reaches the network through
+    the same proxy as the shell tool."""
     import os
 
-    from agent_core.tools.base import ToolContext
+    from agent_core.tools.base import ToolContext, apply_proxy_env
 
     env: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -113,7 +117,7 @@ def sandbox_env() -> dict[str, str]:
         if any(upper.startswith(p) for p in ToolContext._ENV_DENY_PREFIXES):
             continue
         env[key] = value
-    return env
+    return apply_proxy_env(env)
 
 
 def persist_run_log(run, log_acc: list[str]) -> None:

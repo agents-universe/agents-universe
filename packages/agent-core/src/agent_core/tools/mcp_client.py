@@ -20,6 +20,7 @@ import asyncio
 import base64
 import fnmatch
 import logging
+import os
 import re
 import uuid
 from datetime import timedelta
@@ -46,7 +47,7 @@ _MIME_EXT = {
     "image/svg+xml": "svg",
 }
 
-from ._http import _header_value_problem
+from ._http import _header_value_problem, _should_bypass_proxy
 from ._media import media_url
 from .base import Tool, ToolContext
 from ._mcp_catalog import load_mcp_servers, sanitize_slug
@@ -206,11 +207,25 @@ class McpServerSession:
     signals shutdown and joins the task.
     """
 
-    def __init__(self, slug: str, cfg: dict[str, Any], headers: dict[str, str], ssl_verify: bool = True):
+    def __init__(
+        self,
+        slug: str,
+        cfg: dict[str, Any],
+        headers: dict[str, str],
+        ssl_verify: bool = True,
+        proxy: str = "",
+        no_proxy: str = "",
+    ):
         self.slug = slug
         self.cfg = cfg
         self._headers = headers
         self._ssl_verify = ssl_verify
+        # The platform proxy, resolved once per connection from the same
+        # precedence every other networked channel uses (ToolContext.proxy_url)
+        # — httpx's trust_env only saw the process environment, so a
+        # settings-injected proxy never reached the MCP transport.
+        self._proxy = proxy
+        self._no_proxy = no_proxy
         self._session = None          # mcp.ClientSession
         self._tools: list = []        # cached list_tools result
         self._task: asyncio.Task | None = None
@@ -218,6 +233,17 @@ class McpServerSession:
         self._shutdown = asyncio.Event()
         self._connect_error: Exception | None = None
         self._transport_used: str = ""
+
+    def _client_proxy(self, url: str) -> str | None:
+        """Explicit proxy kwarg for an httpx2 client talking to *url*.
+
+        None (no kwarg) keeps the default trust_env behavior, which is also
+        what a NO_PROXY target must get — passing an explicit proxy disables
+        httpx's own env bypass for that client.
+        """
+        if not self._proxy or _should_bypass_proxy(url, self._no_proxy):
+            return None
+        return self._proxy
 
     @property
     def transport(self) -> str:
@@ -313,6 +339,7 @@ class McpServerSession:
                     follow_redirects=False,
                     timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT),
                     verify=self._ssl_verify,
+                    proxy=self._client_proxy(current),
                 ) as probe:
                     # Stream the probe: a plain .get() reads the FULL body,
                     # and an SSE endpoint's stream never ends — the probe
@@ -374,9 +401,14 @@ class McpServerSession:
             follow_redirects=False,
             timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
             verify=self._ssl_verify,
+            proxy=self._client_proxy(url),
         ) as http_client:
-            # MCP 2.0 yields a third element (session-id getter); ignore it.
-            async with streamable_http_client(url, http_client=http_client) as (read, write, _get_session_id):
+            # The return annotation promises a third element (a session-id
+            # getter), but the installed 2.2 yields only (read, write) —
+            # unpack by position, not by arity, or every connect dies with
+            # "not enough values to unpack" against the wrong shape.
+            async with streamable_http_client(url, http_client=http_client) as streams:
+                read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     self._session = session
@@ -412,6 +444,7 @@ class McpServerSession:
                 timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
                 auth=auth,
                 verify=self._ssl_verify,
+                proxy=self._client_proxy(url),
             )
 
         async with sse_client(url, headers=connect_headers, httpx_client_factory=_factory) as (read, write):
@@ -524,7 +557,11 @@ class McpConnectionManager:
                 _log.warning("MCP server %r: URL safety check failed: %s", slug, url_error)
                 return slug, None
 
-            session = McpServerSession(slug, cfg, headers, self._context.ssl_verify)
+            session = McpServerSession(
+                slug, cfg, headers, self._context.ssl_verify,
+                proxy=self._context.proxy_url(),
+                no_proxy=self._context.cfg("NO_PROXY") or os.environ.get("no_proxy", ""),
+            )
             try:
                 await session.start()
             except Exception as exc:

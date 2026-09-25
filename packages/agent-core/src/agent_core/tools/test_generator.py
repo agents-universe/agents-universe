@@ -801,6 +801,31 @@ _SCAFFOLD_PLAYWRIGHT_CONFIG = r"""import { defineConfig, devices } from '@playwr
 //   PW_RETRIES=1   retry a failure (a known-flaky target; off by default)
 const serial = process.env.PW_SERIAL === '1';
 
+// Chromium started by @playwright/test ignores the HTTP(S)_PROXY env vars, so
+// the platform proxy must be handed to the browser explicitly (the same rule
+// the agent-side Playwright tooling documents). Credentials are split out of
+// the URL because the `server` field takes a host, not a URL, and localhost
+// always bypasses — the suite's own APP_BASE_URL is on this machine.
+const proxyServer = process.env.HTTPS_PROXY || process.env.HTTP_PROXY ||
+  process.env.https_proxy || process.env.http_proxy || '';
+const proxyNo = process.env.NO_PROXY || process.env.no_proxy || '';
+const proxyBypass = proxyNo ? `localhost,127.0.0.1,${proxyNo}` : 'localhost,127.0.0.1';
+const proxy = (() => {
+  if (!proxyServer) return undefined;
+  try {
+    const u = new URL(proxyServer);
+    if (!u.host) return { server: proxyServer, bypass: proxyBypass };
+    return {
+      server: `${u.protocol}//${u.host}`,
+      ...(u.username ? { username: decodeURIComponent(u.username) } : {}),
+      ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
+      bypass: proxyBypass,
+    };
+  } catch {
+    return { server: proxyServer, bypass: proxyBypass };
+  }
+})();
+
 export default defineConfig({
   testDir: './generated',
   timeout: 60_000,
@@ -822,6 +847,7 @@ export default defineConfig({
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
     acceptDownloads: true,
+    ...(proxy ? { proxy } : {}),
   },
   projects: [
     {
@@ -922,6 +948,10 @@ _SCAFFOLD_CONFIG_BASELINES = frozenset({
     # had drifted from (no acceptDownloads).
     "c6392165abcf64b3621af5d127a9bffcb036a8ab3a53f51a2fcd60c2648c8e9e",
     "4e7654c4e84add2757aa67cddbbf302a456eded0e5422f28e6225b84acf4494b",
+    # v2 — shared-session layout, no proxy wiring: the config every workspace
+    # shipped before @playwright/test runs were routed through the platform
+    # proxy (Playwright ignores the proxy env vars on its own).
+    "2a9cb5dc976f893837dc37ddbdf2cf652d16b2ad7cc7c6fd8fec7640c52511b9",
 })
 
 _STORAGE_STATE_RE = re.compile(r"\bstorageState\s*:")

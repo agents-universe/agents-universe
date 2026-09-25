@@ -123,6 +123,63 @@ def test_matches_any_empty_patterns():
     assert _matches_any("anything", []) is False
 
 
+# ---------------------------------------------------------------------------
+# Session proxy resolution
+# ---------------------------------------------------------------------------
+
+
+def test_session_client_proxy_applies_the_platform_proxy():
+    session = McpServerSession(
+        "t", {"url": "https://mcp.example.com/mcp"}, {},
+        proxy="http://proxy.example.com:8080", no_proxy="localhost,127.0.0.1",
+    )
+    assert session._client_proxy("https://mcp.example.com/mcp") == "http://proxy.example.com:8080"
+
+
+def test_session_client_proxy_bypasses_no_proxy_targets():
+    """A local MCP server must not be sent to the corporate proxy — passing an
+    explicit proxy would also disable httpx's own env bypass for that client."""
+    session = McpServerSession(
+        "t", {"url": "http://localhost:8200/mcp"}, {},
+        proxy="http://proxy.example.com:8080", no_proxy="localhost,127.0.0.1",
+    )
+    assert session._client_proxy("http://localhost:8200/mcp") is None
+
+
+def test_session_client_proxy_without_configuration_is_none():
+    """No resolved proxy keeps the default trust_env behavior (env-based)."""
+    session = McpServerSession("t", {"url": "https://mcp.example.com/mcp"}, {})
+    assert session._client_proxy("https://mcp.example.com/mcp") is None
+
+
+@pytest.mark.asyncio
+async def test_discover_passes_the_settings_proxy_to_the_session(monkeypatch):
+    """MCP transports used to read only the process environment via trust_env —
+    a settings-injected proxy never reached them."""
+    import agent_core.tools.mcp_client as mcp_client_module
+
+    captured: dict = {}
+
+    class _FakeSession:
+        def __init__(self, slug, cfg, headers, ssl_verify=True, **kwargs):
+            captured.update(kwargs)
+            self.tools: list = []
+
+        async def start(self):
+            return None
+
+    monkeypatch.setattr(mcp_client_module, "McpServerSession", _FakeSession)
+
+    ctx = _make_context()
+    ctx.integration_settings = {"HTTPS_PROXY": "http://settings-proxy.example.com:8080"}
+    manager = McpConnectionManager(ctx)
+
+    tools = await manager.discover_tools({"one": {"url": "https://mcp.example.com/mcp"}})
+
+    assert tools == {}
+    assert captured.get("proxy") == "http://settings-proxy.example.com:8080"
+
+
 def test_header_value_problem_rejects_only_what_httpx_rejects():
     """The validation must accept everything httpx would send (tab, printable
     ASCII, DEL) and reject what it fails on (CR/LF and friends, non-ASCII)."""
@@ -521,28 +578,15 @@ async def test_start_coerces_timeout_before_spawning_connect_task():
 # ---------------------------------------------------------------------------
 
 
-def _streamable_http_asgi(server):
-    """Wrap a low-level MCP Server in a streamable-http Starlette app.
-
-    The MCP 2.0 SDK dropped ``Server.streamable_http_app()``; the session
-    manager + ASGI handler combination below is what FastMCP now does
-    internally.
-    """
-    from starlette.applications import Starlette
-    from starlette.routing import Route
-    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-
-    session_manager = StreamableHTTPSessionManager(app=server)
-    return Starlette(
-        routes=[Route("/mcp", endpoint=StreamableHTTPASGIApp(session_manager))],
-        lifespan=lambda _app: session_manager.run(),
-    )
-
-
 @pytest.fixture
 async def mcp_test_server():
-    """Start a real MCP streamable-http server on a random port."""
+    """Start a real MCP streamable-http server on a random port.
+
+    Registration uses the lowlevel Server's constructor callbacks and the app
+    comes from ``streamable_http_app()`` — the exact shape CI ran green with
+    against the resolved mcp version. The decorator spelling
+    (``@server.list_tools()``) does not exist on the installed 2.2.x Server.
+    """
     import socket
     from mcp.server.lowlevel import Server
     from mcp import types
@@ -553,53 +597,51 @@ async def mcp_test_server():
     port = sock.getsockname()[1]
     sock.close()
 
-    server = Server("test-mcp-server")
-
-    @server.list_tools()
-    async def list_tools():
-        return [
+    async def on_list_tools(ctx, params=None):
+        return types.ListToolsResult(tools=[
             types.Tool(
                 name="echo",
                 description="Echo back the input text",
-                inputSchema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+                input_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
             ),
             types.Tool(
                 name="adder",
                 description="Add two numbers",
-                inputSchema={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]},
+                input_schema={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]},
             ),
             types.Tool(
                 name="delete_thing",
                 description="Delete something destructive",
-                inputSchema={"type": "object", "properties": {"id": {"type": "string"}}},
-                annotations=types.ToolAnnotations(destructiveHint=True),
+                input_schema={"type": "object", "properties": {"id": {"type": "string"}}},
+                annotations=types.ToolAnnotations(destructive_hint=True),
             ),
-        ]
+        ])
 
-    @server.call_tool()
-    async def call_tool(name, arguments):
-        args = arguments or {}
+    async def on_call_tool(ctx, params):
+        name = params.name
+        args = params.arguments or {}
         if name == "echo":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=args.get("text", ""))],
-                isError=False,
+                is_error=False,
             )
         if name == "adder":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(args.get("a", 0) + args.get("b", 0)))],
-                isError=False,
+                is_error=False,
             )
         if name == "delete_thing":
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=f"Deleted {args.get('id', '?')}")],
-                isError=False,
+                is_error=False,
             )
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
-            isError=True,
+            is_error=True,
         )
 
-    app = _streamable_http_asgi(server)
+    server = Server("test-mcp-server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+    app = server.streamable_http_app()
 
     import uvicorn
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")

@@ -63,7 +63,7 @@ class _FakeSession:
 
     instances: list["_FakeSession"] = []
 
-    def __init__(self, slug, cfg, headers, ssl_verify=True):
+    def __init__(self, slug, cfg, headers, ssl_verify=True, **kwargs):
         self.slug = slug
         self.cfg = cfg
         self.closed = False

@@ -72,3 +72,12 @@ def test_the_current_config_is_not_listed_as_an_upgrade_baseline():
     assert tg._scaffold_digest(tg._SCAFFOLD_PLAYWRIGHT_CONFIG) not in (
         tg._SCAFFOLD_CONFIG_BASELINES
     )
+
+
+def test_the_config_hands_the_platform_proxy_to_the_browser():
+    """@playwright/test launches Chromium without reading the proxy env vars —
+    the config is the only place a QA run can apply the platform proxy, so a
+    rewrite that drops the wiring would silently send the suite direct."""
+    config = tg._SCAFFOLD_PLAYWRIGHT_CONFIG
+    assert "HTTPS_PROXY" in config
+    assert "...(proxy ? { proxy } : {})" in config

@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .base import ToolContext
+from .base import ToolContext, apply_proxy_env
 
 _log = logging.getLogger(__name__)
 _TIMEOUT_CLONE = 300
@@ -81,7 +81,9 @@ def _safe_git_env() -> dict[str, str]:
     Git hooks (post-commit, pre-push, ...) execute with this environment, so
     DB passwords / API keys in the server env must not reach them. Mirrors
     ToolContext.safe_env() filtering; GIT_ASKPASS_TOKEN is re-added by the
-    caller after filtering.
+    caller after filtering. Proxy spellings are normalized afterwards (in
+    run_git's default path) — git's libcurl reads ALL_PROXY and chokes on
+    empty placeholders, exactly what apply_proxy_env scrubs.
     """
     deny_suffixes = ToolContext._ENV_DENY_SUFFIXES
     deny_prefixes = ToolContext._ENV_DENY_PREFIXES
@@ -109,12 +111,17 @@ async def run_git(
     """Run git with credentials injected through a throwaway askpass helper.
 
     ``env`` replaces the default filtered os.environ — callers that need extra
-    hardening variables pass their own copy. The token is never placed on the
-    command line or in the URL; it only ever lives in the helper's environment.
+    hardening variables pass their own copy (skill_source already runs its copy
+    through ToolContext.proxy_env, so a caller-supplied env is left alone). The
+    token is never placed on the command line or in the URL; it only ever lives
+    in the helper's environment.
     """
     if not _GIT_BIN:
         return _dependency_missing("Git executable was not found")
-    env = dict(env) if env is not None else _safe_git_env()
+    if env is None:
+        env = apply_proxy_env(_safe_git_env())
+    else:
+        env = dict(env)
     askpass: Path | None = None
     # Without this an anonymous clone of a repository that wants credentials
     # blocks forever on the terminal prompt instead of failing.

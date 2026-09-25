@@ -1028,3 +1028,60 @@ async def test_page_payload_resolves_agent(client, db, make_project, as_user):
     assert agent["slug"] == publish.agent_slug
     assert agent["display_name"] == publish.agent_slug
     assert agent["project_id"] is None  # the _make_publish global row
+
+
+async def test_session_messages_map_refs_like_the_chat_api(client, db, make_project, as_user):
+    """knowledge_refs must be split into images/attachments/interrupted/error
+    exactly like the chat serializer (routers/conversations) — pre-fix the
+    publish serializer returned the whole refs object as `images` and
+    hardcoded attachments/interrupted/error, so publish history lost every
+    flag the backend persists (error bubbles died on reload)."""
+    publish, _ = await _make_publish(db, make_project)
+    from api.services.publish import get_or_create_publish_conversation
+    conv_id = await get_or_create_publish_conversation(
+        db, publish, viewer_id="test-user"
+    )
+
+    from api.models._compat import new_uuid
+    from api.models.conversation import Message as DbMessage
+
+    db.add(DbMessage(
+        message_id=new_uuid(),
+        conversation_id=conv_id,
+        role="assistant",
+        content="with attachments",
+        sequence_num=1,
+        knowledge_refs='{"images": [{"url": "/x.png"}], "attachments": [{"name": "a.png"}]}',
+    ))
+    db.add(DbMessage(
+        message_id=new_uuid(),
+        conversation_id=conv_id,
+        role="assistant",
+        content="failed turn",
+        sequence_num=2,
+        knowledge_refs='{"error": true}',
+    ))
+    db.add(DbMessage(
+        message_id=new_uuid(),
+        conversation_id=conv_id,
+        role="assistant",
+        content="cut short",
+        sequence_num=3,
+        knowledge_refs='{"interrupted": true}',
+    ))
+    await db.commit()
+
+    async with as_user("test-user"):
+        r = await client.get(
+            f"/api/p/{publish.publish_id}/session/messages",
+            params={"token": _make_viewer_token(str(publish.publish_id), "test-user")},
+        )
+
+    assert r.status_code == 200
+    by_content = {m["content"]: m for m in r.json()}
+    with_refs = by_content["with attachments"]
+    assert with_refs["images"] == [{"url": "/x.png"}]
+    assert with_refs["attachments"] == [{"name": "a.png"}]
+    assert by_content["failed turn"]["error"] is True
+    assert by_content["failed turn"]["images"] is None
+    assert by_content["cut short"]["interrupted"] is True

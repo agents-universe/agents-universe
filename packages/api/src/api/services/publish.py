@@ -352,6 +352,10 @@ async def _serialize_publish_messages(db, publish, conversation_id: str, limit: 
     messages.reverse()
     out = []
     for m in messages:
+        # Same knowledge_refs split as routers/conversations.serialize_message
+        # — images/attachments/interrupted/error are keys INSIDE the refs
+        # object, and the flags must survive reloads on the publish page too.
+        refs = _parse_json_col(m.knowledge_refs, None)
         out.append({
             "message_id": str(m.message_id),
             "role": m.role,
@@ -359,10 +363,10 @@ async def _serialize_publish_messages(db, publish, conversation_id: str, limit: 
             "agent_slug": m.agent_slug,
             "model_name": m.model_name,
             "tool_calls": _parse_json_col(m.tool_calls, []),
-            "images": _parse_json_col(m.knowledge_refs, None),
-            "attachments": None,
-            "interrupted": False,
-            "error": False,
+            "images": refs and refs.get("images") or None,
+            "attachments": refs and refs.get("attachments") or None,
+            "interrupted": bool(refs and refs.get("interrupted")),
+            "error": bool(refs and refs.get("error")),
             "sequence_num": m.sequence_num,
             "created_at": m.created_at.isoformat(),
         })

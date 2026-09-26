@@ -765,7 +765,9 @@ async def test_session_abort(client, db, make_project, as_user, monkeypatch):
     import api.websocket.manager as wm
     monkeypatch.setattr(
         wm.manager, "signal_abort",
-        lambda conversation_id: signalled.append(conversation_id),
+        lambda conversation_id, **kw: signalled.append(
+            (conversation_id, kw.get("reason"))
+        ),
     )
 
     async with as_user("test-user"):
@@ -775,7 +777,7 @@ async def test_session_abort(client, db, make_project, as_user, monkeypatch):
         )
     assert r.status_code == 200
     assert r.json()["aborted"] is True
-    assert signalled == [conv_id]
+    assert signalled == [(conv_id, "publish_viewer_abort")]
 
     # A wrong token cannot abort.
     async with as_user("test-user"):
@@ -784,7 +786,7 @@ async def test_session_abort(client, db, make_project, as_user, monkeypatch):
             json={"token": "x" * 40},
         )
     assert r2.status_code == 404
-    assert signalled == [conv_id]
+    assert signalled == [(conv_id, "publish_viewer_abort")]
 
 
 # ── per-publish / per-viewer / per-thread isolation ──────────────────────────
@@ -957,7 +959,9 @@ async def test_abort_targets_correct_thread(client, db, make_project, monkeypatc
     import api.websocket.manager as wm
     monkeypatch.setattr(
         wm.manager, "signal_abort",
-        lambda conversation_id: signalled.append(conversation_id),
+        lambda conversation_id, **kw: signalled.append(
+            (conversation_id, kw.get("reason"))
+        ),
     )
 
     r = await client.post(
@@ -966,14 +970,17 @@ async def test_abort_targets_correct_thread(client, db, make_project, monkeypatc
         json={"thread_id": "alpha"},
     )
     assert r.status_code == 200
-    assert signalled == [alpha_conv]
+    assert signalled == [(alpha_conv, "publish_abort_api")]
 
     r2 = await client.post(
         f"/api/p/{publish.publish_id}/abort",
         headers={"X-API-Key": plain},
     )
     assert r2.status_code == 200
-    assert signalled == [alpha_conv, default_conv]
+    assert signalled == [
+        (alpha_conv, "publish_abort_api"),
+        (default_conv, "publish_abort_api"),
+    ]
 
     # An unknown thread is a no-op success — and creates no row.
     r3 = await client.post(
@@ -982,7 +989,10 @@ async def test_abort_targets_correct_thread(client, db, make_project, monkeypatc
         json={"thread_id": "nope"},
     )
     assert r3.status_code == 200
-    assert signalled == [alpha_conv, default_conv]
+    assert signalled == [
+        (alpha_conv, "publish_abort_api"),
+        (default_conv, "publish_abort_api"),
+    ]
 
 
 async def test_legacy_shared_publish_rows_unreachable(db, make_project):

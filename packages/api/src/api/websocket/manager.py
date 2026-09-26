@@ -12,6 +12,14 @@ from api.json_utils import json_default as _json_default
 
 _log = logging.getLogger("agents_universe.ws")
 
+# Bound on a single WS frame send. Without it a half-open TCP connection
+# (client vanished behind the proxy without RST) blocks forward_events
+# indefinitely: the consumer stalls, the session event queue fills, and
+# session.emit's backpressure timeout kills the run. Must stay below
+# agent_core.session's emit put-timeout so the consumer always unblocks
+# before the producer gives up. Tests shrink it.
+_SEND_TIMEOUT_S = 5.0
+
 
 class ConnectionManager:
     """Manages active WebSocket connections keyed by conversation_id.
@@ -27,6 +35,11 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[str, WebSocket] = {}
         self._abort_events: dict[str, asyncio.Event] = {}
+        # First-cause token for each set abort event ("ws_abort_frame",
+        # "publish_sse_client_disconnect", ...). Kept alongside the event and
+        # popped with it so interrupted runs can say WHY in logs and
+        # conversation_runs.error_message instead of guessing Stop-vs-crash.
+        self._abort_reasons: dict[str, str] = {}
         self._sessions: dict[str, Any] = {}  # ConversationSession keyed by conversation_id
         self._session_memories: dict[str, list[dict]] = {}  # Ephemeral session notes per conversation
         self._lock = asyncio.Lock()
@@ -107,32 +120,49 @@ class ConnectionManager:
                 and conversation_id not in self._claimed_turns
             ):
                 self._abort_events.pop(conversation_id, None)
+                self._abort_reasons.pop(conversation_id, None)
                 self._session_memories.pop(conversation_id, None)
 
     async def send(self, conversation_id: str, data: dict[str, Any]) -> bool:
         """Send a JSON message to the current WS for *conversation_id*.
 
         Returns ``True`` if delivered, ``False`` if no WS is connected or
-        the send failed.  Failures cause the dead WS to be evicted so the
-        next reconnect can register a fresh one.
+        the send failed.  Failures and send timeouts cause the dead WS to be
+        evicted so the next reconnect can register a fresh one.  A timeout is
+        treated like "no WS connected": the turn keeps running and persisting
+        to the DB — a half-open socket must not abort the run.
         """
         async with self._lock:
             ws = self._connections.get(conversation_id)
         if not ws:
             return False
         try:
-            await ws.send_text(json.dumps(data, default=_json_default))
+            await asyncio.wait_for(
+                ws.send_text(json.dumps(data, default=_json_default)),
+                timeout=_SEND_TIMEOUT_S,
+            )
             return True
+        except asyncio.TimeoutError:
+            _log.warning(
+                "WS send timed out after %.1fs for %s — evicting half-open connection",
+                _SEND_TIMEOUT_S, conversation_id,
+            )
+            await self._evict(conversation_id, ws)
+            return False
         except Exception as e:
             _log.warning("Failed to send to %s: %s", conversation_id, e)
-            async with self._lock:
-                if self._connections.get(conversation_id) is ws:
-                    self._connections.pop(conversation_id, None)
-            try:
-                await ws.close(code=1011)
-            except Exception:
-                _log.debug("WebSocket close() failed during disconnect for %s", conversation_id)
+            await self._evict(conversation_id, ws)
             return False
+
+    async def _evict(self, conversation_id: str, ws: WebSocket) -> None:
+        """Drop *ws* if it is still the current connection and close it."""
+        async with self._lock:
+            if self._connections.get(conversation_id) is ws:
+                self._connections.pop(conversation_id, None)
+        try:
+            await ws.close(code=1011)
+        except Exception:
+            _log.debug("WebSocket close() failed during eviction for %s", conversation_id)
 
     def register_session(self, conversation_id: str, session: Any) -> None:
         self._sessions[conversation_id] = session
@@ -149,6 +179,7 @@ class ConnectionManager:
         self._sessions.pop(conversation_id, None)
         if conversation_id not in self._connections:
             self._abort_events.pop(conversation_id, None)
+            self._abort_reasons.pop(conversation_id, None)
             self._session_memories.pop(conversation_id, None)
 
     def is_session_active(self, conversation_id: str) -> bool:
@@ -213,14 +244,25 @@ class ConnectionManager:
             self._abort_events[conversation_id] = event
         return event
 
-    def signal_abort(self, conversation_id: str) -> None:
+    def signal_abort(self, conversation_id: str, *, reason: str = "abort_signal") -> None:
+        """Set the conversation's abort event, recording the first cause.
+
+        ``reason`` is a stable token ("ws_abort_frame",
+        "publish_sse_client_disconnect", ...) — first cause wins so a
+        follow-up signal cannot overwrite the original attribution.
+        """
         event = self._abort_events.get(conversation_id)
         if event:
+            self._abort_reasons.setdefault(conversation_id, reason)
             event.set()
+
+    def get_abort_reason(self, conversation_id: str) -> str | None:
+        return self._abort_reasons.get(conversation_id)
 
     def reset_abort(self, conversation_id: str) -> None:
         event = self._abort_events.get(conversation_id)
         if event:
+            self._abort_reasons.pop(conversation_id, None)
             event.clear()
 
     # --- In-flight injection buffering (claim window) ---

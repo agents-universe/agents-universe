@@ -74,11 +74,13 @@ async def finish_run(
     tokens_used: int | None = None,
     snapshot: str | None = None,
     replace_snapshot: bool = False,
-) -> None:
+) -> bool:
     """Terminal transition running → completed | failed | interrupted.
 
     Guarded by ``status == 'running'`` so a racing terminal write (e.g. the
-    finally-tail safety net after a normal finish) is a no-op.
+    finally-tail safety net after a normal finish) is a no-op. Returns whether
+    this call performed the transition — the safety net uses it to log a retry
+    only when the terminal write actually had to be replayed.
 
     ``snapshot``/``replace_snapshot``: the throttled ``update_run_snapshot``
     writes partial text every few seconds while the turn runs, and the startup
@@ -101,7 +103,7 @@ async def finish_run(
             values["error_message"] = error_message[:2000]
         if tokens_used is not None:
             values["tokens_used"] = tokens_used
-        await db.execute(
+        result = await db.execute(
             update(ConversationRun)
             .where(
                 ConversationRun.run_id == run_id,
@@ -110,6 +112,7 @@ async def finish_run(
             .values(**values)
         )
         await db.commit()
+        return bool(result.rowcount)
 
 
 async def interrupt_stale_runs(db: AsyncSession) -> int:
@@ -122,7 +125,13 @@ async def interrupt_stale_runs(db: AsyncSession) -> int:
     result = await db.execute(
         update(ConversationRun)
         .where(ConversationRun.status == "running")
-        .values(status="interrupted", ended_at=now_utc())
+        .values(
+            status="interrupted",
+            ended_at=now_utc(),
+            # Attribution: distinguishes restart-flips from live aborts in the
+            # interrupted bucket without a schema change.
+            error_message="Run interrupted by process restart",
+        )
     )
     await db.commit()
     return result.rowcount or 0

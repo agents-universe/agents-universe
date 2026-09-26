@@ -112,6 +112,11 @@ class Transport:
 class _ManagerTransport(Transport):
     def __init__(self, ws: Any) -> None:
         self._ws = ws
+        # Latched after the fallback socket itself times out: manager.send
+        # returning False includes "just evicted as half-open" — retrying THAT
+        # socket unbounded would re-create the stall this timeout exists to
+        # prevent (one bounded probe per event for the rest of the turn).
+        self._fallback_dead = False
 
     async def send(self, conversation_id: str, data: dict) -> bool:
         delivered = await manager.send(conversation_id, data)
@@ -120,9 +125,20 @@ class _ManagerTransport(Transport):
         # the raw socket like the old _send_turn_error did so errors are not
         # silently lost on the last-resort path.
         if not delivered:
+            if self._fallback_dead:
+                return False
             try:
-                await self._ws.send_json(data)
+                await asyncio.wait_for(
+                    self._ws.send_json(data), timeout=manager._SEND_TIMEOUT_S
+                )
                 return True
+            except asyncio.TimeoutError:
+                self._fallback_dead = True
+                _log.warning(
+                    "Transport fallback send timed out for %s — disabling fallback",
+                    conversation_id,
+                )
+                return False
             except Exception:
                 return False
         return True
@@ -194,6 +210,17 @@ async def run_turn(
     # False until manager.register_session runs — a failure before that point
     # leaves the claim-window buffer belonging to a dead turn (see finally).
     session_registered = False
+
+    # Declared before the try so the finally safety net can read them on ANY
+    # exit path, including early returns that never reached their assignments.
+    # _terminal_status records the classification of a terminal stream_end as
+    # soon as it is made — the safety net then retries THAT status instead of
+    # mislabeling a completed/failed turn as interrupted.
+    session: Any = None
+    run_id: str = ""
+    _terminal_status: str | None = None
+    _terminal_error: str | None = None
+    _terminal_tokens: int | None = None
 
     # A nested turn is a delegated agent running INSIDE the top-level turn of
     # the same conversation. The conversation's turn claim, its registered
@@ -539,7 +566,7 @@ async def run_turn(
             # G2: a nested turn writes no run record — the conversation's
             # latest run drives the reopened-session notice and the partial
             # snapshot, and a delegated child must not shadow the parent's.
-            run_id: str = ""
+            run_id = ""
             if not nested:
                 try:
                     from api.services.conversation_runs import create_run
@@ -726,6 +753,7 @@ async def run_turn(
 
             async def forward_events():
                 nonlocal _persist_guard, _inj_guard, _terminal_task_ids, _deferred_task_ids
+                nonlocal _terminal_status, _terminal_error, _terminal_tokens
                 _text_buf: str = ""
                 _thinking_buf: str = ""
                 _last_snap_ts = time.monotonic()
@@ -887,6 +915,19 @@ async def run_turn(
                                 _turn_error = _turn_error or "Model returned no output"
                             else:
                                 _run_status = "completed"
+                            # Record the terminal classification BEFORE the
+                            # shielded persist below: if teardown cancels the
+                            # drain mid-persist, the finally safety net must
+                            # know the intended terminal status (retry the
+                            # same one) instead of guessing "interrupted".
+                            if run_id and _run_status:
+                                _terminal_status = _run_status
+                                _terminal_error = (
+                                    (session.abort_reason or "aborted")
+                                    if _run_status == "interrupted"
+                                    else _turn_error
+                                )
+                                _terminal_tokens = int(event.data.get("total_tokens") or 0)
                             # Whether this event's partial output lands in a
                             # Message row below (drives the snapshot decision at
                             # finish_run: a persisted partial needs no recovery
@@ -942,11 +983,20 @@ async def run_turn(
                             # the turn is still running, so the run row stays
                             # "running" and a later stream_end settles it.
                             if run_id and _run_status:
+                                if _run_status == "interrupted":
+                                    _log.warning(
+                                        "Run interrupted: conversation=%s run_id=%s reason=%s",
+                                        conversation_id, run_id, _terminal_error,
+                                    )
                                 try:
                                     from api.services.conversation_runs import finish_run
                                     await finish_run(
                                         run_id, _run_status,
-                                        error_message=_turn_error if _run_status == "failed" else None,
+                                        error_message=(
+                                            _terminal_error
+                                            if _run_status in ("failed", "interrupted")
+                                            else None
+                                        ),
                                         tokens_used=int(event.data.get("total_tokens") or 0),
                                         # Keep the snapshot ONLY when the partial
                                         # output never made it into a Message row:
@@ -1150,13 +1200,23 @@ async def run_turn(
                         finally:
                             for _w in _waiters:
                                 _w.cancel()
-                    session.abort()
+                    # Attribute the abort before propagating it into the
+                    # session — the settlement paths record this token as the
+                    # run's interruption reason.
+                    if abort_event.is_set():
+                        session.abort(manager.get_abort_reason(conversation_id) or "abort_signal")
+                    elif nested and delegation.cancel_event is not None and delegation.cancel_event.is_set():
+                        session.abort("delegation_cancel")
+                    else:
+                        session.abort("abort_signal")
                     _at.cancel()
                 except Exception:
                     _log.debug("Abort watcher exception for %s", conversation_id, exc_info=True)
             abort_task = asyncio.create_task(_watch_abort())
 
-            # Wait for agent to finish; CancelledError means user hit Stop.
+            # Wait for agent to finish. A CancelledError is a genuine abort
+            # only when OUR watcher caused it (it aborts the session before
+            # cancelling the agent) — any other cancellation is external.
             _aborted = False
             try:
                 await agent_task
@@ -1170,7 +1230,34 @@ async def run_turn(
                     # already unwound — and would swallow a user's Stop.
                     agent_task.cancel()
                     raise
-                _aborted = True
+                if agent_task.cancelled() and session.is_aborted():
+                    _aborted = True
+                else:
+                    # External cancellation: run_turn torn down (process
+                    # shutdown) or the agent died without an abort. Not a user
+                    # Stop — record the cause so the run is attributable.
+                    _log.warning(
+                        "Run cancelled externally: conversation=%s run_id=%s agent_cancelled=%s abort_reason=%s",
+                        conversation_id, run_id, agent_task.cancelled(), session.abort_reason,
+                    )
+                    if run_id:
+                        try:
+                            from api.services.conversation_runs import finish_run
+                            await finish_run(
+                                run_id, "interrupted",
+                                error_message=session.abort_reason or "external_cancellation",
+                                tokens_used=session.tokens_used,
+                            )
+                        except Exception:
+                            _log.warning("finish_run(external cancel) failed for %s", conversation_id, exc_info=True)
+                    if not agent_task.cancelled():
+                        # run_turn itself is being cancelled while the agent
+                        # is still running — propagate; the agent belongs to
+                        # the dying turn, take it down with us.
+                        agent_task.cancel()
+                        raise
+                    # The agent was cancelled without an abort recorded —
+                    # it is done; fall through to drain its events.
             except Exception as agent_exc:
                 _log.error(
                     "Agent task failed: conversation=%s correlation_id=%s error_type=%s error=%s",
@@ -1315,9 +1402,21 @@ async def run_turn(
             # After forward drains, tell the client the abort completed.
             if _aborted:
                 if run_id:
+                    _reason = session.abort_reason or "abort_signal"
                     try:
                         from api.services.conversation_runs import finish_run
-                        await finish_run(run_id, "interrupted", tokens_used=session.tokens_used)
+                        _landed = await finish_run(
+                            run_id, "interrupted",
+                            error_message=_reason,
+                            tokens_used=session.tokens_used,
+                        )
+                        if _landed:
+                            # stream_end already settled the run during the
+                            # drain (same reason) — only log OUR write.
+                            _log.warning(
+                                "Run interrupted: conversation=%s run_id=%s reason=%s",
+                                conversation_id, run_id, _reason,
+                            )
                     except Exception:
                         _log.warning("finish_run(abort) failed for %s", conversation_id, exc_info=True)
                 await _transport_send(transport, conversation_id, {"type": "abort_ack"})
@@ -1346,9 +1445,6 @@ async def run_turn(
             await db.commit()
 
     except BaseException as e:
-        _log.error("agent turn outer exception for %s (%s)", conversation_id, type(e).__name__, exc_info=True)
-        error_message = "Agent execution failed. Check server logs for details."
-        err_msg_id = str(_uuid_mod.uuid4())
         # Error path: DB sessions opened mid-turn (tool_db / event_db) were not
         # closed by the normal drain path — close them here to avoid leaking
         # connection pool slots. close() is idempotent, so double-close is safe.
@@ -1361,6 +1457,29 @@ async def run_turn(
                     await _sess.close()
                 except Exception:
                     _log.debug("Failed to close %s for %s", _sess_name, conversation_id, exc_info=True)
+        if isinstance(e, asyncio.CancelledError):
+            # Teardown cancellation (process shutdown, an enclosing task
+            # cancelled) — not an execution failure. Record it as interrupted
+            # with an honest cause instead of the alarming generic message;
+            # the startup sweep backstops any row this write misses.
+            _log.warning(
+                "Turn cancelled during teardown: conversation=%s run_id=%s",
+                conversation_id, run_id or None,
+            )
+            if run_id:
+                try:
+                    from api.services.conversation_runs import finish_run
+                    await finish_run(
+                        run_id, "interrupted",
+                        error_message=(session.abort_reason if session is not None else None)
+                        or "external_cancellation",
+                    )
+                except Exception:
+                    _log.debug("finish_run(cancelled teardown) failed for %s", conversation_id, exc_info=True)
+            raise
+        _log.error("agent turn outer exception for %s (%s)", conversation_id, type(e).__name__, exc_info=True)
+        error_message = "Agent execution failed. Check server logs for details."
+        err_msg_id = str(_uuid_mod.uuid4())
         try:
             await _transport_send(transport, conversation_id, {"type": "error", "message": error_message, "stream_message_id": err_msg_id})
             await _transport_send(transport, conversation_id, {"type": "stream_end", "message_id": err_msg_id, "total_tokens": 0})
@@ -1368,27 +1487,59 @@ async def run_turn(
             _log.debug("Failed to send outer error to client for %s", conversation_id)
         # Mark the run failed before re-raising — the finally-tail safety
         # net would otherwise flip it to interrupted, losing the attribution.
-        _run_id = locals().get("run_id")
-        if _run_id:
+        if run_id:
             try:
                 from api.services.conversation_runs import finish_run
-                await finish_run(_run_id, "failed", error_message="Agent execution failed. Check server logs for details.")
+                await finish_run(run_id, "failed", error_message="Agent execution failed. Check server logs for details.")
             except Exception:
                 _log.debug("finish_run(outer error) failed for %s", conversation_id, exc_info=True)
         # Re-raise so task cancellation stays visible (the task wrapper logs
         # non-cancellation exceptions) — the finally block below still runs.
         raise
     finally:
-        # Safety net: a turn that exited without a terminal write (e.g. a
-        # cancellation that never reached stream_end) leaves the run row
-        # 'running' — flip it so reopen shows an interrupted notice, not a
-        # zombie. finish_run's status guard makes this a no-op after a
-        # normal terminal write.
-        _run_id = locals().get("run_id")
-        if _run_id:
+        # Safety net: a turn that exited without a terminal write leaves the
+        # run row 'running'. Retry the KNOWN terminal status when one was
+        # classified (finish_run's running-guard no-ops if the original write
+        # landed), fall back to the recorded abort reason, and only label an
+        # unexplained teardown "failed" — "interrupted" must mean we know why.
+        if run_id:
+            _net_status = _terminal_status
+            _net_error = _terminal_error
+            if _net_status is None:
+                if session is not None and session.is_aborted():
+                    _net_status = "interrupted"
+                    _net_error = session.abort_reason or "abort_signal"
+                    _net_branch = "abort"
+                else:
+                    _net_status = "failed"
+                    _net_error = "Run ended without a terminal event (see server logs)"
+                    _net_branch = "unknown"
+            else:
+                _net_branch = "terminal"
             try:
                 from api.services.conversation_runs import finish_run
-                await finish_run(_run_id, "interrupted")
+                _landed = await finish_run(
+                    run_id, _net_status,
+                    error_message=_net_error if _net_status != "completed" else None,
+                    tokens_used=_terminal_tokens,
+                )
+                # Log only when this call performed the transition — a no-op
+                # means the normal terminal write already landed.
+                if _landed and _net_branch == "terminal":
+                    _log.warning(
+                        "Retrying terminal run write: conversation=%s run_id=%s status=%s reason=%s",
+                        conversation_id, run_id, _net_status, _net_error,
+                    )
+                elif _landed and _net_branch == "abort":
+                    _log.warning(
+                        "Run interrupted: conversation=%s run_id=%s reason=%s",
+                        conversation_id, run_id, _net_error,
+                    )
+                elif _landed and _net_branch == "unknown":
+                    _log.warning(
+                        "Run settled without a terminal event: conversation=%s run_id=%s",
+                        conversation_id, run_id,
+                    )
             except Exception:
                 _log.debug("finish_run(finally) failed for %s", conversation_id, exc_info=True)
         # Release per-turn resources even on error paths: provider HTTP

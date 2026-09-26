@@ -221,7 +221,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                 continue
 
             if msg.get("type") == "abort":
-                manager.signal_abort(conversation_id)
+                manager.signal_abort(conversation_id, reason="ws_abort_frame")
                 continue
 
             # Re-check access on every message that touches project state.

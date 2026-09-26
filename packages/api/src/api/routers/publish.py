@@ -509,7 +509,7 @@ async def publish_stream(
                     yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
         except asyncio.CancelledError:
             # Client disconnected — stop the run rather than leak it.
-            manager.signal_abort(conversation)
+            manager.signal_abort(conversation, reason="publish_sse_client_disconnect")
             task.cancel()
             raise
 
@@ -546,7 +546,7 @@ async def publish_abort(
     if conversation is None:
         return {"aborted": True}
     from api.websocket.manager import manager
-    manager.signal_abort(conversation)
+    manager.signal_abort(conversation, reason="publish_abort_api")
     return {"aborted": True}
 
 
@@ -736,7 +736,7 @@ async def post_publish_session_abort(
         return {"aborted": True}
     from api.websocket.manager import manager
 
-    manager.signal_abort(conversation_id)
+    manager.signal_abort(conversation_id, reason="publish_viewer_abort")
     return {"aborted": True}
 
 
@@ -858,7 +858,7 @@ async def post_publish_session_run(
                 if task.exception() is not None:
                     yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
         except asyncio.CancelledError:
-            manager.signal_abort(conversation)
+            manager.signal_abort(conversation, reason="publish_sse_client_disconnect")
             task.cancel()
             raise
 

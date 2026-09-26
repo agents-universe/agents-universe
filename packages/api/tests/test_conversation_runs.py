@@ -139,8 +139,10 @@ async def _user_message_id(db, conversation_id: str) -> str:
 async def test_run_row_created_and_links_user_message(agent_spy, db, make_project):
     """A turn creates one run row pointing at the persisted user message.
 
-    The spy never emits stream_end, so the finally-tail safety net flips the
-    row to interrupted — covering both 3a (creation) and 3g (safety net).
+    The spy never emits stream_end and never aborts, so the finally-tail
+    safety net faces an unexplained teardown — that is a FAILURE ("we don't
+    know why it ended"), not an interruption ("we know why"). Covering both
+    3a (creation) and the safety-net classification.
     """
     conv = await _make_conversation(db, make_project)
     await _add_config(db)
@@ -151,7 +153,8 @@ async def test_run_row_created_and_links_user_message(agent_spy, db, make_projec
     assert run is not None
     assert run.user_message_id == await _user_message_id(db, conv.conversation_id)
     assert run.started_at is not None
-    assert run.status == "interrupted"
+    assert run.status == "failed"
+    assert "terminal event" in run.error_message
     assert run.ended_at is not None
 
 
@@ -357,7 +360,9 @@ async def test_run_failed_with_partial_text_on_api_error(agent_spy, db, make_pro
 
 
 async def test_run_interrupted_on_task_cancel(agent_spy, db, make_project):
-    """User Stop cancels agent_task → the abort path (3e) marks interrupted."""
+    """A cancelled agent_task marks the run interrupted — and, because no
+    abort was recorded (the spy cancels itself, no Stop/abort signal), the
+    reason says external_cancellation instead of masquerading as a user Stop."""
     conv = await _make_conversation(db, make_project)
     await _add_config(db)
 
@@ -370,7 +375,96 @@ async def test_run_interrupted_on_task_cancel(agent_spy, db, make_project):
 
     run = await _get_run(db, conv.conversation_id)
     assert run.status == "interrupted"
+    assert run.error_message == "external_cancellation"
     assert run.ended_at is not None
+
+
+async def test_abort_reason_persisted_on_signal_abort(agent_spy, db, make_project):
+    """A Stop (abort frame) that lands before the turn wires its watcher must
+    persist its reason token on the run row — this is what makes a
+    spontaneous interruption distinguishable from a real Stop in production."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+
+    from api.websocket.manager import manager
+
+    async def _run(kwargs):
+        await asyncio.Event().wait()  # block until the abort watcher cancels
+
+    agent_spy["behavior"] = _run
+    manager.ensure_abort_event(conv.conversation_id)
+    manager.signal_abort(conv.conversation_id, reason="ws_abort_frame")
+    try:
+        await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+    finally:
+        manager._abort_events.pop(conv.conversation_id, None)
+        manager._abort_reasons.pop(conv.conversation_id, None)
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "interrupted"
+    assert run.error_message == "ws_abort_frame"
+
+
+async def test_emit_self_abort_persists_reason(agent_spy, db, make_project):
+    """session.emit's backpressure self-abort (queue stalled, consumer dead)
+    must land as interrupted WITH its reason token, not as an unattributed
+    "interrupted". Mirrors agent.py's loop-top reaction: the session is
+    already aborted when it emits stream_end(stop_reason=aborted)."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        session = kwargs["session"]
+        # What emit() does when its put times out — recorded reason included.
+        session.abort("event_queue_blocked")
+        await session.emit(
+            "stream_end", message_id=msg_id, total_tokens=7, stop_reason="aborted"
+        )
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "interrupted"
+    assert run.error_message == "event_queue_blocked"
+
+
+async def test_stream_end_finish_run_failure_retried_by_safety_net(
+    agent_spy, db, make_project, monkeypatch
+):
+    """If the terminal finish_run write fails, the finally safety net must
+    RETRY THE CLASSIFIED STATUS — a completed turn must never be relabeled
+    interrupted just because its terminal write hiccupped."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        await kwargs["session"].emit("stream_delta", delta="done ")
+        await kwargs["session"].emit("stream_end", message_id=msg_id, total_tokens=3)
+
+    agent_spy["behavior"] = _run
+
+    from api.services import conversation_runs as cr_mod
+
+    real_finish = cr_mod.finish_run
+    calls = {"n": 0}
+
+    async def _flaky_finish(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the stream_end write blows up once
+            raise RuntimeError("transient finish_run failure")
+        return await real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(cr_mod, "finish_run", _flaky_finish)
+
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert calls["n"] >= 2  # first attempt failed, safety net retried
+    assert run.status == "completed"
+    assert run.tokens_used == 3
 
 
 # ── service helpers ──────────────────────────────────────────────────────
@@ -390,6 +484,9 @@ async def test_startup_sweep_interrupts_stale_runs(db, make_project):
     await db.refresh(stale)
     assert stale.status == "interrupted"
     assert stale.ended_at is not None
+    # Attribution: the interrupted bucket must separate restart-flips from
+    # live aborts without a schema change.
+    assert stale.error_message == "Run interrupted by process restart"
     await db.refresh(done)
     assert done.status == "completed"
     assert done.ended_at is None

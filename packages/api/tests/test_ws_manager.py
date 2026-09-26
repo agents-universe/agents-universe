@@ -182,6 +182,33 @@ async def test_send_evicts_dead_ws(mgr):
     assert "c1" not in mgr._connections  # dead WS evicted
 
 
+async def test_send_timeout_evicts_half_open_ws(mgr, monkeypatch, caplog):
+    """A half-open TCP connection (client vanished, no RST) blocks send
+    forever — the timeout must evict it like a dead socket instead of
+    stalling forward_events, which would fill the session queue and make
+    emit() abort the run as "consumer likely dead"."""
+    import api.websocket.manager as mgr_mod
+    import logging
+
+    monkeypatch.setattr(mgr_mod, "_SEND_TIMEOUT_S", 0.05)
+    ws = _make_ws()
+
+    async def _hang(_payload):
+        await asyncio.sleep(60)
+
+    ws.send_text.side_effect = _hang
+    await mgr.connect("c1", ws)
+
+    with caplog.at_level(logging.WARNING, logger="agents_universe.ws"):
+        result = await mgr.send("c1", {"type": "ping"})
+
+    assert result is False
+    assert "c1" not in mgr._connections  # half-open WS evicted
+    ws.close.assert_awaited()
+    assert "WS send timed out" in caplog.text
+    assert "c1" in caplog.text
+
+
 async def test_send_routes_to_reconnected_ws(mgr):
     """After reconnect, send() delivers to the new WS, not the old one."""
     ws1 = _make_ws()
@@ -279,6 +306,52 @@ async def test_abort_works_after_reconnect(mgr):
 
     mgr.signal_abort("c1")
     assert abort_event.is_set()
+
+
+# ── Abort reason attribution ───────────────────────────────────────
+
+def test_signal_abort_records_first_reason(mgr):
+    """signal_abort records a stable reason token; the first cause wins so a
+    follow-up signal cannot overwrite the original attribution."""
+    mgr.ensure_abort_event("c1")
+
+    mgr.signal_abort("c1", reason="ws_abort_frame")
+    mgr.signal_abort("c1", reason="publish_abort_api")
+
+    assert mgr.get_abort_event("c1").is_set()
+    assert mgr.get_abort_reason("c1") == "ws_abort_frame"
+
+
+def test_reset_abort_clears_reason(mgr):
+    mgr.ensure_abort_event("c1")
+    mgr.signal_abort("c1", reason="ws_abort_frame")
+    mgr.reset_abort("c1")
+    assert not mgr.get_abort_event("c1").is_set()
+    assert mgr.get_abort_reason("c1") is None
+
+
+async def test_disconnect_cleans_abort_reason(mgr):
+    """The reason is popped wherever the event is popped — a stale token must
+    not leak into the next turn on the same conversation."""
+    ws = _make_ws()
+    await mgr.connect("c1", ws)
+    mgr.signal_abort("c1", reason="ws_abort_frame")
+    assert mgr.get_abort_reason("c1") == "ws_abort_frame"
+
+    await mgr.disconnect("c1", ws)  # no session, no claim → full cleanup
+
+    assert "c1" not in mgr._abort_events
+    assert mgr.get_abort_reason("c1") is None
+
+
+def test_deregister_session_cleans_abort_reason(mgr):
+    mgr._abort_events["c1"] = asyncio.Event()
+    mgr.signal_abort("c1", reason="ws_abort_frame")
+
+    mgr.deregister_session("c1")  # no WS connected → full cleanup
+
+    assert "c1" not in mgr._abort_events
+    assert mgr.get_abort_reason("c1") is None
 
 
 async def test_disconnect_during_claim_window_keeps_abort_event(mgr):

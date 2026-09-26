@@ -6,6 +6,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+# How long emit() waits for the consumer before declaring it dead and
+# aborting the session. Constant so tests can shrink it.
+_EMIT_PUT_TIMEOUT_S = 10.0
+
 
 @dataclass
 class SessionEvent:
@@ -95,6 +99,10 @@ class ConversationSession:
         self._event_queue: asyncio.Queue[SessionEvent | None] = asyncio.Queue(maxsize=1000)
         self._closed = False
         self.abort_event = asyncio.Event()
+        # First-cause token for the abort ("event_queue_blocked", "abort",
+        # ...) so downstream settlement can record WHY the run stopped
+        # instead of guessing Stop-vs-crash. First abort() wins.
+        self.abort_reason: str | None = None
         self._current_message_id: str = str(uuid.uuid4())
         self._pending_prompts: dict[str, asyncio.Future[str]] = {}
         # The emitted payload of each in-flight prompt, keyed by prompt_id.
@@ -171,23 +179,24 @@ class ConversationSession:
         """Enqueue an event to be forwarded by the WS handler.
 
         Blocks until the consumer drains the queue. If the consumer stalls for
-        more than 10 s the session is aborted so the agent doesn't run forever
-        while no client is listening.
+        longer than ``_EMIT_PUT_TIMEOUT_S`` the session is aborted so the
+        agent doesn't run forever while no client is listening.
         """
         if self._closed:
             return
         try:
             await asyncio.wait_for(
                 self._event_queue.put(SessionEvent(type=event_type, data=data)),
-                timeout=10.0,
+                timeout=_EMIT_PUT_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             import logging
             logging.getLogger("agent_core.session").warning(
-                "Event queue blocked for 10 s on %s — consumer likely dead, aborting agent",
-                event_type,
+                "Event queue blocked for %s s on %s (conversation=%s, queued=%d) — consumer likely dead, aborting agent",
+                _EMIT_PUT_TIMEOUT_S, event_type, self.conversation_id,
+                self._event_queue.qsize(),
             )
-            self.abort_event.set()
+            self.abort("event_queue_blocked")
         except asyncio.CancelledError:
             # Re-raise so cancellation propagates immediately — swallowing it
             # (as the old combined except did) breaks structured cancellation:
@@ -547,7 +556,10 @@ class ConversationSession:
     def is_aborted(self) -> bool:
         return self.abort_event.is_set()
 
-    def abort(self) -> None:
+    def abort(self, reason: str = "abort") -> None:
+        """Set the abort event, recording the first cause."""
+        if self.abort_reason is None:
+            self.abort_reason = reason
         self.abort_event.set()
 
     # --- In-flight user input injection ------------------------------------

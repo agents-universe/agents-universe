@@ -13,6 +13,7 @@ from sqlalchemy import select
 from api.models.conversation import Conversation
 from api.models.conversation_run import ConversationRun
 from api.models.project import Project
+from api.models.publish import AgentPublish, PublishKey
 from api.services.project_deletion import delete_project
 
 
@@ -43,3 +44,34 @@ async def test_delete_project_removes_conversation_runs(db, make_project):
         await db.execute(select(Project).where(Project.project_id == pid))
     ).scalar_one_or_none()
     assert proj is None
+
+
+@pytest.mark.asyncio
+async def test_delete_project_removes_published_agents_and_keys(db, make_project):
+    project = await make_project("publish-cleanup")
+    pid = str(project.project_id)
+    publish = AgentPublish(
+        owner_id="test-user",
+        agent_slug="support-agent",
+        project_id=pid,
+        model_config_id="model-config",
+    )
+    db.add(publish)
+    await db.flush()
+    publish_id = str(publish.publish_id)
+    key = PublishKey(
+        publish_id=publish_id,
+        key_hash="a" * 64,
+        key_hint="1234",
+    )
+    db.add(key)
+    await db.commit()
+
+    await delete_project(db, pid, "test-user", project.slug)
+
+    assert (await db.execute(
+        select(AgentPublish).where(AgentPublish.project_id == pid)
+    )).scalars().all() == []
+    assert (await db.execute(
+        select(PublishKey).where(PublishKey.publish_id == publish_id)
+    )).scalars().all() == []

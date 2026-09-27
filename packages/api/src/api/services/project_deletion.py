@@ -23,6 +23,7 @@ from api.models.project import Project
 from api.models.project_deletion_job import ProjectDeletionJob
 from api.models.project_member import ProjectMember
 from api.models.project_secret import ProjectSecret
+from api.models.publish import AgentPublish, PublishKey
 from api.models.schedule import ScheduledTask, ScheduledTaskRun
 from api.models.script import AutomationScript, ScriptRun
 from api.models.task_event import TaskEvent
@@ -256,6 +257,15 @@ async def delete_project(db: AsyncSession, project_id: str, owner_id: str, confi
             await db.execute(delete(ProjectSecret).where(ProjectSecret.project_id == project_id))
             await db.execute(delete(MCPServer).where(MCPServer.project_id == project_id))
             await db.execute(delete(ProjectMember).where(ProjectMember.project_id == project_id))
+            publishes = select(AgentPublish.publish_id).where(
+                AgentPublish.project_id == project_id
+            )
+            await db.execute(
+                delete(PublishKey).where(PublishKey.publish_id.in_(publishes))
+            )
+            await db.execute(
+                delete(AgentPublish).where(AgentPublish.project_id == project_id)
+            )
             await db.execute(delete(Agent).where(Agent.project_id == project_id))
             await db.execute(delete(Project).where(Project.project_id == project_id))
             await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job_id).values(

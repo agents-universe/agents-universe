@@ -68,42 +68,77 @@ Agents Universe 是一个开源（Apache-2.0）的企业级 AI Agent 平台。�
 - Docker & Docker Compose
 - Node.js 20+（本地开发前端）
 - Python 3.12+（本地开发后端）
-- SQL Server ODBC Driver 17（仅默认 SQL Server 部署需要；改用 PostgreSQL/MySQL/SQLite 时无需安装）
+- SQL Server ODBC Driver 17（仅本地开发直连 SQL Server 需要；Docker 部署镜像已内置，改用 PostgreSQL/MySQL/SQLite 时也无需安装）
 
 ### Docker 一键启动
 
 ```bash
-# 复制环境变量
+# 1. 复制环境变量与编排文件（docker-compose.yml 未入库，必须从 example 复制）
 cp .env.example .env
-# 编辑 .env 填入 LLM API Key 等配置
+cp docker-compose.example.yml docker-compose.yml
 
-# 启动全部服务
+# 2. 生成 SECRET_KEY 并写入 .env（启动时会拒绝一切 change-me 占位值）
+#    bash / macOS / Linux:
+echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
+#    PowerShell:
+#    Add-Content .env "SECRET_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))')"
+
+# 3. 启动全部服务（首次构建含 Playwright 与渗透测试工具链，视网络约 10-30 分钟）
 docker compose up --build
 ```
 
 服务地址：
-- Web UI: http://localhost:5173
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- Web UI / API: http://localhost:8000（同一 nginx 反代 `/api`、`/ws`，健康检查 `/health`）
+- 热重载前端（可选）: `docker compose --profile dev up` → http://localhost:5173
+
+几点说明：
+- `.env` 里**不需要** LLM API Key：启动后在 Settings → AI Models 按用户配置（加密存库）；`SYSTEM_DEFAULT_*` 仅作可选兜底。
+- 默认 `AUTH_BYPASS_ENABLED=true` 免登录，开箱即用，仅供本地体验；生产部署请关闭并配置 OAuth SSO。
+- 数据库迁移与全局知识索引由容器启动脚本自动执行。
+- 首次构建默认使用中国境内镜像源；网络不通时改用官方源构建：
+
+  ```bash
+  docker compose build \
+    --build-arg NPM_REGISTRY=https://registry.npmjs.org \
+    --build-arg PIP_INDEX_URL=https://pypi.org/simple \
+    --build-arg PIP_TRUSTED_HOST=pypi.org \
+    --build-arg APT_MIRROR_HOST=deb.debian.org \
+    --build-arg NODE_BASE_URL=https://nodejs.org/dist \
+    --build-arg PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.playwright.dev
+  docker compose up
+  ```
 
 ### 本地开发
 
 ```bash
-# API (packages/api/)
+# 0. 依赖服务（SQL Server + Redis；compose 文件同上，从 example 复制）
+docker compose up -d sqlserver redis
+
+# 1. 环境变量：cp .env.example .env，生成 SECRET_KEY（同上），
+#    并把 PROJECTS_ROOT 设为已存在的绝对路径（子项目工作区目录）
+
+# 2. API (packages/api/)
 cd packages/api
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate          # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 pip install -e ../agent-core -e .
 PYTHONPATH=src python -m uvicorn api.main:app --port 8000 --reload
+# Windows PowerShell: $env:PYTHONPATH='src'; python -m uvicorn api.main:app --port 8000 --reload
 
-# Frontend (packages/web/)
+# 3. Frontend (packages/web/)
 cd packages/web
 npm install
-npm run dev
+npm run dev                         # http://localhost:5173，代理到 :8000
 
-# 数据库迁移
+# 4. 数据库迁移（API 启动时也会自动执行，手动跑仅为确认）
 cd packages/api
 alembic upgrade head
+
+# 5. 全局知识索引（本地开发不会自动执行，Docker 部署由 entrypoint 执行；在仓库根目录运行）
+python -m agent_core.knowledge.index --global-dir ./knowledge
 ```
+
+> 本地开发直连 uvicorn，API Docs 在 http://localhost:8000/docs；Docker 部署下该路径由 nginx 交给前端 SPA，不提供 Swagger。
 
 ## 为什么是 Agents Universe
 
@@ -375,11 +410,10 @@ agents-universe/
 │   ├── categories.yaml   # 项目分类注册表（各分类的知识条目子集）
 │   └── _template/        # 新项目知识条目源文件
 ├── scaffold/             # 子项目测试脚手架（Playwright 配置，新项目 tests/ 初始化源）
-├── docker-compose.yml    # 容器编排（另含 .local 本地 / .example 示例变体）
-├── docker-entrypoint.sh  # 容器入口：DB 迁移 → nginx → uvicorn
+├── docker-compose.example.yml  # 容器编排示例（复制为 docker-compose.yml 后使用）
+├── docker-entrypoint.sh  # 容器入口：DB 迁移 → 全局知识索引 → nginx → uvicorn
 ├── nginx-combined.conf   # nginx 反代配置（Web UI 与 /api 转发）
-├── Dockerfile            # Multi-stage 构建
-└── *.ps1                 # Windows 本地开发与部署脚本（dev-start / deploy-local / build-deploy）
+└── Dockerfile            # Multi-stage 构建
 ```
 
 ## 核心设计

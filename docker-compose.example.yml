@@ -1,6 +1,10 @@
 # Docker Compose example — copy to docker-compose.yml, fill .env, then:
 #   docker compose up --build
 #
+# By default the api service's nginx serves the Web UI on http://localhost:8000
+# (same-origin reverse proxy for /api, /auth, /ws). The hot-reload dev frontend
+# on :5173 only starts with:  docker compose --profile dev up
+#
 # This example runs the full stack locally on localhost. For production
 # deployment (custom domain, HTTPS, SSO), adapt the URLs and add your own
 # reverse proxy / tunnel — see the api service env vars below.
@@ -20,9 +24,11 @@ services:
       - DB_DRIVER=ODBC Driver 17 for SQL Server
       - DB_TRUST_CERT=true
       - REDIS_URL=redis://redis:6379/0
-      - APP_BASE_URL=http://localhost:8000
-      - WEB_BASE_URL=http://localhost:5173
-      - CORS_ORIGINS=http://localhost:5173
+      # ${VAR:-default} interpolation reads .env — so these stay editable in
+      # .env (plain FOO= entries under `environment:` would override env_file)
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
+      - WEB_BASE_URL=${WEB_BASE_URL:-http://localhost:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8000,http://localhost:5173}
       - PROJECTS_ROOT=/app/projects
       - JAVA_HOME=/usr/lib/jvm/msopenjdk-21-amd64
       - HOME=/home/appuser

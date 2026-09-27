@@ -36,17 +36,25 @@ Agents Universe 部署在 [agents-universe.com](https://agents-universe.com)，�
 ```bash
 cp .env.example .env
 cp docker-compose.example.yml docker-compose.yml
+# 生成 SECRET_KEY（启动时会拒绝一切 change-me 占位值）
+echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env   # PowerShell 见 README
 docker compose up --build
 ```
 
-Web UI: http://localhost:5173 · API: http://localhost:8000 · Docs: http://localhost:8000/docs
+Web UI / API: http://localhost:8000（`/api`、`/ws` 同源反代）· 热重载前端: `docker compose --profile dev up` → http://localhost:5173
 
 ### 本地开发
 
 ```bash
+# 依赖服务（compose 文件同上，从 example 复制）
+docker compose up -d sqlserver redis
+
+# 环境变量：cp .env.example .env，生成 SECRET_KEY（同上），
+# 并把 PROJECTS_ROOT 设为已存在的绝对路径
+
 # API (packages/api/)
 cd packages/api
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -e ../agent-core -e .
 PYTHONPATH=src python -m uvicorn api.main:app --port 8000 --reload
 
@@ -55,8 +63,11 @@ cd packages/web
 npm install
 npm run dev
 
-# 数据库迁移 (packages/api/)
+# 数据库迁移 (packages/api/；API 启动时也会自动执行)
 alembic upgrade head
+
+# 全局知识索引（本地开发不自动执行；在仓库根目录运行）
+python -m agent_core.knowledge.index --global-dir ./knowledge
 ```
 
 ### 提交钩子

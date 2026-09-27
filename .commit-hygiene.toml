@@ -45,6 +45,10 @@ allowed_hosts = [
   "polar.sh",
   "jsdelivr.net",
   "tuna.tsinghua.edu.cn",  # pypi mirror used by the Docker build
+  "pypi.org",              # official PyPI (README build-arg override)
+  "nodejs.org",            # official Node.js dist (README build-arg override)
+  "playwright.dev",        # Playwright CDN (README build-arg override)
+  "debian.org",            # deb.debian.org apt mirror (README build-arg override)
   "microsoft.com",         # packages.microsoft.com apt feed
   "ghproxy.net",           # GitHub download mirrors used behind the GFW
   "ghfast.top",

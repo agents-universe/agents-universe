@@ -24,14 +24,15 @@ PYTHONPATH=src python -m uvicorn api.main:app --port 8000
 # Frontend (from packages/web/)
 npm run dev
 
-# Run knowledge indexer for a project
-python -m agent_core.knowledge.index --project {slug}
+# Knowledge indexer (global tier / one project's workspace)
+python -m agent_core.knowledge.index --global-dir ./knowledge
+python -m agent_core.knowledge.index --project-dir <project_root> --project-id <uuid>
 
 # DB migrations (from packages/api/)
 alembic upgrade head
 alembic revision --autogenerate -m "description"
 
-# Docker local stack
+# Docker local stack (fresh clone first: cp docker-compose.example.yml docker-compose.yml)
 docker compose up
 docker compose up --build
 ```

@@ -17,6 +17,15 @@ unset _v
 echo "[entrypoint] Running database migrations..."
 alembic upgrade head
 
+# Index the global knowledge base (project creation auto-indexes its own
+# workspace; the global tier has no other trigger, so a fresh deployment
+# would otherwise show an empty knowledge panel). Idempotent — unchanged
+# files are skipped by content hash. Never block startup on failure: same
+# fail-open policy as the API-side migrations, which only warn.
+echo "[entrypoint] Indexing global knowledge..."
+python -m agent_core.knowledge.index --global-dir ./knowledge \
+    || echo "[entrypoint] WARN: global knowledge indexing failed (non-fatal)" >&2
+
 # Serve the web UI with nginx (non-root; runtime dirs under /tmp/nginx).
 # Strategy: try to remove stale dirs from a previous run (may fail on /tmp
 # sticky bit if owned by a different UID), then recreate. The Dockerfile

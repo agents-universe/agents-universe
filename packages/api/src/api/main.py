@@ -120,14 +120,19 @@ async def lifespan(app: FastAPI):
     # idempotently; failures only warn so a broken DB doesn't block startup.
     await _run_migrations()
 
-    # Fail closed on the default SECRET_KEY: the placeholder is a public
-    # constant, so a deployment that forgets .env would ship forgeable
-    # sessions (JWT + OAuth) and a decryptable token vault .
-    if settings.secret_key == "change-me-32-char-secret-key-here!":
+    # Fail closed on placeholder SECRET_KEYs: any publicly known value (the
+    # config default and the .env.example sample both start with "change-me")
+    # would ship forgeable sessions (JWT + OAuth) and a decryptable token
+    # vault. Prefix matching catches the current placeholders and any future
+    # sample value that follows the same convention.
+    if settings.secret_key.startswith("change-me"):
         raise RuntimeError(
-            "SECRET_KEY is still the default value. Set a strong secret in .env "
-            "before starting the API — the public default lets anyone forge "
-            "sessions and decrypt the token vault."
+            "SECRET_KEY is still a placeholder value. Generate a strong secret "
+            "and set it in .env before starting the API — a public placeholder "
+            "lets anyone forge sessions and decrypt the token vault.\n"
+            "  Generate one with either:\n"
+            "    openssl rand -hex 32\n"
+            '    python -c "import secrets; print(secrets.token_hex(32))"'
         )
 
     await init_redis()

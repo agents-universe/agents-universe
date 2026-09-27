@@ -122,6 +122,46 @@ async def test_oversized_primary_row_is_not_listed_as_deferred(tmp_path, monkeyp
     assert "domain/primary" not in result.deferred_entries
 
 
+async def test_primary_scan_reuses_parsed_file_until_stat_changes(tmp_path, monkeypatch):
+    import agent_core.knowledge.loader as loader
+
+    kdir = _write_knowledge_dir(tmp_path)
+    original_loads = loader.frontmatter.loads
+    parse_count = 0
+
+    def counting_loads(content):
+        nonlocal parse_count
+        parse_count += 1
+        return original_loads(content)
+
+    loader._directory_entries.cache_clear()
+    monkeypatch.setattr(loader.frontmatter, "loads", counting_loads)
+    async def load_context():
+        return await load_project_context(
+            project_id="p1",
+            db_session=None,
+            cache=_FakeCache([]),
+            knowledge_dir=kdir,
+        )
+
+    await load_context()
+    after_first_load = parse_count
+    first_scan = loader._directory_entries.cache_info()
+    await load_context()
+    assert parse_count == after_first_load
+    assert loader._directory_entries.cache_info().hits > first_scan.hits
+
+    primary = kdir / "domain" / "primary.md"
+    primary.write_text("---\ntitle: Primary\n---\nUPDATED PRIMARY BODY\n", encoding="utf-8")
+    added = kdir / "domain" / "added.md"
+    added.write_text("---\ntitle: Added\n---\nADDED BODY\n", encoding="utf-8")
+    result = await load_context()
+    assert result.loaded_content["domain/primary"].endswith("UPDATED PRIMARY BODY\n")
+    assert result.loaded_content["domain/added"].endswith("ADDED BODY\n")
+    assert parse_count > after_first_load
+    assert loader._directory_entries.cache_info().misses > first_scan.misses
+
+
 # ── Tier-1 hierarchy fields ─────────────────────────────────────────────────
 
 

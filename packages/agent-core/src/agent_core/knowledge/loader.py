@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +78,7 @@ def _is_deferred_level(meta: dict) -> bool:
     return level == "auto" and bool(meta.get("parent"))
 
 
+@lru_cache(maxsize=2048)
 def derive_summary(content: str, limit: int = 160) -> str:
     """Fallback summary when frontmatter has none: first prose paragraph, truncated.
 
@@ -105,6 +108,49 @@ def derive_summary(content: str, limit: int = 160) -> str:
         if para:
             return para[:limit]
     return ""
+
+
+@lru_cache(maxsize=2048)
+def _read_primary_file(
+    path: str, mtime_ns: int, size: int, ctime_ns: int
+) -> tuple[str, dict, str]:
+    """Read and parse a Markdown file once per stable filesystem fingerprint."""
+    content = Path(path).read_text("utf-8").lstrip("\ufeff")
+    post = frontmatter.loads(content)
+    return content, dict(post.metadata), post.content
+
+
+@lru_cache(maxsize=4096)
+def _directory_entries(path: str, mtime_ns: int, ctime_ns: int) -> tuple[tuple[str, bool], ...]:
+    with os.scandir(path) as entries:
+        children = []
+        for entry in entries:
+            try:
+                children.append((entry.name, entry.is_dir(follow_symlinks=False)))
+            except OSError:
+                continue
+    return tuple(sorted(children))
+
+
+def _iter_markdown_files(root: Path) -> list[Path]:
+    pending = [root]
+    markdown_files: list[Path] = []
+    while pending:
+        directory = pending.pop()
+        try:
+            stat = directory.stat()
+            entries = _directory_entries(
+                str(directory), stat.st_mtime_ns, stat.st_ctime_ns
+            )
+        except OSError:
+            continue
+        for name, is_directory in entries:
+            child = directory / name
+            if is_directory:
+                pending.append(child)
+            elif child.suffix.lower() == ".md":
+                markdown_files.append(child)
+    return sorted(markdown_files)
 
 
 CATEGORY_PRIORITY = ["domain", "technical", "skills", "system"]
@@ -642,9 +688,10 @@ async def _load_primary_from_disk(
         # containment check must run on the RESOLVED path or an external .md
         # file's full content gets read into the project prompt.
         base_resolved = knowledge_dir.resolve()
-        for md_path in sorted(knowledge_dir.rglob("*.md")):
+        for md_path in _iter_markdown_files(knowledge_dir):
             try:
-                md_path.resolve().relative_to(base_resolved)
+                resolved_path = md_path.resolve()
+                resolved_path.relative_to(base_resolved)
             except (OSError, ValueError):
                 continue
             # the dot-check must look at the path RELATIVE to the
@@ -674,7 +721,8 @@ async def _load_primary_from_disk(
                 log_slugs.add(slug)
                 continue
             try:
-                if md_path.stat().st_size > MAX_FILE_SIZE:
+                file_stat = resolved_path.stat()
+                if file_stat.st_size > MAX_FILE_SIZE:
                     # Oversized file: read the head (frontmatter region) so we
                     # can still register slug/title/category for the overflow
                     # list — otherwise the entry silently vanishes from the
@@ -686,28 +734,33 @@ async def _load_primary_from_disk(
                         continue
                     overflow_scans.append((md_path, head))
                     continue
-                # A UTF-8 BOM (Windows editors) would stick to the first
-                # frontmatter key (title) and break metadata parsing.
-                content = md_path.read_text("utf-8").lstrip("\ufeff")
             except (OSError, UnicodeDecodeError):
                 # File may be removed/renamed between rglob and stat (race),
                 # or replaced mid-read — skip it rather than crashing the load.
                 continue
             try:
-                post = frontmatter.loads(content)
+                # Validate containment above on every scan; this cache only
+                # skips repeat disk reads and parsing for an unchanged file.
+                content, meta, body = _read_primary_file(
+                    str(resolved_path),
+                    file_stat.st_mtime_ns,
+                    file_stat.st_size,
+                    file_stat.st_ctime_ns,
+                )
+            except (OSError, UnicodeDecodeError):
+                continue
             except Exception:
                 _log.warning("Skipping %s: invalid frontmatter", md_path)
                 continue
-            meta = post.metadata
             if meta.get("knowledge_role") == "log":
                 log_slugs.add(slug)
                 continue
             # Deferred-tier files (detail, or auto with a parent) are scanned
             # but their body never joins the static region.
             if _is_deferred_level(meta):
-                deferred_scans.append((md_path, content, meta, post.content))
+                deferred_scans.append((md_path, content, meta, body))
                 continue
-            items.append((md_path, content, meta, post.content))
+            items.append((md_path, content, meta, body))
         return items, overflow_scans, deferred_scans
 
     items, overflow_scans, deferred_scans = await asyncio.to_thread(_scan)

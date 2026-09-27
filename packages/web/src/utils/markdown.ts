@@ -1,11 +1,58 @@
 import MarkdownIt from 'markdown-it'
-import hljs from 'markdown-it-highlightjs'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import css from 'highlight.js/lib/languages/css'
+import diff from 'highlight.js/lib/languages/diff'
+import html from 'highlight.js/lib/languages/xml'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import markdown from 'highlight.js/lib/languages/markdown'
+import python from 'highlight.js/lib/languages/python'
+import sql from 'highlight.js/lib/languages/sql'
+import typescript from 'highlight.js/lib/languages/typescript'
+import yaml from 'highlight.js/lib/languages/yaml'
+import markdownHighlight from 'markdown-it-highlightjs/core'
+
+const languages = {
+  bash,
+  css,
+  diff,
+  html,
+  javascript,
+  json,
+  markdown,
+  python,
+  sql,
+  typescript,
+  yaml,
+}
+
+for (const [name, language] of Object.entries(languages)) {
+  hljs.registerLanguage(name, language)
+}
+hljs.registerAliases(['jsonc'], { languageName: 'json' })
+
+const highlighter = { hljs, auto: true, code: true, ignoreIllegals: true }
+
+function configureHighlighting(instance: MarkdownIt) {
+  instance.use(markdownHighlight, highlighter)
+  instance.options.highlight = (code, language) => {
+    if (language && !hljs.getLanguage(language)) return ''
+    try {
+      return language
+        ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+        : hljs.highlightAuto(code).value
+    } catch {
+      return ''
+    }
+  }
+}
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: true })
-  .use(hljs, { auto: true })
+configureHighlighting(md)
 
 const mdKnowledge = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
-  .use(hljs, { auto: true })
+configureHighlighting(mdKnowledge)
 
 // Tool-produced media URLs are complete absolute addresses. An LLM may still
 // treat one as a relative path and prepend the base again, producing

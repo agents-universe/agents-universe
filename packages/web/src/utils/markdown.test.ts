@@ -26,6 +26,14 @@ describe('renderMarkdown', () => {
     expect(html).toContain('data-code="graph%20TD"')
   })
 
+  it('highlights registered languages and leaves unknown languages as text', () => {
+    const highlighted = renderMarkdown('```python\nprint("ready")\n```')
+    const plain = renderMarkdown('```unknown-language\nprint("ready")\n```')
+    expect(highlighted).toContain('<span class="hljs-built_in">print</span>')
+    expect(plain).toContain('print(&quot;ready&quot;)')
+    expect(plain).not.toContain('<span class="hljs-')
+  })
+
   it('does not allow raw html', () => {
     const html = renderMarkdown('<script>alert(1)</script>')
     expect(html).not.toContain('<script>')

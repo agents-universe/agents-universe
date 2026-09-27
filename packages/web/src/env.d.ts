@@ -21,3 +21,17 @@ declare module 'markdown-it-highlightjs' {
   const plugin: MarkdownIt.PluginSimple
   export default plugin
 }
+
+declare module 'markdown-it-highlightjs/core' {
+  import type MarkdownIt from 'markdown-it'
+  const plugin: (
+    md: MarkdownIt,
+    options?: {
+      hljs?: unknown
+      auto?: boolean
+      code?: boolean
+      ignoreIllegals?: boolean
+    },
+  ) => void
+  export default plugin
+}

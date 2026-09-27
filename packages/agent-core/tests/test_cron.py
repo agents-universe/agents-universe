@@ -141,6 +141,24 @@ class TestTimezones:
         assert before == _utc(2026, 10, 31, 13, 0)
         assert after == _utc(2026, 11, 1, 14, 0)
 
+    def test_dst_fall_back_never_returns_a_past_occurrence(self):
+        after = _utc(2026, 11, 1, 6, 15)
+        assert next_run_at("* * * * *", "America/New_York", after) == _utc(
+            2026, 11, 1, 6, 16
+        )
+
+    def test_dst_fall_back_does_not_skip_the_repeated_hour(self):
+        after = _utc(2026, 11, 1, 5, 59)
+        assert next_run_at("* * * * *", "America/New_York", after) == _utc(
+            2026, 11, 1, 6, 0
+        )
+
+    def test_dst_fall_back_chooses_earliest_future_utc_candidate(self):
+        after = _utc(2026, 11, 1, 5, 10)
+        assert next_run_at("* * * * *", "America/New_York", after) == _utc(
+            2026, 11, 1, 5, 11
+        )
+
     def test_nonexistent_local_time_still_advances(self):
         # 02:30 does not exist on 2026-03-08 in New York; the schedule must not
         # stall or raise — it lands on the pre-transition offset (07:30 UTC).

@@ -153,20 +153,20 @@ def _day_matches(day: date, dom: _Field, dow: _Field) -> bool:
 def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
     """First fire time strictly after ``after``, as a UTC-aware datetime.
 
-    Missed occurrences are skipped, not caught up: the scan starts at the
-    minute after ``after`` regardless of how far in the past the last run was.
+    Missed occurrences are skipped, not caught up. Candidates are compared on
+    the UTC timeline so repeated local times cannot return past or late fires.
     """
     minute, hour, dom, month, dow = _parse(expr)
     zone = _zone(tz)
 
     if after.tzinfo is None:
         after = after.replace(tzinfo=timezone.utc)
+    after_utc = after.astimezone(timezone.utc)
     local_after = after.astimezone(zone)
-    start = local_after.replace(second=0, microsecond=0) + timedelta(minutes=1)
 
     hours = sorted(hour.values)
     minutes = sorted(minute.values)
-    day = start.date()
+    day = local_after.date()
 
     for _ in range(_MAX_DAYS):
         if day.month not in month.values:
@@ -176,11 +176,35 @@ def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
         if not _day_matches(day, dom, dow):
             day += timedelta(days=1)
             continue
+        next_candidate: datetime | None = None
         for h in hours:
             for m in minutes:
-                candidate = datetime.combine(day, time(h, m), tzinfo=zone)
-                if candidate > local_after:
-                    return candidate.astimezone(timezone.utc)
+                local_candidate = datetime.combine(day, time(h, m))
+                first_fold = local_candidate.replace(tzinfo=zone, fold=0)
+                second_fold = local_candidate.replace(tzinfo=zone, fold=1)
+                candidates = [first_fold]
+                if first_fold.utcoffset() != second_fold.utcoffset():
+                    first_valid = (
+                        first_fold.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+                        == local_candidate
+                    )
+                    second_valid = (
+                        second_fold.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+                        == local_candidate
+                    )
+                    if first_valid and second_valid:
+                        candidates.append(second_fold)
+                future = [
+                    candidate.astimezone(timezone.utc)
+                    for candidate in candidates
+                    if candidate.astimezone(timezone.utc) > after_utc
+                ]
+                if future:
+                    candidate_utc = min(future)
+                    if next_candidate is None or candidate_utc < next_candidate:
+                        next_candidate = candidate_utc
+        if next_candidate is not None:
+            return next_candidate
         day += timedelta(days=1)
 
     raise CronError(f"no matching time within {_MAX_DAYS} days for {expr!r}")

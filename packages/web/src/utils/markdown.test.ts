@@ -34,6 +34,26 @@ describe('renderMarkdown', () => {
     expect(plain).not.toContain('<span class="hljs-')
   })
 
+  it.each([
+    // shell/console are the "Shell Session" grammar — content is prompt lines.
+    ['shell', '$ echo hello'],
+    ['console', '$ export PATH=$PATH:/usr'],
+    ['xml', '<root attr="1"/>'],
+    ['go', 'func main() {}'],
+    ['java', 'class Demo {}'],
+    ['cpp', 'int main() { return 0; }'],
+  ])('highlights %s fences', (lang, code) => {
+    // These were silently plain text when only the default subset was
+    // registered against the tree-shaken highlight.js bundle.
+    const html = renderMarkdown('```' + lang + '\n' + code + '\n```')
+    expect(html).toContain('<span class="hljs-')
+  })
+
+  it('resolves the html alias to the xml grammar', () => {
+    const html = renderMarkdown('```html\n<div class="x"></div>\n```')
+    expect(html).toContain('<span class="hljs-tag"')
+  })
+
   it('does not allow raw html', () => {
     const html = renderMarkdown('<script>alert(1)</script>')
     expect(html).not.toContain('<script>')

@@ -16,12 +16,6 @@ declare module '*.vue' {
   export default component
 }
 
-declare module 'markdown-it-highlightjs' {
-  import type MarkdownIt from 'markdown-it'
-  const plugin: MarkdownIt.PluginSimple
-  export default plugin
-}
-
 declare module 'markdown-it-highlightjs/core' {
   import type MarkdownIt from 'markdown-it'
   const plugin: (

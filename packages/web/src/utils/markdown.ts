@@ -1,29 +1,45 @@
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
+import c from 'highlight.js/lib/languages/c'
+import cpp from 'highlight.js/lib/languages/cpp'
 import css from 'highlight.js/lib/languages/css'
 import diff from 'highlight.js/lib/languages/diff'
-import html from 'highlight.js/lib/languages/xml'
+import go from 'highlight.js/lib/languages/go'
+import java from 'highlight.js/lib/languages/java'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import markdown from 'highlight.js/lib/languages/markdown'
+import plaintext from 'highlight.js/lib/languages/plaintext'
 import python from 'highlight.js/lib/languages/python'
+import shell from 'highlight.js/lib/languages/shell'
 import sql from 'highlight.js/lib/languages/sql'
 import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 import markdownHighlight from 'markdown-it-highlightjs/core'
 
+// Keep this list in sync with the languages LLM replies and knowledge docs
+// actually fence — an unregistered language renders as plain escaped text.
+// Aliases (html → xml, sh/zsh → bash, text/txt → plaintext, console →
+// shell) ship inside each language definition's own `aliases`.
 const languages = {
   bash,
+  c,
+  cpp,
   css,
   diff,
-  html,
+  go,
+  java,
   javascript,
   json,
   markdown,
+  plaintext,
   python,
+  shell,
   sql,
   typescript,
+  xml,
   yaml,
 }
 
@@ -32,27 +48,16 @@ for (const [name, language] of Object.entries(languages)) {
 }
 hljs.registerAliases(['jsonc'], { languageName: 'json' })
 
+// Single highlight policy: the plugin reads these options at .use() time and
+// owns options.highlight — a hand-rolled assignment afterwards would silently
+// shadow both (tweaks to `highlighter` would compile and do nothing).
 const highlighter = { hljs, auto: true, code: true, ignoreIllegals: true }
 
-function configureHighlighting(instance: MarkdownIt) {
-  instance.use(markdownHighlight, highlighter)
-  instance.options.highlight = (code, language) => {
-    if (language && !hljs.getLanguage(language)) return ''
-    try {
-      return language
-        ? hljs.highlight(code, { language, ignoreIllegals: true }).value
-        : hljs.highlightAuto(code).value
-    } catch {
-      return ''
-    }
-  }
-}
-
 const md = new MarkdownIt({ html: false, linkify: true, typographer: true })
-configureHighlighting(md)
+  .use(markdownHighlight, highlighter)
 
 const mdKnowledge = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: true })
-configureHighlighting(mdKnowledge)
+  .use(markdownHighlight, highlighter)
 
 // Tool-produced media URLs are complete absolute addresses. An LLM may still
 // treat one as a relative path and prepend the base again, producing

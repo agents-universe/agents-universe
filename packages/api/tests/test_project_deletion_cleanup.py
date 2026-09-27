@@ -75,3 +75,53 @@ async def test_delete_project_removes_published_agents_and_keys(db, make_project
     assert (await db.execute(
         select(PublishKey).where(PublishKey.publish_id == publish_id)
     )).scalars().all() == []
+
+
+def test_delete_project_sweeps_every_table_in_projects_fk_closure():
+    """Tripwire for the hand-maintained DELETE sweep in delete_project.
+
+    The sweep is derived by hand from ~25 tables. agent_publishes was once
+    forgotten: FK violations looped deletion into a 503 retry on
+    Postgres/MySQL/MSSQL and orphaned rows on SQLite. Whenever a new table
+    joins the FK closure of `projects`, delete_project must name its model
+    or the same failure comes back.
+    """
+    import inspect
+
+    from api.database import Base
+    from api.services import project_deletion
+
+    source = inspect.getsource(project_deletion.delete_project)
+
+    table_to_model = {
+        mapper.local_table.name: mapper.class_.__name__
+        for mapper in Base.registry.mappers
+    }
+
+    # FK closure: a table joins when any of its FK targets already joined.
+    reachable = {"projects"}
+    changed = True
+    while changed:
+        changed = False
+        for table in Base.metadata.tables.values():
+            if table.name in reachable:
+                continue
+            parents = {
+                fk.target_fullname.split(".")[0] for fk in table.foreign_keys
+            }
+            if parents & reachable:
+                reachable.add(table.name)
+                changed = True
+
+    missing = []
+    for name in sorted(reachable - {"projects"}):
+        model_name = table_to_model.get(name)
+        if model_name is None:
+            continue  # auxiliary table without a mapped class
+        if f"{model_name}" not in source:
+            missing.append(f"{model_name} ({name})")
+    assert not missing, (
+        "delete_project's sweep does not mention: "
+        + ", ".join(missing)
+        + " — delete them (leaf-first) before deleting their parents"
+    )

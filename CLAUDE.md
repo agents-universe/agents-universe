@@ -1,3 +1,5 @@
+Scheduled background tasks (running plus queued) are capped at 64 per process. Scheduled fires over capacity are persisted as `skipped`; manual launches return busy without creating a pending row. Per-schedule launch locks are removed after their final waiter exits.
+
 # Agents Universe — Enterprise AI Agent Framework
 
 ## Project Overview

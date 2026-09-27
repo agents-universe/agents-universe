@@ -183,9 +183,48 @@ class TestSpawnRun:
         with pytest.raises(scheduled_runs.ScheduleBusy):
             await scheduled_runs.spawn_run(None, str(task.schedule_id), trigger="manual")
 
+    async def test_full_queue_records_scheduled_fire_as_skipped(
+        self, db, make_project, monkeypatch
+    ):
+        project = await make_project()
+        task = await _task(db, str(project.project_id))
+        monkeypatch.setattr(scheduled_runs, "MAX_BACKGROUND_RUNS", 0)
+
+        run_id = await scheduled_runs.spawn_run(
+            None, str(task.schedule_id), trigger="schedule"
+        )
+        run = (
+            await db.execute(
+                select(ScheduledTaskRun).where(ScheduledTaskRun.run_id == run_id)
+            )
+        ).scalars().one()
+        assert run.status == "skipped"
+        assert run.error == "Background execution queue is full"
+
+    async def test_full_queue_rejects_manual_launch_without_pending_row(
+        self, db, make_project, monkeypatch
+    ):
+        project = await make_project()
+        task = await _task(db, str(project.project_id))
+        monkeypatch.setattr(scheduled_runs, "MAX_BACKGROUND_RUNS", 0)
+
+        with pytest.raises(scheduled_runs.ScheduleBusy):
+            await scheduled_runs.spawn_run(
+                None, str(task.schedule_id), trigger="manual"
+            )
+        runs = (
+            await db.execute(
+                select(ScheduledTaskRun).where(
+                    ScheduledTaskRun.schedule_id == task.schedule_id
+                )
+            )
+        ).scalars().all()
+        assert runs == []
+
     async def test_unknown_schedule_raises(self, db):
         with pytest.raises(scheduled_runs.ScheduleNotFound):
             await scheduled_runs.spawn_run(None, "nope", trigger="manual")
+        assert "nope" not in scheduled_runs._spawn_locks
 
 
 class TestTargetStartFailureLeavesNoPhantomRun:

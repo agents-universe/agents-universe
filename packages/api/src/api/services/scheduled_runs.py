@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from sqlalchemy import select, update
@@ -33,16 +34,41 @@ _log = logging.getLogger("agents_universe.scheduler")
 # their own (small) cap; scripts and Playwright runs share the runner's global
 # 3-slot guard with human-initiated runs.
 AGENT_TURN_LIMIT = 2
+MAX_BACKGROUND_RUNS = 64
 _SUMMARY_CAP = 2000
 _ERROR_CAP = 2000
 _LOG_TAIL_CHARS = 1200
 
 _agent_semaphore: asyncio.Semaphore | None = None
-# Per-task launch locks: the "is a run already active?" check and the insert
-# below are separate statements, so two concurrent launches (a tick racing a
-# manual run-now) could both pass the check. The event loop is single-threaded,
-# so a plain dict of locks is safe.
-_spawn_locks: dict[str, asyncio.Lock] = {}
+_background_tasks: set[asyncio.Task] = set()
+_reserved_background_runs = 0
+
+
+class _SpawnLock:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+_spawn_locks: dict[str, _SpawnLock] = {}
+
+
+@asynccontextmanager
+async def _schedule_spawn_lock(schedule_id: str):
+    entry = _spawn_locks.get(schedule_id)
+    if entry is None:
+        entry = _SpawnLock()
+        _spawn_locks[schedule_id] = entry
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0:
+            _spawn_locks.pop(schedule_id, None)
 
 
 class ScheduleBusy(RuntimeError):
@@ -94,59 +120,93 @@ async def spawn_run(app, schedule_id: str, *, trigger: str) -> str:
     a manual launch raises :class:`ScheduleBusy` instead, so the API can answer
     409 rather than pretending it ran.
     """
-    lock = _spawn_locks.setdefault(schedule_id, asyncio.Lock())
-    async with lock:
-        async with AsyncSessionLocal() as db:
-            task = (
-                await db.execute(
-                    select(ScheduledTask).where(ScheduledTask.schedule_id == schedule_id)
-                )
-            ).scalar_one_or_none()
-            if task is None:
-                raise ScheduleNotFound(schedule_id)
-
-            active = (
-                await db.execute(
-                    select(ScheduledTaskRun.run_id)
-                    .where(
-                        ScheduledTaskRun.schedule_id == schedule_id,
-                        ScheduledTaskRun.status.in_(("pending", "running")),
+    global _reserved_background_runs
+    reserved = False
+    try:
+        async with _schedule_spawn_lock(schedule_id):
+            async with AsyncSessionLocal() as db:
+                task = (
+                    await db.execute(
+                        select(ScheduledTask).where(ScheduledTask.schedule_id == schedule_id)
                     )
-                    .limit(1)
+                ).scalar_one_or_none()
+                if task is None:
+                    raise ScheduleNotFound(schedule_id)
+
+                active = (
+                    await db.execute(
+                        select(ScheduledTaskRun.run_id)
+                        .where(
+                            ScheduledTaskRun.schedule_id == schedule_id,
+                            ScheduledTaskRun.status.in_(("pending", "running")),
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                if active:
+                    if trigger == "manual":
+                        raise ScheduleBusy(schedule_id)
+                    run = ScheduledTaskRun(
+                        schedule_id=schedule_id,
+                        project_id=str(task.project_id),
+                        trigger=trigger,
+                        status="skipped",
+                        conversation_id=task.conversation_id,
+                        error="Previous run still in progress",
+                        started_at=now_utc(),
+                        completed_at=now_utc(),
+                    )
+                    db.add(run)
+                    await db.commit()
+                    return str(run.run_id)
+
+                queue_is_full = (
+                    len(_background_tasks) + _reserved_background_runs
+                    >= MAX_BACKGROUND_RUNS
                 )
-            ).first()
-            if active:
-                if trigger == "manual":
-                    raise ScheduleBusy(schedule_id)
+                if queue_is_full:
+                    if trigger == "manual":
+                        raise ScheduleBusy(
+                            "Background execution queue is full"
+                        )
+                    now = now_utc()
+                    run = ScheduledTaskRun(
+                        schedule_id=schedule_id,
+                        project_id=str(task.project_id),
+                        trigger=trigger,
+                        status="skipped",
+                        conversation_id=task.conversation_id,
+                        error="Background execution queue is full",
+                        started_at=now,
+                        completed_at=now,
+                    )
+                    db.add(run)
+                    await db.commit()
+                    return str(run.run_id)
+
+                # Reserve capacity before commit yields to another launcher.
+                _reserved_background_runs += 1
+                reserved = True
                 run = ScheduledTaskRun(
                     schedule_id=schedule_id,
                     project_id=str(task.project_id),
                     trigger=trigger,
-                    status="skipped",
+                    status="pending",
                     conversation_id=task.conversation_id,
-                    error="Previous run still in progress",
                     started_at=now_utc(),
-                    completed_at=now_utc(),
                 )
                 db.add(run)
                 await db.commit()
-                return str(run.run_id)
+                run_id = str(run.run_id)
 
-            run = ScheduledTaskRun(
-                schedule_id=schedule_id,
-                project_id=str(task.project_id),
-                trigger=trigger,
-                status="pending",
-                conversation_id=task.conversation_id,
-                started_at=now_utc(),
-            )
-            db.add(run)
-            await db.commit()
-            run_id = str(run.run_id)
-
-    bg = asyncio.create_task(execute_run(app, run_id))
-    bg.add_done_callback(_log_background_failure)
-    return run_id
+            bg = asyncio.create_task(execute_run(app, run_id))
+            _background_tasks.add(bg)
+            bg.add_done_callback(_background_tasks.discard)
+            bg.add_done_callback(_log_background_failure)
+            return run_id
+    finally:
+        if reserved:
+            _reserved_background_runs -= 1
 
 
 # ── Execution ────────────────────────────────────────────────────────────────

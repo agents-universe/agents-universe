@@ -9,9 +9,19 @@ export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<Project | null>(null)
   const projects = ref<Project[]>([])
   let projectListSeq = 0
+  let activeRefreshes = 0
 
-  function invalidateProjectListRequests() {
-    projectListSeq++
+  /** Invalidate every in-flight project-list fetch; returns the new sequence. */
+  function invalidateProjectListRequests(): number {
+    projectListSeq += 1
+    return projectListSeq
+  }
+
+  /** A local mutation just invalidated an in-flight refresh — that response
+   * may have been the only source of newer server truth (e.g. a project
+   * created in another tab). Refetch so dropping it doesn't pin stale data. */
+  function rescueDroppedRefresh() {
+    if (activeRefreshes > 0) void refreshProjects()
   }
 
   function setCurrentProject(project: Project | null) {
@@ -43,11 +53,13 @@ export const useProjectStore = defineStore('project', () => {
   function setProjects(list: Project[]) {
     invalidateProjectListRequests()
     projects.value = list
+    rescueDroppedRefresh()
   }
 
   /** 从 API 重新拉取项目列表,覆盖会话内缓存 */
   async function refreshProjects() {
-    const seq = ++projectListSeq
+    const seq = invalidateProjectListRequests()
+    activeRefreshes += 1
     try {
       const list = await projectsApi.getProjects()
       // a stale in-flight refresh must not clobber newer local
@@ -61,12 +73,15 @@ export const useProjectStore = defineStore('project', () => {
       }
     } catch (e) {
       console.error('Failed to refresh projects', e)
+    } finally {
+      activeRefreshes -= 1
     }
   }
 
   function addProject(project: Project) {
     invalidateProjectListRequests()
     projects.value.push(project)
+    rescueDroppedRefresh()
   }
 
   /** 用最新数据替换同 id 项目(可见性切换后立即生效,无需等列表刷新) */
@@ -77,12 +92,14 @@ export const useProjectStore = defineStore('project', () => {
     if (currentProject.value?.project_id === project.project_id) {
       currentProject.value = project
     }
+    rescueDroppedRefresh()
   }
 
   function removeProject(projectId: string): boolean {
     invalidateProjectListRequests()
     const existed = projects.value.some(project => project.project_id === projectId)
     projects.value = projects.value.filter(project => project.project_id !== projectId)
+    rescueDroppedRefresh()
     return existed
   }
 
@@ -138,8 +155,15 @@ export const useProjectStore = defineStore('project', () => {
   async function ensureCurrentProject(): Promise<Project | null> {
     if (currentProject.value) return currentProject.value
     if (projects.value.length === 0) {
+      const seq = projectListSeq
       try {
-        projects.value = await projectsApi.getProjects()
+        const list = await projectsApi.getProjects()
+        // A mutation or refresh landing mid-flight owns the newer list —
+        // a pre-mutation snapshot must not erase it (writing over an
+        // empty list is always safe, so keep that fallback).
+        if (seq === projectListSeq || projects.value.length === 0) {
+          projects.value = list
+        }
       } catch (e) {
         console.error('Failed to load projects', e)
         return null

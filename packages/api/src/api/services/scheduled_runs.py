@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import weakref
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -44,39 +45,58 @@ _background_tasks: set[asyncio.Task] = set()
 _reserved_background_runs = 0
 
 
-class _SpawnLock:
-    __slots__ = ("lock", "users")
-
-    def __init__(self) -> None:
-        self.lock = asyncio.Lock()
-        self.users = 0
-
-
-_spawn_locks: dict[str, _SpawnLock] = {}
+# Per-task launch locks: the "is a run already active?" check and the insert
+# below are separate statements, so two concurrent launches (a tick racing a
+# manual run-now) could both pass the check. A weak-value dict keys locks by
+# schedule_id while they are held — the context manager's local reference keeps
+# the lock alive across the yield, and once the last waiter exits the entry is
+# garbage-collected, so deleted schedules never accumulate locks.
+_spawn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
 
 
 @asynccontextmanager
 async def _schedule_spawn_lock(schedule_id: str):
-    entry = _spawn_locks.get(schedule_id)
-    if entry is None:
-        entry = _SpawnLock()
-        _spawn_locks[schedule_id] = entry
-    entry.users += 1
-    try:
-        async with entry.lock:
-            yield
-    finally:
-        entry.users -= 1
-        if entry.users == 0:
-            _spawn_locks.pop(schedule_id, None)
+    lock = _spawn_locks.get(schedule_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _spawn_locks[schedule_id] = lock
+    async with lock:
+        yield
 
 
 class ScheduleBusy(RuntimeError):
-    """A manual launch was refused because the previous run is still active."""
+    """A manual launch was refused; the message names the cause.
+
+    Two disjoint causes share this exception: the task's previous run is
+    still active, or the process-wide background queue is full. Callers
+    surface ``str(exc)`` so users can tell them apart — a fixed message
+    would tell someone launching an *idle* task that a run is "in progress".
+    """
 
 
 class ScheduleNotFound(LookupError):
     """The scheduled task row no longer exists."""
+
+
+def _new_skipped_run(task: ScheduledTask, trigger: str, error: str) -> ScheduledTaskRun:
+    """A terminal ``skipped`` row written at launch time (never executed).
+
+    One timestamp for both columns: two ``now_utc()`` calls can span a tick
+    and record ``completed_at > started_at``.
+    """
+    now = now_utc()
+    return ScheduledTaskRun(
+        schedule_id=task.schedule_id,
+        project_id=str(task.project_id),
+        trigger=trigger,
+        status="skipped",
+        conversation_id=task.conversation_id,
+        error=error,
+        started_at=now,
+        completed_at=now,
+    )
 
 
 def agent_turn_slot_guard() -> asyncio.Semaphore:
@@ -145,17 +165,8 @@ async def spawn_run(app, schedule_id: str, *, trigger: str) -> str:
                 ).first()
                 if active:
                     if trigger == "manual":
-                        raise ScheduleBusy(schedule_id)
-                    run = ScheduledTaskRun(
-                        schedule_id=schedule_id,
-                        project_id=str(task.project_id),
-                        trigger=trigger,
-                        status="skipped",
-                        conversation_id=task.conversation_id,
-                        error="Previous run still in progress",
-                        started_at=now_utc(),
-                        completed_at=now_utc(),
-                    )
+                        raise ScheduleBusy("This task already has a run in progress")
+                    run = _new_skipped_run(task, trigger, "Previous run still in progress")
                     db.add(run)
                     await db.commit()
                     return str(run.run_id)
@@ -166,19 +177,9 @@ async def spawn_run(app, schedule_id: str, *, trigger: str) -> str:
                 )
                 if queue_is_full:
                     if trigger == "manual":
-                        raise ScheduleBusy(
-                            "Background execution queue is full"
-                        )
-                    now = now_utc()
-                    run = ScheduledTaskRun(
-                        schedule_id=schedule_id,
-                        project_id=str(task.project_id),
-                        trigger=trigger,
-                        status="skipped",
-                        conversation_id=task.conversation_id,
-                        error="Background execution queue is full",
-                        started_at=now,
-                        completed_at=now,
+                        raise ScheduleBusy("Background execution queue is full")
+                    run = _new_skipped_run(
+                        task, trigger, "Background execution queue is full"
                     )
                     db.add(run)
                     await db.commit()

@@ -441,11 +441,14 @@ class TestRunNow:
         ).json()
 
         async def fake_spawn(app, schedule_id, *, trigger):
-            raise ScheduleBusy(schedule_id)
+            raise ScheduleBusy("Background execution queue is full")
 
         monkeypatch.setattr("api.services.scheduled_runs.spawn_run", fake_spawn)
         resp = await client.post(f"/api/schedules/{created['schedule_id']}/run")
         assert resp.status_code == 409
+        # The 409 detail must carry the actual cause — a fixed "run in
+        # progress" would mislabel the queue-full rejection on an idle task.
+        assert resp.json()["detail"] == "Background execution queue is full"
 
     async def test_run_now_skips_author_time_conversation_recheck(
         self, client, db, make_project, monkeypatch

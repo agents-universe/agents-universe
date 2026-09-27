@@ -402,7 +402,9 @@ class TestRunNow:
             pass
 
         async def fake_spawn(app, schedule_id, *, trigger):
-            raise ScheduleBusy(schedule_id)
+            # The real exception carries a user-facing reason (active run vs
+            # full queue) — the tool surfaces str(exc) verbatim.
+            raise ScheduleBusy("This task already has a run in progress")
 
         monkeypatch.setitem(sys.modules, "api.services.scheduled_runs", types.SimpleNamespace(
             spawn_run=fake_spawn, ScheduleBusy=ScheduleBusy,

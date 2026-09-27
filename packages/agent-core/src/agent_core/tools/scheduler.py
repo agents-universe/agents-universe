@@ -520,8 +520,8 @@ class SchedulerTool(Tool):
             return {"error": "Scheduled-run service unavailable in this environment"}
         try:
             run_id = await spawn_run(context.app, schedule_id, trigger="manual")
-        except ScheduleBusy:
-            return {"error": "This task already has a run in progress"}
+        except ScheduleBusy as exc:
+            return {"error": str(exc) or "This task already has a run in progress"}
         return {
             "success": True,
             "schedule_id": schedule_id,

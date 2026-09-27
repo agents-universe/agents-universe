@@ -458,8 +458,14 @@ async def run_schedule_now(
     )
     try:
         run_id = await spawn_run(request.app, schedule_id, trigger="manual")
-    except ScheduleBusy:
-        raise HTTPException(status_code=409, detail="This task already has a run in progress")
+    except ScheduleBusy as exc:
+        # The exception distinguishes "previous run still active" from
+        # "process-wide queue full" — a fixed detail would mislabel the
+        # latter on an idle task.
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc) or "This task already has a run in progress",
+        )
     return {"run_id": run_id, "status": "pending"}
 
 

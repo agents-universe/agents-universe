@@ -180,8 +180,9 @@ class TestSpawnRun:
         ))
         await db.commit()
 
-        with pytest.raises(scheduled_runs.ScheduleBusy):
+        with pytest.raises(scheduled_runs.ScheduleBusy) as excinfo:
             await scheduled_runs.spawn_run(None, str(task.schedule_id), trigger="manual")
+        assert str(excinfo.value) == "This task already has a run in progress"
 
     async def test_full_queue_records_scheduled_fire_as_skipped(
         self, db, make_project, monkeypatch
@@ -208,10 +209,13 @@ class TestSpawnRun:
         task = await _task(db, str(project.project_id))
         monkeypatch.setattr(scheduled_runs, "MAX_BACKGROUND_RUNS", 0)
 
-        with pytest.raises(scheduled_runs.ScheduleBusy):
+        with pytest.raises(scheduled_runs.ScheduleBusy) as excinfo:
             await scheduled_runs.spawn_run(
                 None, str(task.schedule_id), trigger="manual"
             )
+        # The two ScheduleBusy causes must stay distinguishable — the router
+        # and the scheduler tool both surface str(exc) as the user-facing error.
+        assert str(excinfo.value) == "Background execution queue is full"
         runs = (
             await db.execute(
                 select(ScheduledTaskRun).where(

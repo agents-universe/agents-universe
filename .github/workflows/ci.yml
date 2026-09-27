@@ -95,6 +95,12 @@ jobs:
       - name: Test
         run: npm test -- --run
         working-directory: packages/web
+      - name: Typecheck and build
+        run: npm run build
+        working-directory: packages/web
+      - name: Lint
+        run: npm run lint
+        working-directory: packages/web
 
   hygiene:
     name: commit hygiene (identity + URLs)

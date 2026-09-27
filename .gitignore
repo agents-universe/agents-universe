@@ -25,6 +25,7 @@ deploy-local.ps1
 
 # Generated analysis output
 graphify-out/
+/review.md
 
 # Test runner artifacts
 test-results/

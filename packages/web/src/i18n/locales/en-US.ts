@@ -279,6 +279,8 @@ export default {
   messageBubble: {
     interrupted: '(interrupted)',
     interruptedTitle: 'This reply was interrupted by the user',
+    turnTokens: '{count} tokens this turn',
+    turnTokensTitle: 'Tokens spent in this turn',
     knowledgeLoaded: 'Knowledge loaded:',
     download: 'Download',
     sentTo: 'Sent to',
@@ -420,6 +422,7 @@ export default {
   layout: {
     menu: 'Menu',
     panel: 'Panel',
+    sessionTokens: 'Session: {count} tokens',
     tabConversations: 'Conversations',
     tabKnowledge: 'Knowledge',
     tabMemory: 'Memory',

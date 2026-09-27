@@ -49,16 +49,23 @@
           :data-tour-target="`center-nav-${nav.id}`"
           @click="goToPage(nav.id)"
         ><component :is="nav.icon" :size="13" /> {{ nav.label }}</button>
-        <!-- 压缩当前对话：与顶部页签同一行（右对齐），不单独占一行 -->
-        <button
-          v-if="pageSegment === 'chat' && convStore.messages.length > 0"
-          class="compress-btn nav-compress"
-          :disabled="isCompressDisabled"
-          @click="handleCompress"
-        >
-          <Shrink :size="13" />
-          <span>{{ compressing ? t('chatPanel.compressing') : t('chatPanel.compressContext') }}</span>
-        </button>
+        <!-- 压缩当前对话 + 会话累计 token：与顶部页签同一行（右对齐组），
+             不单独占一行；分组持有右对齐，子项显隐不牵动页签位置。 -->
+        <div v-if="pageSegment === 'chat'" class="topnav-right">
+          <span
+            v-if="convStore.conversationId && convStore.tokensUsed > 0"
+            class="nav-tokens"
+          >{{ t('layout.sessionTokens', { count: convStore.tokensUsed.toLocaleString() }) }}</span>
+          <button
+            v-if="convStore.messages.length > 0"
+            class="compress-btn nav-compress"
+            :disabled="isCompressDisabled"
+            @click="handleCompress"
+          >
+            <Shrink :size="13" />
+            <span>{{ compressing ? t('chatPanel.compressing') : t('chatPanel.compressContext') }}</span>
+          </button>
+        </div>
       </nav>
       <div class="center-content">
         <Transition name="route-fade" mode="out-in">

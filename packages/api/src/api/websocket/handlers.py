@@ -102,7 +102,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     Message types TO client:
       stream_delta, thinking_delta, thinking_end, turn_status,
       tool_call_start, tool_call_end, knowledge_loaded,
-      token_update, image_output, stream_end, error,
+      token_update, turn_token_usage, image_output, stream_end, error,
       complexity_assessed, context_usage, task_plan_created, task_started,
       task_progress, task_completed, task_failed, task_plan_revised,
       agentic_loop_completed, abort_ack

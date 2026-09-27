@@ -450,6 +450,7 @@ export const useConversationStore = defineStore('conversation', () => {
         thinking: m.thinking || undefined,
         agentSlug: m.agent_slug || undefined,
         modelName: m.model_name || undefined,
+        tokenCount: m.token_count ?? undefined,
         toolCalls: (m.tool_calls ?? []).map((tc) => {
           const storedStatus = tc.status as ToolCallRecord['status']
           const status = (storedStatus === 'running' || storedStatus === 'preparing')
@@ -1033,6 +1034,14 @@ export const useConversationStore = defineStore('conversation', () => {
     rt.tokenBudget = budget
   }
 
+  function setMessageTokenCount(messageId: string, count: number, targetId?: string) {
+    const rt = ensureRuntime(targetId ?? activeId.value!)
+    const m = rt.messages.find((msg) => msg.id === messageId)
+    // No-op when the message isn't loaded (background conversation, or the
+    // frame beat the history load) — the next loadHistory carries the value.
+    if (m) m.tokenCount = count
+  }
+
   function setContextOccupancy(tokens: number, window: number | null, targetId?: string) {
     const rt = ensureRuntime(targetId ?? activeId.value!)
     rt.contextTokens = tokens
@@ -1357,6 +1366,7 @@ export const useConversationStore = defineStore('conversation', () => {
     rejectInjected,
     rejectAllPendingInjected,
     setTokens,
+    setMessageTokenCount,
     setContextOccupancy,
     setContextUsage,
     setTasks,

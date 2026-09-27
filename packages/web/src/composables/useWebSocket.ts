@@ -489,6 +489,18 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           )
         }
         break
+      case 'turn_token_usage':
+        // Sent after the turn-end commit — the badge for the message
+        // stream_end already finalized. null message_id = the turn left no
+        // row; nothing to badge, and the DB value arrives with the next load.
+        if (msg.message_id != null && msg.token_count != null) {
+          conv.setMessageTokenCount(
+            msg.message_id as string,
+            msg.token_count as number,
+            convId,
+          )
+        }
+        break
       case 'knowledge_loaded':
         conv.setLoadedKnowledge((msg.files ?? msg.slugs) as string[], convId)
         if (isActiveConversation) knowledge.setLoadedThisTurn((msg.files ?? msg.slugs) as string[])

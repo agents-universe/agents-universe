@@ -149,6 +149,9 @@ export interface Message {
   isError?: boolean
   /** Partial assistant output cut short by an in-flight user injection. */
   interrupted?: boolean
+  /** This turn's own token cost; absent on legacy rows and on
+   *  injection-frozen partials (the turn's final message carries it). */
+  tokenCount?: number
   timestamp: number
 }
 
@@ -222,6 +225,8 @@ export interface DbMessage {
   /** Turn-level LLM failure (provider exception / empty output); the content
    *  holds the error text when nothing else streamed. */
   error?: boolean
+  /** This turn's own token cost; null on legacy rows / frozen partials. */
+  token_count?: number | null
   created_at: string
 }
 

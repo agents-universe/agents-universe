@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AppLayout from './AppLayout.vue'
 
@@ -33,7 +33,8 @@ const conversationStore = vi.hoisted(() => ({
   messages: [] as unknown[],
   isStreaming: false,
   isThinking: false,
-  conversationId: null,
+  conversationId: null as string | null,
+  tokensUsed: 0,
   reset: vi.fn(),
   loadHistory: vi.fn(),
 }))
@@ -50,6 +51,14 @@ vi.mock('@/components/knowledge/ContextMeter.vue', () => ({ default: { name: 'Ch
 vi.mock('@/components/conversations/ConversationTreePanel.vue', () => ({ default: { name: 'ChildStub', template: '<div />' } }))
 vi.mock('@/components/knowledge/KnowledgePanel.vue', () => ({ default: { name: 'ChildStub', template: '<div />' } }))
 vi.mock('@/components/memory/MemoryPanel.vue', () => ({ default: { name: 'ChildStub', template: '<div />' } }))
+
+// The conversation store mock is shared mutable state — reset the fields the
+// topnav reads so no test inherits the previous one's ledger/conversation.
+beforeEach(() => {
+  conversationStore.conversationId = null
+  conversationStore.tokensUsed = 0
+  conversationStore.messages = []
+})
 
 describe('AppLayout center topnav', () => {
   it('renders 会话 / 工作区 / 发布 / 定时任务 with the publishes tab active', () => {
@@ -88,5 +97,46 @@ describe('AppLayout center topnav', () => {
     routeState.path = '/settings/tokens'
     const wrapper = mount(AppLayout)
     expect(wrapper.find('.center-topnav').exists()).toBe(false)
+  })
+})
+
+describe('AppLayout session token counter', () => {
+  it('shows the lifetime ledger next to the compress button on the chat page', () => {
+    routeState.path = '/projects/p-1/chat'
+    conversationStore.conversationId = 'c1'
+    conversationStore.tokensUsed = 12345
+    conversationStore.messages = [{ id: 'm1' }]
+    const wrapper = mount(AppLayout)
+    const counter = wrapper.find('.nav-tokens')
+    expect(counter.exists()).toBe(true)
+    expect(counter.text()).toContain('会话消耗')
+    expect(counter.text()).toContain((12345).toLocaleString())
+    // The compress button shares the right-aligned group with the counter.
+    expect(wrapper.find('.topnav-right .compress-btn').exists()).toBe(true)
+  })
+
+  it('hides the counter when nothing was consumed yet', () => {
+    routeState.path = '/projects/p-1/chat'
+    conversationStore.conversationId = 'c1'
+    conversationStore.tokensUsed = 0
+    const wrapper = mount(AppLayout)
+    expect(wrapper.find('.nav-tokens').exists()).toBe(false)
+  })
+
+  it('hides the counter without an active conversation', () => {
+    routeState.path = '/projects/p-1/chat'
+    conversationStore.conversationId = null
+    conversationStore.tokensUsed = 500
+    const wrapper = mount(AppLayout)
+    expect(wrapper.find('.nav-tokens').exists()).toBe(false)
+  })
+
+  it('stays hidden on non-chat segments', () => {
+    routeState.path = '/projects/p-1/publishes'
+    conversationStore.conversationId = 'c1'
+    conversationStore.tokensUsed = 500
+    const wrapper = mount(AppLayout)
+    expect(wrapper.find('.nav-tokens').exists()).toBe(false)
+    expect(wrapper.find('.topnav-right').exists()).toBe(false)
   })
 })

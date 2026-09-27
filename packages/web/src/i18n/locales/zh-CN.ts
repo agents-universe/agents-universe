@@ -278,6 +278,8 @@ export default {
   messageBubble: {
     interrupted: '（已中断）',
     interruptedTitle: '本回复被用户中断',
+    turnTokens: '本轮 {count} tokens',
+    turnTokensTitle: '本轮消耗的 token 数',
     knowledgeLoaded: '加载的知识：',
     download: '下载',
     sentTo: '发送给',
@@ -419,6 +421,7 @@ export default {
   layout: {
     menu: '菜单',
     panel: '面板',
+    sessionTokens: '会话消耗 {count} tokens',
     tabConversations: '会话',
     tabKnowledge: '知识',
     tabMemory: '记忆',

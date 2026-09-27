@@ -91,6 +91,7 @@ async def test_transport_drops_everything_that_is_not_whitelisted():
     for event in (
         {"type": "stream_delta", "delta": "hello "},
         {"type": "stream_end", "message_id": "m1", "total_tokens": 11},
+        {"type": "turn_token_usage", "message_id": "m1", "token_count": 9},
         {"type": "abort_ack"},
         {"type": "error", "message": "boom"},
         {"type": "task_plan_created", "tasks": [{"task_id": "t1"}]},
@@ -105,6 +106,9 @@ async def test_transport_drops_everything_that_is_not_whitelisted():
     assert transport.summary == "hello"
     assert transport.message_id == "m1"
     assert transport.tokens_used == 11
+    # The child's own cost is captured (not forwarded) alongside the
+    # cumulative ledger — the delegator reports the delta.
+    assert transport.tokens_delta == 9
     assert transport.error == "boom"
     assert transport.status == "error"
 

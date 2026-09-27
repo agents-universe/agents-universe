@@ -25,6 +25,13 @@
         :title="t('messageBubble.modelTierTitle')"
       >{{ message.modelTier }}</span>
       <span v-if="message.interrupted" class="badge badge--amber" :title="t('messageBubble.interruptedTitle')">{{ t('messageBubble.interrupted') }}</span>
+      <!-- This turn's own token cost; hidden on legacy rows (null) and on
+           injection-frozen partials — the turn's final message carries it. -->
+      <span
+        v-if="message.role === 'assistant' && message.tokenCount != null"
+        class="badge badge--muted"
+        :title="t('messageBubble.turnTokensTitle')"
+      >{{ t('messageBubble.turnTokens', { count: message.tokenCount.toLocaleString() }) }}</span>
       <!-- new Date(ts).toISOString() threw RangeError on invalid/
       missing timestamps (locally recovered messages can lack one) and broke
       the whole message tree. relativeTime already guards null/invalid. -->

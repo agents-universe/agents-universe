@@ -84,6 +84,9 @@ def serialize_message(m: DbMessage) -> dict:
         "interrupted": bool(refs and refs.get("interrupted")),
         "error": bool(refs and refs.get("error")),
         "sequence_num": m.sequence_num,
+        # This turn's own token cost; NULL on legacy rows and on
+        # injection-frozen partials (the turn's final message carries it).
+        "token_count": m.token_count,
         "created_at": m.created_at.isoformat(),
     }
 

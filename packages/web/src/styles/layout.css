@@ -1400,6 +1400,28 @@
   align-self: center;
   margin-right: 4px;
 }
+/* Right-aligned group in the top nav (chat page): owns the row's right edge
+   so its children can appear/disappear without shifting the page tabs. */
+.topnav-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.topnav-right .nav-compress {
+  /* The group already right-aligns — the button's own auto margin must not
+     push it (and the token counter) further. */
+  margin-left: 0;
+}
+/* Lifetime token ledger for the active conversation — a live-ticking number,
+   so tabular digits keep the row from reflowing on every update. */
+.nav-tokens {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  align-self: center;
+  font-variant-numeric: tabular-nums;
+}
 .compress-btn:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: var(--border-strong);
@@ -3028,6 +3050,13 @@
   background: rgba(255, 196, 87, 0.08);
   color: #e8a93d;
   border-color: rgba(255, 196, 87, 0.2);
+}
+
+/* Per-turn token cost — deliberately quiet metadata, not a state color */
+.badge--muted {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-muted);
+  border-color: var(--border);
 }
 
 /* Attribution — @-mention turns / agent answers */

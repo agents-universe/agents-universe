@@ -61,3 +61,25 @@ describe('MessageBubble — attribution badge', () => {
     expect(wrapper.find('.collab-agent-badge').text()).toContain('发送给 Tech Lead')
   })
 })
+
+describe('MessageBubble — per-turn token badge', () => {
+  beforeEach(() => { setActivePinia(createPinia()) })
+
+  it('shows the turn cost on an assistant reply', () => {
+    const wrapper = bubble({ role: 'assistant', tokenCount: 1234 })
+    const badge = wrapper.find('.badge--muted')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('本轮')
+    expect(badge.text()).toContain((1234).toLocaleString())
+  })
+
+  it('hides the badge on legacy rows without a token count', () => {
+    const wrapper = bubble({ role: 'assistant' })
+    expect(wrapper.find('.badge--muted').exists()).toBe(false)
+  })
+
+  it('never badges a user message', () => {
+    const wrapper = bubble({ role: 'user', tokenCount: 55 })
+    expect(wrapper.find('.badge--muted').exists()).toBe(false)
+  })
+})

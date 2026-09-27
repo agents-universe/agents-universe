@@ -196,6 +196,49 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.messages[0].modelName).toBe('claude-sonnet-5')
   })
 
+  it('loadHistory maps token_count onto messages', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'reply',
+      token_count: 42,
+    })], 'conv-a')
+    expect(store.messages[0].tokenCount).toBe(42)
+  })
+
+  it('loadHistory leaves tokenCount unset on legacy null rows', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'reply',
+      token_count: null,
+    })], 'conv-a')
+    expect(store.messages[0].tokenCount).toBeUndefined()
+  })
+
+  it('setMessageTokenCount sets by message id and ignores unknown ids', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'assistant',
+      content: 'reply',
+    })], 'conv-a')
+
+    store.setMessageTokenCount('h1', 99)
+    expect(store.messages[0].tokenCount).toBe(99)
+
+    // The turn_token_usage frame can beat a reload — an id not in the list
+    // must be a no-op, never a crash or a phantom message.
+    store.setMessageTokenCount('missing', 5)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].tokenCount).toBe(99)
+  })
+
   it('stream_end message carries the model from model_selected', () => {
     const store = useConversationStore()
     store.startConversation('conv-a')

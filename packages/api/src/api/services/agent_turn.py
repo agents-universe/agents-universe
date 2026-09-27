@@ -187,7 +187,7 @@ async def run_turn(
     from agent_core.skills.registry import SkillRegistry
     from agent_core.tools.base import ToolContext
     from sqlalchemy import select
-    from api.models.conversation import Conversation
+    from api.models.conversation import Conversation, Message as DbMessage
     from api.models.project import Project
 
     # Plain WS path (no explicit transport): resolve the manager adapter now
@@ -221,6 +221,10 @@ async def run_turn(
     _terminal_status: str | None = None
     _terminal_error: str | None = None
     _terminal_tokens: int | None = None
+    # Final assistant Message row persisted this turn (set by forward_events
+    # at stream_end). The turn-end write parks this turn's token delta on that
+    # row; None when nothing landed in history (the turn died before output).
+    _final_msg_id: str | None = None
 
     # A nested turn is a delegated agent running INSIDE the top-level turn of
     # the same conversation. The conversation's turn claim, its registered
@@ -753,7 +757,7 @@ async def run_turn(
 
             async def forward_events():
                 nonlocal _persist_guard, _inj_guard, _terminal_task_ids, _deferred_task_ids
-                nonlocal _terminal_status, _terminal_error, _terminal_tokens
+                nonlocal _terminal_status, _terminal_error, _terminal_tokens, _final_msg_id
                 _text_buf: str = ""
                 _thinking_buf: str = ""
                 _last_snap_ts = time.monotonic()
@@ -940,6 +944,11 @@ async def run_turn(
                                 msg_id and (_has_content or _turn_error)
                             )
                             if _partial_persisted:
+                                # Last write wins: an injection-boundary frozen
+                                # partial is set first and the turn's final
+                                # stream_end overwrites it, so only the last
+                                # message of the turn carries the token delta.
+                                _final_msg_id = msg_id
                                 _log.info(
                                     "Persisting assistant stream: conversation=%s message_id=%s text_chars=%d tool_calls=%d plan_task_calls=%d images=%d files=%d error=%s",
                                     conversation_id,
@@ -1442,7 +1451,31 @@ async def run_turn(
                 .where(Conversation.conversation_id == conversation_id)
                 .values(**values)
             )
+            # Per-turn attribution: park this turn's OWN usage (this session's
+            # ledger minus the conversation snapshot the turn started from) on
+            # the turn's final assistant message. A delegated child turn runs
+            # the same block for its own message, so the per-message counts
+            # still sum to the conversation ledger. Legacy rows stay NULL and
+            # the UI hides them — one extra row UPDATE per turn, committed
+            # atomically with the ledger write above.
+            if _final_msg_id and tokens_delta > 0:
+                await db.execute(
+                    update(DbMessage)
+                    .where(DbMessage.message_id == _final_msg_id)
+                    .values(token_count=tokens_delta)
+                )
             await db.commit()
+            # stream_end was forwarded to the client before this write existed,
+            # so push the turn's cost after commit — the live bubble shows its
+            # badge without a history reload. A nested turn's copy is captured
+            # by DelegationTransport and dropped (not in its forward list).
+            # Zero-consumption turns stay silent: no badge, no frame.
+            if tokens_delta > 0:
+                await _transport_send(transport, conversation_id, {
+                    "type": "turn_token_usage",
+                    "message_id": _final_msg_id,
+                    "token_count": tokens_delta,
+                })
 
     except BaseException as e:
         # Error path: DB sessions opened mid-turn (tool_db / event_db) were not

@@ -124,6 +124,13 @@ class DelegationTransport:
     :data:`_FORWARDED_EVENTS` onward. ``send`` returns True for dropped events
     as well: the return value only tells the turn whether a *live client* got
     the event, and a nested turn's persistence decisions do not depend on it.
+
+    Token fields: ``tokens_used`` mirrors ``stream_end.total_tokens`` (the
+    child's CUMULATIVE ledger — conversation history included), while
+    ``tokens_delta`` is the child's own cost once the turn-end
+    ``turn_token_usage`` frame arrives. The delegator reports the delta and
+    keeps the cumulative value only as a fallback for turns that never
+    accumulated usage.
     """
 
     def __init__(self, inner: Any) -> None:
@@ -131,6 +138,7 @@ class DelegationTransport:
         self.parts: list[str] = []
         self.message_id: str | None = None
         self.tokens_used: int = 0
+        self.tokens_delta: int | None = None
         self.error: str | None = None
         self.stop_reason: str | None = None
 
@@ -164,6 +172,11 @@ class DelegationTransport:
                 self.message_id = str(data["message_id"])
             self.tokens_used = int(data.get("total_tokens") or 0)
             self.stop_reason = data.get("stop_reason")
+        elif event_type == "turn_token_usage":
+            # Captured then dropped below (not in _FORWARDED_EVENTS): the
+            # child's own cost must reach the delegator's result, never the
+            # parent's client.
+            self.tokens_delta = int(data.get("token_count") or 0)
         elif event_type == "error":
             self.error = str(data.get("message") or "error")
 
@@ -387,13 +400,22 @@ async def run_delegated_turn(
 
     # The child's reply landed in the transcript under its own agent_slug; tell
     # the client to reload history so it appears with its attribution badge.
+    # (Its own token badge rides the same reload — the turn-end write commits
+    # before run_turn returns, hence before this emit.)
+    #
+    # Report the child's OWN cost: stream_end's cumulative total would inflate
+    # the figure by the conversation's entire history. Falls back to the
+    # cumulative value when no usage was accumulated (no provider call).
+    reported_tokens = (
+        transport.tokens_delta if transport.tokens_delta is not None else transport.tokens_used
+    )
     await _emit(ctx, "conversation_updated", {})
     await _emit(ctx, "delegate_finished", {
         "agent": slug,
         "agent_name": display_name,
         "status": status,
         "message_id": transport.message_id,
-        "tokens_used": transport.tokens_used,
+        "tokens_used": reported_tokens,
         "duration_ms": duration_ms,
         "error": transport.error,
     })
@@ -403,7 +425,7 @@ async def run_delegated_turn(
         agent_name=display_name,
         summary=transport.summary,
         message_id=transport.message_id,
-        tokens_used=transport.tokens_used,
+        tokens_used=reported_tokens,
         duration_ms=duration_ms,
         error=transport.error,
     )

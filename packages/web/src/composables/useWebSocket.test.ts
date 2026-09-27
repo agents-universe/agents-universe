@@ -346,6 +346,64 @@ describe('token_update context occupancy', () => {
   })
 })
 
+describe('turn_token_usage dispatch', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('badges the message stream_end finalized with the turn cost', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('answer', undefined, 'conv-a')
+    store.pushStreamingMessage('m-final', undefined, false, 'conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'turn_token_usage', message_id: 'm-final', token_count: 42 })
+
+    expect(store.messages[0].tokenCount).toBe(42)
+  })
+
+  it('ignores a null message_id (turn left no row)', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('answer', undefined, 'conv-a')
+    store.pushStreamingMessage('m-final', undefined, false, 'conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'turn_token_usage', message_id: null, token_count: 42 })
+
+    expect(store.messages[0].tokenCount).toBeUndefined()
+  })
+
+  it('routes to a background conversation via convId', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('background answer', undefined, 'conv-a')
+    store.pushStreamingMessage('m-bg', undefined, false, 'conv-a')
+    store.startConversation('conv-b')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'turn_token_usage', message_id: 'm-bg', token_count: 7 })
+
+    // B is active — B must not receive the badge.
+    expect(store.messages).toHaveLength(0)
+    store.startConversation('conv-a')
+    expect(store.messages[0].tokenCount).toBe(7)
+  })
+})
+
 describe('useWebSocket error frame settlement', () => {
   beforeEach(() => {
     vi.useFakeTimers()

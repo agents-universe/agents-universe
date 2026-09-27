@@ -12,7 +12,11 @@
       </div>
       <template v-else>
         <p v-if="loadError" class="chat-empty-error">{{ loadError }}</p>
-        <AgentCapabilitiesCard v-if="agentStore.currentAgent" :agent="agentStore.currentAgent" />
+        <AgentCapabilitiesCard
+          v-if="agentStore.currentAgent"
+          :agent="agentStore.currentAgent"
+          @apply-prompt="handleApplyPrompt"
+        />
         <p v-else class="chat-empty-hint">{{ t('chatPage.newConversationHint') }}</p>
         <!-- without !agentSlug the button stayed clickable with no
         agent selected and created an agent-less conversation that the
@@ -58,6 +62,7 @@ import { useAgentStore } from '@/stores/agent'
 import { conversationsApi } from '@/api/conversations'
 import { ApiError } from '@/api/client'
 import { closeAllConnections } from '@/composables/useWebSocket'
+import { applyComposerDraft, takeComposerDraft } from '@/composables/useComposerDraft'
 import {
   invalidateLatestConversation,
   isCurrentLatestSeq,
@@ -231,6 +236,13 @@ function maybeAutoStartChat() {
   }
 }
 
+// A starter-prompt chip on the pre-conversation card: stage the text and
+// start the conversation — the Composer consumes the draft when it mounts.
+function handleApplyPrompt(prompt: string) {
+  applyComposerDraft(prompt)
+  startChat()
+}
+
 async function startChat() {
   // Auto-start paths (watchers, route query) can race with the button and
   // with each other (rapid "+" clicks); only the first one creates.
@@ -248,7 +260,12 @@ async function startChat() {
   loadError.value = null
   try {
     const data = await conversationsApi.create(pid, agentSlug.value)
-    if (!isCurrentLatestSeq(seq)) return
+    if (!isCurrentLatestSeq(seq)) {
+      // A project/agent switch superseded this create — a staged chip draft
+      // belongs to the old context and must not land in the next Composer.
+      takeComposerDraft()
+      return
+    }
     convStore.startConversation(data.conversation_id)
     // A fresh conversation's budget comes from create() — the previous
     // runtime's budget (or the 128k default) would otherwise stick forever,
@@ -258,6 +275,9 @@ async function startChat() {
     // token_budget denominator until the first turn reports the real window.
     convStore.setContextOccupancy(0, null, data.conversation_id)
   } catch (e) {
+    // The conversation never started — drop any staged chip draft so it
+    // cannot surface in a later, unrelated Composer mount.
+    takeComposerDraft()
     // Same stale-response guard as loadLatestConversation: the failure must
     // only surface on the empty state it belongs to.
     if (!isCurrentLatestSeq(seq)) return

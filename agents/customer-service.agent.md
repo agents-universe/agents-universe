@@ -3,6 +3,11 @@ slug: "customer-service"
 display_name: "智能客服"
 category: "customer-service"
 description: "智能客服智能体——严格依据项目知识库（FAQ、服务政策、话术）回答用户问题；知识库没有答案时明确告知并转人工；可经自定义 API 与 MCP 工具查询业务系统"
+placeholder: "输入客户问题，我会依据项目知识库回答"
+starter_prompts:
+  - "客户问退款政策，怎么回答？"
+  - "根据 FAQ 检查这段话术"
+  - "知识库没有答案时如何回复并转人工？"
 tools:
   - filesystem
   - knowledge_rw

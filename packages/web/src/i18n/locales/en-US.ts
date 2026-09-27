@@ -320,6 +320,10 @@ export default {
     sizeExceeded: 'File exceeds {mb}MB and cannot be uploaded',
     uploadTimeout: 'Upload timed out, please retry',
     mentionMultiple: 'Only one agent can be mentioned per message',
+    defaultPlaceholder: 'Type a message…',
+  },
+  agentCard: {
+    starterLabel: 'You can use me like this:',
   },
   mentionPopup: {
     searchPlaceholder: 'Search agents…',

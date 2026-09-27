@@ -108,6 +108,24 @@ async def sync_agents_dir(
             def _j(v):
                 return json.dumps(v) if v else None
 
+            # New-conversation guidance: single-line composer placeholder
+            # (truncated to the column length — an over-length value would
+            # fail the whole-sync commit above) and a list of example prompts.
+            # A bare string is ONE prompt, never comma-split: prompts contain
+            # commas. Empty list → None, matching the tools/skills/workflows
+            # NULL convention.
+            raw_placeholder = post.get("placeholder")
+            placeholder = str(raw_placeholder)[:500] if raw_placeholder is not None else None
+            raw_prompts = post.get("starter_prompts")
+            if isinstance(raw_prompts, str):
+                prompts = [raw_prompts.strip()] if raw_prompts.strip() else []
+            elif isinstance(raw_prompts, (list, tuple)):
+                prompts = [
+                    p.strip() for p in raw_prompts if isinstance(p, str) and p.strip()
+                ][:10]
+            else:
+                prompts = []
+
             attrs = dict(
                 display_name=post.get("display_name", slug),
                 description=post.get("description"),
@@ -116,6 +134,8 @@ async def sync_agents_dir(
                 tools=_j(post.get("tools", [])),
                 skills=_j(post.get("skills", [])),
                 workflows=_j(post.get("workflows", [])),
+                placeholder=placeholder,
+                starter_prompts=_j(prompts),
             )
 
             try:

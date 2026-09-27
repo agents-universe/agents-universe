@@ -3,6 +3,11 @@ slug: "project-customization-expert"
 display_name: "项目定制专家"
 category: "platform-assistant"
 description: "负责项目级知识、配置、工作区规则与集成约定的定制，建立可维护且隔离的项目运行上下文。适用于任意领域项目。"
+placeholder: "描述要调整的项目知识、配置或工作区规则"
+starter_prompts:
+  - "给这个项目新增一条工作区规则"
+  - "整理知识库里的过期内容"
+  - "为这个项目配置新的集成约定"
 tools:
   - knowledge_rw
   - memory_rw

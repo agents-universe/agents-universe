@@ -30,5 +30,10 @@ class Agent(Base):
     skills: Mapped[str | None] = mapped_column(Unicode(2000))  # JSON array
     workflows: Mapped[str | None] = mapped_column(Unicode(2000))  # JSON array
     tools: Mapped[str | None] = mapped_column(String(1000))   # JSON array
+    # Composer placeholder shown for a fresh conversation with this agent.
+    placeholder: Mapped[str | None] = mapped_column(Unicode(500))
+    # JSON string array of example prompts (UnicodeText: json.dumps
+    # ensure_ascii escapes CJK far beyond a fixed Unicode(n) length).
+    starter_prompts: Mapped[str | None] = mapped_column(UnicodeText)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)

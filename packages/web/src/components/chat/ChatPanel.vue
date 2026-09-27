@@ -45,7 +45,10 @@
       <!-- Fresh (zero-message) conversation: show what the current agent
            can do instead of a blank list. The first message hides it. -->
       <div v-if="showAgentCapabilities" class="fresh-conversation-card">
-        <AgentCapabilitiesCard :agent="agentStore.currentAgent" />
+        <AgentCapabilitiesCard
+          :agent="agentStore.currentAgent"
+          @apply-prompt="applyComposerDraft"
+        />
       </div>
 
       <!-- Streaming -->
@@ -140,6 +143,7 @@ import { useConversationStore } from '@/stores/conversation'
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { applyComposerDraft } from '@/composables/useComposerDraft'
 import { renderMarkdown } from '@/utils/markdown'
 import type { AttachmentRecord, ImageRecord } from '@/types'
 import MessageBubble from './MessageBubble.vue'

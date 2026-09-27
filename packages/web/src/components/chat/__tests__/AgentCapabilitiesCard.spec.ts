@@ -43,4 +43,48 @@ describe('AgentCapabilitiesCard', () => {
     const wrapper = mount(AgentCapabilitiesCard, { props: { agent: null } })
     expect(wrapper.find('.agent-capabilities-card').exists()).toBe(false)
   })
+
+  it('renders one chip per starter prompt with the i18n heading', () => {
+    const wrapper = mount(AgentCapabilitiesCard, {
+      props: {
+        agent: {
+          ...agent,
+          starter_prompts: ['Review this PR for correctness, risk', 'Write a test plan'],
+        },
+      },
+    })
+    expect(wrapper.find('.agent-capabilities-prompts-label').text()).toBe(
+      '你可以这样用我：',
+    )
+    const chips = wrapper.findAll('.agent-capabilities-chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0].text()).toBe('Review this PR for correctness, risk')
+  })
+
+  it('hides the prompts block when starter_prompts is missing or empty', () => {
+    for (const starter_prompts of [undefined, []] as Array<string[] | undefined>) {
+      const wrapper = mount(AgentCapabilitiesCard, {
+        props: { agent: { ...agent, starter_prompts } },
+      })
+      expect(wrapper.find('.agent-capabilities-prompts').exists()).toBe(false)
+      // No crash regardless — other fixtures omit the field entirely.
+      expect(wrapper.find('.agent-capabilities-card').exists()).toBe(true)
+    }
+  })
+
+  it('emits apply-prompt with the exact string on chip click', async () => {
+    const wrapper = mount(AgentCapabilitiesCard, {
+      props: { agent: { ...agent, starter_prompts: ['Do the thing'] } },
+    })
+    await wrapper.find('.agent-capabilities-chip').trigger('click')
+    expect(wrapper.emitted('apply-prompt')).toEqual([['Do the thing']])
+  })
+
+  it('renders message-format special characters literally', () => {
+    // Agent strings never pass through t() — @ { | must stay inert.
+    const wrapper = mount(AgentCapabilitiesCard, {
+      props: { agent: { ...agent, starter_prompts: ['a@b {c} |d|'] } },
+    })
+    expect(wrapper.find('.agent-capabilities-chip').text()).toBe('a@b {c} |d|')
+  })
 })

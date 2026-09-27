@@ -34,6 +34,8 @@ class AgentResponse(BaseModel):
     skills: list[SkillRef]
     workflows: list[SkillRef]
     tools: list[str] = []
+    placeholder: str | None = None
+    starter_prompts: list[str] = []
 
 
 class SyncResult(BaseModel):
@@ -85,6 +87,25 @@ def _parse_tool_list(raw: str | None) -> list[str]:
     return [str(t) for t in items if isinstance(t, str)] if isinstance(items, list) else []
 
 
+def _parse_str_list(raw: str | None) -> list[str]:
+    """Parse a JSON string array (starter prompts).
+
+    Unlike ``_parse_tool_list`` this never comma-splits: prompts are free
+    text and legitimately contain commas. Malformed JSON yields [].
+    """
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(items, str):
+        return [items]
+    if isinstance(items, list):
+        return [x for x in items if isinstance(x, str)]
+    return []
+
+
 def _to_response(a: Agent) -> AgentResponse:
     return AgentResponse(
         agent_id=a.agent_id,
@@ -96,6 +117,8 @@ def _to_response(a: Agent) -> AgentResponse:
         skills=_parse_refs(a.skills),
         workflows=_parse_refs(a.workflows),
         tools=_parse_tool_list(a.tools),
+        placeholder=a.placeholder,
+        starter_prompts=_parse_str_list(a.starter_prompts),
     )
 
 

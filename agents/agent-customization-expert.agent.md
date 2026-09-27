@@ -3,6 +3,11 @@ slug: "agent-customization-expert"
 display_name: "智能体定制专家"
 category: "platform-assistant"
 description: "负责智能体定义、职责边界、工具技能组合与运行规则的定制，确保能力声明真实、最小且可验证。"
+placeholder: "描述你想定制的智能体能力或行为"
+starter_prompts:
+  - "帮我给这个智能体新增一个技能"
+  - "检查这份智能体定义有什么问题"
+  - "把这个智能体的职责边界收窄"
 tools:
   - filesystem
   - knowledge_rw

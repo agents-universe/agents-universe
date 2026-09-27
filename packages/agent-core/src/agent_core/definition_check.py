@@ -293,7 +293,7 @@ def check_definition(
                     )
             if not meta.get("display_name"):
                 warnings.append("缺少 display_name：选择器里会退化成 slug 显示。")
-            for field in ("tools", "skills", "workflows"):
+            for field in ("tools", "skills", "workflows", "starter_prompts"):
                 if isinstance(meta.get(field), str):
                     warnings.append(f"{field} 写成了字符串标量：建议用 YAML 列表，避免解析歧义。")
         warnings.extend(_tool_warnings(meta))

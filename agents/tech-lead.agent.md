@@ -3,6 +3,11 @@ slug: "tech-lead"
 display_name: "Tech Lead"
 category: "agile-development"
 description: "Technical lead agent – PR review/approval/merge, blocker resolution, and architecture/trade-off review aligned with Jira outcomes."
+placeholder: "Paste a PR link or describe a change to review…"
+starter_prompts:
+  - "Review this PR for correctness and risk"
+  - "Resolve the blocker on this ticket"
+  - "Evaluate the architecture trade-offs of this proposal"
 tools:
   - shell
   - filesystem

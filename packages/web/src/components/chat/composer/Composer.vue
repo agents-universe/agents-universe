@@ -85,7 +85,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Send, Square, Paperclip, FileText, X, Plus, Sparkles } from 'lucide-vue-next'
-import { EditorView, keymap } from '@codemirror/view'
+import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
@@ -93,6 +93,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { useAgentStore, AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
 import { mediaApi } from '@/api/media'
 import { ApiError } from '@/api/client'
+import { pendingDraft, takeComposerDraft } from '@/composables/useComposerDraft'
 import type { AttachmentRecord } from '@/types'
 import MentionPopup from './MentionPopup.vue'
 import SlashPopup from './SlashPopup.vue'
@@ -140,6 +141,16 @@ const isEmpty = ref(true)
 let mentionedAgents: Array<{ slug: string; label: string }> = []
 const mentionHint = ref('')
 let view: EditorView | null = null
+
+// Agent-authored placeholder, falling back to the generic hint. The
+// placeholder() extension only reads its argument when the widget is built,
+// so the text lives in a stable element mutated by this watch — otherwise a
+// plain string would go stale on agent/locale switch.
+const placeholderText = computed(() =>
+  agentStore.currentAgent?.placeholder || t('composer.defaultPlaceholder'),
+)
+const placeholderEl = document.createElement('span')
+watch(placeholderText, (txt) => { placeholderEl.textContent = txt }, { immediate: true })
 
 const selectedConfigId = ref<string | null>(null)
 
@@ -337,6 +348,7 @@ onMounted(() => {
         oneDark,
         updateListener,
         pasteHandlers,
+        cmPlaceholder(() => placeholderEl),
         EditorView.lineWrapping,
         EditorView.theme({
           '&': { background: 'transparent', fontSize: '14px' },
@@ -347,6 +359,16 @@ onMounted(() => {
     }),
     parent: editorWrap.value,
   })
+
+  // Chip clicked on ChatPage's pre-conversation card: the draft was staged
+  // before this Composer existed.
+  const staged = takeComposerDraft()
+  if (staged != null) setDraft(staged)
+})
+
+// Chip clicked while the Composer is already mounted (zero-message card).
+watch(pendingDraft, (v) => {
+  if (v != null && view) setDraft(takeComposerDraft()!)
 })
 
 onBeforeUnmount(() => {
@@ -398,6 +420,17 @@ function clearDraft() {
   isEmpty.value = true
   mentionedAgents = []
   clearAttachments()
+}
+
+/** Replace the whole draft (starter-prompt chip) and focus the editor. */
+function setDraft(text: string) {
+  if (!view) return
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+    selection: { anchor: text.length },
+  })
+  isEmpty.value = text.length === 0
+  view.focus()
 }
 
 // addFiles is the single entry point every attach path funnels into (picker,

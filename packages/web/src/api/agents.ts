@@ -11,6 +11,8 @@ interface AgentApiResponse {
   skills: Array<{ slug: string; description: string }>
   workflows: Array<{ slug: string; description: string }>
   tools?: string[]
+  placeholder?: string | null
+  starter_prompts?: string[]
 }
 
 export const agentsApi = {
@@ -27,6 +29,8 @@ export const agentsApi = {
       skills: a.skills ?? [],
       workflows: a.workflows ?? [],
       tools: a.tools ?? [],
+      placeholder: a.placeholder ?? null,
+      starter_prompts: a.starter_prompts ?? [],
     }))
   },
 

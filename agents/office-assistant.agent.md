@@ -3,6 +3,11 @@ slug: "office-assistant"
 display_name: "办公助手"
 category: "office-docs"
 description: "Office assistant agent – generate and edit PowerPoint (.pptx via python-pptx), Excel (.xlsx via openpyxl), Word (.docx via python-docx), PDF (.pdf via reportlab), and web-based slide decks (self-contained reveal.js HTML); outputs auto-delivered via code_executor OUTPUT_DIR as authenticated /api/media/ download links"
+placeholder: "Describe the document you need…"
+starter_prompts:
+  - "Turn this outline into a 10-slide deck"
+  - "Convert this CSV into a formatted Excel report"
+  - "Generate a PDF invoice from this data"
 tools:
   - filesystem
   - knowledge_rw

@@ -3,6 +3,11 @@ slug: "quality-assurance"
 display_name: "Quality Assurance"
 category: "agile-development"
 description: "Business-oriented QA agent – verify user and business outcomes, design and run automated tests, preserve execution evidence, report concise Jira results."
+placeholder: "Describe what needs to be verified or tested…"
+starter_prompts:
+  - "Design a test plan for this feature"
+  - "Verify the acceptance criteria of this story"
+  - "Run the regression suite and summarize the evidence"
 tools:
   - shell
   - filesystem

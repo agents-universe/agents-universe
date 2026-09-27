@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 from api.paths import PROJECTS_ROOT
-from api.routers.agents import _parse_refs, _parse_tool_list
+from api.routers.agents import _parse_refs, _parse_str_list, _parse_tool_list
 
 
-def _write_project_agent(ws_slug: str, agent_slug: str, display_name: str | None = None) -> None:
+def _write_project_agent(
+    ws_slug: str,
+    agent_slug: str,
+    display_name: str | None = None,
+    extra_frontmatter: str = "",
+) -> None:
     ws = PROJECTS_ROOT / ws_slug
     (ws / "agents").mkdir(parents=True, exist_ok=True)
     (ws / "agents" / f"{agent_slug}.agent.md").write_text(
-        f'---\nslug: "{agent_slug}"\ndisplay_name: "{display_name or agent_slug}"\n---\n\nBody\n',
+        f'---\nslug: "{agent_slug}"\ndisplay_name: "{display_name or agent_slug}"\n'
+        f"{extra_frontmatter}---\n\nBody\n",
         encoding="utf-8",
     )
 
@@ -44,6 +50,25 @@ def test_parse_refs_handles_list_of_dicts():
     assert [(r.slug, r.description) for r in refs] == [("a", "A"), ("b", "")]
 
 
+def test_parse_str_list_handles_json_list():
+    assert _parse_str_list('["a, b", "c"]') == ["a, b", "c"]
+
+
+def test_parse_str_list_never_comma_splits():
+    # Prompts are free text — a comma stays inside one item.
+    assert _parse_str_list('"Review this PR for correctness, risk"') == [
+        "Review this PR for correctness, risk"
+    ]
+
+
+def test_parse_str_list_handles_garbage():
+    assert _parse_str_list("not json") == []
+    assert _parse_str_list(None) == []
+    assert _parse_str_list("") == []
+    assert _parse_str_list('{"a": 1}') == []
+    assert _parse_str_list('["ok", 42, null]') == ["ok"]
+
+
 async def test_list_without_project_is_global_only(client, make_project):
     project = await make_project("proj-g1")
     _write_project_agent("proj-g1", "proj-g1--local", "Local")
@@ -56,7 +81,17 @@ async def test_list_without_project_is_global_only(client, make_project):
 
 async def test_list_with_project_lazily_syncs_and_filters(client, make_project):
     project = await make_project("proj-g2")
-    _write_project_agent("proj-g2", "proj-g2--local", "Local")
+    _write_project_agent(
+        "proj-g2",
+        "proj-g2--local",
+        "Local",
+        extra_frontmatter=(
+            'placeholder: "Describe what you need…"\n'
+            "starter_prompts:\n"
+            '  - "Do the thing, please"\n'
+            '  - "Second prompt"\n'
+        ),
+    )
 
     resp = await client.get(f"/api/agents?project_id={project.project_id}")
     assert resp.status_code == 200
@@ -66,6 +101,20 @@ async def test_list_with_project_lazily_syncs_and_filters(client, make_project):
     local = next(a for a in agents if a["slug"] == "proj-g2--local")
     assert local["project_id"] == str(project.project_id)
     assert local["display_name"] == "Local"
+    assert local["placeholder"] == "Describe what you need…"
+    # The comma inside the first prompt must not split it.
+    assert local["starter_prompts"] == ["Do the thing, please", "Second prompt"]
+
+
+async def test_list_agent_without_guidance_fields_defaults(client, make_project):
+    project = await make_project("proj-g6")
+    _write_project_agent("proj-g6", "proj-g6--bare", "Bare")
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    assert resp.status_code == 200
+    bare = next(a for a in resp.json() if a["slug"] == "proj-g6--bare")
+    assert bare["placeholder"] is None
+    assert bare["starter_prompts"] == []
 
 
 async def test_list_with_project_excludes_other_projects_agents(client, make_project):

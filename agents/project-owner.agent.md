@@ -3,6 +3,11 @@ slug: "project-owner"
 display_name: "Product Owner"
 category: "agile-development"
 description: "Business-focused product owner agent – clarify business goals, manage Jira work, align stakeholders, coordinate scope, acceptance criteria, assumptions, risks."
+placeholder: "Describe a feature or business requirement…"
+starter_prompts:
+  - "Draft acceptance criteria for user login"
+  - "Clarify the business goal of this epic"
+  - "List the risks and assumptions in this scope"
 tools:
   - shell
   - filesystem

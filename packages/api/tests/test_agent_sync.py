@@ -1,6 +1,7 @@
 """Service-level tests for project-scoped agent sync."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sqlalchemy import select
@@ -130,6 +131,79 @@ async def test_missing_project_agents_dir_cleans_rows(db, tmp_path, make_project
     )
     assert synced == []
     assert removed == ["proj-e--y"]
+
+
+async def test_sync_placeholder_and_starter_prompts(db, tmp_path, make_project):
+    """Frontmatter guidance fields round-trip, including CJK text.
+
+    json.dumps defaults to ensure_ascii, so Chinese prompts expand through
+    the escape — the column is UnicodeText precisely for that.
+    """
+    project = await make_project("proj-h")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "proj-h--guide.agent.md").write_text(
+        '---\nslug: "proj-h--guide"\ndisplay_name: "Guide"\n'
+        'placeholder: "描述你想定制的智能体能力或行为"\n'
+        "starter_prompts:\n"
+        '  - "帮我给这个智能体新增一个技能"\n'
+        '  - "检查这份智能体定义有什么问题"\n'
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    synced, _ = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-h--",
+    )
+
+    assert synced == ["proj-h--guide"]
+    row = (await db.execute(select(Agent).where(Agent.slug == "proj-h--guide"))).scalar_one()
+    assert row.placeholder == "描述你想定制的智能体能力或行为"
+    assert json.loads(row.starter_prompts) == [
+        "帮我给这个智能体新增一个技能",
+        "检查这份智能体定义有什么问题",
+    ]
+
+
+async def test_sync_guidance_fields_absent_and_normalized(db, tmp_path, make_project):
+    project = await make_project("proj-i")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+
+    # No guidance fields → both columns NULL.
+    _write_agent_file(agents_dir, "proj-i--plain", "Plain")
+    # Scalar string → one-item list; non-list junk → []; overlong → truncated.
+    (agents_dir / "proj-i--odd.agent.md").write_text(
+        '---\nslug: "proj-i--odd"\ndisplay_name: "Odd"\n'
+        'starter_prompts: "一个提示，含逗号"\n'
+        'placeholder: "' + "x" * 600 + '"\n'
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+    (agents_dir / "proj-i--junk.agent.md").write_text(
+        '---\nslug: "proj-i--junk"\ndisplay_name: "Junk"\n'
+        "starter_prompts: 42\n---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    synced, _ = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-i--",
+    )
+
+    assert set(synced) == {"proj-i--plain", "proj-i--odd", "proj-i--junk"}
+    plain = (await db.execute(select(Agent).where(Agent.slug == "proj-i--plain"))).scalar_one()
+    assert plain.placeholder is None
+    assert plain.starter_prompts is None
+
+    # Never comma-split: the prompt contains a full-width comma and stays whole.
+    odd = (await db.execute(select(Agent).where(Agent.slug == "proj-i--odd"))).scalar_one()
+    assert json.loads(odd.starter_prompts) == ["一个提示，含逗号"]
+    assert len(odd.placeholder) == 500
+
+    junk = (await db.execute(select(Agent).where(Agent.slug == "proj-i--junk"))).scalar_one()
+    assert junk.starter_prompts is None
 
 
 async def test_definition_check_predicts_registration(db, tmp_path, make_project):

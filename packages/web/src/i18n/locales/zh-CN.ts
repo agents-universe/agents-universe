@@ -319,6 +319,10 @@ export default {
     sizeExceeded: '文件超过 {mb}MB，无法上传',
     uploadTimeout: '上传超时，请重试',
     mentionMultiple: '一次只能提及一个智能体',
+    defaultPlaceholder: '输入消息…',
+  },
+  agentCard: {
+    starterLabel: '你可以这样用我：',
   },
   mentionPopup: {
     searchPlaceholder: '搜索智能体…',

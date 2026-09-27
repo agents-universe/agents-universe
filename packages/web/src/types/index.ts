@@ -77,6 +77,10 @@ export interface AgentInfo {
   workflows: EquippedItem[]
   /** Tool names declared in the agent frontmatter (includes mcp / mcp:<slug> markers). */
   tools?: string[]
+  /** Composer placeholder for a fresh conversation (agent-authored, rendered raw). */
+  placeholder?: string | null
+  /** Example prompts shown as clickable chips on the fresh-conversation card. */
+  starter_prompts?: string[]
 }
 
 // ── Conversation ──────────────────────────────────────────────────────────────

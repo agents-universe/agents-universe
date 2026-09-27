@@ -8,6 +8,11 @@ const STORAGE_KEY = 'agents-universe:currentProjectId'
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<Project | null>(null)
   const projects = ref<Project[]>([])
+  let projectListSeq = 0
+
+  function invalidateProjectListRequests() {
+    projectListSeq++
+  }
 
   function setCurrentProject(project: Project | null) {
     const changed = project?.project_id !== currentProject.value?.project_id
@@ -36,11 +41,11 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function setProjects(list: Project[]) {
+    invalidateProjectListRequests()
     projects.value = list
   }
 
   /** 从 API 重新拉取项目列表,覆盖会话内缓存 */
-  let projectListSeq = 0
   async function refreshProjects() {
     const seq = ++projectListSeq
     try {
@@ -60,11 +65,13 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function addProject(project: Project) {
+    invalidateProjectListRequests()
     projects.value.push(project)
   }
 
   /** 用最新数据替换同 id 项目(可见性切换后立即生效,无需等列表刷新) */
   function patchProject(project: Project) {
+    invalidateProjectListRequests()
     const idx = projects.value.findIndex(p => p.project_id === project.project_id)
     if (idx >= 0) projects.value[idx] = project
     if (currentProject.value?.project_id === project.project_id) {
@@ -73,6 +80,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function removeProject(projectId: string): boolean {
+    invalidateProjectListRequests()
     const existed = projects.value.some(project => project.project_id === projectId)
     projects.value = projects.value.filter(project => project.project_id !== projectId)
     return existed

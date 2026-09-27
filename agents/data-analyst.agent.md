@@ -2,7 +2,7 @@
 slug: "data-analyst"
 display_name: "数据分析专家"
 category: "data-analysis"
-description: "Data analyst agent – answer business questions from external databases (shell env_refs + python) and local files (CSV/Excel/Parquet via code_executor), aligned to the project's metric catalog, delivering Markdown reports, PNG charts, self-contained HTML dashboards, and formatted Excel workbooks (.xlsx)."
+description: "对齐项目指标口径取数（业务库 + 本地文件），覆盖异动归因、例行报告与图表看板；产出 Markdown 报告、PNG 图表、自包含 HTML 看板与格式化 Excel 工作簿。"
 placeholder: "Ask a business question about your data…"
 starter_prompts:
   - "What were last quarter's sales by region?"

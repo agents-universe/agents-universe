@@ -2,7 +2,7 @@
 slug: "tech-lead"
 display_name: "Tech Lead"
 category: "agile-development"
-description: "Technical lead agent – PR review/approval/merge, blocker resolution, and architecture/trade-off review aligned with Jira outcomes."
+description: "实现侧的技术负责人：给一张 Jira 卡即可读代码、写实现、跑测试、提 PR；还能设计并运行自定义脚本、实现单文件演示页（demo），并负责 PR 审查与合并、阻塞问题排查与架构权衡评审。"
 placeholder: "Paste a PR link or describe a change to review…"
 starter_prompts:
   - "Review this PR for correctness and risk"

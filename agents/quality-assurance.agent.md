@@ -2,7 +2,7 @@
 slug: "quality-assurance"
 display_name: "Quality Assurance"
 category: "agile-development"
-description: "Business-oriented QA agent – verify user and business outcomes, design and run automated tests, preserve execution evidence, report concise Jira results."
+description: "业务视角的 Quality Assurance：验证用户与业务结果，设计并运行自动化测试（Playwright 脚本与回归套件），保留截图等执行证据，向 Jira 简洁汇报结论。"
 placeholder: "Describe what needs to be verified or tested…"
 starter_prompts:
   - "Design a test plan for this feature"

@@ -2,7 +2,7 @@
 slug: "project-owner"
 display_name: "Product Owner"
 category: "agile-development"
-description: "Business-focused product owner agent – clarify business goals, manage Jira work, align stakeholders, coordinate scope, acceptance criteria, assumptions, risks."
+description: "业务视角的 Product Owner：用选择卡片澄清业务目标与验收标准，拆分故事卡、自动估点并落进 Jira 跟踪，对齐干系人，协调范围、假设与风险。"
 placeholder: "Describe a feature or business requirement…"
 starter_prompts:
   - "Draft acceptance criteria for user login"

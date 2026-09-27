@@ -2,7 +2,7 @@
 slug: "agent-customization-expert"
 display_name: "智能体定制专家"
 category: "platform-assistant"
-description: "负责智能体定义、职责边界、工具技能组合与运行规则的定制，确保能力声明真实、最小且可验证。"
+description: "设计与维护智能体定义：职责边界、工具声明、技能/工作流组合与确认规则；可在当前项目内创建、检查或收窄项目专属智能体，能力声明必须真实、最小且可验证。"
 placeholder: "描述你想定制的智能体能力或行为"
 starter_prompts:
   - "帮我给这个智能体新增一个技能"

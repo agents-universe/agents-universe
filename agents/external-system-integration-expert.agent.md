@@ -2,7 +2,7 @@
 slug: "external-system-integration-expert"
 display_name: "外部系统集成专家"
 category: "platform-assistant"
-description: "负责外部系统接入、API 调用、认证配置与联调排障，优先通过项目知识和已配置集成安全完成验证。"
+description: "负责外部系统安全接入：API 与 MCP 服务器接入、认证与密钥配置（明文不进对话）、接口验证与联调排障；验证过的接口规则写回项目知识，优先通过已配置集成完成调用。"
 placeholder: "描述要接入的外部系统或接口问题"
 starter_prompts:
   - "帮我接入这个系统的 API"

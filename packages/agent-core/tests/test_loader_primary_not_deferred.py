@@ -162,6 +162,42 @@ async def test_primary_scan_reuses_parsed_file_until_stat_changes(tmp_path, monk
     assert loader._directory_entries.cache_info().misses > first_scan.misses
 
 
+async def test_knowledge_cache_invalidate_clears_scan_caches(tmp_path):
+    # The (mtime, size, ctime) fingerprint can miss same-length
+    # mtime-preserving saves — KnowledgeCache.invalidate is the funnel
+    # every write path goes through, so it must clear them too.
+    import agent_core.knowledge.loader as loader
+    from agent_core.knowledge.cache import KnowledgeCache
+
+    kdir = _write_knowledge_dir(tmp_path)
+    loader._iter_markdown_files(kdir)
+    assert loader._directory_entries.cache_info().currsize > 0
+
+    KnowledgeCache().invalidate("p1")
+
+    assert loader._directory_entries.cache_info().currsize == 0
+    assert loader._read_primary_file.cache_info().currsize == 0
+
+
+def test_markdown_walker_uses_platform_glob_case_semantics(tmp_path):
+    # Old code used rglob("*.md"): case-insensitive on Windows, case-sensitive
+    # on POSIX — matching the downstream readers (knowledge_rw, index.py).
+    # The walker must not diverge (e.g. accept NOTES.MD on Linux where every
+    # reader then 404s on notes.md).
+    import os
+
+    import agent_core.knowledge.loader as loader
+
+    kdir = tmp_path / "kdir"
+    kdir.mkdir()
+    (kdir / "lower.md").write_text("# lower", encoding="utf-8")
+    (kdir / "upper.MD").write_text("# upper", encoding="utf-8")
+
+    names = [p.name for p in loader._iter_markdown_files(kdir)]
+    assert "lower.md" in names
+    assert ("upper.MD" in names) is (os.name == "nt")
+
+
 # ── Tier-1 hierarchy fields ─────────────────────────────────────────────────
 
 

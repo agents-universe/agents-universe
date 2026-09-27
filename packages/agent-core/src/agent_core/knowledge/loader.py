@@ -21,6 +21,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -114,7 +115,14 @@ def derive_summary(content: str, limit: int = 160) -> str:
 def _read_primary_file(
     path: str, mtime_ns: int, size: int, ctime_ns: int
 ) -> tuple[str, dict, str]:
-    """Read and parse a Markdown file once per stable filesystem fingerprint."""
+    """Read and parse a Markdown file once per stable filesystem fingerprint.
+
+    The fingerprint cannot see a same-length save that restores mtime
+    (backup/robocopy ``/COPY:DAT`` restores, Windows ``st_ctime`` is
+    creation time and does not move on edit, coarse filesystems round
+    timestamps) \u2014 write paths must call :func:`clear_scan_caches` after
+    touching files. :meth:`KnowledgeCache.invalidate` is that funnel.
+    """
     content = Path(path).read_text("utf-8").lstrip("\ufeff")
     post = frontmatter.loads(content)
     return content, dict(post.metadata), post.content
@@ -130,6 +138,18 @@ def _directory_entries(path: str, mtime_ns: int, ctime_ns: int) -> tuple[tuple[s
             except OSError:
                 continue
     return tuple(sorted(children))
+
+
+def clear_scan_caches() -> None:
+    """Drop memoized directory listings and parsed files (see _read_primary_file).
+
+    Called from the production invalidation funnel
+    (``KnowledgeCache.invalidate``) after any knowledge write/reindex, so a
+    change the fingerprint missed cannot be served until process restart.
+    Cheap: caches rebuild lazily on the next project-context load.
+    """
+    _read_primary_file.cache_clear()
+    _directory_entries.cache_clear()
 
 
 def _iter_markdown_files(root: Path) -> list[Path]:
@@ -148,7 +168,14 @@ def _iter_markdown_files(root: Path) -> list[Path]:
             child = directory / name
             if is_directory:
                 pending.append(child)
-            elif child.suffix.lower() == ".md":
+            # fnmatch is case-insensitive on Windows and case-sensitive on
+            # POSIX \u2014 exactly the platform behavior of the pathlib glob this
+            # walker replaced (rglob("*.md")). Matching case-insensitively
+            # everywhere would make the loader accept NOTES.MD while every
+            # downstream reader (knowledge_rw, index.py removesuffix) uses a
+            # case-sensitive ".md" suffix on Linux \u2014 prompt and tools would
+            # disagree about which knowledge exists.
+            elif fnmatch(name, "*.md"):
                 markdown_files.append(child)
     return sorted(markdown_files)
 

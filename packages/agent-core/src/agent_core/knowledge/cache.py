@@ -63,7 +63,17 @@ class KnowledgeCache:
             return cached
 
     def invalidate(self, project_id: str) -> None:
-        """Evict all cached data for a project (e.g. after re-indexing)."""
+        """Evict all cached data for a project (e.g. after re-indexing).
+
+        Also clears the loader's process-level scan caches (directory
+        listings + parsed files): they are keyed on an mtime/size/ctime
+        fingerprint that can miss a same-length mtime-preserving save, and
+        this method is the one funnel every write path (knowledge_rw,
+        reindex, workspace edits) already goes through.
+        """
+        from agent_core.knowledge.loader import clear_scan_caches
+
+        clear_scan_caches()
         self._store.pop(project_id, None)
         _log.debug("Knowledge cache invalidated for project %s", project_id)
 

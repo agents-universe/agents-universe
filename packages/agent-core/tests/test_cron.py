@@ -159,6 +159,37 @@ class TestTimezones:
             2026, 11, 1, 5, 11
         )
 
+    def test_daily_expression_runs_once_on_the_fall_back_day(self):
+        # 01:00 reads twice on 2026-11-01 (05:00Z EDT, 06:00Z EST) — a
+        # once-per-day task fires at the first reading and does NOT repeat
+        # an hour later; the next fire is the following day.
+        first = next_run_at("0 1 * * *", "America/New_York", _utc(2026, 11, 1, 4, 0))
+        assert first == _utc(2026, 11, 1, 5, 0)
+        second = next_run_at("0 1 * * *", "America/New_York", first)
+        assert second == _utc(2026, 11, 2, 6, 0)
+
+    def test_hourly_expression_skips_the_repeated_reading(self):
+        # Once-per-hour cadence: 01:00 EDT fires at 05:00Z, the next fire is
+        # 02:00 EST at 07:00Z — the repeated 01:00 EST reading is not a new
+        # slot for a schedule that fires at most once per hour.
+        first = next_run_at("0 * * * *", "America/New_York", _utc(2026, 11, 1, 4, 0))
+        assert first == _utc(2026, 11, 1, 5, 0)
+        second = next_run_at("0 * * * *", "America/New_York", first)
+        assert second == _utc(2026, 11, 1, 7, 0)
+
+    def test_dense_expression_fires_across_the_whole_repeated_hour(self):
+        # Every 10 minutes fires through both readings of the ambiguous hour.
+        fires = []
+        cursor = _utc(2026, 11, 1, 4, 59)
+        for _ in range(13):
+            cursor = next_run_at("*/10 * * * *", "America/New_York", cursor)
+            fires.append(cursor)
+            if cursor >= _utc(2026, 11, 1, 7, 0):
+                break
+        # 05:00Z..06:50Z covers 01:00/01:10/…/01:50 twice (EDT then EST).
+        repeated_window = [t for t in fires if _utc(2026, 11, 1, 5, 0) <= t < _utc(2026, 11, 1, 7, 0)]
+        assert len(repeated_window) == 12
+
     def test_nonexistent_local_time_still_advances(self):
         # 02:30 does not exist on 2026-03-08 in New York; the schedule must not
         # stall or raise — it lands on the pre-transition offset (07:30 UTC).

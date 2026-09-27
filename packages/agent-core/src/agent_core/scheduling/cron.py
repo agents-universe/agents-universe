@@ -150,11 +150,31 @@ def _day_matches(day: date, dom: _Field, dow: _Field) -> bool:
     return day.day in dom.values or cron_dow in dow.values
 
 
+def _day_has_transition(day: date, zone: ZoneInfo) -> bool:
+    """True when the zone's UTC offset changes at any instant during ``day``.
+
+    Drives the fast path: on a transition-free local day the local→UTC
+    mapping is strictly monotonic, so the first future (h, m) in local
+    order is the earliest future instant — no fold round-trips or full-grid
+    min() needed. Only ~2 days a year pay for the careful scan below.
+    """
+    start = datetime.combine(day, time.min, tzinfo=zone)
+    end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=zone)
+    return start.utcoffset() != end.utcoffset()
+
+
 def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
     """First fire time strictly after ``after``, as a UTC-aware datetime.
 
     Missed occurrences are skipped, not caught up. Candidates are compared on
     the UTC timeline so repeated local times cannot return past or late fires.
+
+    DST fall-back repeats a wall-clock hour with two real instants. A
+    schedule that fires several times within that hour (``* * * * *``,
+    ``*/10 ...``) fires across BOTH readings so no real minute is skipped;
+    a schedule firing at most once per hour (``0 1 * * *``, ``0 * * * *``)
+    fires only at the first reading — a daily task still runs once per day,
+    matching classic cron.
     """
     minute, hour, dom, month, dow = _parse(expr)
     zone = _zone(tz)
@@ -166,6 +186,11 @@ def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
 
     hours = sorted(hour.values)
     minutes = sorted(minute.values)
+    # The second (fold=1) reading of an ambiguous local time is only a real
+    # extra fire when the schedule already fires more than once per hour —
+    # see the docstring. A once-per-hour-or-slower expression runs at the
+    # first reading only.
+    hour_is_dense = len(minutes) > 1
     day = local_after.date()
 
     for _ in range(_MAX_DAYS):
@@ -176,6 +201,19 @@ def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
         if not _day_matches(day, dom, dow):
             day += timedelta(days=1)
             continue
+
+        if not _day_has_transition(day, zone):
+            # No fold/gap today: local order == UTC order, so the first local
+            # time past local_after is the earliest future instant — compare
+            # in local time (offset arithmetic) and convert only the winner.
+            for h in hours:
+                for m in minutes:
+                    candidate = datetime.combine(day, time(h, m), tzinfo=zone)
+                    if candidate > local_after:
+                        return candidate.astimezone(timezone.utc)
+            day += timedelta(days=1)
+            continue
+
         next_candidate: datetime | None = None
         for h in hours:
             for m in minutes:
@@ -192,7 +230,7 @@ def next_run_at(expr: str, tz: str, after: datetime) -> datetime:
                         second_fold.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
                         == local_candidate
                     )
-                    if first_valid and second_valid:
+                    if first_valid and second_valid and hour_is_dense:
                         candidates.append(second_fold)
                 future = [
                     candidate.astimezone(timezone.utc)

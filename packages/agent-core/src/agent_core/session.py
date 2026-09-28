@@ -553,6 +553,16 @@ class ConversationSession:
         """
         return [dict(payload) for payload in self._pending_prompt_events.values()]
 
+    def pending_prompt_payload(self, prompt_id: str) -> dict[str, Any] | None:
+        """Snapshot of one pending prompt's event payload, or None.
+
+        The WS handler needs the prompt's question *before* it resolves the
+        Future: the awaiting request_user_selection() pops the payload in its
+        finally block, so anything read after resolve_user_selection() is gone.
+        """
+        payload = self._pending_prompt_events.get(prompt_id)
+        return dict(payload) if payload is not None else None
+
     def is_aborted(self) -> bool:
         return self.abort_event.is_set()
 

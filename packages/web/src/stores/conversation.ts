@@ -995,6 +995,19 @@ export const useConversationStore = defineStore('conversation', () => {
     rt.pendingInjected = rt.pendingInjected.filter((p) => p !== pending)
   }
 
+  function recordSelectionAnswer(serverId: string, content: string, targetId?: string) {
+    const id = targetId ?? activeId.value
+    if (!id) return
+    const rt = ensureRuntime(id)
+    // Broadcast-dup guard: a resent frame or a racing second tab must not
+    // append the confirmation twice — the DB row is one (uuid5 PK).
+    if (rt.messages.some((m) => m.id === serverId)) return
+    // Append to the end: the row's sequence_num is below the assistant reply
+    // still streaming, so it renders above the in-flight text — same order a
+    // history reload produces.
+    rt.messages.push({ id: serverId, role: 'user', content, timestamp: Date.now() })
+  }
+
   function rejectInjected(content: string, message: string, targetId?: string, serverId?: string | null) {
     // input_rejected / input_not_processed: the message is settled without
     // the agent consuming it. Clear the pending entry and attach the
@@ -1363,6 +1376,7 @@ export const useConversationStore = defineStore('conversation', () => {
     unregisterInjectedMessage,
     markInputQueued,
     confirmInjected,
+    recordSelectionAnswer,
     rejectInjected,
     rejectAllPendingInjected,
     setTokens,

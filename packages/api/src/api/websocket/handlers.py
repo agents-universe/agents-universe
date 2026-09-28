@@ -20,6 +20,7 @@ from ..services.agent_turn import (  # noqa: F401  (re-export for WS watchdog + 
     _prepare_attachment,
     _validate_attachment_url,
     _save_secret_from_response,
+    _persist_selection_answer,
     _save_user_token_from_response,
     _enqueue_injected_message,
     _guard_injected_message,
@@ -243,6 +244,16 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                 save_to_project = msg.get("save_to_project_secrets", False)
                 save_to_user = msg.get("save_to_user_tokens", False)
 
+                # Capture the prompt payload BEFORE resolving: the awaiting
+                # request_user_selection() pops it in its finally block, and
+                # the recorded row quotes the question. Persist also runs
+                # before resolve so the row's sequence_num is lower than any
+                # assistant content the agent streams after waking.
+                sess = manager.get_session(conversation_id)
+                payload = (
+                    sess.pending_prompt_payload(prompt_id) if sess else None
+                )
+
                 # Always persist secrets even if the agent session has ended
                 # (e.g. task timed out while waiting for user input).
                 if is_secret and save_to_project:
@@ -252,7 +263,14 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     _log.info("user_selection_response: saved secret=%s prompt_id=%s", saved, prompt_id)
                     if saved:
                         await ws.send_json({"type": "secrets_updated"})
-                    sess = manager.get_session(conversation_id)
+                        await _persist_selection_answer(
+                            conversation_id, prompt_id,
+                            question=payload.get("question") if payload else None,
+                            answer_text="已保存密钥",
+                            fallback_note=(
+                                f"【确认】{msg.get('service_key') or '密钥'}：已保存密钥"
+                            ),
+                        )
                     if sess:
                         sess.resolve_user_selection_secret(prompt_id, saved=saved)
                     else:
@@ -265,7 +283,14 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     _log.info("user_selection_response: saved user token=%s prompt_id=%s", saved, prompt_id)
                     if saved:
                         await ws.send_json({"type": "user_tokens_updated"})
-                    sess = manager.get_session(conversation_id)
+                        await _persist_selection_answer(
+                            conversation_id, prompt_id,
+                            question=payload.get("question") if payload else None,
+                            answer_text="已保存密钥（用户令牌）",
+                            fallback_note=(
+                                f"【确认】{msg.get('service_key') or '密钥'}：已保存密钥（用户令牌）"
+                            ),
+                        )
                     if sess:
                         sess.resolve_user_selection_secret(prompt_id, saved=saved)
                     else:
@@ -285,10 +310,16 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                             "message": "Secret response missing save_to_project_secrets/save_to_user_tokens — nothing saved, value not forwarded.",
                         })
                         continue
-                    sess = manager.get_session(conversation_id)
                     if sess:
+                        value = msg.get("value", "")
+                        if payload is not None:
+                            await _persist_selection_answer(
+                                conversation_id, prompt_id,
+                                question=payload.get("question"),
+                                answer_text="已取消" if value == "__cancelled__" else value,
+                            )
                         resolved = sess.resolve_user_selection(
-                            prompt_id, msg.get("value", "")
+                            prompt_id, value
                         )
                         if not resolved:
                             _log.warning("user_selection_response: no pending prompt for prompt_id=%s", prompt_id)

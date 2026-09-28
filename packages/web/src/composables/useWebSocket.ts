@@ -469,6 +469,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         // optimistic id and move it after the interrupted snapshot.
         conv.confirmInjected((msg.message_id as string) ?? '', (msg.content as string) ?? '', convId)
         break
+      case 'user_selection_recorded':
+        // A confirmation-dialog answer persisted as a real user row — there
+        // is no optimistic entry to settle (the dialog dismissal is local),
+        // so append the row directly, deduped by its deterministic id.
+        conv.recordSelectionAnswer((msg.message_id as string) ?? '', (msg.content as string) ?? '', convId)
+        break
       case 'input_rejected':
       case 'input_not_processed':
         // Settled without the agent consuming it (validation failure, or the

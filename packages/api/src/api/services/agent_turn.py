@@ -2771,6 +2771,95 @@ async def _persist_orphan_injection(conversation_id: str, entry) -> None:
     })
 
 
+# The dialog's question is quoted verbatim into the recorded row — a
+# pathological prompt must not bloat messages (well under the 200k guard).
+_SELECTION_QUESTION_MAX = 300
+
+
+async def _persist_selection_answer(
+    conversation_id: str,
+    prompt_id: str,
+    *,
+    question: str | None,
+    answer_text: str,
+    fallback_note: str | None = None,
+) -> str | None:
+    """Best-effort persistence of a confirmation-dialog answer as a
+    role="user" message row, then broadcast it for live UI display.
+
+    Never raises: a failed write must not block the caller from resolving
+    the prompt — the user's answer is already given. The message_id is a
+    uuid5 of (conversation_id, prompt_id), so a duplicate response frame
+    hits _prepare_and_persist_user_message's IntegrityError-as-success
+    branch instead of inserting a second row.
+    """
+    from api.database import AsyncSessionLocal
+    from api.models.conversation import Conversation
+    from api.paths import resolve_project_fs_path
+    from sqlalchemy import select
+
+    if question:
+        q = str(question)
+        if len(q) > _SELECTION_QUESTION_MAX:
+            q = q[:_SELECTION_QUESTION_MAX] + "…"
+        content = f"【确认】{q}：{answer_text}"
+    else:
+        content = fallback_note or f"【确认】{answer_text}"
+    message_id = str(
+        _uuid_mod.uuid5(
+            _uuid_mod.NAMESPACE_URL,
+            f"user_selection:{conversation_id}:{prompt_id}",
+        )
+    )
+
+    try:
+        async with AsyncSessionLocal() as gdb:
+            result = await gdb.execute(
+                select(Conversation.project_id)
+                .where(Conversation.conversation_id == conversation_id)
+            )
+            project_id = result.scalar_one_or_none()
+            if project_id is None:
+                return None
+            fs_path = await resolve_project_fs_path(str(project_id), gdb)
+            if not fs_path:
+                return None
+            persist_result, persist_err = await _prepare_and_persist_user_message(
+                gdb, conversation_id, str(project_id), str(fs_path),
+                content, [],
+                set_title=False, message_id=message_id,
+            )
+            if persist_result is None:
+                _log.warning(
+                    "persist_selection_answer: persist failed conversation=%s prompt_id=%s err=%s",
+                    conversation_id, prompt_id, persist_err,
+                )
+                return None
+            sequence_num = persist_result.sequence_num
+    except Exception:
+        _log.warning(
+            "persist_selection_answer: unexpected error conversation=%s prompt_id=%s",
+            conversation_id, prompt_id, exc_info=True,
+        )
+        return None
+
+    try:
+        await manager.send(conversation_id, {
+            "type": "user_selection_recorded",
+            "message_id": message_id,
+            "prompt_id": prompt_id,
+            "content": content,
+            "sequence_num": sequence_num,
+        })
+    except Exception:
+        # The row is durable; the client picks it up on the next history load.
+        _log.warning(
+            "persist_selection_answer: broadcast failed conversation=%s prompt_id=%s",
+            conversation_id, prompt_id, exc_info=True,
+        )
+    return message_id
+
+
 async def _save_secret_from_response(
     conversation_id: str, user_id: str, msg: dict
 ) -> bool:

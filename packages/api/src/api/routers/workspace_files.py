@@ -30,8 +30,8 @@ router = APIRouter(prefix="/api/projects/{project_id}/workspace")
 _log = logging.getLogger(__name__)
 
 # Byte caps mirror agent_core.tools.filesystem: reading feeds the viewer /
-# editor (2MB is already large for a text preview); writing caps disk usage.
-_MAX_READ_BYTES = 2_000_000
+# editor (5MB is already large for a text preview); writing caps disk usage.
+_MAX_READ_BYTES = 5_000_000
 _MAX_WRITE_BYTES = 5_000_000
 
 # Internal temp/storage directories — never shown in the workspace tree

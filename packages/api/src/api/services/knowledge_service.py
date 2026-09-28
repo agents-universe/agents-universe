@@ -79,13 +79,15 @@ async def get_completeness_by_category(
     result = await db.execute(
         select(
             KnowledgeMetadata.category,
-            func.round(func.avg(func.coalesce(KnowledgeMetadata.completeness_score, 0.0)), 1),
+            func.avg(func.coalesce(KnowledgeMetadata.completeness_score, 0.0)),
         ).where(
             (KnowledgeMetadata.project_id == project_id) | (KnowledgeMetadata.project_id == None),  # noqa: E711
             KnowledgeMetadata.is_archived == False,  # noqa: E712
         ).group_by(KnowledgeMetadata.category)
     )
-    return {cat: float(avg) for cat, avg in result.all()}
+    # Same Python-side rounding as routers/knowledge.py::knowledge_completeness:
+    # round() has no double-precision overload on PostgreSQL.
+    return {cat: round(float(avg), 1) for cat, avg in result.all()}
 
 
 async def list_knowledge_for_project(

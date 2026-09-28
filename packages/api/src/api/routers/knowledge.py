@@ -156,13 +156,17 @@ async def knowledge_completeness(
     result = await db.execute(
         select(
             KnowledgeMetadata.category,
-            func.round(func.avg(func.coalesce(KnowledgeMetadata.completeness_score, 0.0)), 1),
+            func.avg(func.coalesce(KnowledgeMetadata.completeness_score, 0.0)),
         ).where(
             KnowledgeMetadata.project_id == project_id,
             KnowledgeMetadata.is_archived == False,  # noqa: E712
         ).group_by(KnowledgeMetadata.category)
     )
-    return {cat: float(avg) for cat, avg in result.all()}
+    # Rounded in Python, not SQL: completeness_score is a Float column, so
+    # avg() is double precision and PostgreSQL has no round(double precision,
+    # integer) overload (SQLite/MySQL do) — the query 500s there. The value is
+    # display-only, so a dialect-free expression beats a per-dialect branch.
+    return {cat: round(float(avg), 1) for cat, avg in result.all()}
 
 
 @router.get("/knowledge/{slug:path}/children")

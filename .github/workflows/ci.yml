@@ -17,6 +17,16 @@ jobs:
         run: |
           cd packages/agent-core
           pip install -e ".[test]"
+      # The browser tests launch a real headless Chromium; without this the
+      # whole module skips (7 tests) and the bbox math they pin goes
+      # unverified. Cached on pyproject.toml so a Playwright bump refetches.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('packages/agent-core/pyproject.toml') }}
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
       - name: Test
         run: |
           cd packages/agent-core

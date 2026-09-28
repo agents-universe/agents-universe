@@ -12,9 +12,9 @@ from .base import Tool, ToolContext
 
 _log = logging.getLogger(__name__)
 
-# Byte caps : reading feeds the LLM context directly (2MB is
+# Byte caps : reading feeds the LLM context directly (5MB is
 # already huge there); writing is capped to bound disk usage.
-_MAX_READ_BYTES = 2_000_000
+_MAX_READ_BYTES = 5_000_000
 _MAX_WRITE_BYTES = 5_000_000
 
 

@@ -55,8 +55,18 @@
     <!-- All items (root nodes only) -->
     <div class="knowledge-panel-section">
       <div class="section-label">
-        <Library :size="12" class="section-label-icon" />
-        {{ t('knowledgePanel.allItems') }}
+        <span class="section-label-text">
+          <Library :size="12" class="section-label-icon" />
+          {{ t('knowledgePanel.allItems') }}
+        </span>
+        <button
+          v-if="projectId"
+          class="knowledge-copy-template-btn"
+          :title="t('knowledgePanel.copyTemplate')"
+          @click="showTemplatePicker = true"
+        >
+          <CopyPlus :size="13" />
+        </button>
       </div>
       <div class="knowledge-item-list">
         <div
@@ -68,6 +78,9 @@
           <FolderOpen v-if="item.children_slugs.length > 0" :size="13" class="knowledge-item-icon" />
           <FileText v-else :size="13" class="knowledge-item-icon" />
           <span class="knowledge-item-title">{{ item.title }}</span>
+          <span v-if="item.is_global" class="knowledge-global-badge">
+            {{ t('knowledgePanel.systemBadge') }}
+          </span>
           <span v-if="item.children_slugs.length" class="knowledge-children-badge">
             {{ item.children_slugs.length }}
           </span>
@@ -86,27 +99,40 @@
         @close="viewerSlug = null"
       />
     </Transition>
+
+    <TemplatePickerDialog
+      v-if="showTemplatePicker && projectId"
+      :project-id="projectId"
+      @close="showTemplatePicker = false"
+      @copied="onTemplateCopied"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { BarChart3, Zap, FileCheck, RefreshCw, Sparkles, Library, FolderOpen, FileText } from 'lucide-vue-next'
+import { BarChart3, Zap, FileCheck, RefreshCw, Sparkles, Library, FolderOpen, FileText, CopyPlus } from 'lucide-vue-next'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useKnowledgeData } from '@/composables/useKnowledgeData'
 import CompletenessBar from './CompletenessBar.vue'
 import KnowledgeFileViewer from './KnowledgeFileViewer.vue'
+import TemplatePickerDialog from './TemplatePickerDialog.vue'
 
 const props = defineProps<{ projectId?: string }>()
 const { t } = useI18n()
 const knowledgeStore = useKnowledgeStore()
 const viewerSlug = ref<string | null>(null)
+const showTemplatePicker = ref(false)
 
 // A viewer opened for the previous project must not survive a project switch:
 // its slug would resolve against the new project's knowledge (wrong file or
 // a 404). Close it — the viewer's navStack is rebuilt from scratch on reopen.
-watch(() => props.projectId, () => { viewerSlug.value = null })
+// Same for the template picker: its projectId prop would go stale.
+watch(() => props.projectId, () => {
+  viewerSlug.value = null
+  showTemplatePicker.value = false
+})
 
 const projectIdRef = computed(() => props.projectId)
 useKnowledgeData(projectIdRef)
@@ -115,9 +141,47 @@ const rootItems = computed(() =>
   knowledgeStore.items.filter((item) => !item.parent_slug)
 )
 
+function onTemplateCopied(slug: string) {
+  showTemplatePicker.value = false
+  viewerSlug.value = slug
+}
+
 function scoreClass(score: number) {
   if (score >= 90) return 'score-green'
   if (score >= 60) return 'score-amber'
   return 'score-red'
 }
 </script>
+
+<style scoped>
+.section-label-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.knowledge-copy-template-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 3px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s, background 0.15s;
+}
+.knowledge-copy-template-btn:hover {
+  color: var(--accent);
+  background: var(--bg-tertiary);
+}
+.knowledge-global-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+</style>

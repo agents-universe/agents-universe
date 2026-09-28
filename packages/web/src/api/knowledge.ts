@@ -12,6 +12,19 @@ export interface KnowledgeFileDetail {
   parent_slug: string | null
   children_slugs: string[]
   depth: number
+  /** Optional: true = global framework knowledge (read-only, no delete). */
+  is_global?: boolean
+}
+
+/** A system template offered for copying into the project — disk-scanned
+ * from knowledge/_template/, never a DB row. */
+export interface KnowledgeTemplate {
+  slug: string
+  title: string
+  category: string
+  summary: string
+  /** The project already has this slug: copy is disabled (never overwrites). */
+  exists: boolean
 }
 
 export const knowledgeApi = {
@@ -35,4 +48,19 @@ export const knowledgeApi = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
+
+  listTemplates: (projectId: string) =>
+    apiFetch<KnowledgeTemplate[]>(`/api/projects/${enc(projectId)}/knowledge/_templates`),
+
+  copyTemplate: (projectId: string, slug: string) =>
+    apiFetch<{ slug: string; created: boolean }>(
+      `/api/projects/${enc(projectId)}/knowledge/_templates/copy`,
+      { method: 'POST', body: JSON.stringify({ slug }) },
+    ),
+
+  deleteFile: (projectId: string, slug: string) =>
+    apiFetch<{ deleted: boolean; slug: string; file_deleted: boolean; db_row: string }>(
+      `/api/projects/${enc(projectId)}/knowledge/${enc(slug)}`,
+      { method: 'DELETE' },
+    ),
 }

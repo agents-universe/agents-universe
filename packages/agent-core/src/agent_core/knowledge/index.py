@@ -128,6 +128,15 @@ async def index_directory(
             continue
         if any(part.startswith(".") for part in rel_parts):
             continue
+        # _template/ is the system-template source tree, not knowledge: it
+        # reaches projects via project creation and the copy endpoint. Indexing
+        # it globally created _template/* rows whose titles duplicate every
+        # project's copies while being undeletable from any project (delete_one
+        # never touches project_id NULL), so the knowledge panel showed the
+        # whole template set twice. Global scope only — project workspaces
+        # never contain _template/ and their indexing semantics stay unchanged.
+        if project_id is None and rel_parts and rel_parts[0] == "_template":
+            continue
 
         stats["scanned"] += 1
         try:
@@ -539,6 +548,13 @@ async def reindex_one(
         slug = "/".join(parts[k_idx + 1:]).replace("\\", "/").removesuffix(".md")
     except StopIteration:
         slug = path.stem
+
+    # Same invariant as index_directory: the template source tree never
+    # becomes global rows. No current call site reindexes it globally — this
+    # holds the rule for future entry points. No "error" key: callers branch
+    # on that and a deliberate skip is not a failure.
+    if project_id is None and slug.startswith("_template/"):
+        return {"action": "skipped", "slug": slug, "reason": "template_not_indexed_globally"}
 
     title = meta.get("title") or path.stem.replace("-", " ").title()
     category = meta.get("category") or slug.split("/")[0]

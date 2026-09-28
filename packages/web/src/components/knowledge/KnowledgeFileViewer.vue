@@ -19,10 +19,26 @@
                 <FileText :size="18" />
               </span>
               <h3 class="modal-title">{{ entry.title ?? entry.slug }}</h3>
+              <span v-if="entry.isGlobal" class="knowledge-global-chip">
+                {{ t('knowledgePanel.systemBadge') }}
+              </span>
             </div>
-            <button class="modal-close" @click="emit('close')">
-              <X :size="16" />
-            </button>
+            <div class="modal-header-right">
+              <!-- Framework knowledge is read-only through every project path
+                   (the API answers 403) — hide the button instead of showing
+                   a control that can never succeed. -->
+              <button
+                v-if="!entry.isGlobal && !entry.loading && !entry.error && entry.content !== null"
+                class="viewer-action-btn viewer-delete-btn"
+                :title="t('common.delete')"
+                @click="removeEntry(entry)"
+              >
+                <Trash2 :size="15" />
+              </button>
+              <button class="modal-close" @click="emit('close')">
+                <X :size="16" />
+              </button>
+            </div>
           </div>
 
           <!-- Breadcrumb -->
@@ -90,8 +106,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FileText, X, Loader2, AlertCircle, Tag, ChevronLeft, ChevronRight, FolderOpen } from 'lucide-vue-next'
+import { FileText, X, Loader2, AlertCircle, Tag, ChevronLeft, ChevronRight, FolderOpen, Trash2 } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
+import { useKnowledgeStore } from '@/stores/knowledge'
 import { knowledgeApi } from '@/api/knowledge'
 import type { KnowledgeChildItem, KnowledgeAncestor } from '@/types'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
@@ -107,6 +124,8 @@ interface NavEntry {
   error: string
   ancestors: KnowledgeAncestor[]
   children: KnowledgeChildItem[]
+  /** True = global framework knowledge: no delete button (API would 403). */
+  isGlobal: boolean
 }
 
 const props = defineProps<{ slug: string }>()
@@ -116,6 +135,7 @@ useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const projectStore = useProjectStore()
+const knowledgeStore = useKnowledgeStore()
 const navStack = ref<NavEntry[]>([])
 
 function panelStyle(index: number) {
@@ -148,6 +168,7 @@ async function loadEntry(slug: string): Promise<NavEntry> {
     error: '',
     ancestors: [],
     children: [],
+    isGlobal: false,
   }
 
   const pid = projectStore.currentProject?.project_id
@@ -168,6 +189,7 @@ async function loadEntry(slug: string): Promise<NavEntry> {
     entry.tags = file.tags
     entry.children = children
     entry.ancestors = ancestors
+    entry.isGlobal = file.is_global ?? false
   } catch (e) {
     entry.error = e instanceof Error ? e.message : t('knowledgeFileViewer.loadFailed')
   } finally {
@@ -175,6 +197,23 @@ async function loadEntry(slug: string): Promise<NavEntry> {
   }
 
   return entry
+}
+
+async function removeEntry(entry: NavEntry) {
+  // Repo precedent: native confirm for destructive actions (5 call sites).
+  if (!window.confirm(t('knowledgeFileViewer.deleteConfirm', { title: entry.title || entry.slug }))) return
+  const pid = projectStore.currentProject?.project_id
+  if (!pid) return
+  try {
+    await knowledgeApi.deleteFile(pid, entry.slug)
+    // Bump refreshToken → useKnowledgeData reloads the panel; cached
+    // per-project knowledge must never keep serving the deleted entry.
+    knowledgeStore.triggerRefresh()
+    emit('close')
+  } catch (e) {
+    // Keep the panel open and surface the failure inline.
+    entry.error = e instanceof Error ? e.message : t('common.deleteFailed')
+  }
 }
 
 // Monotonic guard: rapid A→B clicks spawn two loadEntry calls; the slower
@@ -295,6 +334,38 @@ onUnmounted(() => {
 .panel-back-btn:hover {
   background: var(--color-bg-hover, #313244);
   color: var(--color-text-primary);
+}
+
+.modal-header-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.viewer-action-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-secondary, #a6adc8);
+  padding: 3px 7px;
+  border-radius: 5px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  transition: color 0.1s, background 0.1s;
+}
+.viewer-delete-btn:hover {
+  color: var(--color-error, #f38ba8);
+  background: var(--color-bg-hover, #313244);
+}
+.knowledge-global-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--color-bg-hover, #313244);
+  color: var(--color-text-secondary, #a6adc8);
+  border: 1px solid var(--color-border, #313244);
 }
 
 .knowledge-breadcrumb {

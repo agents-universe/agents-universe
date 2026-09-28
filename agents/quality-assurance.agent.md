@@ -255,7 +255,7 @@ Do not load `agents/skills/integration/git-pr-manager.md` in this agent. PR queu
 Knowledge templates live at `knowledge/_template/` (framework read-only, flat files). At project creation, the project's category subset is instantiated into the workspace `knowledge/` directory — **the file path mirrors the frontmatter slug** (slug = path relative to `knowledge/` without `.md`). Always use the full slug in `knowledge_rw` calls:
 
 ```
-knowledge/_template/      ← Framework templates (read-only); instantiated once at project creation — never copied again
+knowledge/_template/      ← Framework templates (read-only source); instantiated at project creation and copyable later from the knowledge panel's copy entry — copies join the project workspace, and no path ever overwrites an existing file
   context.md, glossary.md, api-map.md, test-data-setup.md, history.md, ...
 
 {project workspace}/knowledge/   ← Isolated by project; slug = path below, minus .md

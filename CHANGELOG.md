@@ -4,8 +4,13 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **系统模板复制入口 + 知识条目删除** - 知识面板「知识条目」区新增「从系统模板复制」：`GET /knowledge/_templates` 磁盘扫描 `knowledge/_template/`（不建任何 DB 行）列出全部 29 个模板按类分组，`POST /knowledge/_templates/copy` 逐字节复制到项目（含 BOM，`open(xb)` 独占创建、已有同名条目永不覆盖，复制后重建索引并按创建语义把完整度三项分数归零）；复制件归项目所有、可编辑可删除。详情页新增删除按钮（原生确认 → `DELETE /knowledge/{slug}`，镜像 `knowledge_rw delete`：unlink 前先读 parent、同步父级 children、再按精确 project_id 删行），框架知识隐藏按钮且 API 返回 403 `global_knowledge`；列表/详情新增 `is_global` 标记，全局条目带「系统」徽标
+
 ### 修复
 
+- **全局 `_template/*` 不再混入项目知识面板** - 部署入口每次启动跑全局索引 `knowledge/`，索引器曾把 `_template/` 模板源树也扫成 29 条 `project_id NULL` 行，与各项目创建时的拷贝同名成对出现（面板看到成堆重复模板），且 `delete_one` 按精确 project_id 匹配，任何项目都删不掉这些「系统模板」。现索引器在全局范围跳过 `_template/`（`reindex_one` 同规则防御），alembic 迁移 `c7e4a9f2b6d1` 一次性清除存量全局 `_template/*` 行（先删 `knowledge_load_events`/`knowledge_versions` 子行再删主表，offline 模式跳过）；智能体上下文 deferred 列表随之恢复干净，完整度统计改为仅计项目自身行
 - **更新日志 `system/history` 默认不再进入上下文** - 该文件在 Tier-1 被 `knowledge_role: log` 跳过不假，但索引行仍落进 Tier-2 的 `deferred_entries`，每次对话的「Available Detail Knowledge」提示表都带着它；更糟的是 knowledge-manager 的范文只教正文格式，智能体重写时丢掉 frontmatter 后整个更新日志正文会当普通主文件灌进静态区。现 loader 增加 slug 级兜底（`system/history` 无论 frontmatter 如何都进不了任一上下文层），Tier-1 扫描到的 log 文件（含超大文件路径）一并从 deferred 表剔除，`update_context_file` 按 slug+role 双判守门，`knowledge_rw list` 对该 slug 显示 `log` 状态而非误导性的 `unindexed`；knowledge-manager 范文补回 frontmatter 并在层级概念、参考表写明规则，tool-reference 同步。显式 `knowledge_rw read` / `load` 不受影响
 
 ## [1.5.0] - 2026-09-24

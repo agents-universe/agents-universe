@@ -271,6 +271,8 @@ export interface KnowledgeItem {
   children_slugs: string[]
   summary: string
   depth: number
+  /** Optional: absent on older mocks/fixtures. True = global framework knowledge (read-only). */
+  is_global?: boolean
 }
 
 export interface KnowledgeChildItem {

@@ -5,6 +5,7 @@ built at module import time), so they are assigned at module top here.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -86,15 +87,39 @@ def _no_redis():
 
 @pytest.fixture(autouse=True)
 async def _dispose_engine_per_test():
-    """Keep pooled engines (asyncpg/aiomysql) loop-local.
+    """Keep pooled engines (asyncpg/aiomysql) loop-local, and drain detached work.
 
     pytest-asyncio gives every test its own event loop; a connection pooled in
     test N's loop is poisoned for test N+1 ('Event loop is closed'). Must run
     INSIDE the test's loop: a sync teardown runs after the loop dies, and
     closing asyncpg connections is loop-bound. SQLite's NullPool makes this a
     no-op — required for the PG/MySQL CI runs.
+
+    Detached work is drained first. A WS disconnect deliberately leaves work
+    running (handlers.py: a live agent turn continues, and every passive
+    disconnect spawns _maybe_generate_episode), but a test that ends while such
+    a task is mid-query closes the loop under it: the abandoned connection keeps
+    its SQLite write transaction, so a later test fails with 'database is
+    locked' — intermittently, depending on where the task was suspended, and
+    with a PytestUnhandledThreadExceptionWarning from the aiosqlite worker that
+    can no longer deliver its result. Nothing detached can legitimately outlive
+    its test (the loop is per-test).
     """
     yield
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        # Graceful first: a task cancelled mid-query still leaves the aiosqlite
+        # worker thread executing that statement — and holding the SQLite write
+        # lock — after the loop is gone. One that finishes on its own closes its
+        # session and releases the lock. Timeout, then cancel what will not
+        # finish (e.g. the 30s request_user_selection waiter).
+        _, pending = await asyncio.wait(pending, timeout=2)
+        for task in pending:
+            task.cancel()
+        if pending:
+            # Bounded: a task wedged in a non-cancellable call must not hang
+            # the session — the loop close that follows is no worse than before.
+            await asyncio.wait(pending, timeout=5)
     await engine.dispose()
 
 

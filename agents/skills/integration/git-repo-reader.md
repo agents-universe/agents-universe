@@ -49,6 +49,13 @@ or any file read; read files only for the semantics the graph cannot carry
 (it is deterministic, may miss dynamic references, and is a navigation aid,
 not a spec).
 
+The graph covers Python / TS / JS / Vue / Java / C# (.NET) and SQL
+database structure — tables, views, columns, stored procedures, functions
+and triggers linked by `reads` / `writes` / `foreign_key` / `primary_key`
+edges. Query DB objects by plain name (`dbo.Orders`); `impact` on a table
+tells you which procs and views read or write it before you open a single
+`.sql` file.
+
 ```json
 git_repo(operation="clone", repository="org/repo-name")
 git_repo(operation="clone", repository="org/repo-name", branch="develop")

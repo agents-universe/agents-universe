@@ -22,6 +22,13 @@ Before reading files, ask `repo_graph` first: `query` finds symbols/files,
 `report` returns the compact repo map. Read files only for the specific
 content the graph points to.
 
+Coverage includes Python / TS / JS / Vue / Java / C# (.NET) plus SQL
+database structure: tables, views, columns, stored procedures, functions
+and triggers, cross-linked by `reads` / `writes` / `foreign_key` /
+`primary_key` edges. DB objects resolve by plain name (`dbo.Orders`) —
+`impact` on a table answers "who reads or writes this" without opening
+any DDL or proc file.
+
 ## Method: Use `filesystem` Tool Directly
 
 Cloned repositories live under `repos/` in the project workspace. The `filesystem` tool can read them directly — no `git` binary or `shell` required.

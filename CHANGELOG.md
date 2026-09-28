@@ -7,6 +7,7 @@
 ### 新增
 
 - **系统模板复制入口 + 知识条目删除** - 知识面板「知识条目」区新增「从系统模板复制」：`GET /knowledge/_templates` 磁盘扫描 `knowledge/_template/`（不建任何 DB 行）列出全部 29 个模板按类分组，`POST /knowledge/_templates/copy` 逐字节复制到项目（含 BOM，`open(xb)` 独占创建、已有同名条目永不覆盖，复制后重建索引并按创建语义把完整度三项分数归零）；复制件归项目所有、可编辑可删除。详情页新增删除按钮（原生确认 → `DELETE /knowledge/{slug}`，镜像 `knowledge_rw delete`：unlink 前先读 parent、同步父级 children、再按精确 project_id 删行），框架知识隐藏按钮且 API 返回 403 `global_knowledge`；列表/详情新增 `is_global` 标记，全局条目带「系统」徽标
+- **仓库知识图谱支持 C# 与 SQL 数据库结构** - 代码图新增 C# (.NET) 解析（tree-sitter csharp grammar）：类 / 接口 / record / struct / 方法 / 属性符号，`using` 导入按命名空间目录发边、`base_list` 继承与 `new`/链式调用跨文件解析。`.sql` 走区域正则抽取（pack 的 sql grammar 对 T-SQL 方括号标识符、GO 批、过程参数与 `CREATE TRIGGER` 大量产生 ERROR 节点，故不采 AST）：表 / 视图 / 字段 / 存储过程 / 函数 / 触发器成为图节点（复用 `s:` id，下游零改动），主外键与过程读写以 `reads` / `writes` / `foreign_key` / `primary_key` 边把代码与 schema 交叉链接——`impact` 直接回答「谁读写这张表」；跨文件按名解析（`dbo.Orders`，大小写仅唯一匹配回退），歧义与缺失目标只计入 `unresolved_refs` / `unresolved_calls`，从不猜目标
 
 ### 修复
 

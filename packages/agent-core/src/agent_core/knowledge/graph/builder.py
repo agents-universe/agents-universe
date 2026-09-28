@@ -28,8 +28,13 @@ from .cache import GraphCache
 from .languages import EXCLUDED_DIRS, detect_language
 from .model import (
     EDGE_CALLS,
+    EDGE_FOREIGN_KEY,
     EDGE_IMPORTS,
     EDGE_INHERITS,
+    EDGE_PRIMARY_KEY,
+    EDGE_READS,
+    EDGE_WRITES,
+    NODE_COLUMN,
     GraphEdge,
     GraphNode,
     RepoGraph,
@@ -53,6 +58,13 @@ _PARSE_CONCURRENCY = 8  # tree-sitter releases the GIL during parse
 _BUILD_LOCKS: dict[str, asyncio.Lock] = {}  # one build at a time per kg_dir
 
 _TS_EXTS = (".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".vue")
+
+# Edge types whose target is resolved through the symbol indexes in pass 3.
+# Everything else in a parse result (e.g. imports) is handled elsewhere.
+_RESOLVED_EDGE_TYPES = (
+    EDGE_CALLS, EDGE_INHERITS, EDGE_READS, EDGE_WRITES,
+    EDGE_FOREIGN_KEY, EDGE_PRIMARY_KEY,
+)
 
 # Mirrors ToolContext._ENV_DENY_* — these git calls need no secrets.
 _ENV_DENY_SUFFIXES = frozenset(
@@ -466,6 +478,8 @@ def _assemble_graph(
     # Java source roots (src/main/java, src/, repo root) — package paths are
     # relative to one of these. Derived from the tracked .java files.
     java_roots = _java_source_roots(results)
+    # C# source roots — namespace segments map to directories under these.
+    cs_roots = _source_roots(results, "csharp")
 
     # Pass 1: file nodes, symbol nodes, per-file indexes.
     # qname/last_seg indexes are keyed by (lang, name) so same-named symbols in
@@ -474,6 +488,10 @@ def _assemble_graph(
     file_symbols: dict[str, set[str]] = {}
     qname_index: dict[tuple[str, str], list[str]] = {}
     last_seg_index: dict[tuple[str, str], list[str]] = {}  # (lang, last seg)
+    # SQL identifiers are case-insensitive server-side, so cross-file targets
+    # frequently differ in case (dbo.Orders vs dbo.orders). Side-index keyed
+    # casefolded; pass 3 consults it only on an exact miss with a unique hit.
+    sql_cf_index: dict[str, list[str]] = {}
     for rel, entry in results.items():
         lang = entry.get("lang", "")
         file_node_ids[rel] = file_id(rel)
@@ -494,8 +512,16 @@ def _assemble_graph(
                 id=node_id, type=symbol.get("type", "symbol"),
                 name=qname, line=symbol.get("line", 0),
             ))
-            qname_index.setdefault((lang, qname), []).append(node_id)
-            last_seg_index.setdefault((lang, qname.rsplit(".", 1)[-1]), []).append(node_id)
+            # Columns stay out of the resolution indexes: a wide table would
+            # flood last_seg_index with generic names (Id, Name, CreatedAt)
+            # and drown real symbols. resolve_node searches graph.nodes
+            # directly, so columns remain findable; file_symbols keeps them
+            # for primary_key src resolution.
+            if symbol.get("type") != NODE_COLUMN:
+                qname_index.setdefault((lang, qname), []).append(node_id)
+                last_seg_index.setdefault((lang, qname.rsplit(".", 1)[-1]), []).append(node_id)
+            if lang == "sql":
+                sql_cf_index.setdefault(qname.casefold(), []).append(node_id)
         file_symbols[rel] = symbols
 
     # Pass 2: imports -> file-level edges (external modules only counted).
@@ -506,21 +532,34 @@ def _assemble_graph(
             module = imp.get("module") or ""
             if not module:
                 continue
+            if lang == "csharp":
+                # a `using` names a namespace (a directory), so one import can
+                # fan out to every .cs file in the matching directory.
+                targets = _cs_import_targets(module, module_index, cs_roots)
+                if not targets:
+                    external_imports += 1
+                    continue
+                for target_rel in targets:
+                    add_edge(file_node_ids[rel], file_node_ids[target_rel], EDGE_IMPORTS)
+                continue
             target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
             if target_rel is None:
                 external_imports += 1
                 continue
             add_edge(file_node_ids[rel], file_node_ids[target_rel], EDGE_IMPORTS)
 
-    # Pass 3: calls / inherits -> symbol-or-file edges.
-    unresolved = 0
+    # Pass 3: calls / inherits / sql refs -> symbol-or-file edges.
+    # Ambiguity resolves to None (counted, never guessed) — the same contract
+    # every language shares.
+    unresolved_calls = 0
+    unresolved_refs = 0
     for rel, entry in results.items():
         lang = entry.get("lang", "")
         symbols = file_symbols[rel]
         aliases = _alias_map(entry)
         for edge in entry.get("edges", []):
             etype = edge.get("type")
-            if etype not in (EDGE_CALLS, EDGE_INHERITS):
+            if etype not in _RESOLVED_EDGE_TYPES:
                 continue
             target = edge.get("target") or ""
             if not target:
@@ -534,14 +573,24 @@ def _assemble_graph(
                 dst = _resolve_call(
                     target, rel, lang, symbols, aliases, file_symbols,
                     file_node_ids, qname_index, last_seg_index, module_index,
-                    java_roots,
+                    java_roots, cs_roots,
                 )
             else:
                 dst = _resolve_symbol(
                     target, rel, lang, file_symbols, qname_index, last_seg_index
                 )
+            if dst is None and lang == "sql":
+                # exact (case-sensitive) resolution missed: accept a casefold
+                # match only when it is unique — SQL names fold case but two
+                # tables differing only by case must not be guessed between.
+                cf = sql_cf_index.get(target.casefold(), [])
+                if len(cf) == 1:
+                    dst = cf[0]
             if dst is None:
-                unresolved += 1
+                if etype == EDGE_CALLS:
+                    unresolved_calls += 1
+                else:
+                    unresolved_refs += 1
             else:
                 add_edge(src_id, dst, etype)
 
@@ -566,7 +615,8 @@ def _assemble_graph(
         "reused": counters.get("reused", 0),
         "failed": counters.get("failed", 0),
         "skipped": counters.get("skipped", 0),
-        "unresolved_calls": unresolved,
+        "unresolved_calls": unresolved_calls,
+        "unresolved_refs": unresolved_refs,
         "external_imports": external_imports,
         "with_symbols": with_symbols,
         "lang_coverage": lang_coverage,
@@ -582,19 +632,20 @@ def _assemble_graph(
 
 # --- module (import) resolution -------------------------------------------
 
-def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
-    """Most-specific source roots for the tracked .java files.
+def _source_roots(results: dict[str, dict[str, Any]], lang: str) -> list[str]:
+    """Most-specific source roots for the tracked files of one language.
 
-    A FQCN import like com.example.lib.Greeter resolves relative to the root
-    that contains its package dir. Common roots are src/main/java and src/;
-    files at the repo root imply the root itself. Longer roots are tried
-    first because they match the file most precisely.
+    A FQCN import like com.example.lib.Greeter (Java) or a namespace like
+    MyApp.Services (C#) resolves relative to the root that contains its
+    package/namespace dir. Common roots are src/main/java and src/; files at
+    the repo root imply the root itself. Longer roots are tried first because
+    they match the file most precisely.
     """
-    java_files = [rel for rel, entry in results.items() if entry.get("lang") == "java"]
-    if not java_files:
+    lang_files = [rel for rel, entry in results.items() if entry.get("lang") == lang]
+    if not lang_files:
         return []
     roots = {""}  # repo root always applies
-    for rel in java_files:
+    for rel in lang_files:
         parts = rel.split("/")
         # the package path is everything under the source root; any prefix of
         # the file path can be the root — collect the shortest sensible ones
@@ -608,12 +659,17 @@ def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
     return sorted(roots, key=lambda r: (-r.count("/"), r == ""))
 
 
+def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
+    return _source_roots(results, "java")
+
+
 def _resolve_module(
     module: str,
     rel: str,
     lang: str,
     module_index: set[str],
     java_roots: list[str] | None = None,
+    cs_roots: list[str] | None = None,
 ) -> str | None:
     """Map an import specifier to a tracked rel path; None when external."""
     rel_dir = posixpath.dirname(rel)
@@ -623,12 +679,43 @@ def _resolve_module(
         candidates = _ts_module_candidates(module, rel_dir)
     elif lang == "java":
         candidates = _java_candidates_with_roots(module, java_roots or [""])
+    elif lang == "csharp":
+        # single-target view (the alias/call path); pass 2 fans out to every
+        # file in the namespace directory via _cs_import_targets directly.
+        targets = _cs_import_targets(module, module_index, cs_roots or [""])
+        return targets[0] if targets else None
     else:
         return None
     for candidate in candidates:
         if candidate in module_index:
             return candidate
     return None
+
+
+def _cs_import_targets(module: str, module_index: set[str], roots: list[str]) -> list[str]:
+    """All .cs files under the most specific directory matching the namespace.
+
+    A C# ``using`` names a namespace (a directory), not a file: for
+    ``MyApp.Services`` the candidates are ``MyApp/Services`` then ``MyApp``
+    under each source root, most specific root first. The first directory that
+    contains tracked .cs files wins and ALL its files are returned — a
+    namespace can hold many types, so edges to every file in it are a
+    deliberate over-approximation.
+    """
+    parts = [p for p in module.split(".") if p]
+    if not parts:
+        return []
+    dirs = ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
+    for root in roots:  # roots are pre-sorted most-specific first
+        for directory in dirs:
+            prefix = f"{root}/{directory}/" if root else f"{directory}/"
+            hits = sorted(
+                r for r in module_index
+                if r.startswith(prefix) and r.endswith(".cs")
+            )
+            if hits:
+                return hits
+    return []
 
 
 def _py_module_candidates(module: str, rel_dir: str) -> list[str]:
@@ -712,6 +799,12 @@ def _alias_map(entry: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
                 aliases[alias or name] = (module, name)
             else:
                 aliases[alias or module.split(".")[0]] = (module, None)
+        elif lang == "csharp":
+            # only `using O = Other.Thing;` binds a local name; plain `using`
+            # directives record alias=None and resolve through the global
+            # lang-scoped index instead (same as Java's static imports).
+            if alias:
+                aliases[alias] = (module, None)
         elif name == "*":
             aliases[alias or module] = (module, None)
         elif name:
@@ -759,6 +852,7 @@ def _resolve_call(
     last_seg_index: dict[tuple[str, str], list[str]],
     module_index: set[str],
     java_roots: list[str] | None = None,
+    cs_roots: list[str] | None = None,
 ) -> str | None:
     """Resolve a call target to a node id, or None (unresolved).
 
@@ -770,7 +864,7 @@ def _resolve_call(
     matched = _match_alias(target, aliases)
     if matched is not None:
         module, rest = matched
-        target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
+        target_rel = _resolve_module(module, rel, lang, module_index, java_roots, cs_roots)
         if target_rel is None:
             return None
         if rest:

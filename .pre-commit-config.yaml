@@ -46,5 +46,8 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
         args: ["--maxkb=2048"]
+        # Vendored tree-sitter grammars for the offline container image are
+        # intentional binaries; libtree_sitter_c_sharp.so alone is ~6 MB.
+        exclude: ^docker/ts-grammars/
       - id: check-merge-conflict
       - id: check-toml

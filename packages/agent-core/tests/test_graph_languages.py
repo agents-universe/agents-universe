@@ -76,3 +76,11 @@ def test_fallback_key_used_when_primary_missing():
          patch.object(languages, "_load_grammar", side_effect=fake_load), \
          patch("tree_sitter_language_pack.prefetch"):
         assert languages.get_grammar("jsx") is sentinel
+
+
+def test_detect_language_extended_extensions():
+    """C# and SQL register by exact suffix — lookalikes stay unsupported."""
+    assert languages.detect_language("src/App/Program.cs") == "csharp"
+    assert languages.detect_language("db/SCHEMA.SQL") == "sql"  # case-insensitive
+    assert languages.detect_language("Views/Home.cshtml") is None
+    assert languages.detect_language("scripts/gen.sql.bak") is None

@@ -100,6 +100,11 @@ def render_report(graph: RepoGraph) -> str:
     """graphify-style graph_report.md — stats, modules, god nodes, usage."""
     stats = graph.stats
     built = datetime.fromtimestamp(graph.repo.built_at, tz=timezone.utc).isoformat()
+    # unresolved refs = non-call edges (sql reads/writes/fk/pk) with no target;
+    # only shown when nonzero so code-only repos keep the plain line.
+    unresolved = f"unresolved calls: {stats.get('unresolved_calls', 0)}"
+    if stats.get("unresolved_refs"):
+        unresolved += f" | unresolved refs: {stats['unresolved_refs']}"
     lines = [
         "# Repository Graph Report",
         "",
@@ -111,7 +116,7 @@ def render_report(graph: RepoGraph) -> str:
         f"- parsed: {stats.get('parsed', 0)} (reused from cache: {stats.get('reused', 0)})"
         f" | failed: {stats.get('failed', 0)} | skipped: {stats.get('skipped', 0)}",
         *_coverage_lines(stats),
-        f"- unresolved calls: {stats.get('unresolved_calls', 0)} | build: {stats.get('build_ms', 0)} ms",
+        f"- {unresolved} | build: {stats.get('build_ms', 0)} ms",
         f"- built at: {built}",
         "",
     ]

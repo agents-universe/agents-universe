@@ -55,3 +55,25 @@ def test_no_symbols_still_labels_mods():
     out = compact_map(graph)
     assert "mods: (no symbols)" in out
     assert "hint:" in out
+
+
+def test_sql_dense_module_leads_with_table():
+    """A sql DDL file is symbols-dense (columns); the table must lead the
+    module entry and the line must stay inside the char cap."""
+    rel = "db/schema.sql"
+    # builder emission order: the table first, then its columns
+    nodes = [GraphNode(id=f"s:{rel}:dbo.Orders", type="table", name="dbo.Orders")]
+    nodes += [
+        GraphNode(id=f"s:{rel}:dbo.Orders.Col{i}", type="column", name=f"dbo.Orders.Col{i}")
+        for i in range(6)
+    ]
+    graph = RepoGraph(
+        repo=RepoMeta(name="ddl", head_sha="abc", langs=["sql"], built_at=0.0),
+        nodes=nodes,
+    )
+    out = compact_map(graph)
+    assert len(out) <= 1200
+    mods_line = next(line for line in out.split("\n") if line.startswith("mods: "))
+    assert mods_line.startswith("mods: db/schema.sql(dbo.Orders")
+    # whole elision after the first four names — no half-written column
+    assert ",+3" in mods_line

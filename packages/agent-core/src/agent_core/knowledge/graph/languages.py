@@ -1,11 +1,12 @@
 """Language detection and per-language tree-sitter node-type maps.
 
 Grammar objects load lazily from ``tree_sitter_language_pack`` (bundles the
-python/typescript/javascript/tsx/jsx/vue/java grammars) and are cached — the
-pack is only imported on first build/query, keeping plain ``import agent_core``
-light. No .scm query files: the parser walks the AST generically from these
-tables, so the tree-sitter query API (which churns across versions) never
-comes into play.
+python/typescript/javascript/tsx/jsx/vue/java/csharp grammars) and are cached —
+the pack is only imported on first build/query, keeping plain ``import agent_core``
+light. SQL needs no grammar: ``parser.py`` regex-extracts it like Vue's
+script-block path. No .scm query files: the parser walks the AST generically
+from these tables, so the tree-sitter query API (which churns across versions)
+never comes into play.
 """
 from __future__ import annotations
 
@@ -30,6 +31,8 @@ SUPPORTED_EXT: dict[str, str] = {
     ".jsx": "jsx",
     ".vue": "vue",
     ".java": "java",
+    ".cs": "csharp",
+    ".sql": "sql",
 }
 
 # Committed vendor/build dirs are still skipped even when git ls-files lists
@@ -64,6 +67,9 @@ class LanguageSpec:
     def is_java(self) -> bool:
         return self.key == "java"
 
+    def is_csharp(self) -> bool:
+        return self.key == "csharp"
+
 
 _PY_BUILTINS = frozenset({
     "print", "len", "range", "str", "int", "float", "bool", "list", "dict",
@@ -85,6 +91,14 @@ _JAVA_BUILTINS = frozenset({
     "Runnable", "Exception", "RuntimeException", "Error", "Throwable",
     "Number", "BigDecimal", "BigInteger", "Stream", "Collectors", "Function",
     "Supplier", "Consumer", "Predicate",
+})
+
+_CSHARP_BUILTINS = frozenset({
+    "System", "Console", "String", "Math", "Object", "Int32", "Int64",
+    "Double", "Boolean", "List", "Dictionary", "IEnumerable", "Task",
+    "DateTime", "Guid", "Exception", "StringBuilder", "Convert", "File",
+    "Path", "Directory", "Regex", "Environment", "JsonSerializer",
+    "StringComparer", "InvalidOperationException", "ArgumentException",
 })
 
 _JS_BUILTINS = frozenset({
@@ -194,6 +208,35 @@ _SPECS: dict[str, LanguageSpec] = {
         import_nodes=("import_declaration",),
         inherited_field=None,        # superclass / super_interfaces fields
         builtins=_JAVA_BUILTINS,
+    ),
+    "csharp": LanguageSpec(
+        key="csharp",
+        symbol_nodes={
+            "class_declaration": "class",
+            "interface_declaration": "class",
+            "record_declaration": "class",
+            "struct_declaration": "class",
+            "enum_declaration": "class",
+            "method_declaration": "function",
+            "constructor_declaration": "function",
+            "property_declaration": "symbol",
+        },
+        call_node="invocation_expression",
+        call_callee_field="function",
+        import_nodes=("using_directive",),
+        inherited_field=None,        # bases live in a plain base_list child
+        builtins=_CSHARP_BUILTINS,
+    ),
+    # sql never enters the spec-driven walker — parser.py regex-extracts it
+    # (Vue's script-block precedent); the stub keeps language_spec() total.
+    "sql": LanguageSpec(
+        key="sql",
+        symbol_nodes={},
+        call_node="",
+        call_callee_field="",
+        import_nodes=(),
+        inherited_field=None,
+        builtins=frozenset(),
     ),
 }
 

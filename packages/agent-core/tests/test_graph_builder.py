@@ -173,6 +173,93 @@ JAVA21_FILES = {
     ),
 }
 
+# C# fixture: file-scoped and block namespaces, interface/record/struct
+# inheritance, cross-file calls, a using alias, and directory-based namespace
+# imports (using X -> every .cs file under the matching directory).
+CS_FILES = {
+    "src/App/Program.cs": (
+        "using System;\n"
+        "using App.Services;\n"
+        "\n"
+        "namespace App;\n"
+        "\n"
+        "class Program\n"
+        "{\n"
+        "    static void Main()\n"
+        "    {\n"
+        "        var svc = new Service();\n"
+        "        svc.Extra();\n"
+        "        svc.Do();\n"
+        "        Console.WriteLine(\"hi\");\n"
+        "    }\n"
+        "}\n"
+    ),
+    "src/App/Service.cs": (
+        "namespace App\n"
+        "{\n"
+        "    public interface IService\n"
+        "    {\n"
+        "        void Do();\n"
+        "    }\n"
+        "\n"
+        "    public class Service : IService, BaseService\n"
+        "    {\n"
+        "        private Helper _helper = new Helper();\n"
+        "        public string Name { get; set; }\n"
+        "\n"
+        "        public void Do()\n"
+        "        {\n"
+        "            _helper.Util();\n"
+        "            this.Extra();\n"
+        "        }\n"
+        "\n"
+        "        public void Extra() { }\n"
+        "    }\n"
+        "\n"
+        "    public class BaseService { }\n"
+        "}\n"
+    ),
+    "src/App/Helper.cs": (
+        "namespace App\n"
+        "{\n"
+        "    public class Helper\n"
+        "    {\n"
+        "        public void Util() { }\n"
+        "    }\n"
+        "}\n"
+    ),
+}
+
+# C# edge constructs: chained calls through `new`/`this`, generic base lists,
+# using-alias directives, record/struct declarations.
+CS_EDGE_FILES = {
+    "src/Edge/Chain.cs": (
+        "using O = Other.Thing;\n"
+        "using System;\n"
+        "\n"
+        "namespace Edge\n"
+        "{\n"
+        "    public class Chain\n"
+        "    {\n"
+        "        Order GetService() { return null; }\n"
+        "        void f()\n"
+        "        {\n"
+        "            var b = GetService().Fetch().Run();\n"
+        "            var c = new Foo().Util();\n"
+        "            var d = this.Do();\n"
+        "        }\n"
+        "        void Do() { }\n"
+        "    }\n"
+        "\n"
+        "    public class Repo : IRepo<Order> { }\n"
+        "    public interface IRepo<T> { }\n"
+        "    public interface IHasId { }\n"
+        "    public record Rec(int Id) : IHasId;\n"
+        "    public struct Pt { }\n"
+        "}\n"
+    ),
+}
+
 # Java constructs that used to yield zero symbols or wrong edges: @interface
 # annotation types, module-info, scoped implements targets, chained calls.
 JAVA_EDGE_FILES = {
@@ -205,6 +292,98 @@ JAVA_EDGE_FILES = {
         "}\n"
         "class Service { Service fetch() { return this; } void run() {} }\n"
         "class Foo { void bar() {} }\n"
+    ),
+}
+
+# Realistic T-SQL shapes the regex extractor must survive: table-level
+# constraints, an ALTER-attributed FK, bracketed identifiers, a ghost table
+# inside a comment, GO batches, proc DML and trigger pseudo-tables.
+SQL_FILES = {
+    "db/schema.sql": (
+        "-- schema comment\n"
+        "CREATE TABLE dbo.Orders (\n"
+        "    OrderId INT NOT NULL,\n"
+        "    CustomerId INT NOT NULL,\n"
+        "    Total DECIMAL(18,2) NOT NULL,\n"
+        "    CONSTRAINT PK_Orders PRIMARY KEY (OrderId),\n"
+        "    CONSTRAINT FK_Orders_Customers FOREIGN KEY (CustomerId) REFERENCES dbo.Customers (CustomerId)\n"
+        ");\n"
+        "\n"
+        "/* ghost: CREATE TABLE dbo.Ghost (Id INT); */\n"
+        "CREATE TABLE dbo.Customers (\n"
+        "    CustomerId INT NOT NULL PRIMARY KEY,\n"
+        "    Name NVARCHAR(200) NOT NULL\n"
+        ");\n"
+        "\n"
+        "CREATE TABLE [dbo].[Events] (\n"
+        "    [EventId] BIGINT IDENTITY NOT NULL\n"
+        ");\n"
+        "\n"
+        "CREATE VIEW dbo.vOrders AS\n"
+        "    SELECT o.OrderId, c.Name FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId;\n"
+        "\n"
+        "ALTER TABLE dbo.Shipments ADD CONSTRAINT FK_Ship_Ord FOREIGN KEY (OrderId) REFERENCES dbo.Orders (OrderId);\n"
+    ),
+    "db/procs/GetOrder.sql": (
+        "CREATE PROCEDURE dbo.GetOrder @OrderId INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SELECT o.Total, c.Name\n"
+        "    FROM dbo.Orders o\n"
+        "    JOIN dbo.Customers c ON c.CustomerId = o.CustomerId\n"
+        "    WHERE o.OrderId = @OrderId;\n"
+        "\n"
+        "    SELECT * FROM dbo.Inventory WHERE OrderId = @OrderId;\n"
+        "\n"
+        "    INSERT INTO dbo.AuditLog (Message) VALUES ('read');\n"
+        "\n"
+        "    UPDATE dbo.Orders SET Total = Total WHERE OrderId = @OrderId;\n"
+        "\n"
+        "    DELETE FROM dbo.Staging WHERE OrderId = @OrderId;\n"
+        "\n"
+        "    EXEC dbo.AuditTrail 'read';\n"
+        "END\n"
+        "GO\n"
+    ),
+    "db/procs/Tsql.sql": (
+        "CREATE FUNCTION dbo.fnTotal (@Id INT)\n"
+        "RETURNS INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    RETURN (SELECT SUM(Total) FROM dbo.Orders WHERE CustomerId = @Id);\n"
+        "END\n"
+        "GO\n"
+        "CREATE TRIGGER dbo.trgOrders ON dbo.Orders AFTER INSERT, UPDATE\n"
+        "AS\n"
+        "BEGIN\n"
+        "    INSERT INTO dbo.EventLog (Kind) SELECT 'x' FROM inserted;\n"
+        "END\n"
+    ),
+}
+
+# SQL identifiers fold case server-side: the table is declared dbo.Orders but
+# the proc reads dbo.orders — exact resolution misses, the casefold side-index
+# must pick the unique match.
+SQL_CASE_FILES = {
+    "db/defs.sql": (
+        "CREATE TABLE dbo.Orders (\n"
+        "    OrderId INT NOT NULL\n"
+        ");\n"
+    ),
+    "db/procs/CaseProbe.sql": (
+        "CREATE PROCEDURE dbo.ReadOrder AS\n"
+        "BEGIN\n"
+        "    SELECT OrderId FROM dbo.orders;\n"
+        "END\n"
+    ),
+}
+
+# Prose in a .sql file: must land in the graph with zero symbols and no error.
+SQL_GARBAGE_FILES = {
+    "db/notes.sql": (
+        "Release notes\n"
+        "\n"
+        "This file documents how to roll the cluster. See the ops wiki.\n"
     ),
 }
 
@@ -264,6 +443,50 @@ def java_edge_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _seed_repo(path: Path, files: dict[str, str], message: str) -> Path:
+    path.mkdir()
+    for rel, text in files.items():
+        target = path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    _run("init", "-b", "main", cwd=path)
+    _run("config", "user.email", "t@t.t", cwd=path)
+    _run("config", "user.name", "t", cwd=path)
+    _run("add", ".", cwd=path)
+    _run("commit", "-m", message, cwd=path)
+    return path
+
+
+@pytest.fixture
+def csharp_repo(tmp_path: Path) -> Path:
+    """A local git repo seeded only with the C# fixture files."""
+    return _seed_repo(tmp_path / "csharp", CS_FILES, "seed csharp")
+
+
+@pytest.fixture
+def csharp_edge_repo(tmp_path: Path) -> Path:
+    """A local git repo seeded only with the C# edge-case fixture files."""
+    return _seed_repo(tmp_path / "csharp_edge", CS_EDGE_FILES, "seed csharp edge")
+
+
+@pytest.fixture
+def sql_repo(tmp_path: Path) -> Path:
+    """A local git repo seeded only with the T-SQL fixture files."""
+    return _seed_repo(tmp_path / "sql", SQL_FILES, "seed sql")
+
+
+@pytest.fixture
+def sql_case_repo(tmp_path: Path) -> Path:
+    """A local git repo where a proc reads a table in different case."""
+    return _seed_repo(tmp_path / "sql_case", SQL_CASE_FILES, "seed sql case")
+
+
+@pytest.fixture
+def sql_garbage_repo(tmp_path: Path) -> Path:
+    """A local git repo whose only .sql file is prose."""
+    return _seed_repo(tmp_path / "sql_garbage", SQL_GARBAGE_FILES, "seed sql garbage")
+
+
 @pytest.fixture
 def grammars():
     # get_grammar already attempts a prefetch download before giving up.
@@ -276,6 +499,13 @@ def grammars():
 def java_grammar():
     if get_grammar("java") is None:
         pytest.skip("tree-sitter java grammar unavailable even after prefetch attempt (offline?)")
+    return True
+
+
+@pytest.fixture
+def csharp_grammar():
+    if get_grammar("csharp") is None:
+        pytest.skip("tree-sitter csharp grammar unavailable even after prefetch attempt (offline?)")
     return True
 
 
@@ -602,6 +832,255 @@ async def test_java_edge_build_coverage(java_edge_repo: Path, tmp_path: Path, ja
     report = render_report(graph)
     assert "parse rate: 4/4 files with symbols (100%)" in report
     assert "by language: java 4/4" in report
+
+
+# ---------------------------------------------------------------------------
+# C# (.NET): symbols, inheritance, cross-file calls, directory imports
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_csharp_build_symbols_and_edges(csharp_repo: Path, tmp_path: Path, csharp_grammar):
+    summary = await _build(csharp_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["files"] == 3
+    assert stats["failed"] == 0
+    assert stats["lang_coverage"]["csharp"] == {"files": 3, "with_symbols": 3}
+
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    nodes = {n.id: n for n in graph.nodes}
+    prog_file = "f:src/App/Program.cs"
+    assert nodes[prog_file].lang == "csharp"
+    assert nodes["s:src/App/Program.cs:Program"].type == "class"
+    assert nodes["s:src/App/Program.cs:Program.Main"].type == "function"
+    assert nodes["s:src/App/Service.cs:Service"].type == "class"
+    assert nodes["s:src/App/Service.cs:Service.Name"].type == "symbol"
+
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    # cross-file: new Service() and the class-only svc.Extra() resolve into
+    # Service.cs (suffix drop: "svc.Extra" -> "Extra" -> Service.Extra)
+    assert ("s:src/App/Program.cs:Program.Main", "s:src/App/Service.cs:Service", "calls") in edges
+    assert ("s:src/App/Program.cs:Program.Main", "s:src/App/Service.cs:Service.Extra", "calls") in edges
+    # svc.Do() is ambiguous — IService.Do (interface declaration) and
+    # Service.Do (implementation) are both valid targets and the resolver
+    # never guesses; no edge may be fabricated for it.
+    assert not any(
+        e.src == "s:src/App/Program.cs:Program.Main" and e.dst.endswith(":Service.Do")
+        for e in graph.edges
+    )
+    assert stats["unresolved_calls"] >= 1
+    # same-file constructor + member calls
+    assert ("s:src/App/Service.cs:Service", "s:src/App/Helper.cs:Helper", "calls") in edges
+    assert ("s:src/App/Service.cs:Service.Do", "s:src/App/Helper.cs:Helper.Util", "calls") in edges
+    assert ("s:src/App/Service.cs:Service.Do", "s:src/App/Service.cs:Service.Extra", "calls") in edges
+    # base_list inheritance (interface + class bases)
+    assert ("s:src/App/Service.cs:Service", "s:src/App/Service.cs:IService", "inherits") in edges
+    assert ("s:src/App/Service.cs:Service", "s:src/App/Service.cs:BaseService", "inherits") in edges
+    # directory-based namespace imports: `using App.Services` fans out to every
+    # .cs file under src/App (self edge dropped by src != dst)
+    assert (prog_file, "f:src/App/Service.cs", "imports") in edges
+    assert (prog_file, "f:src/App/Helper.cs", "imports") in edges
+    # Console.WriteLine is a builtin — never a call edge
+    assert not any(
+        e.type == "calls" and "Console" in e.src + e.dst for e in graph.edges
+    )
+
+
+@pytest.mark.asyncio
+async def test_csharp_parse_edge_constructs(csharp_edge_repo: Path, csharp_grammar):
+    """Parse layer: chained calls through `new`/`this`, generic base lists,
+    using-alias directives, record/struct declarations."""
+    chain = parse_file(csharp_edge_repo / "src/Edge/Chain.cs", "src/Edge/Chain.cs")
+    assert chain is not None and chain.stats.get("error") is None
+
+    names = {s["name"]: s["type"] for s in chain.symbols}
+    assert names["Chain"] == "class"
+    assert names["Chain.f"] == "function"
+    assert names["Repo"] == "class"
+    assert names["Rec"] == "class"        # record_declaration
+    assert names["Pt"] == "class"         # struct_declaration
+    assert names["IRepo"] == "class"
+    assert names["IHasId"] == "class"
+
+    calls = {e["target"] for e in chain.edges if e["type"] == "calls"}
+    assert "GetService.Fetch.Run" in calls   # full chain, no lost prefixes
+    assert "Foo.Util" in calls               # new Foo().Util()
+    assert "Foo" in calls                    # the constructor itself
+    assert "Do" in calls                     # this.Do() stripped to Do
+
+    inherits = {(e["from"], e["target"]) for e in chain.edges if e["type"] == "inherits"}
+    assert ("Repo", "IRepo") in inherits     # IRepo<Order> -> IRepo (args dropped)
+    assert ("Rec", "IHasId") in inherits
+    # `using System;` is external (no import edge at build), the alias binds.
+    assert {"module": "System", "name": None, "alias": None} in chain.imports
+    assert {"module": "Other.Thing", "name": None, "alias": "O"} in chain.imports
+
+
+@pytest.mark.asyncio
+async def test_csharp_build_coverage_and_report(csharp_edge_repo: Path, tmp_path: Path, csharp_grammar):
+    summary = await _build(csharp_edge_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["files"] == 1
+    assert stats["failed"] == 0
+    assert stats["lang_coverage"]["csharp"] == {"files": 1, "with_symbols": 1}
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    report = render_report(graph)
+    assert "by language: csharp 1/1" in report
+    # the using alias resolves Repo/Chain calls through the module path only
+    # when the alias target exists in-repo; `Other.Thing` is external, so its
+    # absence must not fabricate edges.
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    assert not any("Other.Thing" in src + dst for src, dst, _ in edges)
+
+
+# ---------------------------------------------------------------------------
+# SQL / database schema
+# ---------------------------------------------------------------------------
+
+def test_sql_parse_declarations_and_refs(sql_repo: Path):
+    """Parse layer: declarations, PK/FK attribution and proc DML refs."""
+    schema = parse_file(sql_repo / "db/schema.sql", "db/schema.sql")
+    assert schema is not None and schema.stats.get("error") is None
+    types = {s["name"]: s["type"] for s in schema.symbols}
+    assert types["dbo.Orders"] == "table"
+    assert types["dbo.Orders.OrderId"] == "column"
+    assert types["dbo.Orders.CustomerId"] == "column"
+    assert types["dbo.Orders.Total"] == "column"
+    assert types["dbo.Customers"] == "table"
+    assert types["dbo.Customers.CustomerId"] == "column"
+    assert types["dbo.Events"] == "table"           # [dbo].[Events] normalized
+    assert types["dbo.Events.EventId"] == "column"
+    assert types["dbo.vOrders"] == "view"
+    # the ghost table lives inside a block comment — provably not indexed
+    assert not any("Ghost" in name for name in types)
+    lines = {s["name"]: s["line"] for s in schema.symbols}
+    assert lines["dbo.Orders"] == 2
+    assert lines["dbo.Customers"] == 11
+    assert lines["dbo.vOrders"] == 20
+
+    edges = {(e["type"], e["from"], e["target"]) for e in schema.edges}
+    # table-level PK + inline PK both land on the column they constrain
+    assert ("primary_key", "dbo.Orders.OrderId", "dbo.Orders") in edges
+    assert ("primary_key", "dbo.Customers.CustomerId", "dbo.Customers") in edges
+    # FK inside CREATE TABLE -> nearest preceding table; ALTER -> its own table
+    assert ("foreign_key", "dbo.Orders", "dbo.Customers") in edges
+    assert ("foreign_key", "dbo.Shipments", "dbo.Orders") in edges
+    assert ("reads", "dbo.vOrders", "dbo.Orders") in edges
+    assert ("reads", "dbo.vOrders", "dbo.Customers") in edges
+    # CREATE TABLE x ( / REFERENCES x ( / INSERT INTO x ( never call
+    assert not any(e["type"] == "calls" for e in schema.edges)
+
+    proc = parse_file(sql_repo / "db/procs/GetOrder.sql", "db/procs/GetOrder.sql")
+    assert proc is not None and proc.stats.get("error") is None
+    symbols = {s["name"]: s for s in proc.symbols}
+    assert symbols["dbo.GetOrder"]["type"] == "procedure"
+    assert symbols["dbo.GetOrder"]["line"] == 1
+    assert all(e["from"] == "dbo.GetOrder" for e in proc.edges)
+    assert all(e.get("target_kind") == "sql" for e in proc.edges)
+    assert {e["target"] for e in proc.edges if e["type"] == "reads"} == {
+        "dbo.Orders", "dbo.Customers", "dbo.Inventory",
+    }
+    # writes-before-reads: DELETE FROM never double-counts as a read
+    assert {e["target"] for e in proc.edges if e["type"] == "writes"} == {
+        "dbo.AuditLog", "dbo.Orders", "dbo.Staging",
+    }
+    assert {e["target"] for e in proc.edges if e["type"] == "calls"} == {
+        "dbo.AuditTrail",
+    }
+
+    tsql = parse_file(sql_repo / "db/procs/Tsql.sql", "db/procs/Tsql.sql")
+    assert tsql is not None and tsql.stats.get("error") is None
+    ttypes = {s["name"]: s["type"] for s in tsql.symbols}
+    assert ttypes == {"dbo.fnTotal": "function", "dbo.trgOrders": "trigger"}
+    tlines = {s["name"]: s["line"] for s in tsql.symbols}
+    assert tlines["dbo.fnTotal"] == 1
+    assert tlines["dbo.trgOrders"] == 8   # GO batch separator
+    tedges = {(e["type"], e["from"], e["target"]) for e in tsql.edges}
+    assert ("reads", "dbo.fnTotal", "dbo.Orders") in tedges
+    assert ("reads", "dbo.trgOrders", "dbo.Orders") in tedges       # ON target
+    assert ("writes", "dbo.trgOrders", "dbo.EventLog") in tedges
+    # DML pseudo-tables never become targets (nor unresolved-ref noise)
+    assert not any(e["target"] in ("inserted", "deleted") for e in tsql.edges)
+
+
+@pytest.mark.asyncio
+async def test_sql_build_cross_file_edges(sql_repo: Path, tmp_path: Path):
+    summary = await _build(sql_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["files"] == 3
+    assert stats["failed"] == 0
+    assert stats["lang_coverage"]["sql"] == {"files": 3, "with_symbols": 3}
+
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    nodes = {n.id: n for n in graph.nodes}
+    assert nodes["f:db/schema.sql"].lang == "sql"
+    assert nodes["s:db/schema.sql:dbo.Orders"].type == "table"
+    assert nodes["s:db/schema.sql:dbo.Orders.OrderId"].type == "column"
+    assert nodes["s:db/schema.sql:dbo.vOrders"].type == "view"
+    assert nodes["s:db/procs/GetOrder.sql:dbo.GetOrder"].type == "procedure"
+    assert nodes["s:db/procs/Tsql.sql:dbo.fnTotal"].type == "function"
+    assert nodes["s:db/procs/Tsql.sql:dbo.trgOrders"].type == "trigger"
+
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    # the core deliverable: cross-file proc/view/trigger -> table bindings
+    assert ("s:db/procs/GetOrder.sql:dbo.GetOrder", "s:db/schema.sql:dbo.Orders", "reads") in edges
+    assert ("s:db/procs/GetOrder.sql:dbo.GetOrder", "s:db/schema.sql:dbo.Customers", "reads") in edges
+    assert ("s:db/procs/GetOrder.sql:dbo.GetOrder", "s:db/schema.sql:dbo.Orders", "writes") in edges
+    assert ("s:db/procs/Tsql.sql:dbo.fnTotal", "s:db/schema.sql:dbo.Orders", "reads") in edges
+    assert ("s:db/procs/Tsql.sql:dbo.trgOrders", "s:db/schema.sql:dbo.Orders", "reads") in edges
+    # schema edges stay within the DDL file
+    assert ("s:db/schema.sql:dbo.Orders.OrderId", "s:db/schema.sql:dbo.Orders", "primary_key") in edges
+    assert ("s:db/schema.sql:dbo.Customers.CustomerId", "s:db/schema.sql:dbo.Customers", "primary_key") in edges
+    assert ("s:db/schema.sql:dbo.Orders", "s:db/schema.sql:dbo.Customers", "foreign_key") in edges
+    # sql never declares imports
+    assert not any(e.type == "imports" for e in graph.edges)
+    assert stats["external_imports"] == 0
+
+    # Missing targets are counted, never guessed: Inventory (read) plus
+    # AuditLog/Staging/EventLog (writes); `inserted` must not be among them
+    # (it would raise the count). EXEC's missing proc counts as a call.
+    assert stats["unresolved_refs"] == 4
+    assert stats["unresolved_calls"] == 1
+
+    report = render_report(graph)
+    assert "by language: sql 3/3" in report
+    assert "unresolved refs: 4" in report
+    assert len(summary["repo_map"]) <= 1200
+
+
+@pytest.mark.asyncio
+async def test_sql_case_insensitive_resolution(sql_case_repo: Path, tmp_path: Path):
+    """dbo.orders in a proc resolves to the declared dbo.Orders — but only
+    because the casefold match is unique."""
+    summary = await _build(sql_case_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    assert ("s:db/procs/CaseProbe.sql:dbo.ReadOrder", "s:db/defs.sql:dbo.Orders", "reads") in edges
+    assert stats["unresolved_refs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_garbage_file_no_failure(sql_garbage_repo: Path, tmp_path: Path):
+    """Prose .sql enters the graph with zero symbols and no parse failure."""
+    summary = await _build(sql_garbage_repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["files"] == 1
+    assert stats["failed"] == 0
+    assert stats["with_symbols"] == 0
+    assert stats["lang_coverage"]["sql"] == {"files": 1, "with_symbols": 0}
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    assert [n.id for n in graph.nodes] == ["f:db/notes.sql"]
 
 
 @pytest.mark.asyncio

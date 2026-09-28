@@ -218,7 +218,7 @@ MCP（Model Context Protocol）用于把外部工具服务器接入平台：
 | Playwright | 浏览器自动化 | `browser_playwright.py` |
 | Pydantic / python-frontmatter / PyYAML | 输入和 Markdown frontmatter 解析 | core/API |
 | cryptography | AES-GCM 密钥加密 | `token_vault.py` |
-| tree-sitter-language-pack | 仓库代码图解析 | `knowledge/graph` |
+| tree-sitter-language-pack | 仓库代码图解析（C# 等语法；SQL 不走 grammar，按区域正则抽取） | `knowledge/graph` |
 | pandas / matplotlib / openpyxl | 数据处理、图表、Excel | Agent 执行环境 |
 | python-pptx / python-docx / reportlab / pypdf | 办公文档生成和读取 | Agent 执行环境 |
 | Vue 3 / Pinia / Vue Router | 前端组件、状态与路由 | `packages/web` |

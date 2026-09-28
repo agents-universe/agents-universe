@@ -36,7 +36,11 @@ MANIFEST = "parsers.json"
 TARBALL = "parsers-linux-x86_64.tar.zst"
 
 # Default languages: everything the repo graph registers in languages.py.
-DEFAULT_LANGS = ["python", "typescript", "tsx", "javascript", "vue", "java"]
+DEFAULT_LANGS = ["python", "typescript", "tsx", "javascript", "vue", "java", "csharp"]
+
+# Pack key -> tarball module name, where the compiled grammar's self-name
+# differs from the key get_language() accepts (key "csharp", module "c_sharp").
+KEY_TO_MODULE = {"csharp": "c_sharp"}
 
 # GitHub-release mirrors, tried in order before the direct URL. Public
 # proxies for github.com/release assets; swap freely if one goes away.
@@ -100,11 +104,12 @@ def main() -> int:
 
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         for lang in args.langs:
-            src = extract_dir / f"libtree_sitter_{lang}.so"
+            module = KEY_TO_MODULE.get(lang, lang)
+            src = extract_dir / f"libtree_sitter_{module}.so"
             if not src.is_file():
                 print(f"WARN: grammar {lang!r} not in tarball, skipped", file=sys.stderr)
                 continue
-            dst = OUT_DIR / src.name
+            dst = OUT_DIR / f"libtree_sitter_{module}.so"
             dst.write_bytes(src.read_bytes())
             print(f"vendored {dst.relative_to(REPO_ROOT)} ({dst.stat().st_size} bytes)")
     return 0

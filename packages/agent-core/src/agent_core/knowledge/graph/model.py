@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # stats keys (also written into graph.json "stats")
 STAT_FILES = "files"            # tracked source files in the repo
@@ -22,6 +22,7 @@ STAT_REUSED = "reused"          # files served from the SHA256 cache
 STAT_FAILED = "failed"          # files that could not be parsed
 STAT_SKIPPED = "skipped"        # files skipped (too big / excluded)
 STAT_UNRESOLVED = "unresolved_calls"
+STAT_UNRESOLVED_REFS = "unresolved_refs"  # non-call edges (sql reads/writes/fk/pk) with no target node
 STAT_BUILD_MS = "build_ms"
 STAT_WITH_SYMBOLS = "with_symbols"    # files that produced >= 1 symbol
 STAT_LANG_COVERAGE = "lang_coverage"  # per-language {files, with_symbols}
@@ -32,11 +33,23 @@ NODE_FILE = "file"
 NODE_CLASS = "class"
 NODE_FUNCTION = "function"
 NODE_SYMBOL = "symbol"          # top-level consts (TS/JS variable_declarator)
+NODE_TABLE = "table"            # CREATE TABLE (sql)
+NODE_VIEW = "view"              # CREATE VIEW (sql)
+NODE_COLUMN = "column"          # column inside CREATE TABLE (sql)
+NODE_PROCEDURE = "procedure"    # CREATE PROCEDURE (sql) — distinct from function
+NODE_TRIGGER = "trigger"        # CREATE TRIGGER (sql)
 # "module" is reserved for v2 knowledge-page nodes.
 
 EDGE_IMPORTS = "imports"
 EDGE_CALLS = "calls"
 EDGE_INHERITS = "inherits"
+# sql schema edges: reads/writes bind code (procs, views, triggers) to tables,
+# foreign_key/primary_key describe the schema itself (child -> parent direction
+# so impact on a parent table reaches every child).
+EDGE_READS = "reads"
+EDGE_WRITES = "writes"
+EDGE_FOREIGN_KEY = "foreign_key"
+EDGE_PRIMARY_KEY = "primary_key"
 # "contains" and "references" are schema-reserved for v2.
 
 

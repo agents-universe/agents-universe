@@ -5,8 +5,9 @@ reported — that a file reaches the page. The page reads back name/size/content
 from the ``<input type=file>`` so a buffer that never made it across the
 CDP boundary fails loudly.
 
-Skipped when Chromium is missing (CI installs no browsers), same convention
-as test_browser_bbox.py.
+Skipped when Chromium is missing (a dev machine that never ran
+``playwright install``); CI installs it, same convention as
+test_browser_bbox.py.
 """
 from __future__ import annotations
 

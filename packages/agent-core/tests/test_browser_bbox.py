@@ -6,10 +6,10 @@ wrong place. ``bounding_box`` returns BOTH viewport-relative and full-page
 tests pin the exact JS math with a real headless Chromium against a local
 HTML page (localhost hostname, not an SSRF target).
 
-CI does not install Playwright browsers (agent-core job installs only
-``pip install -e ".[test]"``), so the whole module is skipped when the
-Chromium executable is missing — same convention as the repo's other
-skipif markers.
+The module is skipped when Chromium is missing (e.g. a dev machine that never
+ran ``playwright install``) — same convention as the repo's other skipif
+markers. CI installs it explicitly in the agent-core job, so these tests do
+run there rather than silently skipping.
 """
 from __future__ import annotations
 

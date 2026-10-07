@@ -127,12 +127,51 @@ async def test_create_customer_service_subset(client):
     assert "environment/environment.md" not in files
 
 
+async def test_create_legacy_modernization_subset(client):
+    resp = await _create(client, "lm-subset", "legacy-modernization")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["category"] == "legacy-modernization"
+    assert body["category_label"] == "旧系统改造项目"
+
+    files = _knowledge_files(body["slug"])
+    assert len(files) == EXPECTED_COUNTS["legacy-modernization"]
+    for f in (
+        "domain/context.md",
+        "domain/glossary.md",
+        "domain/role-matrix.md",
+        "system/history.md",
+        "integrations/custom-api.md",
+        "integrations/mcp-servers.md",
+        "integrations/skill-sources.md",
+        "technical/legacy-architecture.md",
+        "technical/legacy-data-model.md",
+        "technical/legacy-api-map.md",
+        "domain/legacy-business-process.md",
+        "technical/legacy-resources.md",
+        "technical/target-architecture.md",
+        "technical/target-api-map.md",
+        "domain/target-business-process.md",
+        "technical/evolution-mapping.md",
+        "domain/migration-plan.md",
+    ):
+        assert f in files
+    # 其他分类的专用知识条目不应混入
+    assert "technical/system-architecture.md" not in files
+    assert "technical/api-map.md" not in files
+    assert "technical/data-model.md" not in files
+    assert "domain/metric-catalog.md" not in files
+    assert "environment/environment.md" not in files
+    assert "skills/test-data-setup.md" not in files
+    assert "domain/faq.md" not in files
+
+
 async def test_create_unknown_category_400(client):
     resp = await _create(client, "unknown-cat", "foo")
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert detail["code"] == "unknown_category"
-    assert detail["valid_categories"] == ["software", "data-analysis", "customer-service", "docs", "other"]
+    assert detail["valid_categories"] == ["software", "legacy-modernization", "data-analysis", "customer-service", "docs", "other"]
     # 校验先于任何写盘:没有遗留目录
     assert not (PROJECTS_ROOT / "unknown-cat").exists()
 
@@ -141,10 +180,11 @@ async def test_categories_endpoint(client):
     resp = await client.get("/api/projects/categories")
     assert resp.status_code == 200
     cats = resp.json()
-    assert [c["slug"] for c in cats] == ["software", "data-analysis", "customer-service", "docs", "other"]
-    assert [c["label"] for c in cats] == ["软件项目", "数据分析", "智能客服", "文档知识库", "自定义项目"]
+    assert [c["slug"] for c in cats] == ["software", "legacy-modernization", "data-analysis", "customer-service", "docs", "other"]
+    assert [c["label"] for c in cats] == ["软件项目", "旧系统改造项目", "数据分析", "智能客服", "文档知识库", "自定义项目"]
     assert [c["template_count"] for c in cats] == [
         EXPECTED_COUNTS["software"],
+        EXPECTED_COUNTS["legacy-modernization"],
         EXPECTED_COUNTS["data-analysis"],
         EXPECTED_COUNTS["customer-service"],
         EXPECTED_COUNTS["docs"],

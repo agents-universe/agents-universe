@@ -7,6 +7,7 @@ describe('DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY', () => {
     // project in that category, so assert the table as a whole.
     expect(DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY).toEqual({
       'software': ['project-owner', 'tech-lead', 'quality-assurance'],
+      'legacy-modernization': ['project-owner', 'tech-lead', 'quality-assurance'],
       'data-analysis': ['data-analyst', 'office-assistant'],
       'customer-service': ['customer-service', 'office-assistant'],
       'docs': ['office-assistant', 'project-customization-expert'],

@@ -25,6 +25,27 @@ categories:
       - integrations/custom-api
       - integrations/mcp-servers
       - integrations/skill-sources
+  - slug: legacy-modernization
+    label: 旧系统改造项目
+    description: 遗留系统现代化改造：盘点旧系统架构、数据、业务流程、接口与资源接入，设计新系统架构、接口与目标流程，记录新旧差异对照与迁移改造计划
+    templates:
+      - domain/context
+      - domain/glossary
+      - domain/role-matrix
+      - system/history
+      - integrations/custom-api
+      - integrations/mcp-servers
+      - integrations/skill-sources
+      - technical/legacy-architecture
+      - technical/legacy-data-model
+      - technical/legacy-api-map
+      - domain/legacy-business-process
+      - technical/legacy-resources
+      - technical/target-architecture
+      - technical/target-api-map
+      - domain/target-business-process
+      - technical/evolution-mapping
+      - domain/migration-plan
   - slug: data-analysis
     label: 数据分析
     description: 指标分析、报表看板、取数与数据治理等数据类项目

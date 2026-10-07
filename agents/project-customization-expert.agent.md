@@ -65,11 +65,12 @@ token_budget: 100000
 
 ### 第 2.5 步：项目分类识别
 
-项目创建时选择了分类（注册表 `knowledge/categories.yaml`，`software` 软件项目 / `data-analysis` 数据分析 / `customer-service` 智能客服 / `docs` 文档知识库 / `other` 其他），知识条目按分类复制子集：
+项目创建时选择了分类（注册表 `knowledge/categories.yaml`，`software` 软件项目 / `legacy-modernization` 旧系统改造项目 / `data-analysis` 数据分析 / `customer-service` 智能客服 / `docs` 文档知识库 / `other` 其他），知识条目按分类复制子集：
 
-- **software**：全部 17 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
-- **data-analysis**：12 个知识条目（背景、词汇表、历史、第三方 API + MCP 集成 + 7 个数据专用知识条目：`technical/data-source-map`、`technical/data-model`、`technical/data-pipelines`、`domain/metric-catalog`、`domain/analysis-scenarios`、`skills/sql-patterns`、`skills/analysis-patterns`）
-- **customer-service**：8 个知识条目（背景、历史、第三方 API + MCP 集成 + 4 个客服专用知识条目：`domain/faq`、`domain/service-policies`、`domain/escalation-rules`、`skills/support-scripts`）
+- **software**：全部 18 个知识条目（`domain/context`、`technical/technical-stack`、`technical/api-map` 等）
+- **legacy-modernization**：17 个知识条目（背景、词汇表、角色矩阵、历史、第三方 API + MCP 集成 + Skill 来源 + 10 个改造专用知识条目：`technical/legacy-architecture`、`technical/legacy-data-model`、`technical/legacy-api-map`、`domain/legacy-business-process`、`technical/legacy-resources`、`technical/target-architecture`、`technical/target-api-map`、`domain/target-business-process`、`technical/evolution-mapping`、`domain/migration-plan`）
+- **data-analysis**：13 个知识条目（背景、词汇表、历史、第三方 API + MCP 集成 + Skill 来源 + 7 个数据专用知识条目：`technical/data-source-map`、`technical/data-model`、`technical/data-pipelines`、`domain/metric-catalog`、`domain/analysis-scenarios`、`skills/sql-patterns`、`skills/analysis-patterns`）
+- **customer-service**：9 个知识条目（背景、历史、第三方 API + MCP 集成 + Skill 来源 + 4 个客服专用知识条目：`domain/faq`、`domain/service-policies`、`domain/escalation-rules`、`skills/support-scripts`）
 - **docs**：精简 5 个知识条目（背景、词汇表、历史、环境、系统架构）
 - **other**：仅 `domain/context` + `system/history` 两个基础知识条目
 
@@ -82,6 +83,8 @@ token_budget: 100000
 **数据分析项目**：使用数据分析知识条目矩阵，按优先级深入：`domain/metric-catalog`（指标口径是核心，优先确认）、`technical/data-source-map`（数据源与凭据 secret_ref）、`technical/data-model`（表模型与分层）、`domain/context`、`technical/data-pipelines`（加工链路与调度）、`domain/analysis-scenarios`（固定报表与专题）、`skills/sql-patterns` / `skills/analysis-patterns`、`domain/glossary`。连接凭据一律走 project_secrets，禁止明文写入知识。
 
 **客服问答项目**：使用客服知识条目矩阵，按优先级深入：`domain/faq`（问答是核心，优先确认高频问题与标准答案，问题写成用户原话式标题）、`domain/service-policies`（政策与「不提供服务清单」——防幻觉权威事实源）、`domain/escalation-rules`（转人工触发条件与人工通道配置）、`skills/support-scripts`（话术）、`domain/context`。业务系统查询经 `integrations/custom-api` + `integrations/mcp-servers` 接入，凭据一律 secret_ref 走 project_secrets，禁止明文写入知识。
+
+**旧系统改造项目**：使用改造知识条目矩阵，按优先级深入：`technical/legacy-architecture`（旧系统现状——组件、技术栈、集成、技术债，访谈起点）、`technical/legacy-api-map`（旧系统自身接口面，迁移对照的旧侧行依据）、`technical/legacy-data-model`（核心表、数据质量与迁移约束）、`domain/legacy-business-process`（核心流程、业务规则、人工环节）、`technical/legacy-resources`（代码仓库、文档、CI/CD、数据库等资源接入——git 主机与仓库清单、文档库、数据源是访谈必问项）、`domain/role-matrix`（旧系统角色与使用情况）、`technical/target-architecture` / `technical/target-api-map` / `domain/target-business-process`（新系统设计三件套）、`technical/evolution-mapping`（逐要素新旧对照，迁移正确性的权威矩阵）、`domain/migration-plan`（阶段、切换策略、并行运行、回滚、风险与进度）。`domain/context`、`domain/glossary`、`system/history` 照常维护；凭据一律 secret_ref 走 project_secrets，禁止明文写入知识。
 
 **非软件项目**：识别所需知识类别，创建自定义知识文件。例如：
 - 法律：`domain/legal-framework`、`domain/case-index`、`domain/compliance-checklist`

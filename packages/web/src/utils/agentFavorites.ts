@@ -13,6 +13,7 @@
  */
 export const DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY: Record<string, string[]> = {
   'software': ['project-owner', 'tech-lead', 'quality-assurance'],
+  'legacy-modernization': ['project-owner', 'tech-lead', 'quality-assurance'],
   'data-analysis': ['data-analyst', 'office-assistant'],
   'customer-service': ['customer-service', 'office-assistant'],
   'docs': ['office-assistant', 'project-customization-expert'],

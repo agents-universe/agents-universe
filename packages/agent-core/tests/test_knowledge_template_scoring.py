@@ -29,8 +29,23 @@ TEMPLATE_DIR = REPO_ROOT / "knowledge" / "_template"
 
 # Templates held to exact calibration. `test-patterns` is here because it is the
 # file QA design leans on and its baseline was re-derived after a Data Setup
-# edit; `test-data-setup` is the recipe file added with the QA speedup work.
-CALIBRATED = ["test-data-setup", "test-patterns"]
+# edit; `test-data-setup` is the recipe file added with the QA speedup work;
+# the `legacy-*` / `target-*` / `evolution-mapping` / `migration-plan` stems are
+# the legacy-modernization category templates.
+CALIBRATED = [
+    "test-data-setup",
+    "test-patterns",
+    "legacy-architecture",
+    "legacy-data-model",
+    "legacy-api-map",
+    "legacy-business-process",
+    "legacy-resources",
+    "target-architecture",
+    "target-api-map",
+    "target-business-process",
+    "evolution-mapping",
+    "migration-plan",
+]
 
 # `_EXPECTED_WORDS[category]` drives the curve; an unknown category falls back to
 # a default, so a template's own category must be one the scorer knows.

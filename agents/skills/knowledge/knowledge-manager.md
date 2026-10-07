@@ -18,7 +18,7 @@ tools:
 
 Maintain the knowledge files under `knowledge/` so the agent keeps getting smarter across repeated runs.
 
-Use `knowledge/_template/` as the baseline file set. Projects are initialized with a per-category subset of the templates (see `knowledge/categories.yaml` — every category lists its own subset, e.g. `software` lists all software-relevant files, `customer-service` adds the 客服 files); after creation the knowledge panel also offers a "copy from system template" entry that pulls any template into the project — the copy belongs to the project (editable/deletable like any file), and no copy path overwrites an existing file. A project may add or remove files freely afterwards, but removals must go through `knowledge_rw(operation="delete", slug="...")` so the knowledge index stays in sync. If a project knowledge directory contains additional established files, keep this reference table in sync rather than treating them as ad hoc notes.
+Use `knowledge/_template/` as the baseline file set. Projects are initialized with a per-category subset of the templates (see `knowledge/categories.yaml` — every category lists its own subset, e.g. `software` lists all software-relevant files, `customer-service` adds the 客服 files, `legacy-modernization` adds the 旧系统改造 files); after creation the knowledge panel also offers a "copy from system template" entry that pulls any template into the project — the copy belongs to the project (editable/deletable like any file), and no copy path overwrites an existing file. A project may add or remove files freely afterwards, but removals must go through `knowledge_rw(operation="delete", slug="...")` so the knowledge index stays in sync. If a project knowledge directory contains additional established files, keep this reference table in sync rather than treating them as ad hoc notes.
 
 To initialize a project knowledge directory, use `filesystem(operation="create_dir", path="knowledge")` then create the template files via `knowledge_rw(operation="write", ...)`. For routine updates, read/write Markdown files directly with `knowledge_rw` and append to `system/history`. **Knowledge slugs are the file path under `knowledge/` without `.md`** (e.g. `technical/api-map` → `knowledge/technical/api-map.md`) — always use the full slug in `knowledge_rw` calls, never a bare filename.
 
@@ -43,7 +43,7 @@ To initialize a project knowledge directory, use `filesystem(operation="create_d
 | `technical/kong-map` | Kong/gateway relative paths, accessName fallback (index only — detail in `technical/kong/*.md`) | When new routes are added; **MUST also create/update detail files** |
 | `integrations/custom-api` | Customer-owned and third-party API integration catalog: base URLs, allowed hosts, auth secret refs, endpoint catalog, usage rules | During onboarding; when API systems/endpoints change |
 | `technical/permission-matrix` | Entitlement -> menu, page action, API, data-scope, or masking mappings | After permission docs, UI observation, API/code discovery, or role-difference checks |
-| `domain/role-matrix` | Executable role archetypes, observed accounts, capability bundles, minimum entitlements | After account discovery, role exploration, or permission-baseline corrections |
+| `domain/role-matrix` | Executable role archetypes, observed accounts, capability bundles, minimum entitlements (also legacy-modernization projects) | After account discovery, role exploration, or permission-baseline corrections |
 | `skills/test-patterns` | Reusable testing strategies and patterns | Extract after design is completed |
 | `skills/test-data-setup` | Verified recipes for creating test data: channel, endpoint, required fields, preconditions, verify read, bulk shape, cleanup | Write the recipe back the moment a creation path is verified — before the spec is generated, not at the end of the task |
 | `technical/data-source-map` | Data source inventory: type, environment, access via `secret_ref`, owner, refresh frequency (data-analysis projects) | During onboarding; when sources or access change |
@@ -57,6 +57,16 @@ To initialize a project knowledge directory, use `filesystem(operation="create_d
 | `domain/service-policies` | Service policies and the "not provided" list — the authoritative anti-hallucination fact source | When policies, scope, or rules change |
 | `domain/escalation-rules` | Escalation triggers, human channels/contacts, handoff requirements, service metric targets | When channels, SLA, or targets change |
 | `skills/support-scripts` | Customer-service reply templates: openers, answer structure, closers, sensitive scenarios | When scripts are optimized |
+| `technical/legacy-architecture` | Legacy as-built architecture: components, tech stack, deployment, integrations, pain points and tech debt (legacy-modernization projects) | During onboarding; when the legacy system changes |
+| `technical/legacy-data-model` | Legacy core tables, volumes, data quality rules, migration constraints (legacy-modernization projects) | When legacy schema or migration constraints change |
+| `technical/legacy-api-map` | Legacy system's own API inventory: endpoints, consumers, auth, deprecated/shadow APIs (legacy-modernization projects) | When legacy endpoints are discovered or retired |
+| `domain/legacy-business-process` | Legacy as-is business processes: core flows, steps, rules, manual touchpoints (legacy-modernization projects) | When as-is process facts are corrected or added |
+| `technical/legacy-resources` | Legacy resource access index: code repos, docs, CI/CD, databases — connection method plus secret_ref (legacy-modernization projects) | When a resource is onboarded or its access changes |
+| `technical/target-architecture` | Target-state architecture: components, technology choices, deployment, headline differences from the legacy system (legacy-modernization projects) | When target design or technology choices change |
+| `technical/target-api-map` | New-system API contract authority: endpoint catalog with legacy-replacement references (legacy-modernization projects) | When the new API design changes |
+| `domain/target-business-process` | Target to-be business processes: new flows, automation points, simplifications over the as-is process (legacy-modernization projects) | When target processes are designed or revised |
+| `technical/evolution-mapping` | Element-by-element old-to-new mapping across features, flows, APIs, tables and jobs — the migration authority matrix (legacy-modernization projects) | When mapping decisions are made; update status during migration |
+| `domain/migration-plan` | Migration phases, cutover strategy, parallel run, rollback, risks, milestones and progress (legacy-modernization projects) | When phases, risks or progress change |
 | `system/history` | Knowledge update log (`knowledge_role: log` — never auto-loaded into context) | Append on every change |
 
 ## Knowledge Sources

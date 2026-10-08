@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from agent_core.agent import AgentConfig
+from agent_core.delegation import list_delegation_candidates
 from agent_core.skills.loader import load_skills_from_dir
 from agent_core.skills.registry import SkillRegistry
 from agent_core.tools.registry import _CORE_TOOLS, _OPTIONAL_TOOL_MODULES
@@ -24,6 +25,7 @@ OFFICE_SKILLS = [
     "office/docx",
     "office/pdf",
     "office/web-slides",
+    "office/zip",
 ]
 OFFICE_TRIGGER_CASES = [
     ("帮我生成ppt", "office/pptx"),
@@ -31,6 +33,8 @@ OFFICE_TRIGGER_CASES = [
     ("把这个表导出成excel文件", "office/xlsx"),
     ("帮我写一份word文档", "office/docx"),
     ("把这周的分析报告导出成pdf", "office/pdf"),
+    ("把这个文件夹打包成zip", "office/zip"),
+    ("帮我解压这个压缩包", "office/zip"),
 ]
 
 _CJK_RE = re.compile(r"[一-鿿]")
@@ -78,6 +82,23 @@ def test_agent_body_references_skill_paths():
     cfg = _load_agent()
     for slug in OFFICE_SKILLS:
         assert f"agents/skills/{slug}.md" in cfg.system_prompt
+
+
+def test_office_delegation_discoverable_by_zip_queries():
+    # Mirror ``ListAgentsTool``'s exact pipeline: roster from the definition
+    # files, then case-insensitive substring over slug/display_name/description/
+    # skills — other agents must find office-assistant for zip work.
+    roster = list_delegation_candidates(None, str(REPO_ROOT))
+    records = [c.as_dict() for c in roster]
+    assert any(r["slug"] == "office-assistant" for r in records)
+    for q in ("zip", "压缩", "解压", "打包"):
+        hits = [
+            r["slug"] for r in records
+            if q in " ".join(
+                [r["slug"], r["display_name"], r["description"], *r["skills"]]
+            ).lower()
+        ]
+        assert "office-assistant" in hits, f"{q!r} cannot find office-assistant via list_agents"
 
 
 # ── Office skills ───────────────────────────────────────────────────────────

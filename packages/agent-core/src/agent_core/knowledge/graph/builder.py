@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .cache import GraphCache
+from .cache import GraphCache, GraphCacheState
 from .languages import EXCLUDED_DIRS, detect_language
 from .model import (
     EDGE_CALLS,
@@ -54,6 +54,13 @@ _log = logging.getLogger(__name__)
 # Auto-builds (git_repo ops) skip repos larger than this — parsing thousands
 # of files would stall the turn for little in-context value.
 AUTO_BUILD_MAX_FILES = 3000
+# Explicit `repo_graph build` may force past AUTO_BUILD_MAX_FILES but still
+# refuses absurd trees: hashing/serializing tens of thousands of files holds
+# the build lock and bloats graph.json far past what the LLM can use.
+MAX_BUILD_FILES = 10_000
+# Git listing/rev-parse should answer in seconds; a wedged git (stale index
+# lock, hung fsmonitor) must not hold a build forever.
+_GIT_TIMEOUT_S = 10.0
 _PARSE_CONCURRENCY = 8  # tree-sitter releases the GIL during parse
 _BUILD_LOCKS: dict[str, asyncio.Lock] = {}  # one build at a time per kg_dir
 
@@ -111,6 +118,19 @@ def _find_git() -> str | None:
     return None
 
 
+async def _communicate(process: asyncio.subprocess.Process) -> tuple[bytes, bytes] | None:
+    """communicate() bounded by _GIT_TIMEOUT_S; None on timeout (proc killed)."""
+    try:
+        return await asyncio.wait_for(process.communicate(), timeout=_GIT_TIMEOUT_S)
+    except (TimeoutError, asyncio.TimeoutError):
+        try:
+            process.kill()
+            await process.wait()
+        except OSError:
+            pass
+        return None
+
+
 async def _git_head_sha(repo: Path) -> str:
     """Current HEAD sha; best-effort, "" when not resolvable (no fast path)."""
     git = _find_git()
@@ -121,8 +141,9 @@ async def _git_head_sha(repo: Path) -> str:
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env=_git_env(),
             )
-            out, _ = await process.communicate()
-            if process.returncode == 0:
+            comm = await _communicate(process)
+            if comm is not None and process.returncode == 0:
+                out, _ = comm
                 return out.decode("utf-8", "replace").strip()
         except OSError:
             pass
@@ -164,11 +185,12 @@ async def _tracked_files(repo: Path) -> list[str] | None:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env=_git_env(),
         )
-        out, _ = await process.communicate()
+        comm = await _communicate(process)
     except OSError:
         return None
-    if process.returncode != 0:
+    if comm is None or process.returncode != 0:
         return None
+    out, _ = comm
     # core.quotepath=false keeps non-ASCII paths as raw bytes (same as the
     # commit op); -z splits on NUL, so paths with spaces/newlines are safe.
     return [path for path in out.decode("utf-8", "replace").split("\0") if path]
@@ -177,7 +199,9 @@ async def _tracked_files(repo: Path) -> list[str] | None:
 def _walk_files(repo: Path) -> list[str]:
     files: list[str] = []
     for root, dirs, names in os.walk(repo):
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRS)
+        # Case-insensitive: EXCLUDED_DIRS is all-lowercase and Windows checkouts
+        # produce Bin/obj/ trees that would otherwise slip through.
+        dirs[:] = sorted(d for d in dirs if d.lower() not in EXCLUDED_DIRS)
         rel_root = Path(root).relative_to(repo)
         for name in sorted(names):
             rel = (rel_root / name).as_posix() if str(rel_root) != "." else name
@@ -203,11 +227,12 @@ async def _untracked_files(repo: Path) -> list[str] | None:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env=_git_env(),
         )
-        out, _ = await process.communicate()
+        comm = await _communicate(process)
     except OSError:
         return None
-    if process.returncode != 0:
+    if comm is None or process.returncode != 0:
         return None
+    out, _ = comm
     # -z splits on NUL, so paths with spaces/newlines are safe (same as
     # _tracked_files).
     return [path for path in out.decode("utf-8", "replace").split("\0") if path]
@@ -217,7 +242,7 @@ def _candidate_files(files: list[str]) -> list[str]:
     """Files worth indexing: supported ext, not in an excluded dir."""
     return sorted({
         rel for rel in files
-        if not any(part in EXCLUDED_DIRS for part in rel.split("/"))
+        if not any(part.lower() in EXCLUDED_DIRS for part in rel.split("/"))
         and detect_language(rel) is not None
     })
 
@@ -251,6 +276,38 @@ async def build_repo_graph(
 ) -> dict[str, Any]:
     """Build/refresh the graph for one checkout; returns a summary dict.
 
+    One build at a time per kg_dir — auto-builds (git_repo ops) and explicit
+    ``repo_graph build`` share this lock, so a forced rebuild can never race
+    an auto-build on the same manifest. The lock lives here (not in
+    maybe_build_auto) so every entry point serializes identically.
+
+    See _build_repo_graph_locked for the build semantics.
+    """
+    lock = _BUILD_LOCKS.setdefault(str(kg_dir), asyncio.Lock())
+    async with lock:
+        return await _build_repo_graph_locked(repo, kg_dir, force, include_untracked)
+
+
+def _persist(
+    cache: GraphCache, state: GraphCacheState, graph: RepoGraph, kg_dir: Path
+) -> str:
+    """Persist manifest + graph + report; returns the compact repo map.
+
+    Runs in a worker thread (one to_thread call for the whole tail): the two
+    JSON dumps alone can freeze the event loop for seconds on a large repo,
+    which would starve WS pings/heartbeats and drop the client connection.
+    """
+    cache.save(state)
+    save_repo_graph(graph, kg_dir)
+    (kg_dir / REPORT_FILE).write_text(render_report(graph), encoding="utf-8")
+    return compact_map(graph)
+
+
+async def _build_repo_graph_locked(
+    repo: Path, kg_dir: Path, force: bool = False, include_untracked: bool = False
+) -> dict[str, Any]:
+    """Build/refresh the graph for one checkout; returns a summary dict.
+
     Fast path: head unchanged AND the manifest already covers every candidate
     source file -> up_to_date with zero hashing. Otherwise every candidate
     file is hashed but only changed ones are re-parsed (bounded thread pool);
@@ -262,26 +319,30 @@ async def build_repo_graph(
     reported in the summary's ``warning`` so an empty-looking graph is never
     silently misread as "no code". Pass ``include_untracked=True`` to fold
     them into the candidates as well.
+
+    Every CPU/JSON-heavy step (manifest load, walk, assembly, persistence)
+    runs via asyncio.to_thread: this coroutine shares the process event loop
+    with the WebSocket it must keep alive.
     """
     started = time.perf_counter()
     kg_dir.mkdir(parents=True, exist_ok=True)
     cache = GraphCache(kg_dir / "cache")
-    state = cache.load()
+    state = await asyncio.to_thread(cache.load)
 
     tracked = await _tracked_files(repo)
     if tracked is None:
         _log.info("git ls-files failed for %s; falling back to os.walk", repo)
-        tracked = _walk_files(repo)
-    tracked_candidates = _candidate_files(tracked)
+        tracked = await asyncio.to_thread(_walk_files, repo)
+    tracked_candidates = await asyncio.to_thread(_candidate_files, tracked)
     untracked = await _untracked_files(repo)
-    untracked_candidates = _candidate_files(untracked or [])
+    untracked_candidates = await asyncio.to_thread(_candidate_files, untracked or [])
     if include_untracked:
         candidates = sorted(set(tracked_candidates) | set(untracked_candidates))
     else:
         candidates = tracked_candidates
     head = await _git_head_sha(repo)
 
-    existing = load_repo_graph(kg_dir)
+    existing = await asyncio.to_thread(load_repo_graph, kg_dir)
     if (
         not force
         # "" = HEAD unresolvable (no git / worktree / empty repo). The stored
@@ -298,13 +359,28 @@ async def build_repo_graph(
             "status": "up_to_date",
             "head": head,
             "stats": existing.stats,
-            "repo_map": compact_map(existing),
+            "repo_map": await asyncio.to_thread(compact_map, existing),
             "graph_path": str(kg_dir / GRAPH_FILE),
             "build_ms": int((time.perf_counter() - started) * 1000),
         }
         if untracked_candidates and not include_untracked:
             summary["warning"] = _untracked_hint(untracked_candidates)
         return summary
+
+    # Refuse absurd trees AFTER the fast path so an already-built oversized
+    # graph still serves up_to_date; only new/forced builds are cut off.
+    if len(candidates) > MAX_BUILD_FILES:
+        return {
+            "status": "skipped",
+            "reason": "too_many_files",
+            "files": len(candidates),
+            "max": MAX_BUILD_FILES,
+            "hint": (
+                f"Repo has {len(candidates)} source files (> {MAX_BUILD_FILES}); "
+                "the knowledge graph is not built for repos this size. "
+                "Use search/read tools instead."
+            ),
+        }
 
     counters: dict[str, Any] = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
     failed_reasons: dict[str, int] = {}
@@ -371,7 +447,7 @@ async def build_repo_graph(
 
     results = {rel: state.files[rel] for rel in candidates if rel in state.files}
     counters["failed_reasons"] = failed_reasons
-    graph = _assemble_graph(repo.name, head, results, counters)
+    graph = await asyncio.to_thread(_assemble_graph, repo.name, head, results, counters)
     graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
     graph.stats["untracked_sources"] = 0 if include_untracked else len(untracked_candidates)
 
@@ -390,9 +466,7 @@ async def build_repo_graph(
     # Record the build mode so a later build in the other mode cannot reuse
     # this manifest through the fast path.
     state.tracked_only = not include_untracked
-    cache.save(state)
-    save_repo_graph(graph, kg_dir)
-    (kg_dir / REPORT_FILE).write_text(render_report(graph), encoding="utf-8")
+    repo_map = await asyncio.to_thread(_persist, cache, state, graph, kg_dir)
     invalidate_cached(kg_dir)
     _log.info("repo graph %s: %d files, %d nodes, %d edges (%d ms)",
               repo.name, graph.stats.get("files", 0), graph.stats.get("nodes", 0),
@@ -401,7 +475,7 @@ async def build_repo_graph(
         "status": "built",
         "head": head,
         "stats": graph.stats,
-        "repo_map": compact_map(graph),
+        "repo_map": repo_map,
         "graph_path": str(kg_dir / GRAPH_FILE),
     }
     warnings = []
@@ -420,14 +494,16 @@ async def maybe_build_auto(
     """Best-effort auto-build on git ops; never raises, never blocks the result.
 
     Guard rails: requires a plain .git dir; skips repos over
-    AUTO_BUILD_MAX_FILES with a hint; one build at a time per kg_dir.
+    AUTO_BUILD_MAX_FILES with a hint; one build at a time per kg_dir (the
+    lock is taken inside build_repo_graph, so every entry point serializes
+    the same way).
     """
     if not (repo / ".git").is_dir():
         return None
     tracked = await _tracked_files(repo)
     if tracked is None:
-        tracked = _walk_files(repo)
-    candidate_count = len(_candidate_files(tracked))
+        tracked = await asyncio.to_thread(_walk_files, repo)
+    candidate_count = len(await asyncio.to_thread(_candidate_files, tracked))
     if candidate_count > AUTO_BUILD_MAX_FILES:
         return {
             "status": "skipped",
@@ -436,13 +512,11 @@ async def maybe_build_auto(
             "hint": f"Repo has {candidate_count} source files; run repo_graph build to force.",
         }
     kg_dir = repo_graph_dir(project_fs_path, repo_name)
-    lock = _BUILD_LOCKS.setdefault(str(kg_dir), asyncio.Lock())
-    async with lock:
-        try:
-            return await build_repo_graph(repo, kg_dir, force=force)
-        except Exception as exc:
-            _log.exception("auto repo graph build failed for %s", repo_name)
-            return {"status": "failed", "reason": str(exc)}
+    try:
+        return await build_repo_graph(repo, kg_dir, force=force)
+    except Exception as exc:
+        _log.exception("auto repo graph build failed for %s", repo_name)
+        return {"status": "failed", "reason": str(exc)}
 
 
 # ---------------------------------------------------------------------------

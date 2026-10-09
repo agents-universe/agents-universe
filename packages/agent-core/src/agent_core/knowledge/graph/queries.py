@@ -14,6 +14,11 @@ from .model import RepoGraph, is_symbol_id, parse_node_id
 MAX_DEPTH = 2
 MAX_HOPS = 6
 SEARCH_LIMIT = 20
+# List caps: these results travel over the WebSocket as one tool_call_end
+# frame — an unbounded blast-radius list on a hub symbol can push a multi-MB
+# frame past the 5s send budget and get the connection evicted.
+NEIGHBOR_LIMIT = 200
+IMPACT_LIMIT = 200
 
 
 def _entry(graph: RepoGraph, node_id: str, **extra: Any) -> dict[str, Any]:
@@ -68,7 +73,11 @@ def resolve_node(graph: RepoGraph, query: str) -> dict[str, Any]:
 
 
 def neighbors(graph: RepoGraph, node_id: str, depth: int = 1) -> dict[str, Any]:
-    """BFS in both directions; depth is capped at MAX_DEPTH."""
+    """BFS in both directions; depth is capped at MAX_DEPTH.
+
+    The BFS runs to completion so ``count`` is exact; the ``neighbors`` list
+    itself is capped at NEIGHBOR_LIMIT (``truncated`` marks the cut).
+    """
     depth = min(max(int(depth or 1), 1), MAX_DEPTH)
     fwd, rev = graph.adjacency()
     seen = {node_id}
@@ -88,13 +97,22 @@ def neighbors(graph: RepoGraph, node_id: str, depth: int = 1) -> dict[str, Any]:
                     found.append(_entry(graph, src, direction="in", via=etype, depth=level))
                     next_frontier.append(src)
         frontier = next_frontier
-    return {"node_id": node_id, "depth": depth, "neighbors": found, "count": len(found)}
+    total = len(found)
+    result: dict[str, Any] = {
+        "node_id": node_id, "depth": depth,
+        "neighbors": found[:NEIGHBOR_LIMIT], "count": total,
+    }
+    if total > NEIGHBOR_LIMIT:
+        result["truncated"] = True
+    return result
 
 
 def impact_set(graph: RepoGraph, node_id: str) -> dict[str, Any]:
     """Reverse BFS from a node: every node that transitively depends on it.
 
-    The refactor blast radius — 'what breaks if I change this'.
+    The refactor blast radius — 'what breaks if I change this'. The BFS runs
+    to completion so ``count`` stays exact; the node/file lists are capped at
+    IMPACT_LIMIT (``truncated`` marks the cut).
     """
     _, rev = graph.adjacency()
     seen = {node_id}
@@ -108,12 +126,15 @@ def impact_set(graph: RepoGraph, node_id: str) -> dict[str, Any]:
                 affected.append(_entry(graph, src, via=etype))
                 queue.append(src)
     files = sorted({parse_node_id(entry["node_id"])[1] for entry in affected})
-    return {
+    result: dict[str, Any] = {
         "node_id": node_id,
-        "affected_nodes": affected,
-        "affected_files": files,
+        "affected_nodes": affected[:IMPACT_LIMIT],
+        "affected_files": files[:IMPACT_LIMIT],
         "count": len(files),
     }
+    if len(affected) > IMPACT_LIMIT or len(files) > IMPACT_LIMIT:
+        result["truncated"] = True
+    return result
 
 
 def shortest_path(

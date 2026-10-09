@@ -36,11 +36,14 @@ SUPPORTED_EXT: dict[str, str] = {
 }
 
 # Committed vendor/build dirs are still skipped even when git ls-files lists
-# them — they are noise, not architecture.
+# them — they are noise, not architecture. bin/obj/.vs are .NET build output
+# and IDE state: a walked or include_untracked build would otherwise index
+# thousands of generated .cs files.
 EXCLUDED_DIRS: frozenset[str] = frozenset({
     ".git", "node_modules", "vendor", "dist", "build", "out", "coverage",
     "__pycache__", ".venv", "venv", ".next", ".nuxt", ".tox",
     ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
+    "bin", "obj", ".vs",
 })
 
 # Skip giant / minified / generated files outright.

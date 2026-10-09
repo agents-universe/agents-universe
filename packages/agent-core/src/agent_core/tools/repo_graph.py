@@ -9,6 +9,7 @@ missed, so read files for semantics.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -147,7 +148,9 @@ class RepoGraphTool(Tool):
         repo, error = self._require_repo(params, context)
         if error:
             return error
-        graph = load_cached(repo_graph_dir(context.project_fs_path, repo.name))
+        # load_cached off-loop: the first query after a rebuild does a full
+        # sync json.load of graph.json — seconds of freeze on a big graph.
+        graph = await asyncio.to_thread(load_cached, repo_graph_dir(context.project_fs_path, repo.name))
         if graph is None:
             return self._no_graph_hint(repo, context)
         query = params.get("query", "")
@@ -159,7 +162,7 @@ class RepoGraphTool(Tool):
         repo, error = self._require_repo(params, context)
         if error:
             return error
-        graph = load_cached(repo_graph_dir(context.project_fs_path, repo.name))
+        graph = await asyncio.to_thread(load_cached, repo_graph_dir(context.project_fs_path, repo.name))
         if graph is None:
             return self._no_graph_hint(repo, context)
         symbol = params.get("symbol") or params.get("query") or ""
@@ -172,7 +175,7 @@ class RepoGraphTool(Tool):
             depth = int(params.get("depth", 1))
         except (TypeError, ValueError):
             depth = 1
-        result = queries.neighbors(graph, node["node_id"], depth=depth)
+        result = await asyncio.to_thread(queries.neighbors, graph, node["node_id"], depth=depth)
         result["node"] = node
         return result
 
@@ -180,7 +183,7 @@ class RepoGraphTool(Tool):
         repo, error = self._require_repo(params, context)
         if error:
             return error
-        graph = load_cached(repo_graph_dir(context.project_fs_path, repo.name))
+        graph = await asyncio.to_thread(load_cached, repo_graph_dir(context.project_fs_path, repo.name))
         if graph is None:
             return self._no_graph_hint(repo, context)
         symbol = params.get("symbol") or params.get("query") or ""
@@ -189,7 +192,7 @@ class RepoGraphTool(Tool):
         node = queries.resolve_node(graph, symbol)
         if "error" in node:
             return node
-        result = queries.impact_set(graph, node["node_id"])
+        result = await asyncio.to_thread(queries.impact_set, graph, node["node_id"])
         result["node"] = node
         return result
 
@@ -197,7 +200,7 @@ class RepoGraphTool(Tool):
         repo, error = self._require_repo(params, context)
         if error:
             return error
-        graph = load_cached(repo_graph_dir(context.project_fs_path, repo.name))
+        graph = await asyncio.to_thread(load_cached, repo_graph_dir(context.project_fs_path, repo.name))
         if graph is None:
             return self._no_graph_hint(repo, context)
         start = params.get("from") or params.get("query") or ""
@@ -221,12 +224,12 @@ class RepoGraphTool(Tool):
         if error:
             return error
         kg_dir = repo_graph_dir(context.project_fs_path, repo.name)
-        graph = load_cached(kg_dir)
+        graph = await asyncio.to_thread(load_cached, kg_dir)
         if graph is None:
             return self._no_graph_hint(repo, context)
         # Only the compact map enters context; the full report stays on disk.
         return {
-            "repo_map": compact_map(graph),
+            "repo_map": await asyncio.to_thread(compact_map, graph),
             "graph_path": str(kg_dir / GRAPH_FILE),
             "report_path": str(kg_dir / REPORT_FILE),
         }

@@ -97,6 +97,30 @@ def _task_timeout_seconds() -> int:
 # unbounded memory growth from a runaway stream.
 _MAX_TOOL_ARGS_CHARS = 2_000_000
 
+# WS-frame cap for tool_call_end payloads: the whole result travels as one
+# JSON frame, and manager.send evicts the connection after 5s — a multi-MB
+# tool result (repo graph blast radius, a big file read) would get the
+# client disconnected. The LLM-bound tool message keeps the full result;
+# this only bounds what the browser receives.
+_MAX_TOOL_OUTPUT_CHARS = 100_000
+
+
+def _clip_tool_output(result):
+    """Return result unchanged when it fits the WS cap, else a preview dict."""
+    if not isinstance(result, dict):
+        return result
+    try:
+        text = json.dumps(result, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return result
+    if len(text) <= _MAX_TOOL_OUTPUT_CHARS:
+        return result
+    return {
+        "truncated": True,
+        "bytes": len(text),
+        "preview": text[:50_000],
+    }
+
 # Tool-call loop budgets (iterations = provider round-trips). The chat loop
 # refreshes its per-loop budget when the user injects a message mid-run;
 # total_budget (5x) is the never-refreshed safety valve. Long closed-loop
@@ -1496,7 +1520,7 @@ class Agent:
                         bad_result = {"error": f"Malformed tool arguments (invalid JSON): {_e}"}
                         await session.emit("tool_call_start", tool=tool_name, input={}, call_id=tool_id)
                         await session.emit("turn_status", phase="running_tool", tool=tool_name, call_id=tool_id, message_id=message_id)
-                        await session.emit("tool_call_end", tool=tool_name, output=bad_result, call_id=tool_id)
+                        await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(bad_result), call_id=tool_id)
                         messages.append(Message(role="tool", content=_dumps(bad_result), tool_call_id=tool_id, name=tool_name))
                         continue
 
@@ -1511,7 +1535,7 @@ class Agent:
                             result = {"status": "completed", "summary": task_summary}
                         except asyncio.CancelledError:
                             result = {"error": "Tool execution interrupted"}
-                            await session.emit("tool_call_end", tool=tool_name, output=result, call_id=tool_id, status="error")
+                            await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id, status="error")
                             raise
                         except Exception as e:
                             # Same degradation as the ordinary-tool path below:
@@ -1549,7 +1573,7 @@ class Agent:
                         await session.emit(
                             "tool_call_end",
                             tool=tool_name,
-                            output={**result, "tasks": plan_snapshot},
+                            output=_clip_tool_output({**result, "tasks": plan_snapshot}),
                             call_id=tool_id,
                         )
                         messages.append(Message(
@@ -1568,13 +1592,13 @@ class Agent:
                             result = await tool.execute(args, self._tool_ctx)
                         except asyncio.CancelledError:
                             result = {"error": "Tool execution interrupted"}
-                            await session.emit("tool_call_end", tool=tool_name, output=result, call_id=tool_id, status="error")
+                            await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id, status="error")
                             raise
                         except Exception as e:
                             _log.warning("Tool %s failed (call_id=%s): %s", tool_name, tool_id, e, exc_info=True)
                             result = {"error": str(e)[:500]}
 
-                    await session.emit("tool_call_end", tool=tool_name, output=result, call_id=tool_id)
+                    await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id)
 
                     if result.get("images"):
                         await session.emit("image_output", message_id=message_id, images=result["images"])
@@ -2333,7 +2357,7 @@ class Agent:
                     bad_result = {"error": f"Malformed tool arguments (invalid JSON): {_e}"}
                     await session.emit("tool_call_start", tool=tool_name, input={}, call_id=tool_id, task_id=task_id)
                     await session.emit("turn_status", phase="running_tool", tool=tool_name, call_id=tool_id, task_id=task_id)
-                    await session.emit("tool_call_end", tool=tool_name, output=bad_result, call_id=tool_id, task_id=task_id)
+                    await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(bad_result), call_id=tool_id, task_id=task_id)
                     messages.append(Message(role="tool", content=_dumps(bad_result), tool_call_id=tool_id, name=tool_name))
                     continue
 
@@ -2361,7 +2385,7 @@ class Agent:
                         result = await tool.execute(args, task_tool_ctx)
                     except asyncio.CancelledError:
                         result = {"error": "Tool execution interrupted"}
-                        await session.emit("tool_call_end", tool=tool_name, output=result, call_id=tool_id, task_id=task_id, status="error")
+                        await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id, task_id=task_id, status="error")
                         raise
                     except Exception as e:
                         _log.warning("Tool %s failed (call_id=%s): %s", tool_name, tool_id, e, exc_info=True)
@@ -2370,7 +2394,7 @@ class Agent:
                 await session.emit(
                     "tool_call_end",
                     tool=tool_name,
-                    output=result,
+                    output=_clip_tool_output(result),
                     call_id=tool_id,
                     task_id=task_id,
                     **progress,

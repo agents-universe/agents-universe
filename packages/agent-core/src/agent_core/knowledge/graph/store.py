@@ -1,8 +1,10 @@
 """Persistent graph storage: atomic graph.json writes + in-memory cache.
 
 The in-memory cache is keyed by file mtime/size, so queries never serve a
-stale graph after a rebuild, and re-loading an unchanged file is free. Safe
-under the single-threaded asyncio event loop.
+stale graph after a rebuild, and re-loading an unchanged file is free. May
+run from worker threads (load_cached goes through asyncio.to_thread): every
+_GRAPH_MEMO access is a single dict get/set/pop, so a concurrent miss can
+double-load — benign, same content, last write wins.
 """
 from __future__ import annotations
 

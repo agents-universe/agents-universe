@@ -1600,11 +1600,18 @@ class Agent:
 
                     await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id)
 
-                    if result.get("images"):
-                        await session.emit("image_output", message_id=message_id, images=result["images"])
+                    # Guard the type, not just truthiness: some tools report a
+                    # COUNT under these keys (repo_graph's too_many_files
+                    # summary carries files=<int>), and iterating an int here —
+                    # outside the tool try/except — killed the whole turn with
+                    # "'int' object is not iterable".
+                    images = result.get("images")
+                    if isinstance(images, list) and images:
+                        await session.emit("image_output", message_id=message_id, images=images)
 
-                    if result.get("files"):
-                        _deliverable = [f for f in result["files"] if isinstance(f, dict) and f.get("url")]
+                    out_files = result.get("files")
+                    if isinstance(out_files, list) and out_files:
+                        _deliverable = [f for f in out_files if isinstance(f, dict) and f.get("url")]
                         if _deliverable:
                             await session.emit("file_output", message_id=message_id, files=_deliverable)
 

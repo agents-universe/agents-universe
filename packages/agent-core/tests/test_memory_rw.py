@@ -237,3 +237,43 @@ async def test_save_still_rejects_actual_secret_shapes(memories_db):
     ):
         result = await tool.execute({"operation": "save", "content": content}, ctx)
         assert "error" in result, (content, result)
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_secret_shapes_in_tags(memories_db):
+    """tags persist alongside content — a secret routed through the tags param
+    must be rejected like one routed through content."""
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+
+    for tags in (["PASSWORD=hunter2"], "api_key: sk-abc123", ["authToken=abc"]):
+        result = await tool.execute(
+            {"operation": "save", "content": "benign fact", "tags": tags},
+            ctx,
+        )
+        assert "error" in result, (tags, result)
+
+    from sqlalchemy import text
+    row = (await memories_db.execute(text("SELECT COUNT(*) FROM personal_memories"))).first()
+    assert row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_secret_shapes_in_tags(memories_db):
+    """The update path applies the same guard — it must not smuggle secrets
+    into an existing memory via tags."""
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+
+    await tool.execute({"operation": "save", "content": "initial"}, ctx)
+    from sqlalchemy import text
+    mid = (await memories_db.execute(text("SELECT memory_id FROM personal_memories"))).first()[0]
+
+    result = await tool.execute(
+        {"operation": "update", "memory_id": mid, "tags": ["password=hunter2"]},
+        ctx,
+    )
+    assert "error" in result
+
+    row = (await memories_db.execute(text("SELECT tags FROM personal_memories"))).first()
+    assert row.tags is None

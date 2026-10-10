@@ -228,4 +228,10 @@ def search(graph: RepoGraph, query: str, limit: int = SEARCH_LIMIT) -> dict[str,
             continue
         matches.append(_entry(graph, node.id))
     matches.sort(key=lambda entry: (entry["type"] != "file", entry["name"]))
-    return {"query": query, "matches": matches[:limit], "count": len(matches[:limit])}
+    # count is the TOTAL (the neighbors/impact_set convention): capping the
+    # list must not also cap the number reported to the caller — a truncated
+    # result would otherwise under-report how much matched.
+    result: dict[str, Any] = {"query": query, "matches": matches[:limit], "count": len(matches)}
+    if len(matches) > limit:
+        result["truncated"] = True
+    return result

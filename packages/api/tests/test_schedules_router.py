@@ -269,6 +269,46 @@ class TestUpdate:
         assert resp.json()["name"] == "renamed"
         assert resp.json()["script_id"] == str(script.script_id)
 
+    async def test_patch_name_preserves_overdue_next_run(
+        self, client, db, make_project
+    ):
+        """A cadence-untouched PATCH must not recompute next_run_at.
+
+        An occurrence that is already due (next_run_at <= now, scheduler tick
+        not yet claimed it) would otherwise be pushed a full period into the
+        future by an unrelated name/description edit — the imminent fire is
+        then silently lost.
+        """
+        from datetime import timedelta
+
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(project, script_id=str(script.script_id)),
+            )
+        ).json()
+        # Whole seconds: some DATETIME dialects (MSSQL) truncate microseconds.
+        due_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(
+            microsecond=0
+        )
+        task = (
+            await db.execute(
+                select(ScheduledTask).where(
+                    ScheduledTask.schedule_id == created["schedule_id"]
+                )
+            )
+        ).scalar_one()
+        task.next_run_at = due_at
+        await db.commit()
+
+        resp = await client.patch(
+            f"/api/schedules/{created['schedule_id']}", json={"name": "renamed"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["next_run_at"] == due_at.isoformat()
+
     async def test_owner_can_disable_after_conversation_deleted(
         self, client, db, make_project
     ):

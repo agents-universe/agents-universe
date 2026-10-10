@@ -1608,12 +1608,22 @@ async def run_turn(
         # lookup, provider config, or any early exception) never drained
         # anything — its buffer belongs to a dead turn, and the next turn's
         # drain would inject stale messages into an unrelated turn. Discard
-        # them; the UI's input_queued settles on the failed turn.
+        # them — and notify, because the claim-window input_queued (acked
+        # with message_id null) leaves the client's optimistic message
+        # pending forever when the turn died without a terminal error
+        # (teardown cancellation emits none). A terminal error that already
+        # ran rejectAllPendingInjected makes each notify a no-op.
         # G13: a nested turn never registered, so `session_registered` is False
         # for it by construction — without the `not nested` guard it would
         # unconditionally drop the parent turn's buffered injections.
         if not nested and not session_registered:
-            manager.discard_pending_injections(conversation_id)
+            for _dropped in manager.discard_pending_injections(conversation_id):
+                await _transport_send(transport, conversation_id, {
+                    "type": "input_not_processed",
+                    "message_id": None,
+                    "content": _dropped.get("content", ""),
+                    "message": "Agent failed before the message was processed.",
+                })
         # G14: `turn_started` is the CHILD's start, so its cutoff would delete
         # files the user attached while the parent was already running — the
         # very race the comment below warns about, widened to the parent turn.
@@ -2007,7 +2017,11 @@ async def _prepare_and_persist_user_message(
     insert conflicts (watchdog racing forward_events on the same injection)
     the existing row is treated as success — idempotent by construction.
     """
-    if not isinstance(content, str) or len(content) > 200_000:
+    # Split type/length: a non-string would otherwise be reported as
+    # "exceeds the 200,000 character limit", blaming size for a type error.
+    if not isinstance(content, str):
+        return None, "Message content must be text"
+    if len(content) > 200_000:
         return None, "Message content exceeds the 200,000 character limit"
     # attachments must be a list — a str/dict slides past len() and then
     # _validate_attachment_url's att.get("url") AttributeErrors, taking the
@@ -2637,7 +2651,15 @@ async def _enqueue_injected_message(
 
     content = msg.get("content", "")
     attachments = msg.get("attachments") or []
-    if not isinstance(content, str) or len(content) > 200_000:
+    # Split type/length: a non-string must not be reported as an oversize
+    # rejection — the two failures have different fixes for the user.
+    if not isinstance(content, str):
+        await manager.send(conversation_id, {
+            "type": "input_rejected", "message_id": None, "content": content,
+            "message": "Message content must be text",
+        })
+        return
+    if len(content) > 200_000:
         await manager.send(conversation_id, {
             "type": "input_rejected", "message_id": None, "content": content,
             "message": "Message content exceeds the 200,000 character limit",
@@ -2685,6 +2707,18 @@ async def _enqueue_injected_message(
     })
 
 
+def _injection_settled(entry) -> bool:
+    """True when the turn's forward handler already settled this injection's
+    persist Future (resolve_input_persisted) — the client received either
+    user_message_injected (ok) or input_rejected (failed).
+
+    consumed only flips for ACCEPTED entries, so a rejected one would
+    otherwise fall through to the orphan path: a second notification after
+    input_rejected, and a row the client was told was rejected.
+    """
+    return entry.persisted is not None and entry.persisted.done()
+
+
 async def _guard_injected_message(
     conversation_id: str, entry, session
 ) -> None:
@@ -2705,13 +2739,13 @@ async def _guard_injected_message(
         # its own input queue and can never consume this entry, so the
         # orphan would sit until the conversation went fully idle.
         while True:
-            if entry.consumed:
+            if entry.consumed or _injection_settled(entry):
                 return
             sess = manager.get_session(conversation_id)
             if sess is None or sess is not session:
                 break
             await asyncio.sleep(0.2)
-        if entry.consumed:
+        if entry.consumed or _injection_settled(entry):
             return
         await _persist_orphan_injection(conversation_id, entry)
     except asyncio.CancelledError:

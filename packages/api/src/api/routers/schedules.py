@@ -405,13 +405,26 @@ async def update_schedule(
     task.prompt = prompt if target_type == "agent" else None
     if body.env is not None:
         task.env_json = new_env_json
+    # Capture BEFORE the assignments below overwrite the stored values — the
+    # cadence comparison must see the row's previous state.
+    cadence_changed = (
+        (body.cron_expr is not None and body.cron_expr != task.cron_expr)
+        or (body.timezone is not None and body.timezone != task.timezone)
+        or (body.enabled is not None and body.enabled != task.enabled)
+    ) or (enabled and task.next_run_at is None)
     task.conversation_id = conversation_id
     task.cron_expr = cron_expr
     task.timezone = timezone
     task.enabled = enabled
-    # Recompute whenever the cadence or the on/off state changed — a stale
-    # past next_run_at would fire immediately on the next tick.
-    task.next_run_at = _upcoming(cron_expr, timezone, enabled=enabled)
+    # Recompute only when the cadence or the on/off state actually changed —
+    # an unconditional recompute would push a due occurrence (next_run_at <=
+    # now, scheduler tick not yet fired) a full period into the future, so a
+    # name-only PATCH could silently eat an imminent fire. The value-compare
+    # (not presence-compare) keeps an explicitly-sent unchanged field from
+    # resetting the anchor; the next_run_at is None clause heals a legacy row
+    # that is enabled but was never anchored.
+    if cadence_changed:
+        task.next_run_at = _upcoming(cron_expr, timezone, enabled=enabled)
     task.updated_at = now_utc()
     await db.commit()
     return _task_dict(task)

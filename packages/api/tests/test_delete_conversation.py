@@ -80,7 +80,43 @@ async def test_delete_guarded_update_refuses_concurrently_deleted(db, make_proje
 
     with pytest.raises(HTTPException) as exc:
         await delete_conversation(str(conv.conversation_id), db, conv)
+    # rowcount=0 = a concurrent delete won, not a running agent — the same
+    # 404 the second delete gets, not the misleading 409.
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_reverts_when_turn_claims_mid_delete(db, make_project, monkeypatch):
+    """The claim is in-memory — neither the advisory is_turn_active check nor
+    the UPDATE's status='active' predicate can see a turn that claims while
+    the delete is in flight, and run_turn reads status='active' in its own
+    session before the delete commits. The post-commit re-check must catch
+    that claim, restore the row to 'active', and refuse with 409."""
+    project = await make_project()
+    conv = await _make_conversation(db, project)
+    cid = str(conv.conversation_id)
+
+    from api.websocket.manager import manager as ws_manager
+
+    calls = {"n": 0}
+
+    def _claim_appears_after_first_check(_: str) -> bool:
+        calls["n"] += 1
+        # First (advisory) check: no turn yet. Post-commit re-check: a turn
+        # claimed while the status flip was in flight.
+        return calls["n"] >= 2
+
+    monkeypatch.setattr(ws_manager, "is_turn_active", _claim_appears_after_first_check)
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_conversation(cid, db, conv)
     assert exc.value.status_code == 409
+
+    # The row must be back to 'active' — a refused delete leaves no trace.
+    row = await db.execute(
+        select(Conversation).where(Conversation.conversation_id == cid)
+    )
+    assert row.scalar_one().status == "active"
 
 
 @pytest.mark.asyncio

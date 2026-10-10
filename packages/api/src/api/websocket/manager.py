@@ -291,12 +291,13 @@ class ConnectionManager:
     def has_pending_injections(self, conversation_id: str) -> bool:
         return bool(self._pending_injections.get(conversation_id))
 
-    def discard_pending_injections(self, conversation_id: str) -> None:
+    def discard_pending_injections(self, conversation_id: str) -> list[dict]:
         """Drop buffered messages whose turn died before the session was
-        registered. The next turn's drain self-heals (the UI already showed
-        input_queued, and the user can resend — the message never reached
-        the agent or the DB)."""
-        self._pending_injections.pop(conversation_id, None)
+        registered, returning them so the caller can notify the client —
+        the claim-window input_queued ack alone leaves the optimistic
+        message pending forever unless the turn also emitted a terminal
+        error."""
+        return self._pending_injections.pop(conversation_id, [])
 
     # --- Session memory (ephemeral, in-memory only) ---
 

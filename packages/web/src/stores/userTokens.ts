@@ -35,8 +35,14 @@ export const useUserTokensStore = defineStore('userTokens', () => {
   }
 
   async function remove(serviceKey: string) {
+    const seq = loadSeq
     await userTokensApi.remove(serviceKey)
-    tokens.value = tokens.value.filter((t) => t.service_key !== serviceKey)
+    // Same seq guard as projectSecrets.remove: a blind local filter lets a
+    // load() that landed before the DELETE but resolved after it write the
+    // deleted row back into the list. Reloading the DB list cannot leave a
+    // stale row behind; if reset() bumped loadSeq meanwhile, the list was
+    // already cleared and refetching would resurrect it.
+    if (seq === loadSeq) await load()
   }
 
   function reset() {

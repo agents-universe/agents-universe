@@ -185,7 +185,10 @@ class MemoryRWTool(Tool):
             if scope not in ("project", "global"):
                 return {"error": f"save supports scope 'project' or 'global' only, got {scope!r}"}
 
-        guard_error = self._check_secret_guard(content)
+        # Tags persist too — a secret smuggled through the tags param would
+        # bypass the content guard (config:{key} is built from the already-
+        # guarded key, but caller-supplied tags are not).
+        guard_error = self._check_secret_guard(content, *tags)
         if guard_error:
             return {"error": guard_error}
 
@@ -386,8 +389,10 @@ class MemoryRWTool(Tool):
             return {"error": "Memory not found or access denied"}
 
         # Same secret guard as save — update must not smuggle secrets into
-        # personal memory via the content field.
-        guard_error = self._check_secret_guard(params.get("content"))
+        # personal memory via the content or tags fields.
+        guard_error = self._check_secret_guard(
+            params.get("content"), *_coerce_tags(params.get("tags"))
+        )
         if guard_error:
             return {"error": guard_error}
 

@@ -346,11 +346,16 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     # message must not be queued for the agent. attachments
                     # must be a list too: a str/dict passes len() and later
                     # AttributeErrors inside attachment validation.
-                    if not isinstance(content, str) or len(content) > 200_000:
-                        # input_rejected (not "error"): the turn keeps streaming
-                        # and only the optimistic pending entry is settled — an
-                        # "error" event would clear the streaming state and pin
-                        # a permanent error message onto a running turn.
+                    # input_rejected (not "error"): the turn keeps streaming
+                    # and only the optimistic pending entry is settled — an
+                    # "error" event would clear the streaming state and pin
+                    # a permanent error message onto a running turn.
+                    if not isinstance(content, str):
+                        # Type failure, not size: a non-string must not be
+                        # reported as "exceeds the 200,000 character limit".
+                        await ws.send_json({"type": "input_rejected", "message_id": None, "content": content, "message": "Message content must be text"})
+                        continue
+                    if len(content) > 200_000:
                         await ws.send_json({"type": "input_rejected", "message_id": None, "content": content, "message": "Message content exceeds the 200,000 character limit"})
                         continue
                     if not isinstance(attachments, list):

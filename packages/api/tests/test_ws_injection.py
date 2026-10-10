@@ -54,10 +54,13 @@ def test_pending_injection_buffer_per_conversation(mgr):
 
 def test_discard_pending_injections(mgr):
     mgr.enqueue_pending_injection("c1", {"content": "a"})
-    mgr.discard_pending_injections("c1")
+    dropped = mgr.discard_pending_injections("c1")
+    # The caller needs the dropped messages to notify the client — the
+    # claim-window ack alone leaves the optimistic message pending forever.
+    assert [d["content"] for d in dropped] == ["a"]
     assert not mgr.has_pending_injections("c1")
     # Idempotent on an empty conversation
-    mgr.discard_pending_injections("c1")
+    assert mgr.discard_pending_injections("c1") == []
 
 
 def test_session_memories_register_in_manager(mgr):
@@ -151,6 +154,11 @@ async def test_persist_user_message_validation_errors(db, make_project):
             db, conv.conversation_id, str(project.project_id), fs_path, empty, [],
         )
         assert result is None and "empty" in err, empty
+    # Non-string content: a type failure, not an oversize one
+    result, err = await _prepare_and_persist_user_message(
+        db, conv.conversation_id, str(project.project_id), fs_path, 123, [],
+    )
+    assert result is None and err == "Message content must be text"
     # Nothing persisted on the failure paths
     count = (await db.execute(
         select(func.count()).select_from(DbMessage).where(DbMessage.conversation_id == conv.conversation_id)
@@ -286,6 +294,26 @@ async def test_enqueue_injected_message_rejects_oversized():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_injected_message_rejects_non_string_content():
+    """Type failure ≠ size failure: a non-string content field must not be
+    reported as 'exceeds the 200,000 character limit' — the two failures
+    have different fixes for the user."""
+    from agent_core.session import ConversationSession
+    from api.websocket.manager import manager
+
+    sess = ConversationSession(conversation_id="c1", project_id="p1", user_id="u1")
+    sent: list[dict] = []
+    async def _fake_send(conversation_id, data):
+        sent.append(data)
+        return True
+    with patch.object(manager, "send", side_effect=_fake_send):
+        await _enqueue_injected_message("c1", sess, {"type": "message", "content": {"nested": "dict"}})
+    assert sent[0]["type"] == "input_rejected"
+    assert sent[0]["message"] == "Message content must be text"
+    assert not sess.has_pending_user_input()
+
+
+@pytest.mark.asyncio
 async def test_enqueue_injected_message_queue_full():
     from agent_core.session import ConversationSession
     from api.websocket.manager import manager
@@ -347,6 +375,72 @@ async def test_guard_returns_when_consumed():
 
 
 @pytest.mark.asyncio
+async def test_guard_settled_rejection_not_reprocessed(db, make_project):
+    """A persist rejection already settled the entry (resolve_input_persisted
+    False + input_rejected sent) — consumed never flips for rejected entries,
+    so without the settled check the watchdog would fall through to the
+    orphan path: re-persisting a message the client was told was rejected
+    and sending a second notification."""
+    from api.websocket.manager import manager
+
+    project = await make_project()
+    conv = await _make_conversation(db, project)
+    entry = _make_entry("rej-1", "persist failed")
+    entry.persisted.set_result(False)
+
+    sent: list[dict] = []
+    async def _fake_send(conversation_id, data):
+        sent.append(data)
+        return True
+
+    with patch.object(manager, "send", side_effect=_fake_send), \
+         patch.object(manager, "get_session", side_effect=[None]) as _m:
+        # Session deregistered: old code would take the orphan path here.
+        await _guard_injected_message(conv.conversation_id, entry, None)
+
+    assert sent == []
+    count = (await db.execute(
+        select(func.count()).select_from(DbMessage).where(DbMessage.conversation_id == conv.conversation_id)
+    )).scalar()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_run_turn_discard_notifies_buffered_injections():
+    """A turn that dies before register_session discards the claim-window
+    buffer in its finally — each dropped message must be notified with
+    input_not_processed (message_id null, the claim-window ack shape), or
+    the client's optimistic message stays pending forever when the turn
+    died without a terminal error (teardown cancellation emits none)."""
+    from api.services.agent_turn import run_turn
+    from api.websocket.manager import manager
+
+    cid = f"c-{uuid.uuid4().hex[:8]}"
+    manager.enqueue_pending_injection(cid, {"type": "message", "content": "first"})
+    manager.enqueue_pending_injection(cid, {"type": "message", "content": "second"})
+
+    sent: list[dict] = []
+    async def _fake_send(conversation_id, data):
+        sent.append(data)
+        return True
+
+    with patch.object(manager, "send", side_effect=_fake_send):
+        # Unknown conversation → lookup fails before register_session →
+        # the finally discards the buffer of this dead turn.
+        await run_turn(cid, MagicMock(), {"type": "message", "content": "hi"}, "test-user")
+
+    assert not manager.has_pending_injections(cid)
+    rejected = [m for m in sent if m["type"] == "input_not_processed"]
+    # message_id null = the claim-window input_queued acked null too, so the
+    # client matches on content (FIFO among serverId-null pending entries).
+    assert [(m["content"], m["message_id"]) for m in rejected] == [
+        ("first", None), ("second", None),
+    ]
+    # The turn-death error still goes out alongside the per-message notices.
+    assert any(m["type"] == "error" for m in sent)
+
+
+@pytest.mark.asyncio
 async def test_persist_refuses_soft_deleted_conversation(db, make_project):
     """A delete that raced between the WS checks and the persist row lock
     leaves the conversation soft-deleted; the locked status check must refuse
@@ -383,3 +477,63 @@ async def test_persist_refuses_soft_deleted_conversation(db, make_project):
         )
     ).scalars().all()
     assert rows == []
+
+
+# ── claim-window validation (real receive loop) ────────────────────
+
+
+class _FakeWS:
+    """Connect handshake, then yields scripted frames before disconnecting."""
+
+    def __init__(self, frames: list[dict] | None = None) -> None:
+        self.cookies: dict[str, str] = {}
+        self.sent: list[dict] = []
+        self._frames = list(frames or [])
+
+    async def accept(self) -> None:
+        pass
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(json.loads(text))
+
+    async def receive_text(self) -> str:
+        if self._frames:
+            return json.dumps(self._frames.pop(0))
+        from starlette.websockets import WebSocketDisconnect
+        raise WebSocketDisconnect()
+
+    async def close(self, code: int = 1000) -> None:
+        pass
+
+    def frames_of(self, type_: str) -> list[dict]:
+        return [f for f in self.sent if f.get("type") == type_]
+
+
+@pytest.mark.asyncio
+async def test_claim_window_rejects_non_string_content(db, make_project, monkeypatch):
+    """The claim-window validation in the receive loop must distinguish a
+    type failure from an oversize one — a non-string content field was
+    reported as 'exceeds the 200,000 character limit'."""
+    from api.websocket.handlers import conversation_ws
+    from api.websocket.manager import ConnectionManager
+
+    mgr = ConnectionManager()
+    monkeypatch.setattr("api.websocket.handlers.manager", mgr)
+    monkeypatch.setattr("api.services.agent_turn.manager", mgr)
+
+    project = await make_project()
+    conv = await _make_conversation(db, project)
+    cid = str(conv.conversation_id)
+    # A pre-held claim routes the incoming message into the injection
+    # branch (claim_turn returns False) without starting a real turn.
+    assert await mgr.claim_turn(cid)
+
+    ws = _FakeWS([{"type": "message", "content": {"nested": "dict"}}])
+    await conversation_ws(cid, ws)
+
+    rejected = ws.frames_of("input_rejected")
+    assert len(rejected) == 1
+    assert rejected[0]["message"] == "Message content must be text"

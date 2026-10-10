@@ -361,9 +361,9 @@ async def delete_conversation(
         raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再删除。")
     # Guarded update — the is_turn_active check is advisory: a turn can claim
     # the conversation between that check and this UPDATE. Only a
-    # status='active' row may be soft-deleted; if a turn re-activated it
-    # meanwhile, rowcount stays 0 and the delete refuses instead of racing
-    # the running turn.
+    # status='active' row may be soft-deleted. The status predicate cannot
+    # see the turn's in-memory claim, though — the post-commit re-check below
+    # closes that half of the race.
     result = await db.execute(
         update(Conversation)
         .where(
@@ -374,12 +374,37 @@ async def delete_conversation(
     )
     if result.rowcount == 0:
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再删除。")
+        # Not a running-agent 409: delete is the only writer of status, so
+        # rowcount=0 means a concurrent delete already won the race after
+        # authorize passed. Answer with the same 404 the second delete gets
+        # instead of blaming an agent that may not even be running.
+        raise HTTPException(status_code=404, detail="Conversation not found")
     # Commit before the (slow) media rmtree: a turn claimed while the status
     # change was still uncommitted would see status='active', run a full turn,
     # and its reply would land in a conversation deleted moments later —
     # visible to nobody but the tokens were spent.
     await db.commit()
+    # The claim is in-memory, so neither the advisory check nor the UPDATE's
+    # status predicate could see a turn that claimed while this request was
+    # in flight — and run_turn reads status='active' in its own session
+    # BEFORE this commit lands, so such a turn would keep running against the
+    # soft-deleted row. Re-check now that the delete is committed: a claim
+    # held this close to the status flip is a turn that just started (it
+    # cannot have finished within one commit await), so put the row back and
+    # refuse. A claim landing AFTER this check happens after run_turn's own
+    # status read, and that read then sees 'deleted' — the turn aborts on its
+    # own. Either way a live turn and a soft-deleted row never coexist.
+    if ws_manager.is_turn_active(conversation_id):
+        await db.execute(
+            update(Conversation)
+            .where(
+                Conversation.conversation_id == conversation_id,
+                Conversation.status == "deleted",
+            )
+            .values(status="active"),
+        )
+        await db.commit()
+        raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再删除。")
     # Best-effort disk cleanup: uploads and generated images for this
     # conversation live under {PROJECTS_ROOT}/{slug}/.tmp/media/{id}/ and were
     # never reclaimed on delete — soft-deleted conversations' media (privacy

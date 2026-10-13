@@ -8,6 +8,8 @@ grammars.
 """
 from __future__ import annotations
 
+import codecs
+import hashlib
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -26,6 +28,8 @@ from agent_core.knowledge.graph.parser import (
     FileParseResult,
     _SqlSanitizer,
     _SqlStreamParser,
+    _detect_sql_encoding,
+    over_size_limit,
     parse_bytes,
     parse_file,
 )
@@ -451,12 +455,15 @@ def java_edge_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _seed_repo(path: Path, files: dict[str, str], message: str) -> Path:
+def _seed_repo(path: Path, files: dict[str, str | bytes], message: str) -> Path:
     path.mkdir()
     for rel, text in files.items():
         target = path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        if isinstance(text, bytes):
+            target.write_bytes(text)
+        else:
+            target.write_text(text, encoding="utf-8")
     _run("init", "-b", "main", cwd=path)
     _run("config", "user.email", "t@t.t", cwd=path)
     _run("config", "user.name", "t", cwd=path)
@@ -1091,6 +1098,82 @@ async def test_sql_garbage_file_no_failure(sql_garbage_repo: Path, tmp_path: Pat
     assert [n.id for n in graph.nodes] == ["f:db/notes.sql"]
 
 
+def test_sql_utf16_dump_parses_like_utf8(tmp_path: Path):
+    """UTF-16 dumps (BOM'd or not, either endianness) yield the same graph as
+    their UTF-8 twin. Without transcoding the ASCII scanner sees C\\0R\\0E...
+    and reports zero symbols with NO error — a silently empty schema, which
+    is exactly how a large dump used to kill the queryable object graph."""
+    text = (
+        "CREATE TABLE dbo.Orders (\n"
+        "  OrderId INT NOT NULL,\n"
+        "  CustomerId INT,\n"
+        "  CONSTRAINT PK_Orders PRIMARY KEY (OrderId)\n"
+        ");\n"
+        "CREATE TABLE dbo.Customers (\n"
+        "  CustomerId INT NOT NULL,\n"
+        "  CONSTRAINT PK_Customers PRIMARY KEY (CustomerId)\n"
+        ");\n"
+        "ALTER TABLE dbo.Orders ADD FOREIGN KEY (CustomerId) "
+        "REFERENCES dbo.Customers (CustomerId);\n"
+        "CREATE VIEW dbo.vOrders AS "
+        "SELECT OrderId FROM dbo.Orders JOIN dbo.Customers ON 1 = 1;\n"
+    )
+    reference = parse_bytes(text.encode("utf-8"), "db/schema.sql", "sql")
+    assert len(reference.symbols) == 6  # 3 objects + 3 columns in the fixture
+    assert _detect_sql_encoding(text.encode("utf-8")) is None
+    variants = {
+        "bom_le.sql": codecs.BOM_UTF16_LE + text.encode("utf-16-le"),
+        "bom_be.sql": codecs.BOM_UTF16_BE + text.encode("utf-16-be"),
+        "bare_le.sql": text.encode("utf-16-le"),
+        "bare_be.sql": text.encode("utf-16-be"),
+    }
+    for name, data in variants.items():
+        path = tmp_path / name
+        path.write_bytes(data)
+        result = parse_file(path, name)  # streaming entry
+        assert result is not None and result.stats.get("error") is None, name
+        assert result.symbols == reference.symbols, name
+        got = Counter((e["type"], e["from"], e["target"]) for e in result.edges)
+        want = Counter((e["type"], e["from"], e["target"]) for e in reference.edges)
+        assert got == want, name
+        assert result.lines == reference.lines, name
+        # identity still covers the file as stored — manifest shas keep matching
+        assert result.sha256 == hashlib.sha256(data).hexdigest(), name
+        assert parse_bytes(data, name, "sql").symbols == reference.symbols, name
+
+
+@pytest.mark.asyncio
+async def test_sql_utf16_repo_builds_graph(tmp_path: Path):
+    """End to end: a UTF-16 dump lands in the built graph with resolvable
+    cross-file edges — the user-visible symptom was an empty, unqueryable
+    SQL node set rather than a build failure."""
+    repo = _seed_repo(tmp_path / "sql_utf16", {
+        "db/schema.sql": codecs.BOM_UTF16_LE + SQL_FILES["db/schema.sql"].encode("utf-16-le"),
+        "db/procs/GetOrder.sql": SQL_FILES["db/procs/GetOrder.sql"].encode("utf-16-le"),
+    }, "seed utf16 sql")
+    summary = await _build(repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["failed"] == 0
+    assert stats["lang_coverage"]["sql"] == {"files": 2, "with_symbols": 2}
+
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    nodes = {n.id for n in graph.nodes}
+    assert "s:db/schema.sql:dbo.Orders" in nodes
+    assert "s:db/schema.sql:dbo.Orders.OrderId" in nodes
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    assert ("s:db/schema.sql:dbo.Orders", "s:db/schema.sql:dbo.Customers", "foreign_key") in edges
+    # cross-file resolution matches transcoded names against the UTF-8 table
+    assert (
+        "s:db/procs/GetOrder.sql:dbo.GetOrder", "s:db/schema.sql:dbo.Orders", "reads"
+    ) in edges
+    # Inventory/AuditLog/Staging unresolved, AuditTrail an unresolved call —
+    # identical counts to the UTF-8 build of the same two files.
+    assert stats["unresolved_refs"] == 3
+    assert stats["unresolved_calls"] == 1
+
+
 @pytest.mark.asyncio
 async def test_up_to_date_fast_path(repo: Path, tmp_path: Path):
     first = await _build(repo, tmp_path)
@@ -1594,3 +1677,22 @@ async def test_sql_over_hard_cap_skipped(tmp_path: Path, monkeypatch):
     assert "db/huge.sql" in skipped
     assert "over" in skipped["db/huge.sql"]
     assert summary["stats"]["files"] == 0
+
+
+def test_sql_utf16_size_cap_counts_decoded_bytes(tmp_path: Path, monkeypatch):
+    """UTF-16 stores two bytes per character: a dump whose raw stat is over
+    the cap but whose decoded content is under it must still parse — the cap
+    stops pathological files, it must not punish an encoding."""
+    text = "CREATE TABLE dbo.Big (Id INT);\n" + "-- pad\n" * 40
+    path = tmp_path / "huge.sql"
+    path.write_bytes(text.encode("utf-16-le"))  # BOM-less: the sniff earns its keep
+    size = path.stat().st_size
+    monkeypatch.setattr(languages_mod, "SQL_MAX_FILE_BYTES", size - 1)
+    assert not over_size_limit(path, size, "sql")
+    result = parse_file(path, "huge.sql")
+    assert result is not None
+    assert {"dbo.Big", "dbo.Big.Id"} <= {s["name"] for s in result.symbols}
+    # decoded content over the cap stays skipped (raw stat would say ~2x over)
+    monkeypatch.setattr(languages_mod, "SQL_MAX_FILE_BYTES", size // 2 - 1)
+    assert over_size_limit(path, size, "sql")
+    assert parse_file(path, "huge.sql") is None

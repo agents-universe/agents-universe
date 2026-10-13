@@ -45,7 +45,7 @@ from .model import (
     repo_graph_dir,
     symbol_id,
 )
-from .parser import file_sha256, parse_file
+from .parser import file_sha256, over_size_limit, parse_file
 from .report import REPORT_FILE, compact_map, render_report
 from .store import GRAPH_FILE, invalidate_cached, load_repo_graph, save_repo_graph
 
@@ -424,7 +424,7 @@ async def _build_repo_graph_locked(
             state.files.pop(rel, None)
             return
         limit = max_file_bytes(lang)
-        if size > limit:
+        if over_size_limit(path, size, lang):
             reason = (
                 f"over {limit // (1 << 20)}MB limit" if limit >= (1 << 20)
                 else f"over {limit}B limit"

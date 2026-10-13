@@ -9,6 +9,7 @@ never fatal.
 from __future__ import annotations
 
 import bisect
+import codecs
 import functools
 import hashlib
 import logging
@@ -62,7 +63,7 @@ def parse_file(path: Path, rel_path: str) -> FileParseResult | None:
         return None
     try:
         size = path.stat().st_size
-        if size > max_file_bytes(lang):
+        if over_size_limit(path, size, lang):
             _log.debug("graph parse skipped %s: %d bytes > %d", rel_path, size, max_file_bytes(lang))
             return None
         if lang == "sql":
@@ -73,11 +74,37 @@ def parse_file(path: Path, rel_path: str) -> FileParseResult | None:
     return parse_bytes(data, rel_path, lang)
 
 
+def over_size_limit(path: Path, size: int, lang: str | None) -> bool:
+    """True when *size* exceeds the parse cap for *lang*.
+
+    sql is measured in decoded bytes: a UTF-16 dump stores two bytes per
+    character, so its raw stat would count twice against a cap that exists
+    to catch pathological files, not to punish an encoding. Only files
+    already over the raw cap pay the 4KB head read that settles encoding.
+    """
+    limit = max_file_bytes(lang)
+    if size <= limit:
+        return False
+    if lang != "sql":
+        return True
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(_SQL_DETECT_BYTES)
+    except OSError:
+        return True  # vanished/locked mid-scan: skip, same as an unreadable file
+    codec = _detect_sql_encoding(head)
+    divisor = 4 if codec == "utf-32" else 2 if codec in _UTF16_CODECS else 1
+    return size // divisor > limit
+
+
 def parse_bytes(data: bytes, rel_path: str, lang: str) -> FileParseResult:
     """Pure parse entry point (also used by tests)."""
     started = time.perf_counter()
+    sha256 = hashlib.sha256(data).hexdigest()  # identity stays over the raw bytes
+    if lang == "sql":
+        data = _sql_to_utf8(data)
     result = FileParseResult(
-        sha256=hashlib.sha256(data).hexdigest(),
+        sha256=sha256,
         lang=lang,
         stats={"parse_ms": 0.0, "error": None},
         lines=data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0),
@@ -910,12 +937,69 @@ def _parse_sql(data: bytes, rel_path: str, result: FileParseResult) -> None:
     parser.finish()
 
 
+# --- sql encoding -------------------------------------------------------
+# SQL Server tooling writes dumps as UTF-16 (SSMS "Unicode", sqlcmd -u),
+# always BOM'd; scripts converted elsewhere may be BOM-less. The scanner's
+# regexes are ASCII, so UTF-16 bytes (C\0R\0E\0T\0E\0 \0T\0A\0B...) match
+# nothing: the file "parses" with zero symbols and no error, and the graph
+# silently loses the whole schema. Every entry point therefore transcodes to
+# UTF-8 before scanning; file identity (sha256) still covers the raw bytes,
+# and over_size_limit() measures the cap in decoded bytes.
+_UTF16_CODECS = frozenset({"utf-16", "utf-16-le", "utf-16-be"})
+_SQL_BOMS = (
+    # utf-32 first: UTF-32LE's BOM starts with UTF-16LE's (FF FE 00 00).
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+_SQL_DETECT_BYTES = 4096   # head sample for BOM-less sniffing and the cap
+_SQL_MIN_SNIFF = 8         # bytes before NUL-parity sniffing trusts itself
+
+
+def _detect_sql_encoding(head: bytes) -> str | None:
+    """Codec for a non-UTF-8 SQL byte stream; None means "already UTF-8".
+
+    BOM-less UTF-16 is recognized by NUL parity: ASCII text encoded UTF-16LE
+    is ``x\0x\0``, so NULs pile onto one parity of byte offsets. UTF-8 text
+    contains no NUL at all — that is what makes the density test safe: a
+    UTF-8 file can only trip it by actually carrying NUL bytes, and random
+    binary sits far below the threshold at either parity.
+    """
+    for bom, codec in _SQL_BOMS:
+        if head.startswith(bom):
+            return codec
+    sample = head[:_SQL_DETECT_BYTES]
+    n = len(sample) - (len(sample) % 2)
+    if n < _SQL_MIN_SNIFF:
+        return None
+    even = sum(1 for i in range(0, n, 2) if sample[i] == 0)
+    odd = sum(1 for i in range(1, n, 2) if sample[i] == 0)
+    # One parity must hold >= 12.5% of ALL bytes while the other stays rare.
+    # ASCII-heavy SQL clears that easily even with CJK comments mixed in.
+    if odd * 8 >= n and odd > even * 3:
+        return "utf-16-le"
+    if even * 8 >= n and even > odd * 3:
+        return "utf-16-be"
+    return None
+
+
+def _sql_to_utf8(data: bytes) -> bytes:
+    """Whole-buffer transcode for the single-shot sql path; UTF-8 is a no-op."""
+    codec = _detect_sql_encoding(data)
+    if codec is None:
+        return data
+    # "utf-16" (BOM'd) strips the BOM; the bare -le/-be codecs never see one.
+    return data.decode(codec, errors="replace").encode("utf-8")
+
+
 def _parse_sql_file(path: Path) -> FileParseResult | None:
     """Streaming SQL file entry: chunked reads, incremental sha and line count.
 
     No whole-file read_bytes() — a multi-hundred-MB dump is sanitized and
-    scanned in a bounded window. OSError (lock, deleted mid-scan) returns
-    None like the generic path.
+    scanned in a bounded window, and a UTF-16 dump is transcoded chunk by
+    chunk (the encoding is sniffed once, from the first read). OSError and
+    a decode failure both return None like the generic path.
     """
     started = time.perf_counter()
     digest = hashlib.sha256()
@@ -925,19 +1009,36 @@ def _parse_sql_file(path: Path) -> FileParseResult | None:
         sha256="", lang="sql", stats={"parse_ms": 0.0, "error": None}, lines=0,
     )
     parser = _SqlStreamParser(result)
+    decoder: codecs.IncrementalDecoder | None = None
+    sniffed = False
     try:
         with open(path, "rb") as fh:
             while True:
-                chunk = fh.read(SQL_READ_CHUNK)
-                if not chunk:
+                raw = fh.read(SQL_READ_CHUNK)
+                if not raw:
                     break
-                digest.update(chunk)
-                total += len(chunk)
+                digest.update(raw)  # identity covers the file as stored
+                if not sniffed:
+                    sniffed = True  # a regular file's first read is the head
+                    codec = _detect_sql_encoding(raw)
+                    if codec is not None:
+                        decoder = codecs.getincrementaldecoder(codec)(
+                            errors="replace"
+                        )
+                chunk = raw if decoder is None else decoder.decode(raw).encode("utf-8")
+                total += len(chunk)  # line accounting runs over decoded bytes
                 nl += chunk.count(b"\n")
                 last = chunk[-1:]
                 parser.feed(chunk)
+            if decoder is not None:
+                tail = decoder.decode(b"", final=True).encode("utf-8")
+                if tail:
+                    total += len(tail)
+                    nl += tail.count(b"\n")
+                    last = tail[-1:]
+                    parser.feed(tail)
         parser.finish()
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     result.sha256 = digest.hexdigest()
     result.lines = nl + (1 if total and last != b"\n" else 0)

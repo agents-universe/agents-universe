@@ -27,6 +27,7 @@ STAT_BUILD_MS = "build_ms"
 STAT_WITH_SYMBOLS = "with_symbols"    # files that produced >= 1 symbol
 STAT_LANG_COVERAGE = "lang_coverage"  # per-language {files, with_symbols}
 STAT_FAILED_REASONS = "failed_reasons"  # error string -> file count
+STAT_SKIPPED_FILES = "skipped_files"  # rel path -> skip reason (bounded)
 STAT_UNTRACKED = "untracked_sources"  # untracked source files not indexed
 
 NODE_FILE = "file"

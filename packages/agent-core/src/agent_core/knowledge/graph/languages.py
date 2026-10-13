@@ -49,6 +49,16 @@ EXCLUDED_DIRS: frozenset[str] = frozenset({
 # Skip giant / minified / generated files outright.
 MAX_FILE_BYTES = 2 * 1024 * 1024
 
+# sql streams through a sliding window (parser._SqlStreamParser), so its cap
+# is only a pathological stop, not a memory bound — dumps and migration
+# scripts routinely exceed the default 2MB.
+SQL_MAX_FILE_BYTES = 1 << 30  # 1 GiB
+
+
+def max_file_bytes(lang: str | None) -> int:
+    """Parse size cap for *lang* — single source of truth for parser and builder."""
+    return SQL_MAX_FILE_BYTES if lang == "sql" else MAX_FILE_BYTES
+
 
 @dataclass(frozen=True)
 class LanguageSpec:

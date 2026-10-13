@@ -9,6 +9,7 @@ grammars.
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,9 +19,16 @@ from agent_core.knowledge.graph.builder import (
     _java_source_roots,
     build_repo_graph,
 )
+from agent_core.knowledge.graph import languages as languages_mod
 from agent_core.knowledge.graph import queries
 from agent_core.knowledge.graph.languages import get_grammar
-from agent_core.knowledge.graph.parser import parse_file
+from agent_core.knowledge.graph.parser import (
+    FileParseResult,
+    _SqlSanitizer,
+    _SqlStreamParser,
+    parse_bytes,
+    parse_file,
+)
 from agent_core.knowledge.graph.report import compact_map, render_report
 from agent_core.knowledge.graph.store import load_cached
 
@@ -1360,3 +1368,229 @@ async def test_queries(repo: Path, tmp_path: Path, grammars):
 
     found = queries.search(graph, "greet")
     assert any(m["name"] == "Greeter.greet" for m in found["matches"])
+
+
+# ---------------------------------------------------------------------------
+# Large SQL: streaming parser parity + oversized-file visibility
+# ---------------------------------------------------------------------------
+
+def _san_whole(data: bytes) -> bytes:
+    san = _SqlSanitizer()
+    return san.feed(data) + san.finish()
+
+
+def _san_chunked(data: bytes, chunk: int) -> bytes:
+    san = _SqlSanitizer()
+    out = bytearray()
+    for i in range(0, len(data), chunk):
+        out += san.feed(data[i:i + chunk])
+    out += san.finish()
+    return bytes(out)
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 4096])
+def test_sql_sanitizer_chunked_matches_whole(chunk):
+    """--  /*  */  and '' markers split across a read boundary must sanitize
+    exactly like the whole buffer at once."""
+    cases = [
+        b"",
+        b"SELECT 1;",
+        b"-- comment\nCREATE TABLE t (x);\n",
+        b"/* a */x/* b\ny */z\n",
+        b"'unterminated\nmore lines\nCREATE TABLE ghost (x);\n",
+        b"''''\n",                      # two escaped-quote pairs
+        b"a'b'c'd\n",
+        b"/* unterminated block",
+        b"-", b"/", b"*/", b"'", b"--", b"/*",
+        b"x--y\nz",
+        b"/* */'it''s'--done\n",
+        b"CREATE TABLE dbo.T (\n  Id INT, -- trailing\n  Name /* mid */ NVARCHAR(9)\n);\n",
+    ] + [text.encode() for text in SQL_FILES.values()]
+    for data in cases:
+        assert _san_chunked(data, chunk) == _san_whole(data), data
+
+
+def test_sql_sanitizer_semantics():
+    """Blanking rules: comments/strings die (including ghost CREATEs),
+    newlines survive, unterminated string blanks to EOF, length preserved."""
+    data = (
+        b"-- ghost: CREATE TABLE ghost (x);\n"
+        b"CREATE TABLE real (x);\n"
+        b"/* block\nCREATE TABLE inblock (x); */\n"
+        b"INSERT INTO t VALUES ('it''s');\n"
+        b"SELECT 'unclosed\n"
+        b"CREATE TABLE after (x);\n"
+    )
+    out = _san_whole(data)
+    assert len(out) == len(data)
+    assert out.count(b"\n") == data.count(b"\n")
+    assert b"ghost" not in out and b"inblock" not in out and b"after" not in out
+    assert b"CREATE TABLE real" in out
+    assert b"INSERT INTO t VALUES" in out
+    assert b"it''s" not in out
+
+
+@pytest.mark.parametrize("window,span,chunk", [
+    (64, 512, 1),          # tiny window + pop cycles + per-byte feeds
+    (64, 512, 13),
+    (4096, 1 << 20, 4096),  # window triggers rounds, no pop (fixtures < span)
+    (1 << 20, 1 << 20, 1 << 20),  # single round, whole-buffer semantics
+])
+def test_sql_stream_window_invariance(window, span, chunk):
+    """Streaming with any window/chunking yields byte-identical symbols and
+    the same edge multiset as the single-shot parse of the same bytes."""
+    for rel, text in SQL_FILES.items():
+        data = text.encode()
+        reference = parse_bytes(data, rel, "sql")
+        result = FileParseResult(sha256="", lang="sql")
+        parser = _SqlStreamParser(result, window=window, span=span)
+        for i in range(0, len(data), chunk):
+            parser.feed(data[i:i + chunk])
+        parser.finish()
+        assert result.symbols == reference.symbols, rel
+        got = Counter((e["type"], e["from"], e["target"]) for e in result.edges)
+        want = Counter((e["type"], e["from"], e["target"]) for e in reference.edges)
+        assert got == want, rel
+
+
+def test_sql_attr_frozen_run_preserved():
+    """A CREATE VIEW between two tables pins later FK attribution to the table
+    before the view — the old whole-buffer walk broke there too. Preserved for
+    cache parity; fixing it requires a CACHE_VERSION bump."""
+    text = (
+        "CREATE TABLE dbo.A (Id INT);\n"
+        "CREATE VIEW dbo.v AS SELECT Id FROM dbo.A;\n"
+        "CREATE TABLE dbo.B (\n"
+        "  Aid INT,\n"
+        "  FOREIGN KEY (Aid) REFERENCES dbo.A (Id)\n"
+        ");\n"
+    ).encode()
+    result = parse_bytes(text, "db/x.sql", "sql")
+    assert {s["name"]: s["type"] for s in result.symbols}["dbo.v"] == "view"
+    fk = {(e["from"], e["target"]) for e in result.edges if e["type"] == "foreign_key"}
+    # attributed to dbo.A (frozen at the view), not to the nearer dbo.B
+    assert ("dbo.A", "dbo.A") in fk
+    assert ("dbo.B", "dbo.A") not in fk
+
+
+def _big_sql_dump() -> tuple[bytes, dict[str, int]]:
+    """~20MiB synthetic T-SQL: 40 tables with FKs, a view, a GO proc and bulk
+    INSERTs — a realistic dump shape that today's 2MB guard silently drops."""
+    lines: list[str] = []
+    starts: dict[str, int] = {}
+    for i in range(40):
+        name = f"dbo.T{i:02d}"
+        starts[name] = len(lines) + 1
+        # Column symbols carry the line of their part start (just after the
+        # previous column's comma), matching the pre-streaming parser.
+        starts[f"{name}.Name"] = len(lines) + 2
+        lines.append(f"CREATE TABLE {name} (")
+        lines.append("    Id INT NOT NULL,")
+        lines.append("    Name NVARCHAR(64) NOT NULL,")
+        if i == 0:
+            lines.append("    CONSTRAINT PK_T00 PRIMARY KEY (Id)")
+        else:
+            lines.append("    Tid INT NOT NULL,")
+            lines.append(
+                f"    CONSTRAINT FK_T{i:02d} FOREIGN KEY (Tid) "
+                f"REFERENCES dbo.T{i - 1:02d} (Id)"
+            )
+        lines.append(");")
+    starts["dbo.vAll"] = len(lines) + 1
+    lines.append(
+        "CREATE VIEW dbo.vAll AS "
+        "SELECT a.Id FROM dbo.T00 a JOIN dbo.T01 b ON b.Id = a.Id;"
+    )
+    starts["dbo.Rebuild"] = len(lines) + 1
+    lines.append("CREATE PROCEDURE dbo.Rebuild AS")
+    lines.append("BEGIN")
+    lines.append("    DELETE FROM dbo.T00;")
+    lines.append("    EXEC dbo.Purge;")
+    lines.append("END")
+    lines.append("GO")
+    header = "\n".join(lines) + "\n"
+    insert = "INSERT INTO dbo.T39 (Id, Name) VALUES (1, 'x');\n"
+    bulk = insert * (20 * 1024 * 1024 // len(insert) + 1)
+    return (header + bulk).encode("ascii"), starts
+
+
+def test_large_sql_streams(tmp_path: Path):
+    """A ~20MiB dump streams through parse_file with bounded memory and
+    exact line numbers — the old whole-buffer path refused it outright."""
+    data, starts = _big_sql_dump()
+    path = tmp_path / "dump.sql"
+    path.write_bytes(data)
+    result = parse_file(path, "dump.sql")
+    assert result is not None and result.stats.get("error") is None
+    assert len(data) > 2 * 1024 * 1024
+    # linear streaming, not an O(n^2) scan (quadratic would take minutes)
+    assert result.stats["parse_ms"] < 15000
+    assert result.lines == data.count(b"\n") + (1 if not data.endswith(b"\n") else 0)
+    lines_by_name = {s["name"]: s["line"] for s in result.symbols}
+    for name in ("dbo.T00", "dbo.T07", "dbo.T39", "dbo.vAll", "dbo.Rebuild"):
+        assert lines_by_name[name] == starts[name], name
+    assert lines_by_name["dbo.T07.Name"] == starts["dbo.T07.Name"]
+    types = {s["name"]: s["type"] for s in result.symbols}
+    assert types["dbo.T39"] == "table"
+    assert types["dbo.vAll"] == "view"
+    assert types["dbo.Rebuild"] == "procedure"
+    writes = [e for e in result.edges if e["type"] == "writes" and e["target"] == "dbo.T39"]
+    assert len(writes) == 1          # ~460k INSERTs dedup to one edge
+    # The bulk INSERTs trail the CREATE PROCEDURE, so its region owns them.
+    assert writes[0]["from"] == "dbo.Rebuild"
+    fks = {(e["from"], e["target"]) for e in result.edges if e["type"] == "foreign_key"}
+    assert ("dbo.T07", "dbo.T06") in fks
+    assert ("dbo.T39", "dbo.T38") in fks
+    calls = {(e["from"], e["target"]) for e in result.edges if e["type"] == "calls"}
+    assert ("dbo.Rebuild", "dbo.Purge") in calls
+    deletes = {e["target"] for e in result.edges if e["type"] == "writes"}
+    assert "dbo.T00" in deletes
+
+
+@pytest.mark.asyncio
+async def test_oversized_file_skipped_visibly(tmp_path: Path):
+    """Files over the per-language cap are skipped with a visible reason: named
+    in stats and the report, never handed to parse_file, and the manifest
+    marker keeps the next build on the fast path (previously a permanent
+    fast-path disable plus a wasted re-hash every build)."""
+    files = {
+        "small.py": "def ok():\n    return 1\n",
+        "big.py": "x = 1\n" * 500_000,  # ~3MB, over the 2MB cap
+    }
+    repo = _seed_repo(tmp_path / "bigrepo", files, "seed big")
+    from agent_core.knowledge.graph import parser as _parser_mod
+    with patch("agent_core.knowledge.graph.builder.parse_file",
+               wraps=_parser_mod.parse_file) as counted:
+        summary = await _build(repo, tmp_path)
+    assert summary["status"] == "built"
+    stats = summary["stats"]
+    assert stats["skipped"] == 1
+    assert stats["skipped_files"] == {"big.py": "over 2MB limit"}
+    assert stats["files"] == 1  # big.py is not in the graph
+    # stat check runs before hashing/parsing: parse_file never sees it
+    assert all(call.args[1] != "big.py" for call in counted.call_args_list)
+    graph = load_cached(tmp_path / "kg")
+    assert graph is not None
+    assert graph.node("f:big.py") is None
+    assert graph.node("s:small.py:ok") is not None
+    report = render_report(graph)
+    assert "## Skipped files (too large / unreadable)" in report
+    assert "big.py" in report
+    # marker stays in the manifest: the follow-up build takes the fast path
+    second = await _build(repo, tmp_path)
+    assert second["status"] == "up_to_date"
+
+
+@pytest.mark.asyncio
+async def test_sql_over_hard_cap_skipped(tmp_path: Path, monkeypatch):
+    """The sql-specific cap (1GiB pathological stop) is the same knob the
+    parser and builder both read — a small override makes it testable."""
+    monkeypatch.setattr(languages_mod, "SQL_MAX_FILE_BYTES", 100)
+    files = {"db/huge.sql": "CREATE TABLE dbo.Big (Id INT);\n" + "-- pad\n" * 40}
+    repo = _seed_repo(tmp_path / "cap", files, "seed cap")
+    summary = await _build(repo, tmp_path)
+    assert summary["stats"]["skipped"] == 1
+    skipped = summary["stats"]["skipped_files"]
+    assert "db/huge.sql" in skipped
+    assert "over" in skipped["db/huge.sql"]
+    assert summary["stats"]["files"] == 0

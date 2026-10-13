@@ -8,14 +8,19 @@ never fatal.
 """
 from __future__ import annotations
 
+import bisect
+import functools
 import hashlib
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .languages import LanguageSpec, detect_language, get_grammar, language_spec
+from .languages import LanguageSpec, detect_language, get_grammar, language_spec, max_file_bytes
+
+_log = logging.getLogger(__name__)
 
 # <script> / <script lang="ts"> block inside a .vue file. The vue grammar in
 # the language pack treats embedded script as raw text, so the fragment is
@@ -56,8 +61,12 @@ def parse_file(path: Path, rel_path: str) -> FileParseResult | None:
     if lang is None:
         return None
     try:
-        if path.stat().st_size > 2 * 1024 * 1024:  # noqa: PLR2004 (2MB guard)
+        size = path.stat().st_size
+        if size > max_file_bytes(lang):
+            _log.debug("graph parse skipped %s: %d bytes > %d", rel_path, size, max_file_bytes(lang))
             return None
+        if lang == "sql":
+            return _parse_sql_file(path)
         data = path.read_bytes()
     except OSError:
         return None
@@ -106,6 +115,25 @@ def _parse_vue(data: bytes, rel_path: str, result: FileParseResult) -> None:
 # identifiers, proc parameter lists, EXEC, CREATE TRIGGER, GO batches), so an
 # AST is deliberately not used — Vue's script-block path is the precedent for
 # a language that bypasses the generic walker.
+#
+# Large files stream: bytes are sanitized incrementally into a sliding
+# window and scanned in rounds over [end - SQL_SPAN_MAX, end), so a
+# multi-hundred-MB dump never lands in memory whole. Every match shorter
+# than SQL_SPAN_MAX is discovered complete in the round its last byte
+# arrives; rounds re-cover the retained tail, which is safe because every
+# emission deduplicates (sym_seen / edge_seen) and every attribution
+# (region owner, PK/FK table) is a pure function of the declaration index.
+# Forward state — sanitizer, column bodies, trigger headers, line cursors —
+# consumes each byte exactly once. A match longer than SQL_SPAN_MAX that
+# straddles a round boundary is lost: a documented pathological bound (a
+# constraint list or dotted chain over 1 MiB), never a real schema.
+# Known quirks deliberately preserved for byte-parity with the old
+# whole-buffer parse (fixing either requires a CACHE_VERSION bump):
+#   * attr_table freezes at the first non-table declaration (a CREATE VIEW
+#     between two tables pins later FKs to the first table);
+#   * a match cut by a region boundary in the old slice-based scan may
+#     normalize differently — only reachable via a dangling dotted target
+#     immediately before CREATE.
 
 # An identifier: [bracketed] | `backticked` | bare, optionally schema-qualified.
 _SQL_IDENT = (
@@ -151,6 +179,12 @@ _SQL_BODY_STOP_RE = re.compile(
 _SQL_CONSTRAINT_LEAD = frozenset({
     "constraint", "primary", "foreign", "unique", "check", "key", "index",
 })
+# Bytes that can immediately precede another identifier segment — a qual-call
+# match starting right after one is a mid-identifier fragment, not a real call.
+_SQL_WORD_CHAR = frozenset(
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    b"_$#@].`"
+)
 
 # Words that look like identifiers after a keyword but can never be a table.
 _SQL_NOT_TABLE = frozenset({
@@ -184,50 +218,165 @@ _SQL_DECL_KIND = {
 }
 
 
-def _sql_sanitize(data: bytes) -> bytes:
-    """Blank comments and string literals in place, preserving length.
+# Streaming window constants (see the section header for the invariants):
+# retention behind the scan start is SQL_SPAN_MAX + SQL_LOOKBACK bytes, which
+# keeps the ALTER window (200) and the qual-call precede-24 byte-exact — a
+# pure byte slice of the same text, never a collapsed approximation.
+SQL_WINDOW = 4 * 1024 * 1024        # buffered bytes before a scan round
+SQL_SPAN_MAX = 1024 * 1024          # longest match still discoverable across rounds
+SQL_LOOKBACK = 200                  # bytes retained before each round's scan start
+SQL_READ_CHUNK = 1024 * 1024        # raw read size in the streaming file path
+SQL_MAX_DECLS = 50_000              # declaration-index quota (pathological files)
+_SQL_PRE_CAP = 1024 * 1024          # CREATE-name -> '(' search prefix cap
+_SQL_PART_CAP = 64 * 1024           # one column-part buffer quota
+_SQL_HEAD_CAP = 400                 # trigger header bytes kept for the no-AS fallback
 
-    Newlines survive so line numbers computed on the result match the
+
+def _blank_non_nl(chunk: bytes) -> bytes:
+    """Blank *chunk* to spaces, preserving newlines (line numbers stay exact)."""
+    if not chunk:
+        return b""
+    if 0x0A not in chunk:
+        return b" " * len(chunk)
+    return b"\n".join(b" " * len(part) for part in chunk.split(b"\n"))
+
+
+def _at_scan_edge(buf: bytes, m: "re.Match[bytes]", end_i: int) -> bool:
+    """Could *m* grow if more bytes followed the scan edge?
+
+    Given an endpos cut, the regex engine backtracks an identifier to a
+    shorter form that still fits: ``dbo.Custo|mers`` ends exactly at the
+    edge, and ``dbo.|Customers`` backtracks to ``dbo`` leaving the dot
+    unconsumed. Either truncated form would poison sym_seen (the offset is
+    deduped) so it must never be emitted before the full text is resident.
+    A whitespace-then-dot lookahead detects both; deferred matches are
+    re-scanned next round from an earlier offset with more bytes available.
+    """
+    if m.end() >= end_i:
+        return True
+    j = m.end()
+    while j < end_i and buf[j] in b" \t\r\n":
+        j += 1
+    return j >= end_i or buf[j] == 0x2E  # '.' — a pending qualifier
+
+
+# Next sanitizer state-machine marker in NORMAL mode. One search per segment:
+# three separate finds for `-`/`/`/`'` would each scan to the end of the
+# chunk whenever that byte is absent (an INSERT-heavy dump has one `'` per
+# line and no dashes — 2 full-chunk scans per string).
+_SQL_SAN_MARK_RE = re.compile(rb"[-/']")
+
+
+class _SqlSanitizer:
+    """Incremental comment/string blanking — byte-identical to one-shot scanning.
+
+    Fed arbitrarily split chunks: ``feed()`` returns the sanitized prefix of
+    everything received so far and holds back a trailing byte that could
+    still complete a ``--`` / ``/*`` / ``*/`` / ``''`` marker split across a
+    read boundary. ``finish()`` applies end-of-input semantics: an
+    unterminated block comment or string blanks to the end (matching the old
+    whole-buffer loop), a dangling ``-`` or ``/`` is plain text. Newlines
+    survive everywhere so line numbers computed on the result match the
     original file, and a CREATE TABLE inside a comment or string provably
     never becomes a node. Double quotes are left alone — in T-SQL they are
     usually identifiers, rarely literals in DDL.
     """
-    out = bytearray(data)
-    i, n = 0, len(data)
-    while i < n:
-        c = data[i]
-        if c == 0x2D and i + 1 < n and data[i + 1] == 0x2D:  # -- line comment
-            j = data.find(b"\n", i)
-            j = n if j == -1 else j
-            for k in range(i, j):
-                out[k] = 0x20
-            i = j
-        elif c == 0x2F and i + 1 < n and data[i + 1] == 0x2A:  # /* block */
-            close = data.find(b"*/", i + 2)
-            end = n if close == -1 else close + 2
-            for k in range(i, end):
-                if out[k] != 0x0A:
-                    out[k] = 0x20
-            i = end
-        elif c == 0x27:  # 'literal' with '' escape
-            j = i + 1
-            while j < n:
-                if data[j] == 0x27:
-                    if j + 1 < n and data[j + 1] == 0x27:
-                        j += 2
-                        continue
+
+    _NORMAL, _LINE, _BLOCK, _STRING = range(4)
+
+    def __init__(self) -> None:
+        self._mode = self._NORMAL
+        self._pending = b""  # unclassifiable tail held for the next feed
+
+    def feed(self, raw: bytes) -> bytes:
+        data = self._pending + raw
+        self._pending = b""
+        out = bytearray()
+        i, n = 0, len(data)
+        mode = self._mode
+        while i < n:
+            if mode == self._NORMAL:
+                mark = _SQL_SAN_MARK_RE.search(data, i)
+                if mark is None:
+                    out += data[i:]
                     break
-                j += 1
-            end = min(j + 1, n)
-            for k in range(i, end):
-                if out[k] != 0x0A:
-                    out[k] = 0x20
-            i = end
-        else:
-            i += 1
-    return bytes(out)
+                j = mark.start()
+                out += data[i:j]
+                if data[j] == 0x27:  # 'literal' with '' escape
+                    mode = self._STRING
+                    out.append(0x20)
+                    i = j + 1
+                    continue
+                if j + 1 >= n:  # marker at the very end: hold for the next feed
+                    self._pending = data[j:]
+                    break
+                if data[j] == 0x2D and data[j + 1] == 0x2D:  # -- line comment
+                    mode = self._LINE
+                    out += b"  "
+                    i = j + 2
+                    continue
+                if data[j] == 0x2F and data[j + 1] == 0x2A:  # /* block */
+                    mode = self._BLOCK
+                    out += b"  "
+                    i = j + 2
+                    continue
+                out.append(data[j])
+                i = j + 1
+                continue
+            if mode == self._LINE:
+                k = data.find(b"\n", i)
+                if k == -1:
+                    out += _blank_non_nl(data[i:])
+                    break
+                out += _blank_non_nl(data[i:k])
+                out.append(0x0A)
+                i = k + 1
+                mode = self._NORMAL
+                continue
+            if mode == self._BLOCK:
+                k = data.find(b"*/", i)
+                if k == -1:
+                    if n > i and data[n - 1] == 0x2A:  # could start '*/'
+                        out += _blank_non_nl(data[i:n - 1])
+                        self._pending = b"*"
+                    else:
+                        out += _blank_non_nl(data[i:])
+                    break
+                out += _blank_non_nl(data[i:k + 2])
+                i = k + 2
+                mode = self._NORMAL
+                continue
+            # mode == _STRING: blank until the closing quote ('' escapes both)
+            k = data.find(b"'", i)
+            if k == -1:
+                out += _blank_non_nl(data[i:])
+                break
+            if k + 1 >= n:  # closing-or-escape quote split at the boundary
+                out += _blank_non_nl(data[i:k])
+                self._pending = b"'"
+                break
+            out += _blank_non_nl(data[i:k + 1])
+            if data[k + 1] == 0x27:
+                out.append(0x20)
+                i = k + 2
+                continue
+            i = k + 1
+            mode = self._NORMAL
+            continue
+        self._mode = mode
+        return bytes(out)
+
+    def finish(self) -> bytes:
+        """End-of-input flush: pending markers resolve as plain text or blank."""
+        pending, self._pending = self._pending, b""
+        if not pending:
+            return b""
+        if self._mode in (self._BLOCK, self._STRING):  # unterminated -> blank to EOF
+            return _blank_non_nl(pending)
+        return pending
 
 
+@functools.lru_cache(maxsize=8192)
 def _sql_norm_name(raw: bytes) -> str:
     """`[dbo].[Orders]` / ``dbo . Orders`` -> canonical ``dbo.Orders``."""
     text = raw.decode("utf-8", "replace")
@@ -251,197 +400,549 @@ def _sql_valid_table(name: str) -> bool:
     return True
 
 
-def _sql_split_columns(text: bytes, start: int, end: int) -> list[tuple[str, int, bytes]]:
-    """Column name, offset and text for each top-level part of a table body.
-
-    The paren search stops at the first statement keyword or `;` after the
-    table name so `CREATE TABLE x AS SELECT ...` (no column body) can never
-    mistake a following statement's argument list for its own.
-    """
-    stop = _SQL_BODY_STOP_RE.search(text, start, end)
-    search_end = stop.start() if stop is not None else end
-    open_at = text.find(b"(", start, search_end)
-    if open_at == -1:
-        return []
-    depth = 0
-    body_end = end
-    for i in range(open_at, end):
-        if text[i] == 0x28:
-            depth += 1
-        elif text[i] == 0x29:
-            depth -= 1
-            if depth == 0:
-                body_end = i
-                break
-    # Split strictly *inside* the parens: starting the scan at the opening
-    # paren itself would leave depth at 1 for every comma, collapsing the
-    # whole body into one part (only the first column would ever be seen).
-    columns: list[tuple[str, int, bytes]] = []
-    depth = 0
-    part_start = open_at + 1
-    for i in range(open_at + 1, body_end):
-        c = text[i]
-        if c == 0x28:
-            depth += 1
-        elif c == 0x29:
-            depth -= 1
-        elif c == 0x2C and depth == 0:
-            columns.append((part_start, i))
-            part_start = i + 1
-    columns.append((part_start, body_end))
-    out = []
-    for col_start, col_end in columns:
-        part = text[col_start:col_end]
-        m = _re_ident_start(part)
-        if m is None:
-            continue
-        first = _sql_norm_name(m.group(1)).lower()
-        if first in _SQL_CONSTRAINT_LEAD:
-            continue  # table-level constraint, handled by the global PK/FK pass
-        out.append((_sql_norm_name(m.group(1)), col_start, part))
-    return out
-
-
 def _re_ident_start(part: bytes):
     return re.match(rb"^\s*(" + _SQL_IDENT_ONLY + rb")", part)
 
 
-def _parse_sql(data: bytes, rel_path: str, result: FileParseResult) -> None:
-    text = _sql_sanitize(data)
+class _LineCursor:
+    """Forward line counter for one symbol stream (decls or columns).
 
-    def line_of(offset: int) -> int:
-        return text.count(b"\n", 0, offset) + 1
+    Queries arrive in ascending order; the delta between two resident
+    positions is a plain newline count. When the cursor has fallen behind
+    the window base the caller re-anchors it (see _SqlStreamParser._line_at).
+    """
 
-    sym_seen: set[str] = set()
-    edge_seen: set[tuple[str, str | None, str]] = set()
+    __slots__ = ("pos", "line")
 
-    def emit_symbol(name: str, graph_type: str, line: int) -> None:
-        if not name or name in sym_seen:
+    def __init__(self) -> None:
+        self.pos = 0
+        self.line = 1
+
+
+class _TableBody:
+    """Streaming replica of the old _sql_split_columns: pre-body search, then parts.
+
+    Phase ``pre`` hunts the body's opening ``(`` (stopping at the first
+    statement keyword so `CREATE TABLE x AS SELECT ...` can never mistake a
+    following statement's argument list for its own); phase ``body`` splits
+    depth-0 commas exactly like the old inline loop. Region close (next
+    declaration or EOF) finalizes the pending part — the old parse clipped
+    the body at region_end the same way.
+    """
+
+    __slots__ = ("pos", "start", "qname", "phase", "prefix", "part",
+                 "part_abs", "part_dropped", "depth")
+
+    def __init__(self, start: int, qname: str) -> None:
+        self.pos = start           # next absolute byte to consume
+        self.start = start         # decl.end — anchor for prefix offsets
+        self.qname = qname
+        self.phase = "pre"
+        self.prefix = bytearray()
+        self.part = bytearray()
+        self.part_abs = 0
+        self.part_dropped = False
+        self.depth = 0
+
+    def feed(self, parser: "_SqlStreamParser", chunk: bytes, chunk_abs: int,
+             final: bool = False) -> None:
+        if self.phase == "done" or not chunk:
             return
-        sym_seen.add(name)
-        result.symbols.append({"name": name, "type": graph_type, "line": line})
+        if self.phase == "pre":
+            self.prefix += chunk
+            stop = _SQL_BODY_STOP_RE.search(self.prefix)
+            if stop is not None and not final and stop.end() == len(self.prefix):
+                # Keyword touching the fed boundary may be a backtracked
+                # shorter form — defer it to the next feed/region close.
+                stop = None
+            limit = stop.start() if stop is not None else len(self.prefix)
+            open_at = self.prefix.find(b"(", 0, limit)
+            if open_at == -1:
+                if stop is not None or len(self.prefix) > _SQL_PRE_CAP:
+                    self.phase = "done"
+                    self.prefix.clear()
+                return
+            # Body opens: switch to part mode over everything after the '('.
+            self.phase = "body"
+            body = bytes(self.prefix[open_at + 1:])
+            self.prefix.clear()
+            self.depth = 0
+            self.part_abs = self.start + open_at + 1
+            self._scan_body(parser, body, self.part_abs)
+            return
+        self._scan_body(parser, chunk, chunk_abs)
 
-    def emit_edge(etype: str, src: str | None, target: str) -> None:
+    def _scan_body(self, parser: "_SqlStreamParser", data: bytes, data_abs: int) -> None:
+        i, n = 0, len(data)
+        depth = self.depth
+        while i < n:
+            j, tag = -1, 0
+            for pos, t in ((data.find(b"(", i), 40), (data.find(b")", i), 41),
+                           (data.find(b",", i), 44)):
+                if pos != -1 and (j == -1 or pos < j):
+                    j, tag = pos, t
+            if j == -1:
+                self._append_part(data[i:])
+                break
+            self._append_part(data[i:j])
+            if tag == 40:
+                depth += 1
+                self._append_part(b"(")
+            elif tag == 41:
+                if depth == 0:      # body closes — old parse stopped at body_end
+                    self._emit_part(parser)
+                    self.depth = 0
+                    self.phase = "done"
+                    return
+                depth -= 1
+                self._append_part(b")")
+            elif depth == 0:        # depth-0 comma: one column part ends
+                self._emit_part(parser)
+                self.part_abs = data_abs + j + 1
+            else:
+                self._append_part(b",")
+            i = j + 1
+        self.depth = depth
+
+    def _append_part(self, data: bytes) -> None:
+        if not data or self.part_dropped:
+            return
+        if len(self.part) + len(data) > _SQL_PART_CAP:
+            self.part_dropped = True  # pathological part: skip its symbol only
+            return
+        self.part += data
+
+    def _emit_part(self, parser: "_SqlStreamParser") -> None:
+        if not self.part_dropped:
+            m = _re_ident_start(bytes(self.part))
+            if m is not None:
+                first = _sql_norm_name(m.group(1)).lower()
+                if first not in _SQL_CONSTRAINT_LEAD:
+                    # table-level constraint, handled by the global PK/FK pass
+                    col = _sql_norm_name(m.group(1))
+                    name = f"{self.qname}.{col}"
+                    parser._emit_symbol(name, "column", parser._line_at(parser.col_cursor, self.part_abs))
+                    if _SQL_PK_INLINE_RE.search(bytes(self.part)):
+                        parser._emit_edge("primary_key", name, self.qname)
+        self.part.clear()
+        self.part_dropped = False
+
+    def finalize(self, parser: "_SqlStreamParser") -> None:
+        if self.phase == "body":
+            self._emit_part(parser)  # unclosed body: old parse kept [part_start, region_end)
+        self.phase = "done"
+
+
+class _TriggerHeader:
+    """First-AS / ON-target tracking for CREATE TRIGGER across feeds.
+
+    The old parse searched the whole header once the region was known; here
+    the first ``AS`` is found incrementally (with a SQL_SPAN_MAX overlap so
+    a boundary-split match is still seen), the first 400 header bytes are
+    retained for the no-AS fallback, and the ON target is resolved once —
+    when AS is found, over the still-resident prefix, exactly matching the
+    old ``header[:as]`` substring search. Realistic headers settle in the
+    first feed; a header whose prefix has already left the window is
+    pathological and degrades to a search from the window base.
+    """
+
+    __slots__ = ("pos", "start", "qname", "as_pos", "as_from", "head", "on")
+
+    def __init__(self, start: int, qname: str) -> None:
+        self.pos = start
+        self.start = start
+        self.qname = qname
+        self.as_pos: int | None = None
+        self.as_from = start
+        self.head = bytearray()
+        self.on: str | None = None
+
+    def feed(self, parser: "_SqlStreamParser", chunk: bytes, chunk_abs: int,
+             final: bool = False) -> None:
+        if len(self.head) < _SQL_HEAD_CAP:
+            self.head += chunk[: _SQL_HEAD_CAP - len(self.head)]
+        if self.as_pos is not None or not chunk:
+            return
+        hi = chunk_abs + len(chunk)
+        lo = max(self.start, self.as_from, parser.base)
+        if hi > lo:
+            m = _SQL_AS_RE.search(parser.buf, lo - parser.base, hi - parser.base)
+            if m is not None:
+                # `AS` ending exactly at the fed boundary may be backtracked —
+                # wait for more bytes; the overlap in as_from re-finds it.
+                if not final and parser.base + m.end() == hi:
+                    pass
+                else:
+                    self.as_pos = parser.base + m.start()
+                    self._resolve_on(parser)
+        self.as_from = max(self.start, hi - parser.span)
+
+    def _resolve_on(self, parser: "_SqlStreamParser") -> None:
+        if self.on is not None or self.as_pos is None:
+            return
+        lo = max(self.start, parser.base)
+        hi = self.as_pos
+        if hi > lo:
+            m = _SQL_TRIGGER_ON_RE.search(parser.buf, lo - parser.base, hi - parser.base)
+            if m is not None:
+                self.on = _sql_norm_name(m.group(1))
+
+    def finalize(self, parser: "_SqlStreamParser") -> None:
+        target = self.on
+        if self.as_pos is None:
+            # no AS in the header: old parse searched its first 400 bytes
+            m = _SQL_TRIGGER_ON_RE.search(self.head)
+            target = _sql_norm_name(m.group(1)) if m is not None else None
+        if target is not None:
+            parser._emit_edge("reads", self.qname, target)
+
+
+class _SqlStreamParser:
+    """Sliding-window regex extraction over a sanitized SQL byte stream.
+
+    See the section header for the invariants. In short: rounds scan
+    ``[scan_from, end)`` where ``scan_from`` trails ``end`` by SQL_SPAN_MAX
+    (SQL_LOOKBACK bytes retained behind it), so any match up to SQL_SPAN_MAX
+    is discovered complete; re-scans of the retained tail are idempotent
+    thanks to sym_seen/edge_seen dedup and pure-function attribution.
+    """
+
+    def __init__(self, result: FileParseResult,
+                 window: int = SQL_WINDOW, span: int = SQL_SPAN_MAX) -> None:
+        self.result = result
+        self.window = window
+        self.span = span
+        self.san = _SqlSanitizer()
+        self.buf = bytearray()       # sanitized text; absolute pos = base + index
+        self.base = 0                # absolute offset of buf[0]
+        self.scan_from = 0           # next round's scan start (absolute)
+        self._nl_before_base = 0     # newlines in [0, base) — re-anchor source
+        # Declaration index (pure functions of it back every attribution).
+        self.decls: list[dict[str, Any]] = []
+        self.decl_offs: list[int] = []
+        self.decl_seen: set[int] = set()
+        self.first_non_table: int | None = None
+        self._decl_frozen = False
+        self.machine: _TableBody | _TriggerHeader | None = None
+        self.sym_seen: set[str] = set()
+        self.edge_seen: set[tuple[str, str | None, str]] = set()
+        self.decl_cursor = _LineCursor()
+        self.col_cursor = _LineCursor()
+
+    # --- public entries ---
+
+    def feed(self, raw: bytes) -> None:
+        out = self.san.feed(raw)
+        if out:
+            self.buf += out
+        if len(self.buf) >= self.window:
+            self._round()
+
+    def finish(self) -> None:
+        out = self.san.finish()
+        if out:
+            self.buf += out
+        self._round(final=True)
+
+    # --- emission / lines ---
+
+    def _emit_symbol(self, name: str, graph_type: str, line: int) -> None:
+        if not name or name in self.sym_seen:
+            return
+        self.sym_seen.add(name)
+        self.result.symbols.append({"name": name, "type": graph_type, "line": line})
+
+    def _emit_edge(self, etype: str, src: str | None, target: str) -> None:
         if not _sql_valid_table(target):
             return
         key = (etype, src, target)
-        if key in edge_seen:
+        if key in self.edge_seen:
             return
-        edge_seen.add(key)
-        result.edges.append({
+        self.edge_seen.add(key)
+        self.result.edges.append({
             "type": etype,
             "target": target,
             "target_kind": "sql",
             "from": src,
         })
 
-    # Declarations own [start, next start) — one ownership rule for all DML.
-    decls: list[dict[str, Any]] = []
-    for m in _SQL_DECL_RE.finditer(text):
-        kind = _SQL_DECL_KIND[m.group(1).upper().decode()]
-        qname = _sql_norm_name(m.group(2))
-        if not qname or qname.startswith("#"):
-            continue
-        decls.append({"offset": m.start(), "end": m.end(), "kind": kind,
-                      "qname": qname, "line": line_of(m.start())})
+    def _line_at(self, cursor: _LineCursor, abs_pos: int) -> int:
+        """1-based line of *abs_pos* on the sanitized text (resident only)."""
+        if cursor.pos <= abs_pos and cursor.pos >= self.base:
+            cursor.line += self.buf.count(b"\n", cursor.pos - self.base, abs_pos - self.base)
+            cursor.pos = abs_pos
+            return cursor.line
+        # Stale cursor (its anchor left the window) or an out-of-order query:
+        # re-anchor from the pop checkpoint. abs_pos < base is only reachable
+        # with span < the column-part quota (test configs); production span
+        # (1MiB) dwarfs the 64KiB part cap, so the count starts at base.
+        end_i = max(0, abs_pos - self.base)
+        cursor.line = 1 + self._nl_before_base + self.buf.count(b"\n", 0, end_i)
+        cursor.pos = abs_pos
+        return cursor.line
 
-    # (region_start, region_end, owning declaration | None). Text before the
-    # first declaration and DML in table regions has no owning symbol — src
-    # stays None so the builder attaches it to the file node.
-    regions: list[tuple[int, int, dict[str, Any] | None]] = []
-    prev_end = 0
-    for i, decl in enumerate(decls):
-        region_end = decls[i + 1]["offset"] if i + 1 < len(decls) else len(text)
-        if decl["offset"] > prev_end:
-            regions.append((prev_end, decl["offset"], None))
-        regions.append((decl["offset"], region_end, decl))
-        prev_end = region_end
-    if prev_end < len(text):
-        regions.append((prev_end, len(text), None))
+    # --- round machinery ---
 
-    for start, region_end, decl in regions:
-        if region_end <= start:
-            continue
+    def _round(self, final: bool = False) -> None:
+        end = self.base + len(self.buf)
+        scan_from = self.scan_from
+        if end > scan_from:
+            # 1. declarations first: region owners and machines need the index
+            new_decls = self._scan_decls(scan_from, end, final)
+            for decl in new_decls:
+                self._close_machine(decl["offset"])   # prior region ends here
+                self._emit_symbol(decl["qname"], decl["kind"], decl["line"])
+                self._open_machine(decl)
+            if self.machine is not None:
+                self._feed_machine(end, final)        # last region stays open
+            # 2. per-region DML (writes-first), then the table-level PK/FK pass
+            self._dml_round(scan_from, end, final)
+            self._pkf_round(scan_from, end, final)
+            # 3. pop: retain SPAN_MAX + LOOKBACK behind the next scan start
+            self.scan_from = max(0, end - self.span)
+            keep_from = self.scan_from - SQL_LOOKBACK
+            if keep_from > self.base:
+                drop = keep_from - self.base
+                self._nl_before_base += self.buf.count(b"\n", 0, drop)
+                del self.buf[:drop]
+                self.base = keep_from
+        if final and self.machine is not None:
+            self._close_machine(end)
+
+    def _scan_decls(self, scan_from: int, end: int, final: bool) -> list[dict[str, Any]]:
+        if self._decl_frozen:
+            return []
+        new: list[dict[str, Any]] = []
+        end_i = end - self.base
+        for m in _SQL_DECL_RE.finditer(self.buf, scan_from - self.base, end_i):
+            if not final and _at_scan_edge(self.buf, m, end_i):
+                continue  # backtracked identifier; next round re-finds it
+            offset = self.base + m.start()
+            if offset in self.decl_seen:
+                continue
+            kind = _SQL_DECL_KIND[m.group(1).upper().decode()]
+            qname = _sql_norm_name(m.group(2))
+            if not qname or qname.startswith("#"):
+                continue  # temp/empty names never become nodes or region owners
+            if len(self.decls) >= SQL_MAX_DECLS:
+                self._decl_frozen = True  # pathological quota: freeze the index
+                break
+            decl = {"offset": offset, "end": self.base + m.end(), "kind": kind,
+                    "qname": qname, "line": self._line_at(self.decl_cursor, offset)}
+            self.decl_seen.add(offset)
+            self.decls.append(decl)
+            self.decl_offs.append(offset)
+            if kind != "table" and self.first_non_table is None:
+                self.first_non_table = len(self.decls) - 1
+            new.append(decl)
+        return new
+
+    def _open_machine(self, decl: dict[str, Any]) -> None:
+        if decl["kind"] == "table":
+            self.machine = _TableBody(decl["end"], decl["qname"])
+        elif decl["kind"] == "trigger":
+            self.machine = _TriggerHeader(decl["end"], decl["qname"])
+        else:
+            self.machine = None  # procs/views have no column body or header
+
+    def _feed_machine(self, end: int, final: bool = False) -> None:
+        m = self.machine
+        if m is None or m.pos >= end:
+            return
+        lo = max(0, m.pos - self.base)  # pos >= base by construction; clamped anyway
+        chunk = bytes(self.buf[lo:end - self.base])
+        m.feed(self, chunk, self.base + lo, final)
+        m.pos = end
+
+    def _close_machine(self, at: int) -> None:
+        m = self.machine
+        self.machine = None
+        if m is None:
+            return
+        if m.pos < at:
+            lo = max(0, m.pos - self.base)
+            chunk = bytes(self.buf[lo:at - self.base])
+            # final=True: `at` is a real region boundary (next declaration or
+            # EOF) — the old parse searched the region slice with the same
+            # end-of-slice keyword semantics.
+            m.feed(self, chunk, self.base + lo, True)
+            m.pos = at
+        m.finalize(self)
+
+    def _dml_round(self, scan_from: int, end: int, final: bool) -> None:
+        # Regions follow the old layout exactly: [0, first decl) has no
+        # owner, each declaration owns [offset, next offset), the last runs
+        # to EOF. Only the region containing scan_from is clipped on the left.
+        pos = scan_from
+        while pos < end:
+            i = bisect.bisect_right(self.decl_offs, pos) - 1
+            if i < 0:
+                decl = None
+                nxt = self.decl_offs[0] if self.decl_offs else None
+            else:
+                decl = self.decls[i]
+                nxt = self.decl_offs[i + 1] if i + 1 < len(self.decl_offs) else None
+            hi = end if nxt is None else min(nxt, end)
+            if hi > pos:
+                # A region cut at the round end (not at a declaration) is an
+                # artificial boundary: matches touching it are deferred so a
+                # backtracked shorter form is never emitted. A region cut at
+                # the next declaration keeps the old slice semantics.
+                self._scan_region(pos, hi, decl,
+                                  defer_edge=not final and hi == end)
+            if nxt is None or nxt >= end:
+                break
+            pos = nxt
+
+    def _scan_region(self, lo: int, hi: int, decl: dict[str, Any] | None,
+                     defer_edge: bool) -> None:
         src: str | None = None
-        if decl is not None:
-            src = decl["qname"] if decl["kind"] in (
-                "procedure", "function", "view", "trigger"
-            ) else None
-            emit_symbol(decl["qname"], decl["kind"], decl["line"])
-            if decl["kind"] == "table":
-                for col, col_off, part in _sql_split_columns(text, decl["end"], region_end):
-                    emit_symbol(f'{decl["qname"]}.{col}', "column", line_of(col_off))
-                    if _SQL_PK_INLINE_RE.search(part):
-                        emit_edge("primary_key", f'{decl["qname"]}.{col}', decl["qname"])
-            if decl["kind"] == "trigger":
-                # the header ends at the first AS: `CREATE TRIGGER t ON x AFTER
-                # INSERT AS ...` — later ON clauses are joins, not the target.
-                header = text[decl["end"]:region_end]
-                as_at = _SQL_AS_RE.search(header)
-                on_target = _SQL_TRIGGER_ON_RE.search(
-                    header[:as_at.start()] if as_at else header[:400]
-                )
-                if on_target:
-                    emit_edge("reads", decl["qname"], _sql_norm_name(on_target.group(1)))
-
-        region = text[start:region_end]
+        if decl is not None and decl["kind"] in ("procedure", "function", "view", "trigger"):
+            src = decl["qname"]
+        lo_i, hi_i = lo - self.base, hi - self.base
         # writes first, so `DELETE FROM x`'s FROM never double-counts as a read
         spans: list[tuple[int, int]] = []
         for rx in _SQL_WRITE_RES:
-            for m in rx.finditer(region):
-                emit_edge("writes", src, _sql_norm_name(m.group(1)))
-                spans.append((m.start(), m.end()))
-        for m in _SQL_READ_RE.finditer(region):
-            if any(s <= m.start() and m.end() <= e for s, e in spans):
+            for m in rx.finditer(self.buf, lo_i, hi_i):
+                if defer_edge and _at_scan_edge(self.buf, m, hi_i):
+                    continue  # backtracked identifier; next round re-finds it
+                self._emit_edge("writes", src, _sql_norm_name(m.group(1)))
+                spans.append((self.base + m.start(), self.base + m.end()))
+        # Containment filter: exists span with s <= p and q <= e. Sorted by
+        # start, that is a prefix max on e — same predicate as the old any().
+        starts: list[int] = []
+        max_e: list[int] = []
+        if spans:
+            spans.sort()
+            running = -1
+            for s, e in spans:
+                starts.append(s)
+                if e > running:
+                    running = e
+                max_e.append(running)
+
+        def covered(p: int, q: int) -> bool:
+            if not starts:
+                return False
+            i = bisect.bisect_right(starts, p) - 1
+            return i >= 0 and max_e[i] >= q
+
+        for m in _SQL_READ_RE.finditer(self.buf, lo_i, hi_i):
+            if defer_edge and _at_scan_edge(self.buf, m, hi_i):
                 continue
-            emit_edge("reads", src, _sql_norm_name(m.group(1)))
-        for m in _SQL_EXEC_RE.finditer(region):
+            p, q = self.base + m.start(), self.base + m.end()
+            if covered(p, q):
+                continue
+            self._emit_edge("reads", src, _sql_norm_name(m.group(1)))
+        for m in _SQL_EXEC_RE.finditer(self.buf, lo_i, hi_i):
+            if defer_edge and _at_scan_edge(self.buf, m, hi_i):
+                continue
             target = _sql_norm_name(m.group(1))
             if not target.startswith("@"):
-                emit_edge("calls", src, target)
-        for m in _SQL_QUAL_CALL_RE.finditer(region):
-            if any(s <= m.start() and m.end() <= e for s, e in spans):
+                self._emit_edge("calls", src, target)
+        for m in _SQL_QUAL_CALL_RE.finditer(self.buf, lo_i, hi_i):
+            if defer_edge and _at_scan_edge(self.buf, m, hi_i):
                 continue
-            before = region[max(0, m.start() - 24):m.start()]
-            words = re.findall(rb"[A-Za-z_]+", before)
+            if m.start() == lo_i and lo_i > 0:
+                # Unlike every other pass this one has no \b keyword anchor,
+                # so a scan start landing mid-identifier would match a
+                # fragment (dbo.Orders| -> bo.Orders). The full match was
+                # already discovered by the round in which its '(' arrived
+                # (that round's scan_from cannot trail past the match start).
+                prev = self.buf[lo_i - 1]
+                if prev in _SQL_WORD_CHAR:
+                    continue
+            p, q = self.base + m.start(), self.base + m.end()
+            if covered(p, q):
+                continue
+            before = self.buf[max(0, m.start() - 24):m.start()]
+            words = re.findall(rb"[A-Za-z_]+", bytes(before))
             if words and words[-1].decode("ascii", "ignore").lower() in _SQL_QUAL_CALL_NO_PRECEDE:
                 continue
-            emit_edge("calls", src, _sql_norm_name(m.group(1)))
+            self._emit_edge("calls", src, _sql_norm_name(m.group(1)))
 
     # Table-level PK/FK (also covers inline REFERENCES): attributed to the
     # closest preceding CREATE TABLE, unless an ALTER TABLE sits after it and
     # within reach — then the ALTER names the table being constrained.
-    def attr_table(offset: int) -> str | None:
-        create = None
-        for decl in decls:
-            if decl["kind"] == "table" and decl["offset"] < offset:
-                create = decl
-            else:
-                break
-        window_start = max(0, offset - 200)
+    def _attr_table(self, p: int) -> str | None:
+        i = bisect.bisect_left(self.decl_offs, p)   # decls[i:] start at/after p
+        j = self.first_non_table if self.first_non_table is not None else len(self.decls)
+        # Frozen-run quirk, preserved for parity: the old walk broke at the
+        # first non-table declaration, so a CREATE VIEW between two tables
+        # pins later attributions to the last table before the view. Fixing
+        # this requires a CACHE_VERSION bump.
+        create = self.decls[min(i, j) - 1] if min(i, j) > 0 else None
         alter = None
-        for m in _SQL_ALTER_RE.finditer(text[window_start:offset]):
+        for m in _SQL_ALTER_RE.finditer(self.buf, max(0, p - SQL_LOOKBACK) - self.base,
+                                        p - self.base):
             alter = m  # last one wins
-        if alter is not None:
-            alter_abs = window_start + alter.start()
-            if create is None or alter_abs > create["offset"]:
-                return _sql_norm_name(alter.group(1))
+        if alter is not None and (create is None or self.base + alter.start() > create["offset"]):
+            return _sql_norm_name(alter.group(1))
         return create["qname"] if create else None
 
-    for m in _SQL_PK_RE.finditer(text):
-        table = attr_table(m.start())
-        if table is None:
-            continue
-        for raw_col in m.group(1).split(b","):
-            col = _sql_norm_name(raw_col)
-            if col:
-                emit_edge("primary_key", f"{table}.{col}", table)
-    for rx in (_SQL_FK_RE, _SQL_REF_RE):
-        for m in rx.finditer(text):
-            table = attr_table(m.start())
+    def _pkf_round(self, scan_from: int, end: int, final: bool) -> None:
+        lo_i, hi_i = scan_from - self.base, end - self.base
+        defer = not final
+        for m in _SQL_PK_RE.finditer(self.buf, lo_i, hi_i):
+            if defer and _at_scan_edge(self.buf, m, hi_i):
+                continue  # backtracked identifier; next round re-finds it
+            table = self._attr_table(self.base + m.start())
             if table is None:
                 continue
-            emit_edge("foreign_key", table, _sql_norm_name(m.group(1)))
+            for raw_col in m.group(1).split(b","):
+                col = _sql_norm_name(raw_col)
+                if col:
+                    self._emit_edge("primary_key", f"{table}.{col}", table)
+        for rx in (_SQL_FK_RE, _SQL_REF_RE):
+            for m in rx.finditer(self.buf, lo_i, hi_i):
+                if defer and _at_scan_edge(self.buf, m, hi_i):
+                    continue
+                table = self._attr_table(self.base + m.start())
+                if table is None:
+                    continue
+                self._emit_edge("foreign_key", table, _sql_norm_name(m.group(1)))
+
+
+def _parse_sql(data: bytes, rel_path: str, result: FileParseResult) -> None:
+    """Single-shot entry (parse_bytes): one chunk through the stream parser."""
+    parser = _SqlStreamParser(result)
+    parser.feed(data)
+    parser.finish()
+
+
+def _parse_sql_file(path: Path) -> FileParseResult | None:
+    """Streaming SQL file entry: chunked reads, incremental sha and line count.
+
+    No whole-file read_bytes() — a multi-hundred-MB dump is sanitized and
+    scanned in a bounded window. OSError (lock, deleted mid-scan) returns
+    None like the generic path.
+    """
+    started = time.perf_counter()
+    digest = hashlib.sha256()
+    total = nl = 0
+    last = b""
+    result = FileParseResult(
+        sha256="", lang="sql", stats={"parse_ms": 0.0, "error": None}, lines=0,
+    )
+    parser = _SqlStreamParser(result)
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(SQL_READ_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                total += len(chunk)
+                nl += chunk.count(b"\n")
+                last = chunk[-1:]
+                parser.feed(chunk)
+        parser.finish()
+    except OSError:
+        return None
+    result.sha256 = digest.hexdigest()
+    result.lines = nl + (1 if total and last != b"\n" else 0)
+    result.stats["parse_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    return result
 
 
 def _parse_lang(data: bytes, lang: str, result: FileParseResult) -> None:

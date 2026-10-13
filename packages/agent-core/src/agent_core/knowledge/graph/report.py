@@ -125,6 +125,11 @@ def render_report(graph: RepoGraph) -> str:
         lines += ["## Failed files", ""]
         for reason, count in sorted(failed_reasons.items(), key=lambda kv: -kv[1]):
             lines.append(f"- {reason}: {count}")
+    skipped_files = stats.get("skipped_files") or {}
+    if skipped_files:
+        lines += ["## Skipped files (too large / unreadable)", ""]
+        for rel, reason in sorted(skipped_files.items()):
+            lines.append(f"- `{rel}` — {reason}")
     lines += ["", "## God nodes (most connected)", ""]
     for node_id, degree in god_nodes(graph):
         kind, rel, qname = parse_node_id(node_id)

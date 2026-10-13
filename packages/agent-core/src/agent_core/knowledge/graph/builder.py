@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .cache import GraphCache, GraphCacheState
-from .languages import EXCLUDED_DIRS, detect_language
+from .languages import EXCLUDED_DIRS, detect_language, max_file_bytes
 from .model import (
     EDGE_CALLS,
     EDGE_FOREIGN_KEY,
@@ -58,6 +58,9 @@ AUTO_BUILD_MAX_FILES = 3000
 # refuses absurd trees: hashing/serializing tens of thousands of files holds
 # the build lock and bloats graph.json far past what the LLM can use.
 MAX_BUILD_FILES = 10_000
+# Per-file skip reasons recorded in stats/report (rel -> reason). Bounded so
+# a repo of a thousand giant generated files cannot bloat graph.json.
+SKIPPED_FILES_MAX = 100
 # Git listing/rev-parse should answer in seconds; a wedged git (stale index
 # lock, hung fsmonitor) must not hold a build forever.
 _GIT_TIMEOUT_S = 10.0
@@ -384,7 +387,13 @@ async def _build_repo_graph_locked(
 
     counters: dict[str, Any] = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
     failed_reasons: dict[str, int] = {}
+    skipped_files: dict[str, str] = {}
     repo_resolved = repo.resolve()
+
+    def _mark_skipped(rel: str, reason: str) -> None:
+        counters["skipped"] += 1
+        if len(skipped_files) < SKIPPED_FILES_MAX:
+            skipped_files[rel] = reason
 
     async def _handle(rel: str) -> None:
         # resolve() follows symlinks/junctions: a walked path can leave the
@@ -400,13 +409,34 @@ async def _build_repo_graph_locked(
         except OSError:
             contained = False
         if not contained:
-            counters["skipped"] += 1
+            _mark_skipped(rel, "missing or outside repo")
             state.files.pop(rel, None)
+            return
+        # Size check before hashing: a giant generated file must not cost a
+        # full hash every build. The manifest marker (no sha) keeps the fast
+        # path intact and is never reused as a parse entry — if the file
+        # shrinks below the cap, the sha mismatch reparses it for real.
+        lang = detect_language(rel)
+        try:
+            size = path.stat().st_size
+        except OSError:  # deleted between ls-files and stat — skip
+            _mark_skipped(rel, "unreadable")
+            state.files.pop(rel, None)
+            return
+        limit = max_file_bytes(lang)
+        if size > limit:
+            reason = (
+                f"over {limit // (1 << 20)}MB limit" if limit >= (1 << 20)
+                else f"over {limit}B limit"
+            )
+            _mark_skipped(rel, reason)
+            state.files[rel] = {"lang": lang, "skipped": reason}
+            _log.debug("repo graph %s: skipping %s (%s)", repo.name, rel, reason)
             return
         try:
             sha = await asyncio.to_thread(file_sha256, path)
         except OSError:  # deleted between ls-files and read — skip
-            counters["skipped"] += 1
+            _mark_skipped(rel, "unreadable")
             state.files.pop(rel, None)
             return
         entry = cache.get(state, rel)
@@ -421,8 +451,8 @@ async def _build_repo_graph_locked(
         # a fixed parser (or a grammar that arrived later) heals the graph on
         # the next build instead of serving the stale failure forever.
         result = await asyncio.to_thread(parse_file, path, rel)
-        if result is None:  # too big / unreadable
-            counters["skipped"] += 1
+        if result is None:  # raced past the stat check: vanished / unreadable
+            _mark_skipped(rel, "unreadable")
             state.files.pop(rel, None)
             return
         if result.stats.get("error"):
@@ -445,8 +475,14 @@ async def _build_repo_graph_locked(
         if rel not in candidates:
             state.files.pop(rel, None)
 
-    results = {rel: state.files[rel] for rel in candidates if rel in state.files}
+    # Manifest markers for skipped files stay in state.files (fast path) but
+    # never become graph results — same as the old pop-and-forget behaviour.
+    results = {
+        rel: state.files[rel] for rel in candidates
+        if rel in state.files and not state.files[rel].get("skipped")
+    }
     counters["failed_reasons"] = failed_reasons
+    counters["skipped_files"] = skipped_files
     graph = await asyncio.to_thread(_assemble_graph, repo.name, head, results, counters)
     graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
     graph.stats["untracked_sources"] = 0 if include_untracked else len(untracked_candidates)
@@ -695,6 +731,7 @@ def _assemble_graph(
         "with_symbols": with_symbols,
         "lang_coverage": lang_coverage,
         "failed_reasons": counters.get("failed_reasons", {}),
+        "skipped_files": counters.get("skipped_files") or {},
     }
     return RepoGraph(
         repo=RepoMeta(name=repo_name, head_sha=head_sha, langs=langs, built_at=now_epoch()),

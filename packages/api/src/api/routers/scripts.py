@@ -83,8 +83,9 @@ async def startup_sweep(db: AsyncSession) -> int:
 # Playwright phase budgets: browser preflight and the test run itself (the
 # dependency install budget lives inside agent-core's ensure_node_deps). Their
 # sum bounds how long a cold run can take - the WS poll loop below must
-# outlast it.
-_PLAYWRIGHT_BROWSER_TIMEOUT = 180
+# outlast it. The preflight budget now lives in agent-core's shared helper.
+from agent_core.tools.shell import PLAYWRIGHT_BROWSER_TIMEOUT as _PLAYWRIGHT_BROWSER_TIMEOUT  # noqa: E402
+
 _PLAYWRIGHT_TEST_TIMEOUT = 540
 
 # WS log poll total window. 900s covers a cold Playwright run
@@ -656,17 +657,14 @@ async def _execute_playwright(
                 return
             await progress("Dependencies ready")
 
-            # Phase 2: browser preflight. Idempotent - downloads only what
-            # PLAYWRIGHT_BROWSERS_PATH is missing, which covers projects whose
-            # scaffold pins an older @playwright/test than the container's
-            # chromium build. --no-install forces the local node_modules shim.
+            # Phase 2: browser preflight - the shared agent-core helper (same
+            # code the shell fallback runs). Lazy import so tests patch it on
+            # agent_core.tools.shell, mirroring ensure_node_deps above.
             await progress("Verifying browser binaries...")
-            npx = shutil.which("npx") or "npx"
+            from agent_core.tools.shell import ensure_playwright_browsers
             try:
-                code = await _stream_subprocess(
-                    db, run, log_acc,
-                    [npx, "--no-install", "playwright", "install", "chromium"],
-                    str(tests_dir), env, _PLAYWRIGHT_BROWSER_TIMEOUT,
+                browser_error = await ensure_playwright_browsers(
+                    f"npm run test:{slug}", str(tests_dir), project_fs, env,
                 )
             except asyncio.TimeoutError:
                 await fail(
@@ -674,8 +672,8 @@ async def _execute_playwright(
                     result_status="timed_out",
                 )
                 return
-            if code != 0:
-                await fail(f"Browser verification failed (exit code {code})")
+            if browser_error:
+                await fail(browser_error)
                 return
             await progress("Browser ready")
 

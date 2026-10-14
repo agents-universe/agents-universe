@@ -2,7 +2,7 @@
 category: skills
 slug: skills/test-patterns
 tags: [testing, patterns, qa]
-template_words: 223
+template_words: 276
 title: Test Pattern Library
 ---
 
@@ -32,6 +32,12 @@ Whole-system plans: fixed name `tests/test-plan.md`, case IDs `SYS-{3-digit}` (s
 - One sign-in per run: `tests/auth.setup.ts` signs in once and every spec inherits that session, so cases must not log in themselves. A case about signing in, switching user, or checking permissions runs signed out deliberately.
 - Cases in one spec file run in parallel: a case may not depend on another case's effects. Merge a genuine continuation into one case; mark state-sharing cases as serial instead of leaving the dependency implicit.
 - Tunables live on the config: `PW_SERIAL=1` (one at a time), `PW_WORKERS=n` (browser count), `PW_RETRIES=1` (retry; off by default so the recorded video matches the failure that was reported).
+
+## Run Channels
+
+- `.spec.ts` runs prefer the platform server-side channel (`POST /api/projects/{id}/playwright/specs/{slug}/run`); the shell `npm run test:{slug}` fallback is last resort only (it self-installs dependencies and browsers first).
+- Ad-hoc browser probes/screenshots use `browser_playwright` or `code_executor(language="python-playwright")` (Python channels) — never shell `node`/`npx` scripts.
+- Specs are created with the `test_generator` tool — never hand-write `.spec.ts`.
 
 ## Test Dimensions
 

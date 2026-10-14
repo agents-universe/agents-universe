@@ -11,6 +11,12 @@ from api.models.script import AutomationScript, ScriptRun
 from api.routers import scripts as scripts_router
 
 
+async def _fake_browsers_ok(*args, **kwargs):
+    """Stand-in for the shared browser preflight (agent_core.tools.shell) —
+    phase tests patch the npm phases, never actually run npx."""
+    return None
+
+
 @pytest.mark.asyncio
 async def test_execute_script_streams_output_and_completes(client, db, make_project):
     """A real python run through the streaming executor: output lands in the
@@ -91,6 +97,7 @@ async def test_execute_playwright_reports_phase_progress(client, db, make_projec
         return ""
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
     monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
 
@@ -224,6 +231,7 @@ async def test_execute_playwright_captures_result_and_artifacts(
         return 1
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
 
     await scripts_router._execute_playwright(
@@ -277,6 +285,7 @@ async def test_execute_playwright_falls_back_to_the_log_verdict(
         return 0
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
 
     await scripts_router._execute_playwright(
@@ -305,6 +314,7 @@ async def test_execute_playwright_records_a_verdict_when_startup_fails(
         return "npm install exploded"
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
 
     await scripts_router._execute_playwright(
         run_id, "login-3", {}, "test-user", str(project_fs),
@@ -343,6 +353,7 @@ async def test_execute_playwright_fails_fast_when_the_target_is_unreachable(
         return "ConnectError: [Errno 111] Connection refused"
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
     monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
 
@@ -381,6 +392,7 @@ async def test_execute_playwright_runs_the_suite_when_the_target_answers(
         return ""
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
     monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
 
@@ -412,6 +424,7 @@ async def test_execute_playwright_skips_the_probe_without_app_base_url(
         raise AssertionError("probe must not run without APP_BASE_URL")
 
     monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", _fake_browsers_ok)
     monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
     monkeypatch.setattr(scripts_router, "_probe_target", fake_probe)
 
@@ -420,6 +433,47 @@ async def test_execute_playwright_skips_the_probe_without_app_base_url(
     )
 
     assert (await _reload_run(run_id)).status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_playwright_browser_preflight_failure_fails_the_run(
+    client, db, make_project, monkeypatch
+):
+    """The shared browser preflight's error string must land on the run row
+    (status failed) with the phase markers still in order — the agent reads
+    the log to diagnose a missing/wrong-revision chromium."""
+    project = await make_project("exec-pw-preflight")
+    run, project_fs = await _seed_playwright_run(db, project, spec_slug="login-7")
+    run_id = str(run.run_id)
+
+    async def fake_deps(*args, **kwargs):
+        return None
+
+    async def fake_browsers(*args, **kwargs):
+        return "Browser preflight failed (exit code 1): Executable doesn't exist"
+
+    async def fake_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+        log_acc.append(f"ran {' '.join(cmd)}\n")
+        return 0
+
+    monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_playwright_browsers", fake_browsers)
+    monkeypatch.setattr(scripts_router, "_stream_subprocess", fake_stream)
+
+    await scripts_router._execute_playwright(
+        run_id, "login-7", {}, "test-user", str(project_fs),
+    )
+
+    refreshed = await _reload_run(run_id)
+    assert refreshed.status == "failed"
+    log = refreshed.stdout_log or ""
+    assert "Browser preflight failed" in log
+    assert "Executable doesn't exist" in log
+    markers = ["Preparing test dependencies", "Dependencies ready", "Verifying browser"]
+    positions = [log.index(m) for m in markers]
+    assert positions == sorted(positions)
+    # The suite never launched.
+    assert not any("--reporter" in line for line in log.splitlines())
 
 
 @pytest.mark.asyncio

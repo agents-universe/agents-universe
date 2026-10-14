@@ -605,6 +605,133 @@ async def ensure_node_deps(
     return None
 
 
+# Browser preflight budget for Node Playwright runs. Shared with the API's
+# spec runner (scripts.py) - one number, one behavior across both channels.
+PLAYWRIGHT_BROWSER_TIMEOUT = 180
+
+# Preflight success cache: key = package dir | installed playwright version |
+# PLAYWRIGHT_BROWSERS_PATH. An npm install that bumps @playwright/test or a
+# changed browsers path yields a different key, so the check re-runs. Browsers
+# deleted mid-process with the same version won't re-trigger it - accepted as
+# the cost of skipping npx on every command.
+_browsers_verified: dict[str, str] = {}
+
+
+def _declares_playwright(pkg_dir: Path) -> bool:
+    """True when the package depends on Playwright (@playwright/test or playwright)."""
+    try:
+        import json
+        package = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(package, dict):
+        return False
+    for key in ("dependencies", "devDependencies"):
+        values = package.get(key, {})
+        if isinstance(values, dict) and ("@playwright/test" in values or "playwright" in values):
+            return True
+    return False
+
+
+def _installed_playwright_version(pkg_dir: Path) -> str | None:
+    """Version of the locally installed Playwright runner, None when unreadable.
+
+    Unversioned never matches the cache key's empty sentinel on purpose: a
+    package whose version cannot be read must preflight every time.
+    """
+    import json
+    for name in ("@playwright/test", "playwright"):
+        manifest = pkg_dir / "node_modules" / name / "package.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        version = data.get("version") if isinstance(data, dict) else None
+        if isinstance(version, str) and version:
+            return version
+    return None
+
+
+async def ensure_playwright_browsers(
+    command: str, cwd: str, project_root: str, env: dict[str, str],
+    *, timeout: int = PLAYWRIGHT_BROWSER_TIMEOUT,
+) -> str | None:
+    """Verify/install the local @playwright/test chromium before a Node run.
+
+    Shared by the shell tool and the API's spec runner - the same preflight,
+    the same budget. The container bakes the PYTHON Playwright's chromium
+    into PLAYWRIGHT_BROWSERS_PATH; a scaffold-pinned @playwright/test may
+    expect another revision, which surfaces as Playwright's "Executable
+    doesn't exist" without this step. Returns None when nothing is to do
+    (non-Playwright command, no local shim, or a warm cache) or on success;
+    an error string on failure. Raises asyncio.TimeoutError - after killing
+    the process tree - when the install exceeds *timeout*.
+    """
+    if not _PLAYWRIGHTISH_CMD.search(command):
+        return None
+    pkg_dir = _find_package_dir(cwd, project_root, command)
+    if pkg_dir is None:
+        return None
+    if "playwright" not in command and not _declares_playwright(pkg_dir):
+        return None
+    # `npx --no-install` needs the local shim; without it the user command
+    # fails with its own message anyway (ensure_node_deps owns that path).
+    bin_dir = pkg_dir / "node_modules" / ".bin"
+    if not (bin_dir / "playwright").exists() and not (bin_dir / "playwright.cmd").exists():
+        return None
+
+    version = _installed_playwright_version(pkg_dir)
+    cache_key = "|".join((
+        str(pkg_dir.resolve()),
+        version or "",
+        env.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+    ))
+    if version and cache_key in _browsers_verified:
+        return None
+
+    cmd = "npx --no-install playwright install chromium"
+    try:
+        if _SHELL_ARGS:
+            proc = await asyncio.create_subprocess_exec(
+                *_SHELL_ARGS, cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
+                **spawn_in_new_session(),
+            )
+        else:
+            # Own-session guarantee as in _run_install: without it the child
+            # shares the server's process group and terminate_process_tree's
+            # killpg on timeout would SIGKILL uvicorn itself.
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, cwd=str(pkg_dir), env=env,
+                **spawn_in_new_session(),
+            )
+    except OSError as exc:
+        _log.warning("Failed to start browser preflight in %s: %s", pkg_dir, exc)
+        return f"Failed to start browser preflight: {exc}"
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        terminate_process_tree(proc)
+        await proc.wait()
+        _log.warning("Browser preflight timed out in %s", pkg_dir)
+        raise
+    except asyncio.CancelledError:
+        terminate_process_tree(proc)
+        await proc.wait()
+        raise
+    if proc.returncode == 0:
+        if version:
+            _browsers_verified[cache_key] = "1"
+        return None
+    stderr_text = _redact_env_proxies(stderr.decode(errors="replace"), env)
+    _log.warning(
+        "Browser preflight failed (exit=%s) in %s: %s",
+        proc.returncode, pkg_dir, stderr_text[:500],
+    )
+    return f"Browser preflight failed (exit code {proc.returncode}): {stderr_text[:1000]}"
+
+
 class ShellTool(Tool):
     name = "shell"
     prompt_hint = (
@@ -617,7 +744,9 @@ class ShellTool(Tool):
         "use the `git_repo` tool to clone repositories. "
         "ALL paths must be relative to the project root - absolute paths, ~, and ../ "
         "are rejected. If a command is rejected, switch to a dedicated tool instead of "
-        "rephrasing."
+        "rephrasing. Playwright/npm test commands run dependency + browser setup first "
+        "(self-healing); use shell for .spec.ts runs only as a last-resort fallback - "
+        "ad-hoc browser probes belong to browser_playwright / code_executor python-playwright."
     )
     description = (
         "Run shell commands (bash) in a restricted environment. "
@@ -743,6 +872,12 @@ class ShellTool(Tool):
         # Auto-install Node.js dependencies when running npx/npm commands
         # in a directory that has package.json but no usable node_modules.
         install_error = await self._ensure_node_deps(command, cwd, context)
+        if install_error is None:
+            # Browser preflight: the same one the server spec runner runs, so
+            # the shell fallback cannot die on a missing/wrong-revision
+            # chromium. Runs strictly after the deps phase - `npx --no-install`
+            # needs the shim that phase just guaranteed.
+            install_error = await self._ensure_playwright_browsers(command, cwd, context)
         if install_error:
             # npm's own stderr can quote the proxy it failed to reach.
             install_error = redact_proxy_credentials(install_error, context.proxy_url())
@@ -851,3 +986,16 @@ class ShellTool(Tool):
         """Delegate to the module-level ensure_node_deps (shared with the API's
         script executor) - the env is built exactly like the command's own."""
         return await ensure_node_deps(command, cwd, context.project_fs_path, _build_env(context))
+
+    async def _ensure_playwright_browsers(self, command: str, cwd: str, context: ToolContext) -> str | None:
+        """Delegate to the module-level ensure_playwright_browsers (shared with
+        the API's spec runner); TimeoutError maps to the tool's error shape."""
+        try:
+            return await ensure_playwright_browsers(
+                command, cwd, context.project_fs_path, _build_env(context)
+            )
+        except asyncio.TimeoutError:
+            return (
+                f"Browser preflight timed out after {PLAYWRIGHT_BROWSER_TIMEOUT}s "
+                "- retry, or run the spec through the platform server-side channel"
+            )

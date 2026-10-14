@@ -38,6 +38,9 @@ Output: {content: str, status_code: int, content_type: str}
 ## browser_playwright
 
 Controls a headless Chromium browser; returns screenshots, downloads and page state.
+The interactive ad-hoc browser channel — ad-hoc browser work (probes, screenshots,
+recordings) starts here; scripted ad-hoc browser work belongs to
+`code_executor(language="python-playwright")`.
 
 ```
 Operations: goto, click, fill, select_option, check, uncheck, hover, press,
@@ -90,6 +93,27 @@ downloads). Outbound HTTP(S) uses the platform proxy — `HTTPS_PROXY` is set in
 the sandbox environment; a browser launched inside with Playwright must be
 given it explicitly as `proxy=os.environ['HTTPS_PROXY']` (Playwright ignores
 proxy env vars). Proxy credentials never appear in the returned output or logs.
+`python-playwright` is the scripted ad-hoc browser channel (120s) — Playwright
+Python and its browsers are preinstalled.
+
+## test_generator
+
+Generate executable Playwright `.spec.ts` files from structured test cases —
+the only way to create specs; never hand-write `.spec.ts`.
+
+```
+Inputs: operation ("generate_spec"), issue_key (str), test_cases
+        (list of {title, steps: [str], expected_results: [str], uploads?: [...]}),
+        include_login (bool, optional), output_dir (str, optional)
+Output: {success, file_path, relative_path, test_count, issue_key, scaffold_updates?}
+```
+
+Writes `tests/generated/{slug}.spec.ts` (slug = lowercased issue key), creates
+the `tests/` scaffold when missing (`package.json` with `@playwright/test`,
+`playwright.config.ts`, `auth.setup.ts`), and adds a `test:{slug}` npm script.
+Run the result through the platform server-side spec channel
+(`POST /api/projects/{project_id}/playwright/specs/{slug}/run`); the shell
+`npm run test:{slug}` fallback is last resort only.
 
 ## knowledge_rw
 
@@ -150,6 +174,12 @@ code_executor (credentials in the proxy URL are masked from output). Intranet
 hosts that must bypass the proxy belong in NO_PROXY/APP_NO_PROXY; pass
 APP_BASE_URL inline (`APP_BASE_URL=http://... npm run test:{slug}`) — it is
 stripped from server env.
+Playwright/npm test commands first auto-run dependency install + a browser
+preflight (`npx --no-install playwright install chromium`, 180s cap, cached
+per tests dir + Playwright version), then the command. Channel rule: `.spec.ts`
+runs prefer the platform server-side spec channel (shell = last-resort
+fallback); ad-hoc browser probes belong to `browser_playwright` /
+`code_executor python-playwright`, never shell node/npx scripts.
 ```
 
 Java/Spring Boot tests: detect in order `./mvnw test` → `mvn test` → `./gradlew test`; use the first applicable. Raise `timeout_seconds` (up to 300) for Maven/Gradle builds. Exit codes are faithful — environment failures must be classified by the agent, not the tool.

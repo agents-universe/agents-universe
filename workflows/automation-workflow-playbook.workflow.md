@@ -45,8 +45,8 @@ Language governance: `workflows/` files are repository-wide framework documents 
 4. Design structured test cases: prefer UI or UI+integration, and retain related APIs, key parameters, scripts, assertions, and evidence requirements in the structured design and generated assets. Resolve each case's data-setup need now, not at execution time (see `testing/test-data-setup`).
 5. Write a business-readable test design summary plus the minimum execution contract to a target Jira comment, then read back **the comment you just wrote** (`jira(operation="get_comment", issue_key="...", comment_id="<id returned by add_comment>")`) to confirm completeness and usability — no need to re-read the whole comment list. Do not default to pasting full JSON, every API parameter, long logs, or complete script output into Jira.
 6. Create or update a linked `[AI test]` test card based on the confirmed design comment.
-7. Generate the Playwright script from the confirmed design comment or test-card scope.
-8. Execute the script and collect scenario-level screenshots and recordings. Run generated Playwright `.spec.ts` through the platform server-side channel `POST /api/projects/{project_id}/playwright/specs/{slug}/run` (body `{"env": {"APP_*": "..."}}`) and poll `GET /api/scripts/runs/{run_id}`; fall back to agent-side `shell(command="npm run test:{slug}", cwd="tests")` only when the platform API is unreachable. Never hand a TypeScript spec to `code_executor` (`python-playwright` runs Python, not `.spec.ts`); use `code_executor(language="python-playwright")` only for ad-hoc Python browser probes. For UI scenarios, drive the page through the same visible entry points a user would use before asserting. Whenever a screenshot carries multiple assertion points, state points, field comparisons, or error messages, default to an annotated screenshot first. Then validate evidence completeness, classify failures, create or update a Bug only for product defects, and complete Jira writeback.
+7. Generate the Playwright script **with the `test_generator` tool** from the confirmed design comment or test-card scope — never hand-write `.spec.ts`.
+8. Execute the script and collect scenario-level screenshots and recordings. Run generated Playwright `.spec.ts` through the platform server-side channel `POST /api/projects/{project_id}/playwright/specs/{slug}/run` (body `{"env": {"APP_*": "..."}}`) and poll `GET /api/scripts/runs/{run_id}`; fall back to agent-side `shell(command="npm run test:{slug}", cwd="tests")` only when the platform API is unreachable (last resort — the shell fallback runs the shared dependency + browser setup). Never hand a TypeScript spec to `code_executor` (`python-playwright` runs Python, not `.spec.ts`); ad-hoc browser checks during execution use `browser_playwright` / `code_executor(language="python-playwright")`, never `shell` node scripts. For UI scenarios, drive the page through the same visible entry points a user would use before asserting. Whenever a screenshot carries multiple assertion points, state points, field comparisons, or error messages, default to an annotated screenshot first. Then validate evidence completeness, classify failures, create or update a Bug only for product defects, and complete Jira writeback.
 9. Write new knowledge back to `projects/{project}/knowledge/`, and clean up temporary files created for the run.
 
 ## 3. Release Regression Flow
@@ -69,7 +69,7 @@ Language governance: `workflows/` files are repository-wide framework documents 
 
 ### Automation Development
 
-- Coverage: generate the Playwright script from confirmed design and persist Jira test assets.
+- Coverage: generate the Playwright script with the `test_generator` tool (never hand-write `.spec.ts`) from confirmed design and persist Jira test assets.
 - Main outputs: generated script and internal execution artifacts, with concise test-card scope and pre-execution notes.
 
 ### Regression Validation

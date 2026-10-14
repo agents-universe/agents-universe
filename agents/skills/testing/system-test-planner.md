@@ -83,9 +83,9 @@ Secret prompts return only an opaque status — never request or echo plaintext 
 
 ## Execution Notes (for later runs)
 
-When a `SYS-xxx` case is executed on demand, prefer the platform server-side channel `POST /api/projects/{project_id}/playwright/specs/{slug}/run` with body `{"env": {"APP_USERNAME": "...", "APP_PASSWORD": "...", "APP_BASE_URL": "..."}}` (APP_*-prefixed keys only, values ≤ 500 chars), then poll `GET /api/scripts/runs/{run_id}`. It pins `cwd` to the project `tests/` directory and runs the same `test:{slug}` npm script with sandboxed env. **Never hand a TypeScript `.spec.ts` to `code_executor(language="python-playwright")`** — that channel executes Python browser scripts, not `.spec.ts`; use it only for ad-hoc Python browser probes.
+When a `SYS-xxx` case is executed on demand, prefer the platform server-side channel `POST /api/projects/{project_id}/playwright/specs/{slug}/run` with body `{"env": {"APP_USERNAME": "...", "APP_PASSWORD": "...", "APP_BASE_URL": "..."}}` (APP_*-prefixed keys only, values ≤ 500 chars), then poll `GET /api/scripts/runs/{run_id}`. It pins `cwd` to the project `tests/` directory and runs the same `test:{slug}` npm script with sandboxed env. **Never hand a TypeScript `.spec.ts` to `code_executor(language="python-playwright")`** — that channel executes Python browser scripts, not `.spec.ts`. Ad-hoc probes for plan validation use `browser_playwright` or `code_executor(language="python-playwright")` (Python channels) — never shell `node`/`npx` scripts.
 
-Only when the platform API is unreachable (local-only development), fall back to the agent-side shell:
+Only when the platform API is unreachable (local-only development), fall back to the agent-side shell — **last resort**; it self-installs dependencies and browsers first (the same setup the server channel runs):
 
 ```json
 // Fallback only — prefer the platform server-side channel above.

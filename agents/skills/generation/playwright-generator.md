@@ -31,6 +31,8 @@ The tool performs the following automatically:
 3. Adds a focused npm script `test:{slug}` to `tests/package.json` (e.g. `test:proj-456`).
 4. Generates a **self-contained** spec: imports only `@playwright/test`, groups cases with `test.describe('{issue_key}')`, and renders each case as a `test(...)` block with step actions and assertions. There is no framework runtime wrapper — do not import anything from `src/orchestration` or call functions like `runGeneratedCase`; they do not exist.
 
+Never hand-write a `.spec.ts` — the generator is the only way to create one. Editing selectors or resolving TODOs in a generated file is fine; structural changes mean regenerating with new test cases.
+
 ## Run Shape
 
 The scaffold signs in **once per run** (`auth.setup.ts` stores the session, the chromium project hands it to every spec), so cases do not log in themselves and the spec carries no login helper. Consequences:
@@ -119,7 +121,7 @@ Rules:
 
 1. **`.spec.ts` never goes to `code_executor`** — a TypeScript spec is not a Python script; handing it to `code_executor` fails or silently does nothing.
 2. **Python browser scripts never go to `shell`** — use `code_executor(language="python-playwright")`, which is the sandboxed browser-automation channel (120s timeout, Playwright Python preinstalled). Do not write `node`/`python` browser probes through the `shell` tool.
-3. The `shell` tool is for non-browser verification only: `npm run typecheck`, git, file inspection.
+3. **Shell's only Playwright use is the `.spec.ts` fallback** in command priority 2–3 below (it self-installs dependencies and browsers first, the same setup the server channel runs). Ad-hoc browser probes never go through shell — they are Python-channel only.
 
 ## Execution
 
@@ -128,11 +130,11 @@ Run from the project `tests/` directory, where the local `package.json`, `packag
 Command priority (use the first that applies):
 
 1. **Platform server-side channel** — `POST /api/projects/{project_id}/playwright/specs/{slug}/run` (body `{"env": {"APP_*": "..."}}`; `APP_*`-prefixed keys only, values ≤ 500 chars). It returns a `run_id` asynchronously; poll `GET /api/scripts/runs/{run_id}` for status and output. The server pins `cwd` to the project `tests/` directory, runs the same `test:{slug}` npm script with sandboxed env, and kills the process tree on timeout. The scheduler's `playwright` target uses this same channel. Prefer it whenever the platform API is reachable from the current environment — it avoids agent-side npm/network issues entirely.
-2. **Agent-side shell fallback** — `shell(command="npm run test:{slug}", cwd="tests")` — use only when the server-side channel is unreachable (local-only development, no platform API access). This is the same command the server channel runs.
-3. `shell(command="npm test -- generated/{slug}.spec.ts", cwd="tests")` — for any spec without a dedicated script.
+2. **Agent-side shell fallback** — `shell(command="npm run test:{slug}", cwd="tests")` — **last resort only**: use when the server-side channel is unreachable (local-only development, no platform API access). It runs the same `test:{slug}` npm script through the shell tool's shared setup path (dependency install + browser preflight, the same code the server runs), but still lacks the server channel's target-reachability probe, run-scoped artifact/report redirection, and 540s budget.
+3. `shell(command="npm test -- generated/{slug}.spec.ts", cwd="tests")` — for any spec without a dedicated script; still only under priority 2's condition.
 4. `shell(command="npm run typecheck", cwd="tests")` — verify TypeScript before running.
 
-Do **not** use bare `npx playwright test`: `playwright` (no `/test`) is a different package that lacks the `test` subcommand.
+Never drive Playwright by hand through shell: no bare `npx playwright test`, no hand-written `node`/`npx` Playwright driver scripts. They bypass the `test:{slug}` npm script's reporter/output/env conventions — exactly the habit that produced missing-browser failures. Even with the self-healing preflight, shell stays fallback-only.
 
 Evidence: the scaffold sets `video` and `trace` to `retain-on-failure`, so a
 failed case leaves `tests/test-results/**/{video.webm,trace.zip}` — attach those

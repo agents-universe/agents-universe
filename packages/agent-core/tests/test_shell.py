@@ -1,4 +1,5 @@
 """Tests for the shell tool env_refs secret injection and output redaction."""
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1367,6 +1368,256 @@ async def test_ensure_node_deps_rebuild_still_missing_reports_actionable_error(t
     assert "bin-links" in result
     assert len(calls) == 2
     assert "npm rebuild" in calls[1]
+
+
+# ---------------------------------------------------------------------------
+# ensure_playwright_browsers (browser preflight, shared with the API runner)
+# ---------------------------------------------------------------------------
+
+
+def _make_playwright_project(tmp_path: Path, version: str = "1.46.0") -> None:
+    """Minimal warm Playwright package: deps installed, shim present, so both
+    ensure_node_deps (early-returns) and the preflight (has a target) apply."""
+    (tmp_path / "package.json").write_text(
+        '{"devDependencies": {"@playwright/test": "^1.46.0"}}', encoding="utf-8"
+    )
+    module = tmp_path / "node_modules" / "@playwright/test"
+    module.mkdir(parents=True, exist_ok=True)
+    (module / "package.json").write_text(f'{{"version": "{version}"}}', encoding="utf-8")
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / "playwright").write_text("#!/bin/sh\n", encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def clear_browsers_cache():
+    shell_module._browsers_verified.clear()
+    yield
+    shell_module._browsers_verified.clear()
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_runs_before_playwright_command(tmp_path):
+    """A Playwright-declared package with warm deps still gets the browser
+    preflight, and the user command runs after it — the QA 'chrome executable'
+    regression: the container's chromium may not match the pinned runner."""
+    _make_playwright_project(tmp_path)
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        error = await shell_module.ensure_playwright_browsers(
+            "npm run test:proj-1", str(tmp_path), str(tmp_path), {},
+        )
+    assert error is None
+    assert len(calls) == 1
+    assert "playwright install chromium" in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_skipped_without_playwright(tmp_path):
+    """Plain `npm test` in a non-Playwright package must not pay the preflight."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}', encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        error = await shell_module.ensure_playwright_browsers(
+            "npm test", str(tmp_path), str(tmp_path), {},
+        )
+    assert error is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_cached_across_commands(tmp_path):
+    """The second run in the same process skips npx entirely (cache keyed on
+    package dir + playwright version + browsers path)."""
+    _make_playwright_project(tmp_path)
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        first = await shell_module.ensure_playwright_browsers(
+            "npm run test:a", str(tmp_path), str(tmp_path), {},
+        )
+        second = await shell_module.ensure_playwright_browsers(
+            "npm run test:a", str(tmp_path), str(tmp_path), {},
+        )
+    assert first is None and second is None
+    assert len(calls) == 1, f"preflight must run once, got {calls}"
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_re_runs_after_runner_upgrade(tmp_path):
+    """An npm install that bumps @playwright/test changes the cache key, so
+    the new runner's chromium revision is verified again."""
+    _make_playwright_project(tmp_path, version="1.46.0")
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        await shell_module.ensure_playwright_browsers(
+            "npm run test:a", str(tmp_path), str(tmp_path), {},
+        )
+        _make_playwright_project(tmp_path, version="1.55.0")
+        await shell_module.ensure_playwright_browsers(
+            "npm run test:a", str(tmp_path), str(tmp_path), {},
+        )
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_failure_surfaces_error(tmp_path):
+    """Playwright's own 'Executable doesn't exist' stderr must surface as an
+    actionable preflight error instead of leaking through the test run."""
+    _make_playwright_project(tmp_path)
+    stderr = b"Error: Executable doesn't exist at /ms-playwright/chromium-1148/chrome-linux/chrome"
+
+    def fake_spawn(*args, **kwargs):
+        return make_proc(out=b"", err=stderr, returncode=1)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        error = await shell_module.ensure_playwright_browsers(
+            "npm run test:a", str(tmp_path), str(tmp_path), {},
+        )
+    assert error is not None
+    assert "Browser preflight failed (exit code 1)" in error
+    assert "Executable doesn't exist" in error
+    assert not shell_module._browsers_verified
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_timeout_raises(tmp_path):
+    """A hung download raises TimeoutError (the caller maps it to an error);
+    the process tree must be killed first."""
+    _make_playwright_project(tmp_path)
+
+    async def hung_communicate():
+        raise asyncio.TimeoutError
+
+    def fake_spawn(*args, **kwargs):
+        proc = make_proc(out=b"")
+        proc.communicate = hung_communicate
+        proc.wait = AsyncMock(return_value=0)
+        return proc
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.terminate_process_tree") as kill,
+    ):
+        with pytest.raises(asyncio.TimeoutError):
+            await shell_module.ensure_playwright_browsers(
+                "npm run test:a", str(tmp_path), str(tmp_path), {},
+            )
+    kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_browser_preflight_skipped_when_shim_missing(tmp_path):
+    """Command mentions playwright but node_modules has no shim — npx
+    --no-install cannot run, so the preflight defers to the command's own
+    failure instead of adding a second one."""
+    (tmp_path / "package.json").write_text(
+        '{"devDependencies": {"@playwright/test": "^1.46.0"}}', encoding="utf-8"
+    )
+    (tmp_path / "node_modules" / "@playwright/test").mkdir(parents=True)
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        error = await shell_module.ensure_playwright_browsers(
+            "npx playwright test generated/x.spec.ts", str(tmp_path), str(tmp_path), {},
+        )
+    assert error is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_runs_preflight_then_command(tmp_path):
+    """End-to-end through ShellTool.execute: the preflight phase runs after
+    the (warm) deps phase and before the user command."""
+    _make_playwright_project(tmp_path)
+    ctx = make_context(project_fs_path=str(tmp_path))
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        calls.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"done\n", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.to_thread", new=AsyncMock(return_value={})),
+    ):
+        result = await shell_module.ShellTool().execute(
+            {"command": "npm run test:proj-1", "cwd": "."}, ctx
+        )
+    assert "error" not in result, result.get("error")
+    assert len(calls) == 2, calls
+    assert "playwright install chromium" in calls[0]
+    assert "npm run test:proj-1" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_execute_preflight_failure_blocks_command(tmp_path):
+    """A failed preflight short-circuits execute() — the suite never starts
+    with a known-broken browser."""
+    _make_playwright_project(tmp_path)
+    ctx = make_context(project_fs_path=str(tmp_path))
+    calls: list[str] = []
+
+    def fake_spawn(*args, **kwargs):
+        cmd = str(args[-1] if args else kwargs)
+        calls.append(cmd)
+        if "playwright install" in cmd:
+            return make_proc(out=b"", err=b"Error: Executable doesn't exist", returncode=1)
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_spawn),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_spawn),
+    ):
+        result = await shell_module.ShellTool().execute(
+            {"command": "npm run test:proj-1", "cwd": "."}, ctx
+        )
+    assert "error" in result
+    assert "Browser preflight failed" in result["error"]
+    assert len(calls) == 1, f"command must not run after a failed preflight: {calls}"
 
 
 

@@ -2165,9 +2165,23 @@
 
 .user-info {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   font-size: 12px;
+}
+
+.user-info-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.user-info-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .user-avatar {
@@ -2186,11 +2200,17 @@
 
 .user-name {
   flex: 1;
+  min-width: 0;
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 12px;
+  /* wrap up to two lines so long names show as fully as possible; the
+     native title tooltip covers anything still clipped */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .logout-btn {

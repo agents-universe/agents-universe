@@ -1,24 +1,30 @@
 <template>
   <div class="sidebar-footer">
     <div class="user-info">
-      <span class="user-avatar">{{ initials }}</span>
-      <span class="user-name">{{ authStore.displayName || t('common.user') }}</span>
-      <button
-        class="settings-btn"
-        :title="t('sidebar.footer.switchLanguage')"
-        @click="toggleLocale"
-      >
-        <Languages :size="12" />
-      </button>
-      <button class="settings-btn" :title="t('sidebar.footer.takeTour')" @click="startTour">
-        <Compass :size="12" />
-      </button>
-      <button class="settings-btn" :title="t('sidebar.footer.tokenSettings')" @click="goSettings">
-        <Settings :size="12" />
-      </button>
-      <button class="logout-btn" :title="t('sidebar.footer.logout')" @click="handleLogout">
-        <LogOut :size="12" />
-      </button>
+      <div class="user-info-main">
+        <span class="user-avatar">{{ initials }}</span>
+        <span class="user-name" :title="authStore.displayName || undefined">{{
+          authStore.displayName || t('common.user')
+        }}</span>
+      </div>
+      <div class="user-info-actions">
+        <button
+          class="settings-btn"
+          :title="t('sidebar.footer.switchLanguage')"
+          @click="toggleLocale"
+        >
+          <Languages :size="12" />
+        </button>
+        <button class="settings-btn" :title="t('sidebar.footer.takeTour')" @click="startTour">
+          <Compass :size="12" />
+        </button>
+        <button class="settings-btn" :title="t('sidebar.footer.tokenSettings')" @click="goSettings">
+          <Settings :size="12" />
+        </button>
+        <button class="logout-btn" :title="t('sidebar.footer.logout')" @click="handleLogout">
+          <LogOut :size="12" />
+        </button>
+      </div>
     </div>
     <span v-if="authStore.activeUsersCount > 1" class="active-users-hint">
       {{ t('sidebar.footer.activeUsers', { count: authStore.activeUsersCount }) }}

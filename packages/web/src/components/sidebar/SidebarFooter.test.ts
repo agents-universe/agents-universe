@@ -33,4 +33,24 @@ describe('SidebarFooter', () => {
     await settingsBtn!.trigger('click')
     expect(router.push).toHaveBeenCalledWith('/settings/tokens')
   })
+
+  it('renders the display name with a full-name tooltip', () => {
+    const wrapper = mount(SidebarFooter)
+    const name = wrapper.get('.user-name')
+    expect(name.text()).toBe('Test User')
+    expect(name.attributes('title')).toBe('Test User')
+  })
+
+  it('omits the tooltip when there is no display name', () => {
+    const original = authStore.displayName
+    authStore.displayName = ''
+    const wrapper = mount(SidebarFooter)
+    expect(wrapper.get('.user-name').attributes('title')).toBeUndefined()
+    authStore.displayName = original
+  })
+
+  it('keeps all four action buttons in the actions row', () => {
+    const wrapper = mount(SidebarFooter)
+    expect(wrapper.findAll('.user-info-actions button').length).toBe(4)
+  })
 })

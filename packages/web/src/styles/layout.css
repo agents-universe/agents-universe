@@ -625,6 +625,27 @@
   flex-shrink: 0;
 }
 
+.agent-tooltip__slug-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.public-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 @keyframes tooltip-in {
   from { opacity: 0; transform: translateY(-50%) translateX(-6px); }
   to   { opacity: 1; transform: translateY(-50%) translateX(0); }

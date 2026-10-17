@@ -52,6 +52,7 @@ export default {
       title: '智能体',
       emptyHint: '点击 + 收藏智能体',
       tooltipSkills: '技能',
+      badgePublic: '公共',
       tooltipWorkflows: '工作流',
       tooltipTools: '工具',
       tooltipMcp: 'MCP 集成',

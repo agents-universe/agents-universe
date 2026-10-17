@@ -19,7 +19,6 @@ tools:
   - delegate_agent
   - list_agents
 skills:
-  - knowledge/knowledge-manager
   - integration/repo-file-reader
   - interaction/user-confirm
 workflows:

@@ -1,5 +1,6 @@
 ---
 slug: "knowledge/knowledge-manager"
+public: true
 description: "Manage the acquisition, accumulation, update, and retirement of project knowledge"
 triggers:
   - "知识沉淀"

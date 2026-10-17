@@ -22,6 +22,7 @@ class SkillDefinition:
     body: str = ""  # full markdown body (instructions)
     execution_code: str | None = None  # extracted from ## Execution code block
     file_path: str = ""
+    public: bool = False  # True => skill is on every agent by default (never removable)
 
 
 _CODE_BLOCK_RE = re.compile(
@@ -43,6 +44,17 @@ def _as_list(value: object) -> list:
     if isinstance(value, str):
         return [value]
     return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _as_bool(value: object) -> bool:
+    """Normalize a YAML scalar to a bool.
+
+    frontmatter may quote the value (`public: "false"`) — a naive `bool(...)`
+    would treat that non-empty string as True.
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_skill(file_path: str | Path, mixin_dir: str | Path | None = None) -> SkillDefinition:
@@ -92,6 +104,7 @@ def load_skill(file_path: str | Path, mixin_dir: str | Path | None = None) -> Sk
         body=body,
         execution_code=execution_code,
         file_path=str(path),
+        public=_as_bool(meta.get("public")),
     )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api/agents")
 class SkillRef(BaseModel):
     slug: str
     description: str = ""
+    public: bool = False
 
 
 class AgentResponse(BaseModel):
@@ -74,6 +75,44 @@ def _parse_refs(raw: str | None) -> list[SkillRef]:
     return result
 
 
+def _public_skill_refs(registry) -> list[SkillRef]:
+    """Project every ``public: true`` skill from the startup registry.
+
+    Only the base registry is scanned — the per-turn project overlay lives in
+    ``agent_turn`` and does not apply at list time. The ``public`` flag attaches
+    to the slug, so a project skill shadowing the same slug still shows as
+    public (matching runtime behavior). ``registry`` is ``None`` when the app
+    lifespan never ran (``ASGITransport`` in tests), which yields no injection.
+    """
+    if registry is None:
+        return []
+    return [
+        SkillRef(slug=s.slug, description=s.description, public=True)
+        for s in registry.all()
+        if s.public
+    ]
+
+
+def _merge_public_skills(skills: list[SkillRef], public_refs: list[SkillRef]) -> list[SkillRef]:
+    """Ensure every public skill appears exactly once in an agent's list.
+
+    A matching entry may come from a stale DB row or a project agent whose
+    frontmatter still lists the slug — keep it and just flag it public instead
+    of appending a duplicate.
+    """
+    by_slug = {r.slug: r for r in skills}
+    for p in public_refs:
+        existing = by_slug.get(p.slug)
+        if existing is None:
+            skills.append(p)
+            by_slug[p.slug] = p
+        else:
+            existing.public = True
+            if not existing.description:
+                existing.description = p.description
+    return skills
+
+
 def _parse_tool_list(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -106,7 +145,7 @@ def _parse_str_list(raw: str | None) -> list[str]:
     return []
 
 
-def _to_response(a: Agent) -> AgentResponse:
+def _to_response(a: Agent, public_refs: list[SkillRef] | None = None) -> AgentResponse:
     return AgentResponse(
         agent_id=a.agent_id,
         slug=a.slug,
@@ -114,7 +153,7 @@ def _to_response(a: Agent) -> AgentResponse:
         description=a.description,
         category=a.category or "agile-development",
         project_id=a.project_id,
-        skills=_parse_refs(a.skills),
+        skills=_merge_public_skills(_parse_refs(a.skills), public_refs or []),
         workflows=_parse_refs(a.workflows),
         tools=_parse_tool_list(a.tools),
         placeholder=a.placeholder,
@@ -142,11 +181,16 @@ async def _sync_project_agents(
 
 @router.get("", response_model=list[AgentResponse])
 async def list_agents(
+    request: Request,
     project_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _current_user: UserInfo = Depends(get_current_user),
 ):
     """List global agents, plus project agents when ``project_id`` is given."""
+    # getattr guard: tests run under ASGITransport without lifespan, so
+    # app.state.skill_registry is absent there and no public skill injects.
+    registry = getattr(request.app.state, "skill_registry", None)
+    public_refs = _public_skill_refs(registry)
     if project_id:
         project = await authorize_project(project_id, db, _current_user)
         await _sync_project_agents(db, project)
@@ -159,7 +203,7 @@ async def list_agents(
         result = await db.execute(
             select(Agent).where(Agent.project_id.is_(None)).order_by(Agent.display_name)
         )
-    return [_to_response(a) for a in result.scalars().all()]
+    return [_to_response(a, public_refs) for a in result.scalars().all()]
 
 
 @router.post("/sync", response_model=SyncResult)

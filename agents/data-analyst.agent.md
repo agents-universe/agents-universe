@@ -28,7 +28,6 @@ skills:
   - analysis/metric-investigator
   - analysis/dataviz
   - analysis/report-writer
-  - knowledge/knowledge-manager
   - interaction/user-confirm
   - office/xlsx
 workflows:

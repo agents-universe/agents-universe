@@ -8,7 +8,7 @@ interface AgentApiResponse {
   description?: string | null
   category?: string | null
   project_id?: string | null
-  skills: Array<{ slug: string; description: string }>
+  skills: Array<{ slug: string; description: string; public?: boolean }>
   workflows: Array<{ slug: string; description: string }>
   tools?: string[]
   placeholder?: string | null

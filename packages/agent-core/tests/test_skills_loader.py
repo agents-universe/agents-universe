@@ -5,7 +5,7 @@ name-only `startswith("_")` check registered them as standalone skills.
 """
 from __future__ import annotations
 
-from agent_core.skills.loader import load_skills_from_dir
+from agent_core.skills.loader import load_skill, load_skills_from_dir
 
 
 def _write(path, slug: str) -> None:
@@ -48,3 +48,27 @@ def test_mixin_dir_still_resolves_when_explicit(tmp_path):
     assert "shared-rules" not in skills
     assert "SKILL BODY" in skills["uses-mixin"].body
     assert "MIXIN RULES" in skills["uses-mixin"].body
+
+
+def _write_with_frontmatter(path, extra: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nslug: {path.stem}\n{extra}---\nBODY\n", encoding="utf-8")
+
+
+def test_public_flag_true(tmp_path):
+    path = tmp_path / "pub.md"
+    _write_with_frontmatter(path, "public: true\n")
+    assert load_skill(path).public is True
+
+
+def test_public_flag_defaults_false(tmp_path):
+    path = tmp_path / "plain.md"
+    _write_with_frontmatter(path, "description: no flag\n")
+    assert load_skill(path).public is False
+
+
+def test_public_flag_quoted_false_stays_false(tmp_path):
+    # A quoted YAML scalar is a non-empty string — naive bool() would be True.
+    path = tmp_path / "quoted.md"
+    _write_with_frontmatter(path, 'public: "false"\n')
+    assert load_skill(path).public is False

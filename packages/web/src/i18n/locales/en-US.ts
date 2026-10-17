@@ -52,6 +52,7 @@ export default {
       title: 'Agents',
       emptyHint: 'Click + to favorite agents',
       tooltipSkills: 'Skills',
+      badgePublic: 'Public',
       tooltipWorkflows: 'Workflows',
       tooltipTools: 'Tools',
       tooltipMcp: 'MCP integrations',

@@ -25,6 +25,7 @@ Project skills override global skills with the same slug.
 slug: "category/skill-name"       # required, unique identifier
 type: "guidance"                   # required: guidance|template|executable|composite
 description: "One-line description"  # required
+public: true                       # optional: on every agent by default, marked 公共 in the UI
 triggers:                          # optional: phrases that cause auto-loading
   - "review this code"
 tools:                             # tools this skill needs

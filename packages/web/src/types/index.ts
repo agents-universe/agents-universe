@@ -40,6 +40,8 @@ export interface ProjectCategory {
 export interface EquippedItem {
   slug: string
   description: string
+  /** Public skills are on every agent by default and cannot be removed. */
+  public?: boolean
 }
 
 /** OpenAI reasoning_effort members; no "max" in the OpenAI API. */

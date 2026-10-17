@@ -42,7 +42,10 @@
           <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipSkills') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="s in tooltipAgent.skills" :key="s.slug" class="agent-tooltip__item">
-              <span class="agent-tooltip__slug">{{ s.slug }}</span>
+              <div class="agent-tooltip__slug-row">
+                <span v-if="s.public" class="public-badge">{{ t('sidebar.agents.badgePublic') }}</span>
+                <span class="agent-tooltip__slug">{{ s.slug }}</span>
+              </div>
               <span v-if="s.description" class="agent-tooltip__item-desc">{{ s.description }}</span>
             </div>
           </div>

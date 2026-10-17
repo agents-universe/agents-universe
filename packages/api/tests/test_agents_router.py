@@ -1,8 +1,49 @@
 """Router tests: project_id filtering, lazy sync, explicit sync endpoint."""
 from __future__ import annotations
 
-from api.paths import PROJECTS_ROOT
+import pytest
+
+from api.main import app
+from api.paths import AGENTS_DIR, PROJECTS_ROOT
 from api.routers.agents import _parse_refs, _parse_str_list, _parse_tool_list
+from api.services.agent_sync import sync_agents_dir
+
+_MISSING = object()
+
+
+@pytest.fixture
+def skill_registry():
+    """Install the real framework skill registry on the app.
+
+    ASGITransport never runs the lifespan, so app.state.skill_registry is
+    normally absent; restore the prior state afterwards (other session-scoped
+    fixtures may have set it) to avoid leaking across tests.
+    """
+    from agent_core.skills.registry import SkillRegistry
+
+    original = getattr(app.state, "skill_registry", _MISSING)
+    registry = SkillRegistry()
+    registry.load_dir(
+        str(AGENTS_DIR / "skills"),
+        mixin_dir=str(AGENTS_DIR / "skills" / "_mixins"),
+    )
+    app.state.skill_registry = registry
+    yield registry
+    if original is _MISSING:
+        if hasattr(app.state, "skill_registry"):
+            delattr(app.state, "skill_registry")
+    else:
+        app.state.skill_registry = original
+
+
+@pytest.fixture
+def no_skill_registry():
+    original = getattr(app.state, "skill_registry", _MISSING)
+    if original is not _MISSING:
+        delattr(app.state, "skill_registry")
+    yield
+    if original is not _MISSING:
+        app.state.skill_registry = original
 
 
 def _write_project_agent(
@@ -148,3 +189,54 @@ async def test_explicit_sync_endpoint(client, make_project):
 async def test_list_with_unknown_project_is_404(client):
     resp = await client.get("/api/agents?project_id=no-such-project")
     assert resp.status_code == 404
+
+
+async def test_public_skill_injected_into_every_agent(client, db, skill_registry):
+    # Global agent rows may not be synced yet (no lifespan in tests), so sync
+    # the framework dir first — the assertion needs real agents to hold.
+    await sync_agents_dir(db, AGENTS_DIR, project_id=None, is_system=True)
+
+    resp = await client.get("/api/agents")
+    assert resp.status_code == 200
+    agents = resp.json()
+    assert agents  # framework agents synced
+    for a in agents:
+        km = [s for s in a["skills"] if s["slug"] == "knowledge/knowledge-manager"]
+        assert len(km) == 1, f"{a['slug']}: {len(km)} knowledge-manager entries"
+        assert km[0]["public"] is True
+        # Every other skill stays non-public.
+        assert all(
+            not s["public"] for s in a["skills"] if s["slug"] != "knowledge/knowledge-manager"
+        )
+
+
+async def test_public_skill_dedupes_entry_still_listed_in_frontmatter(
+    client, make_project, skill_registry
+):
+    # Project agent files are LLM-authored and may still list the slug — the
+    # merge must flag that row public instead of appending a duplicate.
+    project = await make_project("proj-pub")
+    _write_project_agent(
+        "proj-pub",
+        "proj-pub--local",
+        "Local",
+        extra_frontmatter="skills:\n  - knowledge/knowledge-manager\n",
+    )
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    assert resp.status_code == 200
+    local = next(a for a in resp.json() if a["slug"] == "proj-pub--local")
+    km = [s for s in local["skills"] if s["slug"] == "knowledge/knowledge-manager"]
+    assert len(km) == 1
+    assert km[0]["public"] is True
+
+
+async def test_list_without_registry_still_returns_200(client, no_skill_registry):
+    resp = await client.get("/api/agents")
+    assert resp.status_code == 200
+    # No registry => no injection; agents (if any) carry only their own skills.
+    assert all(
+        not s.get("public")
+        for a in resp.json()
+        for s in a["skills"]
+    )

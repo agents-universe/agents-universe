@@ -47,7 +47,6 @@ skills:
   - generation/playwright-generator
   - generation/scheduled-task-writer
   - testing/screenshot-annotator
-  - knowledge/knowledge-manager
   - integration/github-pages-publisher
   - interaction/user-confirm
 workflows:

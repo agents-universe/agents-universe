@@ -43,6 +43,9 @@ KNOWN_REFERENCED_SKILLS = ANALYSIS_SKILLS + [
     "interaction/user-confirm",
     "office/xlsx",
 ]
+# Injected into every agent at response time via `public: true` in the skill
+# file — never listed in this agent's frontmatter `skills:`.
+PUBLIC_SKILLS = {"knowledge/knowledge-manager"}
 
 _CJK_RE = re.compile(r"[一-鿿]")
 
@@ -86,7 +89,8 @@ def test_agent_skill_references_resolve():
     loaded = _skills()
     missing = [s for s in cfg.skills if s not in loaded]
     assert missing == []
-    assert set(cfg.skills) == set(KNOWN_REFERENCED_SKILLS)
+    assert set(cfg.skills) == set(KNOWN_REFERENCED_SKILLS) - PUBLIC_SKILLS
+    assert not PUBLIC_SKILLS & set(cfg.skills)
 
 
 def test_agent_workflow_references_resolve():

@@ -27,7 +27,6 @@ tools:
 skills:
   - integration/jira-analyzer
   - integration/confluence-reader
-  - knowledge/knowledge-manager
   - interaction/user-confirm
   - estimation/story-point-estimator
   - generation/demo-maker

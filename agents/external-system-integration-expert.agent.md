@@ -25,7 +25,6 @@ skills:
   - integration/custom-api-consumer
   - integration/kong-reader
   - integration/self-adapt-db-access
-  - knowledge/knowledge-manager
   - interaction/user-confirm
 workflows:
   - knowledge-ingestion

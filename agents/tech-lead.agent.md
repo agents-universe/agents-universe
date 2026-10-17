@@ -38,7 +38,6 @@ skills:
   - integration/jira-implementer
   - generation/custom-script-writer
   - generation/scheduled-task-writer
-  - knowledge/knowledge-manager
   - interaction/user-confirm
 workflows:
   - knowledge-ingestion

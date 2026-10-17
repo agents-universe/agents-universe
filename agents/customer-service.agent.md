@@ -20,7 +20,6 @@ tools:
 skills:
   - support/customer-reply
   - support/escalation
-  - knowledge/knowledge-manager
   - interaction/user-confirm
 max_tokens: 128000
 token_budget: 100000

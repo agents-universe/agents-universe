@@ -653,6 +653,12 @@ def _assemble_graph(
                     add_edge(file_node_ids[rel], file_node_ids[target_rel], EDGE_IMPORTS)
                 continue
             target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
+            if lang == "python" and imp.get("name") and set(module) == {"."}:
+                # `from . import helper` imports the submodule when it exists;
+                # the package itself is only the attribute fallback.
+                target_rel = _resolve_module(
+                    module + imp["name"], rel, lang, module_index, java_roots
+                ) or target_rel
             if target_rel is None:
                 external_imports += 1
                 continue
@@ -927,19 +933,24 @@ def _alias_map(entry: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
 # --- call/symbol resolution ------------------------------------------------
 
 def _match_alias(target: str, aliases: dict[str, tuple[str, str | None]]):
-    """(module, rest|None) for the longest alias matching target; None if none."""
+    """(module, rest|None, imported) for the longest alias matching target.
+
+    ``imported`` is the name the import bound (None for a module-level
+    binding). A relative from-import such as ``from . import helper`` binds a
+    submodule name there, which is how call resolution finds helper's file.
+    """
     if target in aliases:
         module, name = aliases[target]
-        return module, name
+        return module, name, name
     best_alias: str | None = None
     for alias in aliases:
         if target.startswith(alias + ".") and (best_alias is None or len(alias) > len(best_alias)):
             best_alias = alias
     if best_alias is None:
         return None
-    module, _ = aliases[best_alias]
+    module, name = aliases[best_alias]
     rest = target[len(best_alias) + 1:]
-    return module, rest
+    return module, rest, name
 
 
 def _lookup_in_file(rest: str, target_rel: str, file_symbols: dict[str, set[str]]) -> str | None:
@@ -974,8 +985,19 @@ def _resolve_call(
         return symbol_id(rel, target)
     matched = _match_alias(target, aliases)
     if matched is not None:
-        module, rest = matched
-        target_rel = _resolve_module(module, rel, lang, module_index, java_roots, cs_roots)
+        module, rest, imported = matched
+        target_rel = None
+        if lang == "python" and imported is not None and set(module) == {"."}:
+            # `from . import helper` binds the submodule when one exists
+            # (Python tries it before the package attribute), so resolve the
+            # call into helper's file and fall back to the package itself.
+            target_rel = _resolve_module(
+                module + imported, rel, lang, module_index, java_roots, cs_roots
+            )
+        if target_rel is None:
+            target_rel = _resolve_module(
+                module, rel, lang, module_index, java_roots, cs_roots
+            )
         if target_rel is None:
             return None
         if rest:

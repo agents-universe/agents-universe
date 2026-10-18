@@ -16,7 +16,9 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-CACHE_VERSION = 3
+# Bump whenever parser output changes shape: cached per-file results are
+# keyed by content hash alone, so an old entry would otherwise survive.
+CACHE_VERSION = 4
 _MANIFEST = "index.json"
 
 

@@ -176,7 +176,8 @@ _SQL_QUALIFIED = (
 )
 
 _SQL_DECL_RE = re.compile(
-    rb"CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?"
+    # T-SQL scripts modules with CREATE OR ALTER; MySQL/Oracle use OR REPLACE.
+    rb"CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:TEMP(?:ORARY)?\s+)?"
     rb"(TABLE|VIEW|PROC|PROCEDURE|FUNCTION|TRIGGER)\s+(" + _SQL_IDENT + rb")",
     re.IGNORECASE,
 )
@@ -187,10 +188,12 @@ _SQL_FK_RE = re.compile(
     rb"\bFOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+(" + _SQL_IDENT + rb")", re.IGNORECASE
 )
 _SQL_REF_RE = re.compile(rb"\bREFERENCES\s+(" + _SQL_IDENT + rb")", re.IGNORECASE)
+# T-SQL accepts `TOP (n) [PERCENT]` on every DML verb, not just UPDATE.
+_SQL_TOP = rb"(?:TOP\s*\([^)]*\)\s+(?:PERCENT\s+)?)?"
 _SQL_WRITE_RES = (
-    re.compile(rb"\bINSERT\s+(?:INTO\s+)?(" + _SQL_IDENT + rb")", re.IGNORECASE),
-    re.compile(rb"\bUPDATE\s+(?:TOP\s*\([^)]*\)\s+)?(" + _SQL_IDENT + rb")", re.IGNORECASE),
-    re.compile(rb"\bDELETE\s+(?:FROM\s+)?(" + _SQL_IDENT + rb")", re.IGNORECASE),
+    re.compile(rb"\bINSERT\s+" + _SQL_TOP + rb"(?:INTO\s+)?(" + _SQL_IDENT + rb")", re.IGNORECASE),
+    re.compile(rb"\bUPDATE\s+" + _SQL_TOP + rb"(" + _SQL_IDENT + rb")", re.IGNORECASE),
+    re.compile(rb"\bDELETE\s+" + _SQL_TOP + rb"(?:FROM\s+)?(" + _SQL_IDENT + rb")", re.IGNORECASE),
 )
 _SQL_READ_RE = re.compile(rb"\b(?:FROM|JOIN)\s+(" + _SQL_IDENT + rb")", re.IGNORECASE)
 _SQL_EXEC_RE = re.compile(
@@ -416,15 +419,20 @@ def _sql_norm_name(raw: bytes) -> str:
     return ".".join(cleaned)
 
 
-def _sql_valid_table(name: str) -> bool:
+def _sql_valid_table(name: str, raw: bytes | None = None) -> bool:
     if not name or name.startswith("#"):  # temp tables are session-local
         return False
+    # A quoted identifier (`[Order]`) is unambiguously a name, and a qualified
+    # one (`[dbo].[Order]` -> dbo.Order) cannot be a bare keyword the regex
+    # mistook for a target. Only an unquoted single segment can be a misfire
+    # (`DELETE FROM` with an unparseable body matches "FROM" as the target).
+    quoted = raw is not None and (b"[" in raw or b"`" in raw)
     lowered = name.lower()
-    if lowered in _SQL_PSEUDO_TABLES:
+    if not quoted and lowered in _SQL_PSEUDO_TABLES:
         return False
-    if lowered in _SQL_NOT_TABLE or lowered.rsplit(".", 1)[-1] in _SQL_NOT_TABLE:
-        return False
-    return True
+    if "." in lowered or quoted:
+        return True
+    return lowered not in _SQL_NOT_TABLE
 
 
 def _re_ident_start(part: bytes):
@@ -653,6 +661,9 @@ class _SqlStreamParser:
         self.machine: _TableBody | _TriggerHeader | None = None
         self.sym_seen: set[str] = set()
         self.edge_seen: set[tuple[str, str | None, str]] = set()
+        # Write spans that may still cover a read in a later round (positions
+        # are absolute; pruned once they fall behind the next scan start).
+        self.write_spans: list[tuple[int, int]] = []
         self.decl_cursor = _LineCursor()
         self.col_cursor = _LineCursor()
 
@@ -679,8 +690,12 @@ class _SqlStreamParser:
         self.sym_seen.add(name)
         self.result.symbols.append({"name": name, "type": graph_type, "line": line})
 
-    def _emit_edge(self, etype: str, src: str | None, target: str) -> None:
-        if not _sql_valid_table(target):
+    def _emit_edge(
+        self, etype: str, src: str | None, target: str, raw: bytes | None = None
+    ) -> None:
+        # Declared symbols are already known to be real names, whatever the
+        # keyword filter would say about a table called `[Order]`.
+        if target not in self.sym_seen and not _sql_valid_table(target, raw):
             return
         key = (etype, src, target)
         if key in self.edge_seen:
@@ -727,6 +742,9 @@ class _SqlStreamParser:
             self._pkf_round(scan_from, end, final)
             # 3. pop: retain SPAN_MAX + LOOKBACK behind the next scan start
             self.scan_from = max(0, end - self.span)
+            # A span ending at/before the next scan start cannot cover any
+            # read the next round will look at.
+            self.write_spans = [sp for sp in self.write_spans if sp[1] > self.scan_from]
             keep_from = self.scan_from - SQL_LOOKBACK
             if keep_from > self.base:
                 drop = keep_from - self.base
@@ -827,14 +845,22 @@ class _SqlStreamParser:
         if decl is not None and decl["kind"] in ("procedure", "function", "view", "trigger"):
             src = decl["qname"]
         lo_i, hi_i = lo - self.base, hi - self.base
-        # writes first, so `DELETE FROM x`'s FROM never double-counts as a read
-        spans: list[tuple[int, int]] = []
+        # Writes first, so `DELETE FROM x`'s FROM never double-counts as a
+        # read. Spans from the previous round are carried in too: a statement
+        # whose DELETE/UPDATE keyword sits just before this round's scan start
+        # is not re-found by the anchored write regex, but its FROM/INTO part
+        # is, and without the span it would be emitted as a spurious read.
+        spans: list[tuple[int, int]] = [
+            sp for sp in self.write_spans if sp[1] > lo and sp[0] < hi
+        ]
         for rx in _SQL_WRITE_RES:
             for m in rx.finditer(self.buf, lo_i, hi_i):
                 if defer_edge and _at_scan_edge(self.buf, m, hi_i):
                     continue  # backtracked identifier; next round re-finds it
-                self._emit_edge("writes", src, _sql_norm_name(m.group(1)))
-                spans.append((self.base + m.start(), self.base + m.end()))
+                self._emit_edge("writes", src, _sql_norm_name(m.group(1)), m.group(1))
+                span = (self.base + m.start(), self.base + m.end())
+                spans.append(span)
+                self.write_spans.append(span)
         # Containment filter: exists span with s <= p and q <= e. Sorted by
         # start, that is a prefix max on e — same predicate as the old any().
         starts: list[int] = []
@@ -860,13 +886,13 @@ class _SqlStreamParser:
             p, q = self.base + m.start(), self.base + m.end()
             if covered(p, q):
                 continue
-            self._emit_edge("reads", src, _sql_norm_name(m.group(1)))
+            self._emit_edge("reads", src, _sql_norm_name(m.group(1)), m.group(1))
         for m in _SQL_EXEC_RE.finditer(self.buf, lo_i, hi_i):
             if defer_edge and _at_scan_edge(self.buf, m, hi_i):
                 continue
             target = _sql_norm_name(m.group(1))
             if not target.startswith("@"):
-                self._emit_edge("calls", src, target)
+                self._emit_edge("calls", src, target, m.group(1))
         for m in _SQL_QUAL_CALL_RE.finditer(self.buf, lo_i, hi_i):
             if defer_edge and _at_scan_edge(self.buf, m, hi_i):
                 continue
@@ -886,7 +912,7 @@ class _SqlStreamParser:
             words = re.findall(rb"[A-Za-z_]+", bytes(before))
             if words and words[-1].decode("ascii", "ignore").lower() in _SQL_QUAL_CALL_NO_PRECEDE:
                 continue
-            self._emit_edge("calls", src, _sql_norm_name(m.group(1)))
+            self._emit_edge("calls", src, _sql_norm_name(m.group(1)), m.group(1))
 
     # Table-level PK/FK (also covers inline REFERENCES): attributed to the
     # closest preceding CREATE TABLE, unless an ALTER TABLE sits after it and
@@ -927,7 +953,9 @@ class _SqlStreamParser:
                 table = self._attr_table(self.base + m.start())
                 if table is None:
                     continue
-                self._emit_edge("foreign_key", table, _sql_norm_name(m.group(1)))
+                self._emit_edge(
+                    "foreign_key", table, _sql_norm_name(m.group(1)), m.group(1)
+                )
 
 
 def _parse_sql(data: bytes, rel_path: str, result: FileParseResult) -> None:
@@ -1307,6 +1335,14 @@ def _extract_inheritance(ctx: _Ctx, class_node, class_qname: str) -> None:
         return
     # ts/js: class_heritage -> extends_clause / implements_clause -> expressions
     for child in class_node.children:
+        if child.type == "extends_type_clause":
+            # An interface's `extends` list is a direct child of the
+            # interface_declaration (there is no class_heritage wrapper).
+            for expr in child.named_children:
+                chain = _chain_text(expr)
+                if chain:
+                    _record_inherits(ctx, chain, class_qname)
+            continue
         if child.type != "class_heritage":
             continue
         for clause in child.children:

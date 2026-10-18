@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from agent_core.knowledge.graph.builder import (
+    _assemble_graph,
     _java_source_roots,
     build_repo_graph,
 )
@@ -681,6 +682,56 @@ async def test_multi_name_and_relative_imports(multi_import_repo: Path, tmp_path
     assert ("s:pkg/consumer.py:run", "s:util/helper.py:helper", "calls") in edges
 
 
+def test_relative_from_import_binds_the_submodule(grammars):
+    """`from . import helper` binds a submodule, not a package attribute.
+
+    The alias map recorded the package (module ".") and the imported name,
+    but resolution only mapped "." to __init__.py, so `helper.f()` was
+    attributed to the package (or dropped) instead of helper.py.
+    """
+    texts = {
+        "pkg/__init__.py": "from . import helper\n",
+        "pkg/helper.py": "def f():\n    pass\n",
+        "pkg/user.py": "from . import helper\ndef g():\n    helper.f()\n",
+        "pkg/user2.py": "from . import helper as h\ndef g():\n    h.f()\n",
+    }
+    results = {}
+    for rel, text in texts.items():
+        parsed = parse_bytes(text.encode(), rel, "python")
+        results[rel] = {
+            "sha256": parsed.sha256,
+            "lang": parsed.lang,
+            "symbols": parsed.symbols,
+            "edges": parsed.edges,
+            "imports": parsed.imports,
+        }
+    graph = _assemble_graph("repo", "head", results)
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    for user in ("pkg/user.py", "pkg/user2.py"):
+        assert (f"f:{user}", "f:pkg/helper.py", "imports") in edges
+        assert (f"s:{user}:g", "s:pkg/helper.py:f", "calls") in edges
+    # The package itself still imports the submodule.
+    assert ("f:pkg/__init__.py", "f:pkg/helper.py", "imports") in edges
+
+
+def test_ts_interface_extends_records_inheritance(grammars):
+    """An interface's `extends` is a bare extends_type_clause child of the
+    interface_declaration (not the class_heritage wrapper classes use)."""
+    result = parse_bytes(
+        b"export interface I extends J { x: number }\n"
+        b"interface K extends L, M {}\n"
+        b"class A extends B {}\n",
+        "a.ts",
+        "typescript",
+    )
+    assert result.stats.get("error") is None
+    edges = {(e["type"], e["from"], e["target"]) for e in result.edges}
+    assert ("inherits", "I", "J") in edges
+    assert ("inherits", "K", "L") in edges
+    assert ("inherits", "K", "M") in edges
+    assert ("inherits", "A", "B") in edges
+
+
 # ---------------------------------------------------------------------------
 # Java 21 modern syntax: records, sealed, interface extends, arrow switch
 # ---------------------------------------------------------------------------
@@ -1020,6 +1071,83 @@ def test_sql_parse_declarations_and_refs(sql_repo: Path):
     assert ("writes", "dbo.trgOrders", "dbo.EventLog") in tedges
     # DML pseudo-tables never become targets (nor unresolved-ref noise)
     assert not any(e["target"] in ("inserted", "deleted") for e in tsql.edges)
+
+
+def test_sql_bracketed_keyword_table_keeps_dml_edges():
+    """`[Order]`/`[Group]` are ordinary T-SQL table names.
+
+    Normalization strips the brackets before the keyword filter ran, so every
+    DML edge to a table named after a SQL keyword was silently dropped.
+    """
+    text = (
+        "CREATE TABLE dbo.[Order] (Id INT);\n"
+        "CREATE PROCEDURE dbo.P AS\nBEGIN\n"
+        "  SELECT Id FROM dbo.[Order];\n"
+        "  INSERT INTO dbo.[Group] (Id) VALUES (1);\n"
+        "END\n"
+    ).encode()
+    result = parse_bytes(text, "db/x.sql", "sql")
+    assert {s["name"]: s["type"] for s in result.symbols}["dbo.Order"] == "table"
+    edges = {(e["type"], e["from"], e["target"]) for e in result.edges}
+    assert ("reads", "dbo.P", "dbo.Order") in edges
+    assert ("writes", "dbo.P", "dbo.Group") in edges
+
+
+def test_sql_dml_top_clause_is_a_write():
+    """DELETE/INSERT accept T-SQL `TOP (n) [PERCENT]` like UPDATE does.
+
+    Without it, DELETE TOP matched "TOP" as the target and the trailing FROM
+    was recorded as a read, INSERT TOP vanished, and UPDATE TOP ... PERCENT
+    produced a bogus "PERCENT" table.
+    """
+    cases = {
+        "DELETE TOP (10) FROM dbo.Target;": ("writes", "dbo.Target"),
+        "INSERT TOP (10) INTO dbo.Target (Id) VALUES (1);": ("writes", "dbo.Target"),
+        "UPDATE TOP (10) PERCENT dbo.Target SET Id = 2;": ("writes", "dbo.Target"),
+    }
+    for statement, expected in cases.items():
+        text = (
+            "CREATE TABLE dbo.Target (Id INT);\n"
+            f"CREATE PROCEDURE dbo.P AS\nBEGIN\n  {statement}\nEND\n"
+        ).encode()
+        result = parse_bytes(text, "db/x.sql", "sql")
+        edges = {(e["type"], e["from"], e["target"]) for e in result.edges}
+        assert (expected[0], "dbo.P", expected[1]) in edges, (statement, result.edges)
+        assert ("reads", "dbo.P", "dbo.Target") not in edges, (statement, result.edges)
+        assert not any(e["target"].lower() == "percent" for e in result.edges)
+
+
+def test_sql_create_or_alter_declares_the_module():
+    text = (
+        "CREATE TABLE dbo.T (Id INT);\n"
+        "CREATE OR ALTER PROCEDURE dbo.P AS\nBEGIN\n"
+        "  SELECT Id FROM dbo.T;\nEND\n"
+    ).encode()
+    result = parse_bytes(text, "db/x.sql", "sql")
+    types = {s["name"]: s["type"] for s in result.symbols}
+    assert types["dbo.P"] == "procedure"
+    edges = {(e["type"], e["from"], e["target"]) for e in result.edges}
+    assert ("reads", "dbo.P", "dbo.T") in edges
+
+
+def test_sql_stream_boundary_does_not_turn_a_write_into_a_read():
+    """A write just before a round's scan start is not re-found by the
+    anchored write regex, but its FROM clause is. Its span must survive into
+    the next round or the same statement is also recorded as a read.
+    """
+    mib = 1024 * 1024
+    head = b"CREATE PROCEDURE dbo.P AS\nBEGIN\n"
+    # Round 1 scans [0, 4 MiB); round 2 starts at 3 MiB, just after DELETE.
+    fill = 3 * mib - 6 - len(head)
+    data = head + b" " * fill + b"DELETE FROM dbo.T;" + b" " * (mib + 100) + b"\nEND\n"
+    result = FileParseResult(sha256="", lang="sql")
+    parser = _SqlStreamParser(result)
+    for i in range(0, len(data), 1 << 20):
+        parser.feed(data[i:i + (1 << 20)])
+    parser.finish()
+    assert Counter((e["type"], e["from"], e["target"]) for e in result.edges) == Counter(
+        {("writes", "dbo.P", "dbo.T"): 1}
+    ), result.edges
 
 
 @pytest.mark.asyncio

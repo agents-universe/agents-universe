@@ -57,6 +57,25 @@ class _Field:
         self.restricted = restricted
 
 
+def _parse_digits(text: str) -> int | None:
+    """Interpret an ASCII decimal field, or None when it is not one.
+
+    ``str.isdigit()`` alone is not enough: it accepts superscripts and other
+    digit look-alikes that ``int()`` rejects, and ``int()`` also refuses digit
+    strings past the interpreter's length limit. Cron expressions are user
+    input, so both must fall through to ``CronError`` rather than escape as a
+    bare ``ValueError`` past validate_cron's "message, not exception"
+    contract.
+    """
+    text = text.strip()
+    if not text.isascii() or not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _parse_field(
     raw: str, name: str, lo: int, hi: int, *, sunday_alias: bool = False
 ) -> _Field:
@@ -77,9 +96,9 @@ def _parse_field(
         if "/" in part:
             stepped = True
             part, _, step_text = part.partition("/")
-            if not step_text.strip().isdigit() or int(step_text) == 0:
+            step = _parse_digits(step_text)
+            if step is None or step == 0:
                 raise CronError(f"invalid step in {name} field: {raw!r}")
-            step = int(step_text)
             part = part.strip()
 
         if part == "*":
@@ -107,10 +126,9 @@ def _parse_field(
 
 
 def _int_field(text: str, name: str, lo: int, hi: int) -> int:
-    text = text.strip()
-    if not text.isdigit():
-        raise CronError(f"invalid {name} value: {text!r}")
-    value = int(text)
+    value = _parse_digits(text)
+    if value is None:
+        raise CronError(f"invalid {name} value: {text.strip()!r}")
     if value < lo or value > hi:
         raise CronError(f"{name} value {value} out of range {lo}-{hi}")
     return value

@@ -230,6 +230,23 @@ class TestValidation:
 
     @pytest.mark.parametrize(
         "expr",
+        [
+            "² * * * *",  # isdigit() look-alike that int() rejects
+            "*/² * * * *",
+            "9" * 5000 + " * * * *",  # past int()'s digit-string length limit
+            "*/" + "9" * 5000 + " * * * *",
+        ],
+    )
+    def test_digit_lookalikes_are_errors_not_exceptions(self, expr):
+        # validate_cron promises a readable message for any string input; a
+        # bare ValueError escaping from int() would 500 the schedules API.
+        assert validate_cron(expr) is not None
+        assert describe_cron(expr).startswith("invalid:")
+        with pytest.raises(CronError):
+            next_run_at(expr, "UTC", _utc(2026, 3, 4))
+
+    @pytest.mark.parametrize(
+        "expr",
         ["* * * * *", "0 9 * * 1-5", "*/15 9-18 * * 1,3,5", "0 0 29 2 *", "0 0 * * 7"],
     )
     def test_valid_expressions(self, expr):

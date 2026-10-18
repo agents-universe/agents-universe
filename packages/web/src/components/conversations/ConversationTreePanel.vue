@@ -160,7 +160,6 @@ async function selectConversation(conv: ConversationItem) {
       // that response — otherwise the agent's latest conversation replaces
       // the one the user just clicked.
       await nextTick()
-      invalidateLatestConversation()
     } else {
       // Agent row gone (or not loaded): open the conversation anyway — its
       // messages are keyed by conversation_id. Only the next turn's agent
@@ -168,6 +167,11 @@ async function selectConversation(conv: ConversationItem) {
       console.warn('Conversation belongs to an agent not in the current list', targetSlug)
     }
   }
+  // The user's pick must win over any in-flight latest-restore or create.
+  // A same-agent pick does not change agentSlug, so ChatPage's watch never
+  // fires: without this, its pending response replaces the clicked
+  // conversation when it lands.
+  invalidateLatestConversation()
   convStore.startConversation(conv.conversation_id)
   // Switch the token meter to this conversation's figures — the list item
   // already carries them and the previous conversation's runtime would

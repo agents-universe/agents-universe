@@ -499,6 +499,9 @@ describe('useWebSocket connection-cap eviction', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     setActivePinia(createPinia())
+    // _connections is module state: earlier suites leave entries behind, and
+    // the cap/lifecycle-kick assertions below count every live connection.
+    closeAllConnections()
     localStorage.clear()
     instances = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
@@ -510,6 +513,41 @@ describe('useWebSocket connection-cap eviction', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('reconnecting an existing entry never evicts a healthy connection', () => {
+    // The lifecycle kick reconnects every tracked id. A background socket in
+    // backoff already owns a slot, so replacing it needs no capacity — the
+    // cap check used to evict an unrelated idle OPEN connection instead,
+    // stranding the conversation the user was actually reading.
+    const store = useConversationStore()
+    store.startConversation('conv-idle')
+    const idle = mount('conv-idle')
+    idle.ws.readyState = WebSocket.OPEN
+    idle.ws.onopen!(new Event('open'))
+
+    for (let i = 0; i < MAX_CONNECTIONS - 2; i++) {
+      const id = `conv-busy-${i}`
+      store.startConversation(id)
+      const busy = mount(id)
+      busy.ws.readyState = WebSocket.OPEN
+      busy.ws.onopen!(new Event('open'))
+      store.startThinking(id)
+    }
+
+    store.startConversation('conv-retry')
+    const retry = mount('conv-retry')
+    retry.ws.onclose!({} as CloseEvent) // keeps its slot while backing off
+    expect(retry.status.value).toBe('connecting')
+
+    const idleSocket = idle.ws
+    window.dispatchEvent(new Event('focus'))
+
+    // The retry re-opened (a new socket), and the healthy idle connection
+    // survived.
+    expect(instances).toHaveLength(MAX_CONNECTIONS + 1)
+    expect(idleSocket.readyState).toBe(WebSocket.OPEN)
+    expect(idle.status.value).toBe('connected')
   })
 
   it('a parked waiter is never evicted to free a slot', () => {

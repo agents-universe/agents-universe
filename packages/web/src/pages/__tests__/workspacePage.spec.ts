@@ -271,6 +271,32 @@ describe('WorkspacePage', () => {
     expect(wrapper.find('.script-log-output').text()).toContain('preparing deps')
   })
 
+  it('does not paint a failed run on the selection that replaced it', async () => {
+    const base = apiFetchMock.getMockImplementation()!
+    let rejectRun!: (e: Error) => void
+    const pendingRun = new Promise<never>((_, reject) => { rejectRun = reject })
+    apiFetchMock.mockImplementation((url: string, options?: RequestInit) =>
+      url === '/api/scripts/s1/run' ? pendingRun : base(url, options))
+
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('hello'))!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.workspace-content-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    // Switch to a different runnable target while the POST is in flight.
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('Login flow'))!.trigger('click')
+    await flushPromises()
+
+    rejectRun(new Error('run failed'))
+    await flushPromises()
+
+    // The failure belongs to the script that started the run; showing it in
+    // the spec's panel would misattribute another target's error.
+    expect(wrapper.find('.script-run-error').exists()).toBe(false)
+  })
+
   it('closes the run socket when the project switches', async () => {
     const wrapper = mountPage()
     await flushPromises()

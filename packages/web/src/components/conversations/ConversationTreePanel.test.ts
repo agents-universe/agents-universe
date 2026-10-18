@@ -20,6 +20,8 @@ vi.mock('@/composables/useWebSocket', () => ({
   closeConnection: vi.fn(),
   closeAllConnections: vi.fn(),
 }))
+const latestMock = vi.hoisted(() => ({ invalidateLatestConversation: vi.fn() }))
+vi.mock('@/composables/useLatestConversation', () => latestMock)
 
 function makeConv(over: Partial<ConversationItem> = {}): ConversationItem {
   return {
@@ -227,6 +229,29 @@ describe('ConversationTreePanel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a same-agent pick invalidates the pending latest-conversation restore', async () => {
+    // The agent does not change, so ChatPage's watch(agentSlug) never fires
+    // and nothing else discards its in-flight "open the agent's latest
+    // conversation" response — it would replace the clicked conversation.
+    agentStore.currentAgent = makeAgent()
+    agentStore.agents = [makeAgent()]
+    api.list.mockResolvedValue([makeConv({ conversation_id: 'c2', agent_slug: 'agent' })])
+    store.startConversation('c1')
+
+    const wrapper = mount(ConversationTreePanel, {
+      props: { projectId: 'p1', agentSlug: 'agent' },
+    })
+    await flushPromises()
+    latestMock.invalidateLatestConversation.mockClear()
+
+    await wrapper.find('.conv-tree-item').trigger('click')
+    await flushPromises()
+
+    expect(latestMock.invalidateLatestConversation).toHaveBeenCalled()
+    expect(store.conversationId).toBe('c2')
+    wrapper.unmount()
   })
 
   it('clears the search when the new-conversation button is clicked', async () => {

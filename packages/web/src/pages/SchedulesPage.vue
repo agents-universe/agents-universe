@@ -737,6 +737,10 @@ onMounted(async () => {
 
 watch(projectId, async (pid) => {
   if (!pid) return
+  // The route reuses this component across projects, and the modal is not
+  // route-bound: leaving it open would submit project A's schedule under the
+  // new project (update ignores the project argument; create mixes targets).
+  closeForm()
   closeLogDrawer()
   expandedId.value = null
   history.value = []

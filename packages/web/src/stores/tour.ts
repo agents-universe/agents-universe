@@ -65,28 +65,54 @@ export const useTourStore = defineStore('tour', () => {
     await advanceTo(stepIndex.value + 1)
   }
 
-  function prev() {
+  async function prev() {
     if (!isActive.value || advancing) return
-    let index = stepIndex.value - 1
-    // Walk back over steps the forward pass would never have shown (mobile
-    // skips, unmet or sequence-bound conditions) — landing on one renders an
-    // overlay whose anchors/conditions don't hold. No eligible step back:
-    // stay put rather than show a broken one.
-    while (index >= 0) {
-      const step = TOUR_STEPS[index]
-      if (step.skipOnMobile && isMobile()) {
-        index--
-        continue
+    advancing = true
+    waiting.value = true
+    const gen = tourGen
+    const aborted = () => gen !== tourGen
+    try {
+      let index = stepIndex.value - 1
+      // Walk back over steps the forward pass would never have shown (mobile
+      // skips, unmet or sequence-bound conditions) — landing on one renders an
+      // overlay whose anchors/conditions don't hold. No eligible step back:
+      // stay put rather than show a broken one.
+      while (index >= 0) {
+        if (aborted()) return
+        const step = TOUR_STEPS[index]
+        if (step.skipOnMobile && isMobile()) {
+          index--
+          continue
+        }
+        // Same context the forward pass gives it: the step being left.
+        const prevStepId = TOUR_STEPS[stepIndex.value]?.id ?? null
+        if (step.condition && !step.condition({ prevStepId })) {
+          index--
+          continue
+        }
+        if (!step.route && !step.action && !step.waitFor) {
+          stepIndex.value = index
+          return
+        }
+        // Going back crosses pages and panel tabs too: the step's route,
+        // action and anchor wait are as necessary here as when moving
+        // forward, otherwise the tooltip points at an element the current
+        // page/tab does not render.
+        const outcome = await activateStep(step, aborted)
+        if (outcome === 'aborted') return
+        if (outcome === 'skip') {
+          index--
+          continue
+        }
+        stepIndex.value = index
+        return
       }
-      // Same context the forward pass gives it: the step being left.
-      const prevStepId = TOUR_STEPS[stepIndex.value]?.id ?? null
-      if (step.condition && !step.condition({ prevStepId })) {
-        index--
-        continue
+    } finally {
+      if (!aborted()) {
+        waiting.value = false
+        advancing = false
       }
-      break
     }
-    if (index >= 0) stepIndex.value = index
   }
 
   /** Skip the rest of the tour — marks the user as onboarded. */
@@ -129,6 +155,48 @@ export const useTourStore = defineStore('tour', () => {
     resolve?.()
   }
 
+  /**
+   * Apply a step's navigation, side effect and anchor wait before it shows.
+   * Returns 'skip' when the step cannot be shown, 'aborted' when the tour was
+   * stopped mid-transition.
+   */
+  async function activateStep(
+    step: TourStep, aborted: () => boolean,
+  ): Promise<'ok' | 'skip' | 'aborted'> {
+    if (step.route) {
+      const path = resolveRoute(step.route, currentProjectId())
+      if (!path) {
+        console.warn(`tour: skipping "${step.id}" — no project to route to`)
+        return 'skip'
+      }
+      if (!activeRouter) {
+        console.warn(`tour: skipping "${step.id}" — no router available`)
+        return 'skip'
+      }
+      await activeRouter.push(path)
+      if (aborted()) return 'aborted'
+      const reached = await waitForRoute(path, () => activeRouter!.currentRoute.value.path)
+      if (aborted()) return 'aborted'
+      if (!reached) {
+        console.warn(`tour: skipping "${step.id}" — route "${path}" never became current`)
+        return 'skip'
+      }
+    }
+    if (step.action) {
+      await step.action({ router: activeRouter!, projectId: currentProjectId() })
+      if (aborted()) return 'aborted'
+    }
+    if (step.waitFor) {
+      const el = await waitForSelector(step.waitFor)
+      if (aborted()) return 'aborted'
+      if (!el) {
+        console.warn(`tour: skipping "${step.id}" — "${step.waitFor}" never appeared`)
+        return 'skip'
+      }
+    }
+    return 'ok'
+  }
+
   /** Move to `index` (or the next eligible step after it). */
   async function advanceTo(index: number) {
     if (advancing) return
@@ -153,40 +221,18 @@ export const useTourStore = defineStore('tour', () => {
           index++
           continue
         }
-        if (step.route) {
-          const path = resolveRoute(step.route, currentProjectId())
-          if (!path) {
-            console.warn(`tour: skipping "${step.id}" — no project to route to`)
-            index++
-            continue
-          }
-          if (!activeRouter) {
-            console.warn(`tour: skipping "${step.id}" — no router available`)
-            index++
-            continue
-          }
-          await activeRouter.push(path)
-          if (aborted()) return
-          const reached = await waitForRoute(path, () => activeRouter!.currentRoute.value.path)
-          if (aborted()) return
-          if (!reached) {
-            console.warn(`tour: skipping "${step.id}" — route "${path}" never became current`)
-            index++
-            continue
-          }
+        // Steps with nothing to apply land synchronously: start() must leave
+        // the first step visible before returning, and next()/prev() must not
+        // bounce off the in-flight guard on a step that never awaited.
+        if (!step.route && !step.action && !step.waitFor) {
+          stepIndex.value = index
+          return
         }
-        if (step.action) {
-          await step.action({ router: activeRouter!, projectId: currentProjectId() })
-          if (aborted()) return
-        }
-        if (step.waitFor) {
-          const el = await waitForSelector(step.waitFor)
-          if (aborted()) return
-          if (!el) {
-            console.warn(`tour: skipping "${step.id}" — "${step.waitFor}" never appeared`)
-            index++
-            continue
-          }
+        const outcome = await activateStep(step, aborted)
+        if (outcome === 'aborted') return
+        if (outcome === 'skip') {
+          index++
+          continue
         }
         if (aborted()) return
         stepIndex.value = index
@@ -235,7 +281,7 @@ export const useTourStore = defineStore('tour', () => {
       void next()
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault()
-      prev()
+      void prev()
     }
   }
 

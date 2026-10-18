@@ -994,7 +994,11 @@ async function saveIntegration(svc: IntegrationService) {
     const scope = integrationScopes[svc.key]
     // user scope (user | both) writes user_tokens; project scope (project | both) writes project_secrets
     const toUser = scope !== 'project'
-    const toProject = scope !== 'user' && !!projectId && !!projectSecretByKey[svc.key]
+    // A project-scoped service may have only an extra field stored (an agent
+    // can save "jira:email" on its own). Gating this on the main secret would
+    // run neither branch and still report success, silently dropping the
+    // token the user typed.
+    const toProject = scope !== 'user' && !!projectId
     const baseUrlVal = formValues[svc.key + ':base_url'] ?? ''
     // Snapshot the value first: the user branch clears the input below, and
     // the project branch must still see what was typed .
@@ -1022,10 +1026,19 @@ async function saveIntegration(svc: IntegrationService) {
     // just cleared — on 'both' scope the project secret was overwritten with
     // an empty string. Use the snapshot taken before the user branch ran.
     if (toProject && tokenVal) {
-      const res = await updateProjectSecret(projectId!, projectSecretByKey[svc.key].secret_id, {
-        value: tokenVal,
-      })
-      projectSecretByKey[svc.key].key_hint = res.key_hint
+      const existing = projectSecretByKey[svc.key]
+      if (existing) {
+        const res = await updateProjectSecret(projectId!, existing.secret_id, {
+          value: tokenVal,
+        })
+        existing.key_hint = res.key_hint
+      } else {
+        const res = await createProjectSecret(projectId!, {
+          service_key: svc.key,
+          value: tokenVal,
+        })
+        projectSecretByKey[svc.key] = { secret_id: res.secret_id, key_hint: res.key_hint }
+      }
       formValues[svc.key] = ''
     }
     // Save extra fields (e.g. jira:email) into the same scopes as the parent
@@ -1162,11 +1175,14 @@ const newIntegrationService = computed(() =>
 function cancelAddIntegration() {
   showAddIntegrationForm.value = false
   if (newIntegrationKey.value) {
-    // The form binds token and base_url to formValues[key] / [key + ':base_url']
-    // — the old literal '__new_integration_base_url__' key never existed, so
-    // the value stayed behind in memory and would pre-fill the next attempt.
+    // The form binds token, base_url and every extra field to formValues —
+    // leaving any of them behind would pre-fill (and silently save) the next
+    // attempt.
     delete formValues[newIntegrationKey.value]
     delete formValues[newIntegrationKey.value + ':base_url']
+    for (const field of newIntegrationService.value?.extraFields ?? []) {
+      delete formValues[field.key]
+    }
   }
   newIntegrationKey.value = ''
   delete messages['__new_integration__']

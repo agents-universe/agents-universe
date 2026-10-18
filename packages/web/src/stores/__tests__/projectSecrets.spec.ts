@@ -48,6 +48,28 @@ describe('projectSecrets store seq guard', () => {
     expect(store.secrets.map((s) => s.secret_id)).toEqual(['s2'])
   })
 
+  it('a second mutation still reloads while another mutation\'s reload is in flight', async () => {
+    // load() bumps the load sequence on every call, so comparing a mutation
+    // against it made the second of two overlapping mutations skip its
+    // reload — leaving the row it had just changed visible as if untouched.
+    let resolveSecondDelete!: () => void
+    const secondDelete = new Promise<void>((resolve) => { resolveSecondDelete = resolve })
+    deleteMock.mockImplementation((_projectId: string, secretId: string) =>
+      secretId === 's2' ? secondDelete : Promise.resolve())
+    listMock.mockResolvedValue([secret('s0')])
+    const store = useProjectSecretsStore()
+    store.secrets = [secret('s1'), secret('s2')]
+
+    const first = store.remove('proj-1', 's1')
+    const second = store.remove('proj-1', 's2')
+    await first
+    expect(listMock).toHaveBeenCalledTimes(1)
+
+    resolveSecondDelete()
+    await second
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
   it('remove does not reload when the project switched mid-delete', async () => {
     deleteMock.mockImplementation(async () => {
       // A project switch (reset) bumps loadSeq while the DELETE is in flight.

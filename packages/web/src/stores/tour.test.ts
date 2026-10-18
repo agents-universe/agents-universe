@@ -17,6 +17,17 @@ function fakeRouter(path = '/app'): Router {
   } as unknown as Router
 }
 
+/** A router whose push actually moves currentRoute, like the real one. */
+function routingRouter(path = '/app'): Router {
+  const router = {
+    push: vi.fn(async (target: string) => {
+      router.currentRoute.value.path = target
+    }),
+    currentRoute: { value: { path } },
+  }
+  return router as unknown as Router
+}
+
 /** Small helper: flush pending microtasks (fake timers are active). */
 const flush = () => vi.advanceTimersByTimeAsync(0)
 
@@ -167,6 +178,27 @@ describe('tour store', () => {
     // The only eligible step before 4 is welcome (0).
     store.prev()
     expect(store.stepIndex).toBe(0)
+
+    await store.skip()
+    await flush()
+  })
+
+  it('prev applies the target step\'s route before showing it', async () => {
+    const projectStore = useProjectStore()
+    projectStore.setCurrentProject({ project_id: 'p-1' } as never)
+    projectStore.setProjects([{ project_id: 'p-1' }] as never)
+
+    const router = routingRouter('/projects/p-1/workspace')
+    const store = useTourStore()
+    store.start(16, router) // workspace
+    await flush()
+    expect(store.stepIndex).toBe(16)
+
+    // top-nav (15) anchors on the chat page: walking back must push its
+    // route, not render its overlay over the workspace page.
+    await store.prev()
+    expect(store.stepIndex).toBe(15)
+    expect(router.push).toHaveBeenCalledWith('/projects/p-1/chat')
 
     await store.skip()
     await flush()

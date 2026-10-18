@@ -104,6 +104,65 @@ describe('TokenConfigModal integration scope detection', () => {
     expect(offered).toContain('GitHub / Git')
   })
 
+  it('saves a typed main token when only an extra-field project secret exists', async () => {
+    // The service is already project-configured through "jira:email" alone.
+    // Gating the project branch on the main secret ran neither branch and
+    // still reported "saved": the typed token never reached the server.
+    secretsMock.listProjectSecrets.mockResolvedValue([makeSecret('jira:email')])
+    secretsMock.createProjectSecret.mockResolvedValue({
+      secret_id: 's-jira',
+      service_key: 'jira',
+      key_hint: '...ken',
+    })
+    const wrapper = await mountOnIntegrationsTab()
+
+    const jiraRow = wrapper
+      .findAll('.token-service-row')
+      .find((row) => row.text().includes('Jira'))!
+    expect(jiraRow.find('.scope-badge.project-scope').exists()).toBe(true)
+
+    // Project scope hides base_url: main key + jira:email.
+    const inputs = jiraRow.findAll('.token-edit-block input')
+    expect(inputs).toHaveLength(2)
+    await inputs[0].setValue('new-jira-token')
+    await jiraRow.find('.token-row-actions button').trigger('click')
+    await flushPromises()
+
+    expect(secretsMock.createProjectSecret).toHaveBeenCalledWith('p1', {
+      service_key: 'jira',
+      value: 'new-jira-token',
+    })
+    expect(secretsMock.updateProjectSecret).not.toHaveBeenCalled()
+    // The row is re-rendered after the save, so query it again rather than
+    // asserting against the detached pre-click node.
+    const savedRow = wrapper
+      .findAll('.token-service-row')
+      .find((row) => row.text().includes('Jira'))!
+    expect(savedRow.text()).toContain('✓')
+    expect(savedRow.text()).toContain('...ken')
+  })
+
+  it('cancelling an add leaves no extra-field values behind', async () => {
+    secretsMock.listProjectSecrets.mockResolvedValue([])
+    const wrapper = await mountOnIntegrationsTab()
+
+    await wrapper.find('.token-add-section .add-model-btn').trigger('click')
+    const select = wrapper.find('.token-add-form select')
+    await select.setValue('jira')
+    const extra = wrapper.find('.token-add-form .token-url-input')
+    await extra.setValue('someone@example.com')
+    // Cancel is the third action (add / test / cancel).
+    await wrapper.findAll('.token-add-form .token-row-actions button')[2].trigger('click')
+    await nextTick()
+
+    // Re-open and pick the same service: the old email must not pre-fill.
+    await wrapper.find('.token-add-section .add-model-btn').trigger('click')
+    await wrapper.find('.token-add-form select').setValue('jira')
+    expect(
+      (wrapper.find('.token-add-form .token-url-input').element as HTMLInputElement).value,
+    ).toBe('')
+  })
+
   it('no secret at all leaves the service in the add picker', async () => {
     secretsMock.listProjectSecrets.mockResolvedValue([])
     const wrapper = await mountOnIntegrationsTab()

@@ -545,7 +545,15 @@ async function runScript(scriptId: string | undefined) {
     void loadHistoryForSelection()
     connectToRun(result.run_id)
   } catch (e) {
-    runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
+    // Same ownership guard as the success path: the error belongs to the
+    // target that started the run, not to whatever the tree shows now.
+    if (
+      projectId.value === pidAtStart &&
+      selection.value?.kind === 'script' &&
+      selection.value.scriptId === scriptId
+    ) {
+      runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
+    }
   } finally {
     running.value = false
   }
@@ -571,7 +579,13 @@ async function runSpec(slug: string | undefined) {
     void loadHistoryForSelection()
     connectToRun(result.run_id)
   } catch (e) {
-    runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
+    if (
+      projectId.value === pidAtStart &&
+      selection.value?.kind === 'playwright' &&
+      selection.value.specSlug === slug
+    ) {
+      runError.value = e instanceof Error ? e.message : t('workspace.runFailed')
+    }
   } finally {
     running.value = false
   }

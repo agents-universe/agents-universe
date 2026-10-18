@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, DOMWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { reactive } from 'vue'
 import SchedulesPage from '@/pages/SchedulesPage.vue'
 import type { ScheduledTask } from '@/api/schedules'
 import { apiFetch } from '@/api/client'
@@ -82,7 +83,9 @@ beforeEach(() => {
   FakeWebSocket.instances = []
   vi.stubGlobal('WebSocket', FakeWebSocket)
   setActivePinia(createPinia())
-  route.params = { projectId: 'p-1' }
+  // Reactive so route reuse (the same component instance switching project
+  // ids) reaches the page's projectId computed and its watcher.
+  route.params = reactive({ projectId: 'p-1' })
   agentStore.agents = []
   agentStore.fetchAgents.mockResolvedValue(undefined)
   schedulesApi.list.mockResolvedValue([])
@@ -125,6 +128,23 @@ describe('SchedulesPage', () => {
     const wrapper = mount(SchedulesPage)
     await flushPromises()
     expect(wrapper.find('.schedules-empty').exists()).toBe(true)
+  })
+
+  it('closes the create dialog when the route switches projects', async () => {
+    // The route reuses this page across projects, so an open dialog would
+    // otherwise submit project A's schedule under project B.
+    const wrapper = mount(SchedulesPage)
+    await flushPromises()
+    await wrapper.find('.schedules-new').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('.modal-overlay')).not.toBeNull()
+
+    route.params.projectId = 'p-2'
+    await flushPromises()
+
+    expect(document.querySelector('.modal-overlay')).toBeNull()
+    expect(schedulesApi.list).toHaveBeenCalledWith('p-2')
+    wrapper.unmount()
   })
 
   it('creates a script task from the dialog', async () => {

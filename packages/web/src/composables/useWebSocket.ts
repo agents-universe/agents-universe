@@ -188,20 +188,17 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       return
     }
 
-    // Enforce max connections
-    if (_connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
+    // Enforce max connections. Replacing an existing entry reuses its slot,
+    // so only a brand-new conversation may evict another connection — the
+    // lifecycle kick reconnects a retrying background id and would otherwise
+    // close a healthy (possibly visible) connection for no capacity gain.
+    if (!existing && _connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
       // Every existing connection is streaming a live run. Evicting one
       // would permanently kill that conversation's UI updates: its entry is
       // deleted, streamingIds[id] never clears (events stop arriving) and
       // the conversationId watch never refires, so the sidebar shows
       // "运行中" forever. Refuse this connection instead and retry shortly,
-      // in case a stream ends and a slot frees up .
-      // If an entry already exists for this id (CONNECTING handshake or a
-      // retry backoff), it must be cleaned up BEFORE the map is overwritten —
-      // otherwise its onopen still fires, starts a ping timer and reloads
-      // history, and the conversation ends up with TWO parallel connections
-      // (every stream_delta appended twice).
-      if (existing) _cleanupConnection(id)
+      // in case a stream ends and a slot frees up.
       const statusRef = ref<WsStatus>('connecting')
       const entry: ConnectionEntry = {
         ws: null,
@@ -215,7 +212,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         staleProbeSent: false,
       }
       _connections.set(id, entry)
-    _connRevision.value++
+      _connRevision.value++
       // Re-arms the same entry instead of re-entering connect(): connect()
       // rebuilds the entry with retries: 0, so the give-up check below was
       // dead code and a saturated server retried forever with the UI stuck

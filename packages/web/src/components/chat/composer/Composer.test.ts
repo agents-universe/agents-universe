@@ -204,6 +204,29 @@ describe('Composer slash popup cursor safety', () => {
     expect(view.state.doc.toString()).toBe('/plan ')
     expect(wrapper.find('.slash-popup').exists()).toBe(false)
   })
+
+  it('Enter with the popup open selects the command instead of sending', async () => {
+    // Attach to the document: the popup listens for Enter on document, and
+    // events from a detached wrapper never bubble out of it.
+    const wrapper = mount(Composer, { props: makeProps(), attachTo: document.body })
+    await nextTick()
+    const view = EditorView.findFromDOM(wrapper.find('.cm-content').element as HTMLElement)!
+
+    view.dispatch({ changes: { from: 0, insert: '/' }, selection: { anchor: 1 } })
+    await nextTick()
+    expect(wrapper.find('.slash-popup').exists()).toBe(true)
+
+    // CodeMirror's Enter handler must swallow the newline and let the
+    // document-level popup handler pick the command — it must not submit the
+    // bare "/" as a message.
+    await wrapper.find('.cm-content').trigger('keydown', { key: 'Enter' })
+    await nextTick()
+
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(view.state.doc.toString()).toBe('/plan ')
+    expect(wrapper.find('.slash-popup').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })
 
 describe('Composer selection hydration on page load', () => {

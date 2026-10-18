@@ -283,7 +283,12 @@ onMounted(() => {
     {
       key: 'Enter',
       run: () => {
-        if (showMention.value || showSlash.value) return false
+        // The slash popup handles Enter on the document (its handler fires
+        // after CodeMirror's). Returning true here keeps defaultKeymap from
+        // inserting a newline first, which would move the caret off the "/"
+        // and make insertSlash's trigger guard bail.
+        if (showSlash.value) return true
+        if (showMention.value) return false
         submit()
         return true
       },

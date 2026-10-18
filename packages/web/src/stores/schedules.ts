@@ -11,6 +11,10 @@ export const useSchedulesStore = defineStore('schedules', () => {
   // Seq guard: rapid project A→B switching fires overlapping load()s — a
   // stale response for A must not overwrite the current project's list.
   let loadSeq = 0
+  // Bumped only by reset(): load() bumps loadSeq on every call, so comparing
+  // against it would make a mutation skip its reload whenever an earlier
+  // mutation's reload was already in flight.
+  let resetEpoch = 0
 
   async function load(projectId: string) {
     const seq = ++loadSeq
@@ -30,9 +34,9 @@ export const useSchedulesStore = defineStore('schedules', () => {
    *  (reset() bumped loadSeq — a reload now would write the old project's
    *  list over the new project's store). */
   async function mutate(projectId: string, fn: () => Promise<unknown>): Promise<ScheduledTask | null> {
-    const seq = loadSeq
+    const epoch = resetEpoch
     const result = await fn()
-    if (seq === loadSeq) await load(projectId)
+    if (epoch === resetEpoch) await load(projectId)
     return (result as ScheduledTask) ?? null
   }
 
@@ -61,6 +65,7 @@ export const useSchedulesStore = defineStore('schedules', () => {
     // previous project would still match its seq and write the old project's
     // task list into the freshly reset store.
     loadSeq++
+    resetEpoch++
   }
 
   return { tasks, loading, error, load, create, update, remove, setEnabled, runNow, reset }

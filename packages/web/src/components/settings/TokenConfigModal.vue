@@ -907,6 +907,11 @@ async function loadIntegrationTokens() {
 
     const llmProviders = ['anthropic', 'openai', 'azure_openai', 'google_gemini']
     const configured = new Set<string>()
+    // Services with ANY user_tokens row, main key or extra field. Scope
+    // detection must use this: a lone "jira:email" is user-scoped data, and
+    // reading only savedKeys["jira"] would label the whole service "project"
+    // and make saveIntegration drop the typed token without an API call.
+    const configuredInUser = new Set<string>()
     for (const k of Object.keys(projectSecretByKey)) delete projectSecretByKey[k]
     for (const k of Object.keys(integrationScopes)) delete integrationScopes[k]
     // Drop stale hints from earlier sessions (e.g. token deleted elsewhere)
@@ -926,6 +931,7 @@ async function loadIntegrationTokens() {
       const parentKey = t.service_key.split(':')[0]
       if (integrationServices.some(s => s.key === parentKey)) {
         configured.add(parentKey)
+        configuredInUser.add(parentKey)
       }
     }
     // Project-scoped integrations: main key + extra fields map back to the service.
@@ -941,7 +947,7 @@ async function loadIntegrationTokens() {
       }
     }
     for (const key of configured) {
-      const hasUser = savedKeys[key] !== undefined
+      const hasUser = configuredInUser.has(key)
       const hasProject = !!projectSecretByKey[key]
       integrationScopes[key] = hasUser && hasProject ? 'both' : hasUser ? 'user' : 'project'
     }

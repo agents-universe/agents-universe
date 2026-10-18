@@ -672,3 +672,69 @@ async def test_get_pr_details_requires_a_target():
     result = await GitHubTool()._op_get_pr_details({"repository": "team/svc"}, http.base, {}, http)
 
     assert "no PRs to fetch" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# list_prs — all_repos search
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_prs_all_repos_state_all_omits_the_state_qualifier():
+    """`state=all` must not become `is:all`.
+
+    GitHub has no wildcard state value: `is:all` is an unrecognised qualifier
+    that matches nothing, so the advertised `state: all` returned an empty
+    list. Omitting the state term is what selects every state.
+    """
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": []})
+
+    result = await GitHubTool()._op_list_prs(
+        {"all_repos": True, "state": "all", "author": "ann", "reviewer": "bob"},
+        "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert result["count"] == 0
+    assert http.get.await_args.kwargs["params"]["q"] == (
+        "is:pr archived:false review-requested:bob author:ann"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["open", "closed"])
+async def test_list_prs_all_repos_keeps_explicit_open_and_closed(state):
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": []})
+
+    await GitHubTool()._op_list_prs(
+        {"all_repos": True, "state": state}, "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert http.get.await_args.kwargs["params"]["q"] == (
+        f"is:pr archived:false is:{state}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url", ["https://www.github.com/", "https://WWW.GitHub.com", "github.com"]
+)
+async def test_public_github_host_variants_use_api_github_com(base_url):
+    """The allowlist accepted bare `www.github.com` but not its URL form, so
+    `https://www.github.com` fell through to the Enterprise path and every
+    call hit `https://www.github.com/api/v3/...` (404)."""
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(204, None)
+    ctx = _FakeCtx(http)
+    ctx._cfg["GIT_BASE_URL"] = base_url
+
+    with patch("agent_core.tools.github.get_token", _fake_get_token):
+        result = await GitHubTool().execute(
+            {"operation": "is_starred", "repository": "team/service"}, ctx,
+        )
+
+    assert result == {"starred": True, "repository": "team/service"}
+    assert http.get.await_args.args[0] == (
+        "https://api.github.com/user/starred/team/service"
+    )

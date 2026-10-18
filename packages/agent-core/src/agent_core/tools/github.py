@@ -145,7 +145,11 @@ class GitHubTool(Tool):
         if not base_url:
             return {"error": "GIT_BASE_URL is not configured — set it in Settings → Integrations → Git"}
         api_path = context.cfg("GIT_API_BASE_PATH", "/api/v3")
-        if base_url in ("https://github.com", "http://github.com", "www.github.com", "github.com"):
+        # Match on the host, not the literal string: the setting is free text,
+        # so "https://WWW.GitHub.com/" must reach the public API just like
+        # "github.com" does.
+        base_host = base_url.split("://", 1)[-1].split("/", 1)[0].lower()
+        if base_host in ("github.com", "www.github.com"):
             # Public GitHub: the API lives at api.github.com and paths are
             # relative to it — no /api/v3 prefix, unlike GitHub Enterprise.
             base_url = "https://api.github.com"
@@ -232,8 +236,13 @@ class GitHubTool(Tool):
         if all_repos:
             author = params.get("author")
             reviewer = params.get("reviewer")
-            state = params.get("state", "open")
-            q_parts = [f"is:{state}", "is:pr", "archived:false"]
+            state = str(params.get("state") or "open").lower()
+            q_parts = ["is:pr", "archived:false"]
+            # GitHub search has no "any state" value: `is:all` is an unknown
+            # qualifier that matches nothing, while omitting the state term
+            # means every state.
+            if state in ("open", "closed"):
+                q_parts.append(f"is:{state}")
             if reviewer:
                 q_parts.append(f"review-requested:{reviewer}")
             if author:

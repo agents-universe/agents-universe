@@ -30,6 +30,16 @@ async def test_user_tokens_enforce_unique_user_service(db):
     await db.rollback()
 
 
+async def test_conversations_poll_index_in_migrated_schema(db):
+    """The 5-second sidebar poll's (project_id, user_id) index must exist in
+    the migrated schema — a model-only Index() declaration never reaches a
+    deployed database, and this query predates any index on those columns."""
+    names = await db.run_sync(
+        lambda s: {i["name"] for i in inspect(s.connection()).get_indexes("conversations")}
+    )
+    assert "ix_conversations_project_user" in names
+
+
 async def test_tier_column_matches_model_width(db):
     """user_tier_models.tier is String(50) in the model but was migrated as
     String(10) — PUT /api/tier-models/{azure_openai|google_gemini} writes a

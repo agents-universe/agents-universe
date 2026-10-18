@@ -21,6 +21,12 @@ class Conversation(Base):
         # Publish lookups always predicate publish_id first (then one of
         # viewer_id / thread_id) — see services/publish.py.
         Index("ix_conversations_publish_id", "publish_id"),
+        # The web UI polls the conversation list every 5s and every
+        # project-scoped page lists WHERE project_id=? AND user_id=? AND
+        # status='active' — without this those are full table scans (SQL
+        # Server does not index FKs automatically, same rationale as
+        # ix_messages_conversation_sequence).
+        Index("ix_conversations_project_user", "project_id", "user_id"),
     )
 
     conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)

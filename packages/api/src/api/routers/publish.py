@@ -386,6 +386,54 @@ async def revoke_publish_key(
 # ── Public API (API Key) ───────────────────────────────────────────────────
 
 
+async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversation: str):
+    """Yield SSE frames for one publish run until terminal, then end the stream.
+
+    Module-level (not a closure) so the disconnect cleanup is unit-testable.
+    """
+    from api.websocket.manager import manager
+
+    saw_terminal = False
+    try:
+        while True:
+            try:
+                evt = await asyncio.wait_for(stream.queue.get(), timeout=0.5)
+                yield sse_format(evt)
+                if evt.get("type") == "stream_end":
+                    # Terminal frame; the task may still be unwinding.
+                    saw_terminal = True
+                    break
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+        # Flush anything left after the terminal event / task end.
+        while not stream.queue.empty():
+            try:
+                evt = stream.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if evt.get("type") == "stream_end":
+                saw_terminal = True
+            yield sse_format(evt)
+        # A run that crashed before any terminal frame would otherwise
+        # end the stream in silence — tell the client. (task.exception()
+        # also marks it retrieved; the done callback logs it either way.)
+        if not saw_terminal and task.done() and not task.cancelled():
+            if task.exception() is not None:
+                yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
+    except BaseException:
+        # The client disconnect reaches the generator two ways: CancelledError
+        # at an await (the ASGI layer cancelling the response task while the
+        # generator runs), or — when the disconnect lands while a frame is
+        # being sent — GeneratorExit at the yield, because the framework
+        # closes the suspended generator instead of cancelling into it. A
+        # CancelledError-only handler misses that second path entirely and
+        # the run keeps going after the response is gone. Stop it either way.
+        manager.signal_abort(conversation, reason="publish_sse_client_disconnect")
+        task.cancel()
+        raise
+
+
 @router.post("/api/p/{publish_id}/stream")
 async def publish_stream(
     publish_id: str,
@@ -478,43 +526,8 @@ async def publish_stream(
 
     task.add_done_callback(_consume_run_exception)
 
-    async def _drain():
-        saw_terminal = False
-        try:
-            while True:
-                try:
-                    evt = await asyncio.wait_for(stream.queue.get(), timeout=0.5)
-                    yield sse_format(evt)
-                    if evt.get("type") == "stream_end":
-                        # Terminal frame; the task may still be unwinding.
-                        saw_terminal = True
-                        break
-                except asyncio.TimeoutError:
-                    if task.done():
-                        break
-            # Flush anything left after the terminal event / task end.
-            while not stream.queue.empty():
-                try:
-                    evt = stream.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if evt.get("type") == "stream_end":
-                    saw_terminal = True
-                yield sse_format(evt)
-            # A run that crashed before any terminal frame would otherwise
-            # end the stream in silence — tell the client. (task.exception()
-            # also marks it retrieved; the done callback logs it either way.)
-            if not saw_terminal and task.done() and not task.cancelled():
-                if task.exception() is not None:
-                    yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
-        except asyncio.CancelledError:
-            # Client disconnected — stop the run rather than leak it.
-            manager.signal_abort(conversation, reason="publish_sse_client_disconnect")
-            task.cancel()
-            raise
-
     return StreamingResponse(
-        _drain(),
+        _drain_publish_stream(stream, task, conversation),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -830,40 +843,8 @@ async def post_publish_session_run(
 
     task.add_done_callback(_consume_run_exception)
 
-    async def _drain():
-        saw_terminal = False
-        try:
-            while True:
-                try:
-                    evt = await asyncio.wait_for(stream.queue.get(), timeout=0.5)
-                    yield sse_format(evt)
-                    if evt.get("type") == "stream_end":
-                        saw_terminal = True
-                        break
-                except asyncio.TimeoutError:
-                    if task.done():
-                        break
-            while not stream.queue.empty():
-                try:
-                    evt = stream.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if evt.get("type") == "stream_end":
-                    saw_terminal = True
-                yield sse_format(evt)
-            # A run that crashed before any terminal frame would otherwise
-            # end the stream in silence — tell the client. (task.exception()
-            # also marks it retrieved; the done callback logs it either way.)
-            if not saw_terminal and task.done() and not task.cancelled():
-                if task.exception() is not None:
-                    yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
-        except asyncio.CancelledError:
-            manager.signal_abort(conversation, reason="publish_sse_client_disconnect")
-            task.cancel()
-            raise
-
     return StreamingResponse(
-        _drain(),
+        _drain_publish_stream(stream, task, conversation),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

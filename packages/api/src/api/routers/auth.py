@@ -71,6 +71,16 @@ def _check_logout_origin(request: Request, settings) -> None:
 
     referer = request.headers.get("referer") or request.headers.get("origin")
     if not referer:
+        # A cross-site page can suppress its referer entirely
+        # (Referrer-Policy: no-referrer) while a top-level navigation still
+        # carries the SameSite=Lax session cookie — with no referer the
+        # allowlist below never runs, so the gate needs a second signal.
+        # Fetch Metadata is independent of the referrer policy, so a
+        # cross-site initiator is rejected here; requests without the header
+        # (curl, API clients, older browsers) keep the direct-acting trust.
+        if (request.headers.get("sec-fetch-site") or "").lower() == "cross-site":
+            _log.warning("Cross-site logout attempt blocked: no referer, sec-fetch-site=cross-site")
+            raise HTTPException(status_code=403, detail="Cross-site logout blocked")
         return  # no referer: the user is acting directly (curl, API client)
     try:
         ref_origin = urlsplit(referer)
@@ -290,11 +300,11 @@ async def auth_callback(
 async def logout(request: Request, redis: Redis = Depends(get_redis)):
     """Revoke the SSO token, delete the Redis session, and clear the cookie.
 
-    a third-party page can trigger a cross-site GET (<img
-    src="/auth/logout">) to force-logout a victim — SameSite=Lax cookies are
-    sent on image requests. Logout is initiated by a top-level navigation
-    (no Origin header), so gate on the referer when present: requests with
-    no referer (curl, API clients) are the user acting on their own session.
+    a third-party page can trigger a cross-site GET to force-logout a victim.
+    Logout is initiated by a top-level navigation (no Origin header), so gate
+    on the referer when present; when the referer is absent — curl, API
+    clients, or a cross-site page that suppressed it via Referrer-Policy —
+    fall back to Sec-Fetch-Site, which a cross-site initiator still sends.
     """
     settings = get_settings()
     _check_logout_origin(request, settings)

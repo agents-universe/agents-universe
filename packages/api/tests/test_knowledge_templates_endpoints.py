@@ -336,6 +336,23 @@ async def test_is_global_shapes(client, db, make_project, monkeypatch, tmp_path)
     assert detail.json()["knowledge_id"] == "disk:domain/no-row"
 
 
+async def test_disk_fallback_normalizes_scalar_children(client, make_project):
+    """Scalar `children: domain/one` must come back as a one-element array —
+    the fallback's isinstance guard used to drop it as []."""
+    project = await make_project()
+    _write(
+        project.slug,
+        "domain/scalar-children.md",
+        "---\ntitle: Scalar\nchildren: domain/one\n---\nbody\n",
+    )
+
+    detail = await client.get(
+        f"/api/projects/{project.project_id}/knowledge/domain/scalar-children"
+    )
+    assert detail.status_code == 200
+    assert detail.json()["children_slugs"] == ["domain/one"]
+
+
 async def test_completeness_counts_project_rows_only(client, db, make_project):
     project = await make_project()
     g = _db_row(None, "domain/scored-global", "/g/domain/scored-global.md")

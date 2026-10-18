@@ -296,3 +296,41 @@ async def test_ws_access_check_public_open(client, make_project, as_user):
         conv2 = await client.post(f"/api/projects/{project.project_id}/conversations", json={})
         conv2_id = conv2.json()["conversation_id"]
         assert await _check_project_access(conv2_id, "random-user") is True
+
+
+async def test_ws_access_check_after_project_removal(client, make_project, db):
+    """The per-message gate must mirror the connect-time predicates: a project
+    removed while a socket is open fails closed (has_project_access alone only
+    checks visibility, never is_active)."""
+    from api.websocket.handlers import _check_project_access
+
+    project = await make_project(slug="vis-ws-removed", created_by="test-user")
+    conv = await client.post(f"/api/projects/{project.project_id}/conversations", json={})
+    conv_id = conv.json()["conversation_id"]
+    assert await _check_project_access(conv_id, "test-user") is True
+
+    project.is_active = False
+    await db.commit()
+    assert await _check_project_access(conv_id, "test-user") is False
+
+
+async def test_ws_access_check_after_conversation_soft_delete(client, make_project, db):
+    """A soft-deleted conversation must stop accepting gated WS writes the
+    same way the connect-time check refuses it for new sockets."""
+    from sqlalchemy import update
+
+    from api.models.conversation import Conversation as DbConversation
+    from api.websocket.handlers import _check_project_access
+
+    project = await make_project(slug="vis-ws-softdel", created_by="test-user")
+    conv = await client.post(f"/api/projects/{project.project_id}/conversations", json={})
+    conv_id = conv.json()["conversation_id"]
+    assert await _check_project_access(conv_id, "test-user") is True
+
+    await db.execute(
+        update(DbConversation)
+        .where(DbConversation.conversation_id == conv_id)
+        .values(status="deleted")
+    )
+    await db.commit()
+    assert await _check_project_access(conv_id, "test-user") is False

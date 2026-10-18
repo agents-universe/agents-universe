@@ -58,10 +58,12 @@ def _spawn_background(coro) -> asyncio.Task:
 async def _check_project_access(conversation_id: str, user_id: str) -> bool:
     """Whether user_id may still interact with the conversation's project.
 
-    Private projects require creator/whitelisted-member status. Used by the
-    WS main loop for paths _handle_message's per-turn check never reaches
-    (in-flight injections, user_selection_response secret saves): a socket
-    opened before access was revoked must not keep writing project data.
+    Mirrors the connect-time check below: an active conversation in an
+    active project, plus private-project creator/whitelisted-member status.
+    Used by the WS main loop for paths _handle_message's per-turn check never
+    reaches (in-flight injections, user_selection_response secret saves): a
+    socket opened before access was revoked — or before the conversation was
+    soft-deleted / the project removed — must not keep writing project data.
     """
     from api.database import AsyncSessionLocal
     from api.dependencies.auth import has_project_access
@@ -77,6 +79,8 @@ async def _check_project_access(conversation_id: str, user_id: str) -> bool:
                 .where(
                     Conversation.conversation_id == conversation_id,
                     Conversation.user_id == user_id,
+                    Conversation.status == "active",
+                    Project.is_active == True,  # noqa: E712
                 )
             )
         ).first()

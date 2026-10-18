@@ -234,3 +234,45 @@ class _FakeAsyncClient:
 
     async def get(self, url, **kwargs):
         return await self._get(url, **kwargs)
+
+
+# ── logout CSRF gate ────────────────────────────────────────────────────────
+
+
+async def test_logout_without_referer_allowed(client, idp):
+    """No referer and no fetch metadata (curl, API client): direct acting."""
+    resp = await client.get("/auth/logout")
+    assert resp.status_code in (302, 307)
+
+
+async def test_logout_blocked_when_referer_is_cross_site(client, idp):
+    resp = await client.get(
+        "/auth/logout", headers={"referer": "http://evil.example.com/page"}
+    )
+    assert resp.status_code == 403
+
+
+async def test_logout_blocked_when_no_referer_but_cross_site_fetch_metadata(client, idp):
+    """Referrer-Policy: no-referrer hides the referer from a cross-site
+    top-level navigation (which still carries the Lax session cookie) —
+    Sec-Fetch-Site survives that policy and must close the hole."""
+    resp = await client.get(
+        "/auth/logout", headers={"sec-fetch-site": "cross-site"}
+    )
+    assert resp.status_code == 403
+
+
+async def test_logout_allowed_for_own_origin_referer(client, idp):
+    resp = await client.get(
+        "/auth/logout", headers={"referer": "http://test/app"}
+    )
+    assert resp.status_code in (302, 307)
+
+
+async def test_logout_allowed_for_same_site_fetch_metadata(client, idp):
+    """A same-origin navigation with a suppressed referer (e.g. a
+    Referrer-Policy on our own page) must not be mistaken for CSRF."""
+    resp = await client.get(
+        "/auth/logout", headers={"sec-fetch-site": "same-origin"}
+    )
+    assert resp.status_code in (302, 307)

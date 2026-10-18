@@ -6,8 +6,10 @@ The LLM is replaced with a spy Agent so no external provider is contacted.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 
+import pytest
 from sqlalchemy import select
 
 from api.models.conversation import Conversation
@@ -1245,3 +1247,87 @@ async def test_session_messages_map_refs_like_the_chat_api(client, db, make_proj
     assert by_content["failed turn"]["error"] is True
     assert by_content["failed turn"]["images"] is None
     assert by_content["cut short"]["interrupted"] is True
+
+
+# ── SSE drain disconnect cleanup ────────────────────────────────────────────
+
+
+def _spy_abort(monkeypatch) -> list[tuple[str, str]]:
+    from api.websocket.manager import manager
+
+    aborted: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        manager,
+        "signal_abort",
+        lambda cid, *, reason="abort_signal": aborted.append((cid, reason)),
+    )
+    return aborted
+
+
+async def test_drain_generator_close_stops_the_run(monkeypatch):
+    """A client disconnect that lands while a frame is being sent closes the
+    suspended generator with GeneratorExit at the yield — a CancelledError-only
+    handler never sees it and the run would keep going with no client left."""
+    from api.routers.publish import _drain_publish_stream
+    from api.services.publish import SSEStream
+
+    aborted = _spy_abort(monkeypatch)
+    stream = SSEStream()
+    stream.queue.put_nowait({"type": "stream_delta", "delta": "x"})
+    task = asyncio.create_task(asyncio.sleep(3600))
+
+    gen = _drain_publish_stream(stream, task, "conv-close")
+    frame = await gen.__anext__()
+    assert "stream_delta" in frame
+    await gen.aclose()  # GeneratorExit raised at the yield
+
+    assert aborted == [("conv-close", "publish_sse_client_disconnect")]
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_drain_cancelled_at_await_stops_the_run(monkeypatch):
+    """Disconnect while the drain awaits the queue: CancelledError path, same
+    cleanup (and the re-raise must keep propagating)."""
+    from api.routers.publish import _drain_publish_stream
+    from api.services.publish import SSEStream
+
+    aborted = _spy_abort(monkeypatch)
+    stream = SSEStream()  # empty — the drain blocks in wait_for(queue.get())
+    task = asyncio.create_task(asyncio.sleep(3600))
+
+    gen = _drain_publish_stream(stream, task, "conv-cancel")
+    first = asyncio.ensure_future(gen.__anext__())
+    await asyncio.sleep(0.01)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert aborted == [("conv-cancel", "publish_sse_client_disconnect")]
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_drain_normal_completion_does_not_abort(monkeypatch):
+    """Exhausting the stream after stream_end must not signal abort — the run
+    is meant to finish (or be unwinding) on its own."""
+    from api.routers.publish import _drain_publish_stream
+    from api.services.publish import SSEStream
+
+    aborted = _spy_abort(monkeypatch)
+    stream = SSEStream()
+    stream.queue.put_nowait(
+        {"type": "stream_end", "message_id": "m1", "stop_reason": "stop"}
+    )
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task  # run finished before the drain even starts
+
+    gen = _drain_publish_stream(stream, task, "conv-ok")
+    frames = [f async for f in gen]
+
+    assert len(frames) == 1
+    assert "stream_end" in frames[0]
+    assert aborted == []
+    assert not task.cancelled()

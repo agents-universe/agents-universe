@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent_core.knowledge.loader import normalize_children
 from agent_core.paths import KNOWLEDGE_SLUG_RE, PathEscapeError, is_within, resolve_within
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
@@ -513,7 +514,9 @@ async def get_knowledge(
     category = meta.get("category") or slug.split("/")[0]
     tags = meta.get("tags", [])
     cross_refs = _CROSS_REF_RE.findall(content) if content else []
-    children = meta.get("children", [])
+    # Scalar `children: some/slug` frontmatter normalizes to a one-element
+    # list — the isinstance branch below used to drop it as `[]`.
+    children = normalize_children(meta.get("children"))
 
     return {
         "knowledge_id": f"disk:{slug}",
@@ -526,7 +529,7 @@ async def get_knowledge(
         "cross_references": cross_refs,
         "version": 1,
         "parent_slug": meta.get("parent"),
-        "children_slugs": children if isinstance(children, list) else [],
+        "children_slugs": children,
         "depth": 0,
         # A disk-fallback file is by construction a project's own file —
         # global knowledge always has a DB row backing it.

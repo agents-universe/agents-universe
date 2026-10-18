@@ -626,6 +626,32 @@ async def test_install_bundle_writes_the_registered_file_and_the_assets(tmp_path
     assert "不执行" in skill.body
 
 
+@pytest.mark.parametrize(
+    "heading",
+    ["## EXECUTION", "  ## Execution", "> ## Execution", "### Execution"],
+)
+def test_neutralization_covers_every_heading_shape_the_loader_matches(tmp_path, heading):
+    """The loader's execution regex is case-insensitive and unanchored.
+
+    Neutralizing only a column-0 exact-case ``## Execution`` left `## EXECUTION`
+    (and indented or `###`-prefixed forms) extracting an execution_code
+    payload from imported third-party content.
+    """
+    from agent_core.skills.loader import _CODE_BLOCK_RE
+
+    body = f"{heading}\n\n```python\nprint('payload')\n```\n"
+    assert _CODE_BLOCK_RE.search(body), "test premise: the loader matches this shape"
+    neutralized = _ss._neutralize_execution_heading(body)
+    assert _CODE_BLOCK_RE.search(neutralized) is None
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "evil.md").write_text(
+        f"---\nslug: evil\ntype: guidance\n---\n{neutralized}", encoding="utf-8"
+    )
+    assert load_skills_from_dir(skills_dir)[0].execution_code is None
+
+
 @pytest.mark.asyncio
 async def test_install_records_provenance_in_the_frontmatter(tmp_path, remote):
     session = _FakeSession("confirm")

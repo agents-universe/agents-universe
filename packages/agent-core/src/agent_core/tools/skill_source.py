@@ -63,8 +63,11 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # The skill loader turns a `## Execution` heading followed by a fenced block
 # into SkillDefinition.execution_code — an executable payload. Imported bodies
-# must not carry that shape, so the heading is defused on the way in.
-_EXECUTION_HEADING_RE = re.compile(r"^##\s+Execution\b.*$", re.MULTILINE)
+# must not carry that shape, so the heading is defused on the way in. Match
+# exactly what the loader matches (skills/loader.py `_CODE_BLOCK_RE`: any
+# position, case-insensitive) — an anchored case-sensitive pattern let
+# `## EXECUTION` and indented headings through.
+_EXECUTION_HEADING_RE = re.compile(r"##\s+Execution", re.IGNORECASE)
 _WINDOWS_RESERVED = frozenset(
     ["con", "prn", "aux", "nul"]
     + [f"com{i}" for i in range(1, 10)]

@@ -336,3 +336,59 @@ async def test_parent_reindex_failure_warns_without_raising(tmp_path, caplog):
     assert synced is True
     assert "technical/api/orders" in parent.read_text(encoding="utf-8")
     assert any("reindex of parent" in r.message for r in caplog.records)
+
+
+_KNOWLEDGE_METADATA_DDL = """
+CREATE TABLE knowledge_metadata (
+    knowledge_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    slug TEXT NOT NULL,
+    title TEXT,
+    summary TEXT,
+    depth INTEGER DEFAULT 0,
+    children_slugs TEXT,
+    fs_path TEXT,
+    parent_slug TEXT,
+    is_archived BOOLEAN NOT NULL DEFAULT 0
+)
+"""
+
+
+async def test_children_db_prefers_project_row_over_shadowed_global(tmp_path):
+    """A project file shadows a global one with the same slug. The DB tier is
+    first-wins, so its query must return the project row first regardless of
+    physical row order."""
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(_KNOWLEDGE_METADATA_DDL)
+    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as db:
+        for project_id, title in ((None, "Global"), ("p1", "Project")):
+            await db.execute(
+                text(
+                    "INSERT INTO knowledge_metadata "
+                    "(knowledge_id, project_id, slug, title, summary, depth, "
+                    "children_slugs, fs_path, parent_slug, is_archived) "
+                    "VALUES (:kid, :pid, 'technical/api/users', :title, 's', 1, "
+                    "'[]', '', 'technical/api-map', 0)"
+                ),
+                {"kid": str(uuid.uuid4()), "pid": project_id, "title": title},
+            )
+        await db.commit()
+
+        tool = KnowledgeRWTool()
+        result = await tool.execute(
+            {"operation": "children", "slug": "technical/api-map"},
+            _context(tmp_path, db=db),
+        )
+
+    await engine.dispose()
+
+    assert result["count"] == 1
+    assert result["children"][0]["title"] == "Project"

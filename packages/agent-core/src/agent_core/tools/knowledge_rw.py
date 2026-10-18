@@ -865,13 +865,18 @@ class KnowledgeRWTool(Tool):
             try:
                 from sqlalchemy import text
 
+                # Project rows first: _add() is first-wins, and a project
+                # file shadows a global one with the same slug (matching the
+                # loader's collapse). Without the order the winner was
+                # whatever the database returned first.
                 rows = (await context.db_session.execute(
                     text(
                         "SELECT slug, title, summary, depth, children_slugs, fs_path "
                         "FROM knowledge_metadata "
                         "WHERE parent_slug = :pid_slug "
                         "AND (project_id = :cur OR project_id IS NULL) "
-                        "AND is_archived = :archived"
+                        "AND is_archived = :archived "
+                        "ORDER BY CASE WHEN project_id IS NULL THEN 1 ELSE 0 END"
                     ),
                     {"pid_slug": slug, "cur": context.project_id, "archived": False},
                 )).mappings().all()

@@ -253,3 +253,56 @@ def test_invalid_anchor_regex_is_skipped_not_fatal():
     directive = agent._task_source_priority("帮我对 QA-123 这张卡生成自动化测试")
     assert directive is not None  # the valid entry below still routes
     assert "`jira` tool FIRST" in directive
+
+
+def test_malformed_entry_shapes_degrade_to_no_directive():
+    """Non-dict entries, non-list anchors, unhashable tool values: the
+    frontmatter is user-editable and must not raise in run()."""
+    routing = [
+        "jira-card",
+        2,
+        None,
+        {"id": "anchors-int", "anchors": 5, "tool": "jira"},
+        {"id": "anchors-mixed", "anchors": [123, None], "tool": "jira"},
+        {"id": "tool-unhashable", "anchors": ["QA-123"], "tool": ["jira"]},
+        {"id": "tool-missing", "anchors": ["QA-123"]},
+    ]
+    agent = _make_agent(["jira"], routing=routing)
+    assert agent._task_source_priority("QA-123") is None
+
+
+def test_scalar_anchor_and_first_ops_are_normalized():
+    """A single anchor pattern and a scalar first_ops are legal shorthand;
+    malformed follow_ups entries are skipped instead of crashing."""
+    routing = [{
+        "id": "jira-card",
+        "label": "a Jira card",
+        "anchors": r"QA-\d+",
+        "tool": "jira",
+        "first_ops": "get_issue",
+        "follow_ups": [
+            {"tool": "jira", "op": "add_comment"},
+            "github",
+            {"tool": 5},
+        ],
+    }]
+    agent = _make_agent(["jira"], routing=routing)
+    directive = agent._task_source_priority("QA-123")
+    assert directive is not None
+    assert "get_issue" in directive
+    assert "add_comment" in directive
+    assert "`github`" not in directive
+
+
+def test_follow_ups_dict_is_treated_as_one_entry():
+    routing = [{
+        "id": "jira-card",
+        "anchors": ["QA-\\d+"],
+        "tool": "jira",
+        "first_ops": ["get_issue"],
+        "follow_ups": {"tool": "jira", "op": "add_comment"},
+    }]
+    agent = _make_agent(["jira"], routing=routing)
+    directive = agent._task_source_priority("QA-123")
+    assert directive is not None
+    assert "add_comment" in directive

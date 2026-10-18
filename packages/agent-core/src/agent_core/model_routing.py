@@ -28,7 +28,10 @@ def resolve_tier_config(tier_map: dict[str, str], complexity: str | None) -> str
     """
     if not tier_map:
         return None
-    chain = _FALLBACK.get(complexity or "", _DEFAULT_CHAIN)
+    # complexity may come from unvalidated plan JSON; a list/dict would make
+    # the dict lookup raise TypeError instead of falling back.
+    key = complexity if isinstance(complexity, str) else ""
+    chain = _FALLBACK.get(key, _DEFAULT_CHAIN)
     for tier in chain:
         config_id = tier_map.get(tier)
         if config_id:

@@ -608,17 +608,28 @@ class Agent:
         # malformed regex anchor must degrade to a skipped entry, never raise —
         # this runs unconditionally in run() before the tool loop, so an
         # exception here would kill every subsequent user turn.
-        def _priority(entry: dict) -> int:
+        def _priority(entry: object) -> int:
+            if not isinstance(entry, dict):
+                return 0
             try:
                 return int(entry.get("priority", 0))
             except (TypeError, ValueError):
                 return 0
 
-        entries = sorted(prio_skill.routing, key=_priority, reverse=True)
+        entries = sorted(
+            (e for e in prio_skill.routing if isinstance(e, dict)),
+            key=_priority, reverse=True,
+        )
         for entry in entries:
             anchors = entry.get("anchors") or []
+            if isinstance(anchors, str):
+                anchors = [anchors]
+            elif not isinstance(anchors, (list, tuple)):
+                anchors = []
             matched = False
             for a in anchors:
+                if not isinstance(a, str):
+                    continue
                 try:
                     if re.search(a, user_message, re.IGNORECASE):
                         matched = True
@@ -631,16 +642,31 @@ class Agent:
             if not matched:
                 continue
             tool = entry.get("tool")
-            if tool not in self._tools:
+            if not isinstance(tool, str) or tool not in self._tools:
                 continue
-            first_ops = " → ".join(entry.get("first_ops") or [])
+            raw_ops = entry.get("first_ops") or []
+            if isinstance(raw_ops, str):
+                first_ops = raw_ops
+            elif isinstance(raw_ops, (list, tuple)):
+                first_ops = " → ".join(str(op) for op in raw_ops)
+            else:
+                first_ops = ""
             parts = [
                 f"This task references {entry.get('label') or tool}. "
                 f"Call the `{tool}` tool FIRST: {first_ops}."
             ]
+            raw_follow_ups = entry.get("follow_ups") or []
+            if isinstance(raw_follow_ups, dict):
+                raw_follow_ups = [raw_follow_ups]
+            elif not isinstance(raw_follow_ups, (list, tuple)):
+                raw_follow_ups = []
             follow_ups = []
-            for fu in entry.get("follow_ups") or []:
+            for fu in raw_follow_ups:
+                if not isinstance(fu, dict):
+                    continue
                 fu_tool = fu.get("tool")
+                if not isinstance(fu_tool, str):
+                    continue
                 if fu_tool and fu_tool not in self._tools:
                     continue
                 text = f"use `{fu_tool}`: {fu.get('op')}"
@@ -2422,19 +2448,31 @@ class Agent:
                     task_id=task_id,
                 )
 
-                tool = self._tools.get(tool_name)
-                if tool is None:
-                    result = {"error": f"Unknown tool: {tool_name}"}
+                # plan_task is a chat-loop directive. Inside a subtask there
+                # is no task list to hand to the scheduler and PlannerTool
+                # only ACKs, so executing it silently does nothing — the
+                # model then believes it planned work that will never run.
+                if tool_name == "plan_task":
+                    result = {
+                        "error": (
+                            "plan_task is only available at the top level; "
+                            "continue executing the current task directly"
+                        )
+                    }
                 else:
-                    try:
-                        result = await tool.execute(args, task_tool_ctx)
-                    except asyncio.CancelledError:
-                        result = {"error": "Tool execution interrupted"}
-                        await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id, task_id=task_id, status="error")
-                        raise
-                    except Exception as e:
-                        _log.warning("Tool %s failed (call_id=%s): %s", tool_name, tool_id, e, exc_info=True)
-                        result = {"error": str(e)[:500]}
+                    tool = self._tools.get(tool_name)
+                    if tool is None:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+                    else:
+                        try:
+                            result = await tool.execute(args, task_tool_ctx)
+                        except asyncio.CancelledError:
+                            result = {"error": "Tool execution interrupted"}
+                            await session.emit("tool_call_end", tool=tool_name, output=_clip_tool_output(result), call_id=tool_id, task_id=task_id, status="error")
+                            raise
+                        except Exception as e:
+                            _log.warning("Tool %s failed (call_id=%s): %s", tool_name, tool_id, e, exc_info=True)
+                            result = {"error": str(e)[:500]}
 
                 await session.emit(
                     "tool_call_end",

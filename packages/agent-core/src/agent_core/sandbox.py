@@ -702,6 +702,140 @@ def _is_safe_git_c_value(value: str) -> bool:
     return False
 
 
+def _starts_comment(line: str, i: int) -> bool:
+    """True when the ``#`` at *i* begins a comment rather than sitting inside
+    a word (``x#y`` is literal data)."""
+    if i == 0:
+        return True
+    return line[i - 1] in " \t;&|()<>"
+
+
+def _scan_brace_group(line: str, start: int) -> tuple[int | None, bool]:
+    """Scan a ``{...}`` group opened at *start* (points past the ``{``).
+
+    Returns ``(closing_index, expands)``. *expands* is True when the group
+    holds an unquoted ``,`` or ``..`` and no unquoted whitespace — the shape
+    bash rewrites into multiple words. ``closing_index`` is None when the
+    brace is never closed. Quotes and ``${...}`` / ``$(...)`` / ``$((...))``
+    regions are skipped: their contents are data or validated separately.
+    """
+    depth = 1
+    n = len(line)
+    i = start
+    saw_sep = False
+    saw_space = False
+    while i < n:
+        c = line[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in ("'", '"'):
+            quote = c
+            i += 1
+            while i < n:
+                if quote == '"' and line[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "$" and i + 1 < n:
+            if line[i + 1] == "{":
+                end = _skip_braced(line, i + 2)
+                if end is None:
+                    return None, False
+                i = end + 1
+                continue
+            if line[i + 1] == "(":
+                if i + 2 < n and line[i + 2] == "(":
+                    end = _skip_arith_parens(line, i + 3)
+                else:
+                    end = _skip_subst_parens(line, i + 2)
+                if end is None:
+                    return None, False
+                i = end + 1
+                continue
+        if c in " \t":
+            saw_space = True
+        elif c == ",":
+            saw_sep = True
+        elif c == "." and i + 1 < n and line[i + 1] == ".":
+            saw_sep = True
+            i += 2
+            continue
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i, saw_sep and not saw_space
+        i += 1
+    return None, False
+
+
+def _check_unquoted_expansions(line: str) -> str | None:
+    """Reject unquoted brace expansion and process substitution.
+
+    Validation sees the command before bash rewrites it: ``cat {/,}etc/passwd``
+    tokenizes as one innocuous relative word and only then becomes
+    ``cat /etc/passwd``, while ``<(cmd)`` / ``>(cmd)`` run their payload and
+    splice in a path. Neither form can be judged by token-level path checks,
+    so they fail closed. Quoted text is literal, ``#`` comments are inert, and
+    ``${...}`` / ``$(...)`` are handled elsewhere (substitution payloads are
+    validated recursively by :func:`_check_all_substitutions`).
+    """
+    reason = "Process substitution (<(...) or >(...)) is not allowed"
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in ("'", '"'):
+            quote = c
+            i += 1
+            while i < n:
+                if quote == '"' and line[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "#" and _starts_comment(line, i):
+            break
+        if c in "<>" and i + 1 < n and line[i + 1] == "(":
+            return reason
+        if c == "$" and i + 1 < n:
+            if line[i + 1] == "{":
+                end = _skip_braced(line, i + 2)
+                i = end + 1 if end is not None else i + 1
+                continue
+            if line[i + 1] == "(":
+                if i + 2 < n and line[i + 2] == "(":
+                    end = _skip_arith_parens(line, i + 3)
+                else:
+                    end = _skip_subst_parens(line, i + 2)
+                i = end + 1 if end is not None else i + 1
+                continue
+        if c == "{":
+            end, expands = _scan_brace_group(line, i + 1)
+            if expands:
+                return (
+                    "Brace expansion ({a,b} or {x..y}) is not allowed: it "
+                    "changes path arguments after validation"
+                )
+            # Not an expanding group at this level: walk inside it so a
+            # nested group (`{{a,b} c}`) is still caught.
+            i += 1
+            continue
+        i += 1
+    return None
+
+
 def has_unclosed_quote(text: str) -> bool:
     """True when shlex cannot tokenize *text* because a quote is left open.
 
@@ -783,6 +917,11 @@ def validate_command(
     for line, is_heredoc_body in split_logical_lines(command):
         if is_heredoc_body:
             continue
+        # Brace expansion and process substitution rewrite the command after
+        # tokenization, so their results never reach the path checks below.
+        reason = _check_unquoted_expansions(line)
+        if reason:
+            return reason
         # Escaped parens are literal arguments (`find . \( -true \) -delete`),
         # but shlex in posix mode drops the backslash and emits "(" / ")".
         # The separator splitter below then treats them as command

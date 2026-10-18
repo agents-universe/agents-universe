@@ -53,6 +53,13 @@ def test_unknown_complexity_uses_default_chain_mid_first():
     assert resolve_tier_config(tier_map, None) == "cfg-high"
 
 
+def test_unhashable_complexity_uses_default_chain():
+    """Plan JSON is unvalidated: a list/dict complexity must not raise."""
+    tier_map = {"low": "cfg-low", "mid": "cfg-mid", "high": "cfg-high"}
+    for complexity in (["high"], {"tier": "high"}, 3):
+        assert resolve_tier_config(tier_map, complexity) == "cfg-mid"
+
+
 # ── cheapest_tier ───────────────────────────────────────────────────────
 
 

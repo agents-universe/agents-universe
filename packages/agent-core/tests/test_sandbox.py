@@ -161,6 +161,15 @@ ALLOWED = [
     "git tag -a v1 -m \"~/plan\"",
     "grep -rn \"~/.config\" src/",
     "python -c \"print('a/../b')\"",
+    # Brace/process-substitution scan must not fire on literal text: quotes
+    # and backslashes make it data, a group without `,`/`..` never expands,
+    # and everything after an unquoted `#` is a comment.
+    "echo '{a,b}'",
+    "echo '{/,}etc/passwd'",
+    "echo \\{a,b\\}",
+    "echo file{1}",
+    "echo 'literal <(cmd)'",
+    "echo ok # {a,b}",
     # git workflow subcommands and repo-local config:
     "git config user.email a@b.c",
     "git -c user.email=a@b.c commit -m x",
@@ -367,6 +376,17 @@ DENIED = [
     "sort -o .git/config data.txt",
     "sort --output .git/config data.txt",
     "awk '{print > \".git/config\"}' f.txt",
+    # Brace expansion / process substitution rewrite the command after every
+    # token-level check, so the visible argument says nothing about the path
+    # bash actually opens.
+    "cat {/,}etc/passwd",
+    "cat {../proj-b,../proj-c}/secret.txt",
+    "cp file{1,2}.txt dest",
+    "echo {a,b}",
+    "echo {a..z}/x",
+    "cat <(find . -delete)",
+    "cat >(rm -rf src)",
+    "echo {{a,b} c}",                    # inner group still expands
 ]
 
 
@@ -378,6 +398,19 @@ def test_validate_command_allows(command, tmp_path):
 @pytest.mark.parametrize("command", DENIED)
 def test_validate_command_denies(command, tmp_path):
     assert validate_command(command, cwd=tmp_path, project_root=tmp_path) is not None
+
+
+def test_validate_command_rejects_expansions_inside_substitutions(tmp_path):
+    """Substitution payloads are validated recursively, so an expansion hidden
+    one level down must be rejected there too."""
+    for command in (
+        'echo "$(cat {/,}etc/passwd)"',
+        'echo "$(cat <(find . -delete))"',
+    ):
+        assert validate_command(
+            command, cwd=tmp_path, project_root=tmp_path,
+            allow_substitution=True,
+        ) is not None
 
 
 def test_split_logical_lines_newline_is_a_separator():

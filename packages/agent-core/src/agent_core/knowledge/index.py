@@ -57,12 +57,22 @@ def _days_since(updated_at: datetime | None) -> float:
     return max(0.0, (now - updated_at).total_seconds() / 86400)
 
 
-def _apply_parsed_updates(existing: Any, pf: dict, completeness, file_mtime: datetime) -> None:
+def _apply_parsed_updates(
+    existing: Any,
+    pf: dict,
+    completeness,
+    file_mtime: datetime,
+    db_session=None,
+    knowledge_version_cls=None,
+) -> None:
     """Apply parsed-file fields to an existing KnowledgeMetadata row.
 
     Shared by the update branch and the IntegrityError retry path (a
     concurrent indexer may win the INSERT race, in which case the winner's
-    row is re-fetched and updated through here).
+    row is re-fetched and updated through here). Callers that pass both
+    *db_session* and *knowledge_version_cls* also get a version snapshot of
+    the new content, matching the canonical write path — a bare version bump
+    leaves the version history unable to answer "what changed in vN".
     """
     existing.title = pf["title"]
     existing.category = pf["category"]
@@ -77,7 +87,16 @@ def _apply_parsed_updates(existing: Any, pf: dict, completeness, file_mtime: dat
     existing.content_hash = pf["new_hash"]
     existing.word_count = pf["word_count"]
     existing.updated_at = file_mtime
-    existing.version = (existing.version or 0) + 1
+    new_version_num = (existing.version or 0) + 1
+    existing.version = new_version_num
+    if db_session is not None and knowledge_version_cls is not None:
+        db_session.add(knowledge_version_cls(
+            knowledge_id=existing.knowledge_id,
+            version_num=new_version_num,
+            content=pf["content"],
+            changed_by="indexer",
+            change_summary="Reindex",
+        ))
     existing.knowledge_level = pf["knowledge_level"]
     existing.parent_slug = pf["parent_slug"]
     existing.children_slugs = pf["children_slugs"]
@@ -284,12 +303,20 @@ async def index_directory(
                         )
                     )).scalars().first()
                     if winner is not None:
-                        _apply_parsed_updates(winner, pf, completeness, file_mtime)
+                        _apply_parsed_updates(
+                            winner, pf, completeness, file_mtime,
+                            db_session=db_session,
+                            knowledge_version_cls=KnowledgeVersion,
+                        )
                         stats["updated"] += 1
                     else:
                         stats["skipped"] += 1
             else:
-                _apply_parsed_updates(existing, pf, completeness, file_mtime)
+                _apply_parsed_updates(
+                    existing, pf, completeness, file_mtime,
+                    db_session=db_session,
+                    knowledge_version_cls=KnowledgeVersion,
+                )
                 stats["updated"] += 1
 
             batch_count += 1

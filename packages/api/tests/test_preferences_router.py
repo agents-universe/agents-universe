@@ -77,6 +77,17 @@ async def test_patch_reset_onboarding_completed(client, as_user):
         assert body["onboarding_completed_at"] is None
 
 
+async def test_patch_explicit_null_is_a_noop(client, as_user):
+    """null must not be written to the NOT NULL column (500 before the fix)."""
+    async with as_user("u-pre-null"):
+        await _patch(client, onboarding_completed=True)
+        before = (await _me(client))["preferences"]
+        resp = await _patch(client, onboarding_completed=None)
+        assert resp.status_code == 200
+        assert resp.json() == before
+        assert (await _me(client))["preferences"] == before
+
+
 async def test_me_creates_row_once(client, as_user):
     """Two /api/me calls return identical state — the row is created once."""
     async with as_user("u-pre-idempotent"):

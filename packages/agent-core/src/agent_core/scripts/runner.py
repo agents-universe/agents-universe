@@ -305,6 +305,16 @@ async def execute_script(
                 # Same gates as code_executor's bash mode: blocked external
                 # commands (curl/wget/node/python3/ssh/...) then line-level
                 # path-escape validation.
+                # ANSI-C quoting ($'\x2fetc\x2fpasswd') decodes at runtime,
+                # after every check below has seen only quote-stripped text:
+                # the shlex unescape turns the token into literal content
+                # while bash still executes the decoded path. Check the RAW
+                # script, like code_executor's bash branch.
+                if "$'" in content:
+                    raise RuntimeError(
+                        "Script uses ANSI-C quoting ($'...'), which is not "
+                        "allowed: it decodes characters after validation."
+                    )
                 unescaped = content
                 try:
                     lexer = shlex.shlex(content, posix=True)
@@ -353,6 +363,14 @@ async def execute_script(
             await db.commit()
             raise
         except Exception as e:
+            # A failed progress flush leaves the session pending-rollback:
+            # assigning alone would make the final commit raise
+            # PendingRollbackError and strand the row at "running", blocking
+            # project deletion. Roll back and re-fetch on a clean session.
+            await db.rollback()
+            run = await db.get(ScriptRun, run_id)
+            if run is None:
+                return
             run.status = "failed"
             run.stderr_log = str(e)[:STDERR_CAP]
             run.exit_code = -1

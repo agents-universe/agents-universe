@@ -1285,6 +1285,31 @@ def test_resolve_npm_cache_dir_home_value_expanded(tmp_path, monkeypatch):
     assert resolved == str(tmp_path / ".npm-home-cache")
 
 
+def test_resolve_npm_cache_dir_rejects_paths_outside_project_and_temp(tmp_path, monkeypatch):
+    """The command line and .npmrc are attacker-influenced (a cloned repo can
+    ship one). An absolute cache path there must not make npm create _cacache
+    in an arbitrary host directory — only the package dir and the system temp
+    dir are allowed."""
+    fake_temp = tmp_path / "fake-temp"
+    fake_temp.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside-cache"
+    monkeypatch.setattr(shell_module.tempfile, "gettempdir", lambda: str(fake_temp))
+    (project / ".npmrc").write_text(f"cache={outside}\n", encoding="utf-8")
+
+    resolved = shell_module._resolve_npm_cache_dir(project, "npm run test")
+    assert resolved == str(project / ".npm-cache")
+    assert not outside.exists()
+
+    other = tmp_path / "outside-cmd-cache"
+    resolved = shell_module._resolve_npm_cache_dir(
+        project, f"NPM_CONFIG_CACHE={other} npm run test"
+    )
+    assert resolved == str(project / ".npm-cache")
+    assert not other.exists()
+
+
 @_skip_win32
 def test_resolve_npm_cache_dir_unwritable_candidates_fall_through(tmp_path, monkeypatch):
     monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")

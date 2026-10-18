@@ -508,7 +508,8 @@ async def sync_parent_children(
     if db_session is not None:
         try:
             await reindex_one(
-                fs_path=str(parent_path), project_id=project_id, db_session=db_session
+                fs_path=str(parent_path), project_id=project_id, db_session=db_session,
+                knowledge_root=knowledge_dir,
             )
         except Exception:
             _log.warning("sync_parent_children: reindex of parent %s failed", parent_slug, exc_info=True)
@@ -519,6 +520,7 @@ async def reindex_one(
     fs_path: str,
     project_id: str | None,
     db_session,
+    knowledge_root: str | Path | None = None,
 ) -> dict:
     """Re-index a single knowledge file. Called from the sql_query tool."""
     path = Path(fs_path)
@@ -541,16 +543,29 @@ async def reindex_one(
     meta = post.metadata
     body = post.content
 
-    parts = path.parts
-    try:
-        # The knowledge root is the LAST "knowledge" directory segment on the
-        # path — taking the first one mis-derives the slug when the deployment
-        # path itself contains a "knowledge" dir (e.g. /app/knowledge/{slug}/
-        # knowledge/foo.md would produce "{slug}/knowledge/foo").
-        k_idx = next(i for i in range(len(parts) - 1, -1, -1) if parts[i] == "knowledge")
-        slug = "/".join(parts[k_idx + 1:]).replace("\\", "/").removesuffix(".md")
-    except StopIteration:
-        slug = path.stem
+    slug: str | None = None
+    if knowledge_root is not None:
+        # The caller knows the root, so the slug is simply the path relative
+        # to it. A heuristic over path segments truncates slugs that contain
+        # a nested directory literally named "knowledge"
+        # (technical/knowledge/foo would index as "foo").
+        try:
+            slug = path.resolve().relative_to(Path(knowledge_root).resolve()).as_posix()
+        except (OSError, ValueError):
+            slug = None
+    if slug is None:
+        parts = path.parts
+        try:
+            # Without the root, the LAST "knowledge" directory segment is the
+            # best guess — taking the first one mis-derives the slug when the
+            # deployment path itself contains a "knowledge" dir (e.g.
+            # /app/knowledge/{slug}/knowledge/foo.md would produce
+            # "{slug}/knowledge/foo").
+            k_idx = next(i for i in range(len(parts) - 1, -1, -1) if parts[i] == "knowledge")
+            slug = "/".join(parts[k_idx + 1:]).replace("\\", "/")
+        except StopIteration:
+            slug = path.stem
+    slug = slug.removesuffix(".md")
 
     # Same invariant as index_directory: the template source tree never
     # becomes global rows. No current call site reindexes it globally — this

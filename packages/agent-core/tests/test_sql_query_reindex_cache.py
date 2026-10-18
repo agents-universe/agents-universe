@@ -53,7 +53,7 @@ async def test_full_reindex_invalidates_project_cache(tmp_path):
 
 @pytest.mark.asyncio
 async def test_single_file_reindex_invalidates_cache(tmp_path, monkeypatch):
-    async def _fake_reindex(fs_path, project_id, db_session):
+    async def _fake_reindex(fs_path, project_id, db_session, **kwargs):
         return {"action": "updated", "slug": "foo"}
 
     monkeypatch.setattr(index_mod, "reindex_one", _fake_reindex)
@@ -73,7 +73,7 @@ async def test_single_file_reindex_invalidates_cache(tmp_path, monkeypatch):
 async def test_failed_single_file_reindex_keeps_cache(tmp_path, monkeypatch):
     """An error result means reindex_one wrote nothing — evicting would just
     force a pointless reload of the same rows."""
-    async def _fake_reindex(fs_path, project_id, db_session):
+    async def _fake_reindex(fs_path, project_id, db_session, **kwargs):
         return {"error": "File not found: foo.md"}
 
     monkeypatch.setattr(index_mod, "reindex_one", _fake_reindex)

@@ -325,6 +325,7 @@ class SqlQueryTool(Tool):
                 fs_path=str(path),
                 project_id=context.project_id,
                 db_session=context.db_session,
+                knowledge_root=knowledge_dir,
             )
             await context.db_session.commit()
             # Same eviction as the full path; an error result means

@@ -593,6 +593,12 @@ _DATA_COMMANDS = frozenset({"echo", "printf", "pwd", "tr", "true", "false"})
 # any remaining positionals are file paths (grep <pattern> <files...>).
 _FIRST_POS_DATA = frozenset({"grep", "egrep", "fgrep", "jq", "awk", "gawk", "sed"})
 
+# Commands whose positional path operands are WRITE targets. Their .git
+# operands are denied — git later executes hooks/config written there. sed -i
+# and gawk -i inplace are handled separately in the option loop (only their
+# in-place mode writes).
+_GIT_WRITE_OPERAND_COMMANDS = frozenset({"cp", "mv", "mkdir", "touch"})
+
 # Per-command options whose SEPARATE value token is data, not a path
 # (e.g. `git commit -m "mentions ../x"` must not trip the path checks).
 _DATA_VALUE_OPTS: dict[str, frozenset[str]] = {
@@ -931,6 +937,9 @@ def _validate_segment(
     # (empty-checked) program and never run path validation on it — arbitrary
     # file reads.
     program_seen = False
+    # sed -i / gawk -i inplace rewrite their file operands in place, making
+    # those operands write targets for the .git check below.
+    in_place = False
     # For grep/egrep/fgrep/jq: the pattern/program came from an OPTION
     # (-e/--regexp/-f/--file/--from-file), so the first positional is a FILE
     # OPERAND, not data — without this `grep -e foo ../sibling/secret` read
@@ -965,6 +974,13 @@ def _validate_segment(
 
         if tok.startswith("-") and tok != "-":
             opt_name = tok.split("=", 1)[0]
+            if is_awk_sed and (
+                opt_name.startswith("-i") or opt_name.startswith("--in-place")
+            ):
+                # sed -i/--in-place (suffix may be attached: -i.bak) and
+                # gawk -i inplace edit their file operands in place — those
+                # operands are writes and must not target .git.
+                in_place = True
             # `python3 -m pip ...` (incl. the attached `-mpip` form) — the
             # module is consumed by data-option skip_next below, so record it
             # here for the pip-subcommand gate at the first positional.
@@ -1077,7 +1093,10 @@ def _validate_segment(
                 elif opt_name in path_opts:
                     reason = _check_path(value, cwd=cwd, root=root,
                                          allow_dollar=allow_substitution,
-                                         assigned_vars=assigned_vars, tainted_vars=tainted_vars)
+                                         assigned_vars=assigned_vars, tainted_vars=tainted_vars,
+                                         # sort -o/--output WRITES its value; the
+                                         # other path options are program/URL reads.
+                                         deny_git=cmd_base == "sort")
                     if reason:
                         return reason
                 elif opt_name not in data_opts:
@@ -1097,7 +1116,8 @@ def _validate_segment(
                     return f"Option {opt_name!r} without a value"
                 reason = _check_path(tokens[i + 1], cwd=cwd, root=root,
                                      allow_dollar=allow_substitution,
-                                     assigned_vars=assigned_vars, tainted_vars=tainted_vars)
+                                     assigned_vars=assigned_vars, tainted_vars=tainted_vars,
+                                     deny_git=cmd_base == "sort")
                 if reason:
                     return reason
                 i += 1  # consume the path value
@@ -1237,10 +1257,12 @@ def _validate_segment(
                 if program_seen:
                     # The program came from -e/--expression/-f/--file — this
                     # positional is a FILE OPERAND and must pass path checks
-                    # (e.g. `sed -e 's/^/x/' /etc/passwd`).
+                    # (e.g. `sed -e 's/^/x/' /etc/passwd`). In -i mode it is
+                    # rewritten in place, so .git is off limits too.
                     reason = _check_path(tok, cwd=cwd, root=root,
                                          allow_dollar=allow_substitution,
-                                         assigned_vars=assigned_vars, tainted_vars=tainted_vars)
+                                         assigned_vars=assigned_vars, tainted_vars=tainted_vars,
+                                         deny_git=in_place)
                 else:
                     # The program string is skipped by the path checks — scan it
                     # for escape primitives instead (awk system()/getline, sed e).
@@ -1256,18 +1278,13 @@ def _validate_segment(
                 return reason
             i += 1
             continue
-        if cmd_base in ("cp", "mv"):
-            # cp/mv write to their positional targets — `cp hook.sh
-            # .git/hooks/pre-commit` installs a hook past the redirect check
-            # (`cp -t dir src` and multi-source forms make "the second
-            # positional" ambiguous, so every positional is checked; reading
-            # FROM .git has no legitimate project use — fail-closed).
-            reason = _git_internal_path(tok)
-            if reason:
-                return reason
         reason = _check_path(tok, cwd=cwd, root=root,
                              allow_dollar=allow_substitution,
-                             assigned_vars=assigned_vars, tainted_vars=tainted_vars)
+                             assigned_vars=assigned_vars, tainted_vars=tainted_vars,
+                             deny_git=(
+                                 cmd_base in _GIT_WRITE_OPERAND_COMMANDS
+                                 or (is_awk_sed and in_place)
+                             ))
         if reason:
             return reason
         i += 1
@@ -1532,6 +1549,9 @@ def _check_program_string(program: str, cmd: str) -> str | None:
         except ValueError:
             candidates = program.split()
         for tok in candidates[1:]:
+            reason = _git_internal_path(tok)
+            if reason:
+                return f"{cmd} program {program!r}: {reason}"
             reason = _check_simple(tok)
             if reason:
                 return f"{cmd} program {program!r}: {reason}"
@@ -1547,11 +1567,22 @@ def _check_program_string(program: str, cmd: str) -> str | None:
                     # last group.
                     if isinstance(target, tuple):
                         target = target[-1]
+                    # r/w/R/W targets are program-embedded filenames; a
+                    # w target writes, and reads through sed are exotic, so
+                    # .git fails closed for both.
+                    reason = _git_internal_path(target)
+                    if reason:
+                        return f"{cmd} program {program!r}: {reason}"
                     reason = _check_simple(target)
                     if reason:
                         return f"{cmd} program {program!r}: {reason}"
     else:
         for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', program):
+            # awk string literals can be redirection targets
+            # (`print > ".git/config"`), so .git is off limits here too.
+            reason = _git_internal_path(m.group(1))
+            if reason:
+                return f"{cmd} program {program!r}: {reason}"
             reason = _check_simple(m.group(1))
             if reason:
                 return f"{cmd} program {program!r}: {reason}"
@@ -1574,8 +1605,17 @@ def _dollar_vars(tok: str) -> list[str]:
 
 def _check_path(
     tok: str, *, cwd: Path, root: Path, allow_dollar: bool, assigned_vars: set[str],
-    tainted_vars: frozenset[str] | None = None,
+    tainted_vars: frozenset[str] | None = None, deny_git: bool = False,
 ) -> str | None:
+    # deny_git is opted into at WRITE positions only (cp/mv/mkdir/touch
+    # operands, sed -i / gawk -i inplace file operands, sort -o values):
+    # a file inside .git that git later executes (hooks, config with
+    # hooksPath) must never come from these commands. Reads stay allowed,
+    # matching the filesystem tool — `cat .git/HEAD` is harmless.
+    if deny_git:
+        reason = _git_internal_path(tok)
+        if reason:
+            return reason
     reason = _check_simple(tok)
     if reason:
         return reason

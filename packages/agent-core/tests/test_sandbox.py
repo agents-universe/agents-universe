@@ -218,6 +218,11 @@ ALLOWED = [
     'git commit -m "line1\nline2"',       # quoted string spanning lines
     "cat <<EOF\nhello world\nEOF",        # heredoc body is stdin data
     "python3 - <<'PY'\nprint(1)\nPY",
+    # Reading .git is allowed (matching the filesystem tool); only write
+    # positions deny it.
+    "cat .git/HEAD",
+    "grep -n refs .git/config",
+    "sed -n 1p .git/config",
 ]
 
 DENIED = [
@@ -345,6 +350,23 @@ DENIED = [
     "echo ok\ncat ../proj-b/secret.txt",
     "echo ok\ncat ~/x",
     "ls\ncat sub/../../proj-b/secret.txt",
+    # Non-git commands must not WRITE inside .git — git executes hooks and
+    # re-reads config unvalidated on later commands. Reads stay allowed above.
+    "cp hook.sh .git/hooks/pre-commit",
+    "mv hook.sh .git/hooks/pre-commit",
+    "cp -t .git/hooks hook.sh",
+    "mkdir .git/hooks/evil",
+    "touch .git/hooks/pre-commit",
+    "touch -c .git/config",
+    "sed -i 's/a/b/' .git/config",
+    "sed -i.bak 's/a/b/' .git/config",
+    "sed --in-place 's/a/b/' .git/config",
+    "sed -e 's/a/b/' -i .git/config",
+    "sed 's/a/b/w .git/config' f.txt",
+    "sed '1,5w.git/hooks/pre-commit' f.txt",
+    "sort -o .git/config data.txt",
+    "sort --output .git/config data.txt",
+    "awk '{print > \".git/config\"}' f.txt",
 ]
 
 
@@ -569,6 +591,35 @@ def test_guard_denies_write_outside_project(sandbox_dirs):
     assert r.returncode != 0
     assert "agent-guard" in r.stderr
     assert not (proj_b / "evil.txt").exists()
+
+
+def test_guard_denies_git_internal_writes(sandbox_dirs):
+    """git executes .git/hooks/* and re-reads .git/config on later commands,
+    so a sandboxed script must not plant either — even though both live
+    inside the project write root. Reads stay allowed (the filesystem tool
+    follows the same rule)."""
+    proj_a, _, fake_temp = sandbox_dirs
+    (proj_a / ".git" / "hooks").mkdir(parents=True)
+    (proj_a / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    env = guarded_env(proj_a, fake_temp)
+    for code in (
+        "open('.git/hooks/pre-commit', 'w').write('#!/bin/sh\\necho pwned\\n')",
+        "open('.GIT/config', 'w').write('[core]\\n')",
+        "import os; os.mkdir('.git/refs-evil')",
+        "import shutil; shutil.copyfile('local.txt', '.git/config')",
+        "import os; os.rename('local.txt', '.git/hooks/post-checkout')",
+        "import os; os.truncate('.git/HEAD', 0)",
+    ):
+        r = run_python(code, cwd=proj_a, env=env)
+        assert r.returncode != 0, f"{code!r} must be rejected, got {r.stdout!r}"
+        assert "agent-guard" in r.stderr, code
+    assert not (proj_a / ".git" / "hooks" / "pre-commit").exists()
+    assert not (proj_a / ".git" / "config").exists()
+    assert (proj_a / ".git" / "HEAD").read_text(encoding="utf-8").startswith("ref:")
+
+    r = run_python("print(open('.git/HEAD').read(), end='')", cwd=proj_a, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "refs/heads" in r.stdout
 
 
 def test_guard_denies_listdir_outside(sandbox_dirs):

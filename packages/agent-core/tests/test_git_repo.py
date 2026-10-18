@@ -686,6 +686,47 @@ async def test_push_with_target_repository_pushes_to_fork_url(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_push_target_repository_with_git_suffix_is_not_doubled(tmp_path):
+    """Callers copy clone URLs verbatim ("owner/repo.git"); appending .git
+    again asks the host for repo.git.git, which does not exist."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    _run("checkout", "-b", "feature/PUSH-DOTGIT", cwd=checkout)
+    (checkout / "f.txt").write_text("fork me")
+    _run("add", "f.txt", cwd=checkout)
+    _run("commit", "-m", "add file", cwd=checkout)
+
+    workspace = tmp_path / "ws"
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.cfg.return_value = "https://ghe.example.com"
+
+    real_run = tool._run_git
+    captured: list[list[str]] = []
+
+    async def fake_run(args, cwd, timeout=None, token=None):
+        if args[0] == "push":
+            captured.append(list(args))
+            return {"stdout": "", "stderr": "", "exit_code": 0}
+        return await real_run(args, cwd, timeout, token)
+
+    tool._run_git = fake_run  # type: ignore[method-assign]
+
+    result = await tool.execute(
+        {
+            "operation": "push",
+            "repository_path": "repos/repo",
+            "branch": "feature/PUSH-DOTGIT",
+            "target_repository": "mybot/repo.git",
+        },
+        ctx,
+    )
+
+    assert result.get("status") == "pushed"
+    assert captured[0][1] == "https://ghe.example.com/mybot/repo.git"
+
+
+@pytest.mark.asyncio
 async def test_push_with_target_repository_requires_git_base_url(tmp_path):
     bare = _make_bare_remote(tmp_path)
     _clone_from(bare, tmp_path / "ws" / "repos" / "repo")

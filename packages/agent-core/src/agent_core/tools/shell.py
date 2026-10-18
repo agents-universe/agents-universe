@@ -8,9 +8,11 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..paths import is_within
 from ..sandbox import (
     _EXECUTION_ENV_VARS,
     python_guard_env,
@@ -407,6 +409,24 @@ def _npmrc_cache_dir(pkg_dir: Path) -> str | None:
     return None
 
 
+def _cache_dir_allowed(resolved: Path, pkg_dir: Path) -> bool:
+    """True when a cache candidate stays inside the package dir or system temp.
+
+    Both the command line and the project's .npmrc are untrusted — the
+    repository itself can ship one. Without this gate an absolute value such
+    as /etc or ~/.config made npm create _cacache in an arbitrary host
+    directory, writes the Python runtime guard never sees because npm runs
+    as a separate process.
+    """
+    try:
+        return (
+            is_within(pkg_dir, resolved)
+            or is_within(tempfile.gettempdir(), resolved)
+        )
+    except OSError:
+        return False
+
+
 def _ensure_writable_cache(cache_dir: str) -> bool:
     """Create the cache directory (if needed) and confirm it is writable.
 
@@ -452,6 +472,10 @@ def _resolve_npm_cache_dir(pkg_dir: Path, command: str) -> str | None:
         resolved = Path(cache_dir)
         if not resolved.is_absolute():
             resolved = pkg_dir / resolved
+        # Confinement runs BEFORE the writability probe: probing creates the
+        # directory, so a rejected candidate must not be materialized first.
+        if not _cache_dir_allowed(resolved, pkg_dir):
+            continue
         if _ensure_writable_cache(str(resolved)):
             return str(resolved)
     return None

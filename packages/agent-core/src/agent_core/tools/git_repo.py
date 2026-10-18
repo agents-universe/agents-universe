@@ -934,7 +934,13 @@ class GitRepoTool(Tool):
             if not base:
                 return {"error": "GIT_BASE_URL not configured — cannot resolve fork push target"}
             host = base.rstrip("/").removeprefix("https://").removeprefix("http://")
-            push_target = f"https://{host}/{target_repository}.git"
+            # Callers copy clone URLs verbatim ("owner/repo.git"); appending
+            # .git again asks the host for "repo.git.git", which does not exist.
+            # Same normalization as clone's repository parameter.
+            slug = target_repository.rstrip("/")
+            if not slug.endswith(".git"):
+                slug += ".git"
+            push_target = f"https://{host}/{slug}"
         else:
             push_target = "origin"
             if token:

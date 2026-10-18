@@ -269,6 +269,17 @@ if _project_root:
             canon = _canon(path)
         except Exception:
             _deny(action, path)  # resolution failed — fail closed
+        # git executes .git/hooks/* and re-reads .git/config on later
+        # commands, so a sandboxed script must not plant either — the
+        # content would run unvalidated outside this audit hook. The check
+        # is case-insensitive because Windows/macOS resolve .GIT to .git.
+        # Reads stay allowed (inspecting HEAD/objects is harmless).
+        if action == "write" and any(
+            part.lower() == ".git" for part in canon.replace("\\", "/").split("/")
+        ):
+            raise PermissionError(
+                f"[agent-guard] write access inside .git is blocked: {path}"
+            )
         if not _is_within(roots, canon):
             _deny(action, path)
 

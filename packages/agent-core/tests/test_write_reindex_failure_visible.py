@@ -8,6 +8,8 @@ The write still succeeds (file kept, no rollback), but the result carries
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_core.tools.base import ToolContext
 from agent_core.tools.knowledge_rw import KnowledgeRWTool
 
@@ -84,8 +86,10 @@ async def test_write_reindex_error_dict_reports_not_indexed(tmp_path, monkeypatc
     assert any("NOT updated" in w for w in result.get("warnings", []))
 
 
-async def test_identical_content_reports_indexed(tmp_path):
-    """Unchanged content needs no reindex — reported as indexed, no warnings."""
+async def test_identical_content_without_db_reports_not_indexed(tmp_path):
+    """Identical content still needs the row refreshed — the disk hash says
+    nothing about whether the index row exists. With no session that cannot
+    happen, so indexed is False and the warning matches a changed write."""
     target = tmp_path / "knowledge" / "domain" / "context.md"
     target.parent.mkdir(parents=True)
     target.write_text("same content", encoding="utf-8")
@@ -99,5 +103,35 @@ async def test_identical_content_reports_indexed(tmp_path):
     )
 
     assert result["changed"] is False
-    assert result["indexed"] is True
-    assert "warnings" not in result
+    assert result["indexed"] is False
+    assert any("NOT updated" in w for w in result.get("warnings", []))
+
+
+async def test_identical_content_still_reindexes(tmp_path, monkeypatch):
+    """An unchanged write must refresh the DB row: a previous reindex may
+    have failed (or the DB been rebuilt), so indexed=True is only truthful
+    after reindex_one actually ran."""
+    import agent_core.knowledge.index as index_mod
+
+    calls = []
+
+    async def _fake(**kwargs):
+        calls.append(kwargs)
+        return {"action": "updated"}
+
+    monkeypatch.setattr(index_mod, "reindex_one", _fake)
+
+    tool = KnowledgeRWTool()
+    ctx = _context(tmp_path, db=object())
+    params = {"operation": "write", "slug": "domain/context", "content": "same content"}
+
+    first = await tool.execute(params, ctx)
+    second = await tool.execute(params, ctx)
+
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert second["indexed"] is True
+    assert len(calls) == 2
+    # The knowledge root travels with the call so a nested "knowledge"
+    # directory cannot truncate the slug.
+    assert Path(calls[-1]["knowledge_root"]).resolve() == (tmp_path / "knowledge").resolve()

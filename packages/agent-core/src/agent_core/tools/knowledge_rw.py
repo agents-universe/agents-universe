@@ -385,9 +385,6 @@ class KnowledgeRWTool(Tool):
 
         result = await asyncio.to_thread(_do_write)
         result["indexed"] = False
-        if not result.get("changed"):
-            # Identical content: the index already reflects this file.
-            result["indexed"] = True
         if result.get("changed"):
             # Hierarchy closure FIRST: the child's frontmatter `parent` must
             # land in the parent's `children` before the child reindex runs,
@@ -426,50 +423,58 @@ class KnowledgeRWTool(Tool):
                         "warnings", [],
                     ).append(f"Could not add {slug} to parent {parent_slug}'s children list.")
 
-            # Update knowledge_metadata DB so completeness scores reflect the new content.
-            if context.db_session is not None:
-                try:
-                    from agent_core.knowledge.index import reindex_one
-                    reindex_result = await reindex_one(
-                        fs_path=str(file_path),
-                        project_id=context.project_id,
-                        db_session=context.db_session,
-                    )
-                    if reindex_result.get("error"):
-                        raise RuntimeError(reindex_result["error"])
-                    result["indexed"] = True
-                    for w in reindex_result.get("warnings") or []:
-                        result.setdefault("warnings", []).append(w)
-                except Exception:
-                    _log.warning("Knowledge reindex failed for slug=%s project=%s", slug, context.project_id, exc_info=True)
-                    # A detail file without an index row is invisible to the
-                    # deferred list — the failure must be visible, not silent.
-                    result.setdefault("warnings", []).append(
-                        f"File written but knowledge index NOT updated for {slug} "
-                        "(reindex failed). Detail files missing an index row are "
-                        "invisible to the deferred list — run "
-                        'knowledge_rw(operation="write") again or reindex the project.'
-                    )
-            else:
+        # Reindex on every write, including one whose content is unchanged: an
+        # on-disk hash match only proves the file is current, not that the
+        # knowledge row exists or matches it (an earlier reindex may have
+        # failed, or the DB may have been rebuilt). indexed=True must mean the
+        # row really was refreshed, so an idempotent write repairs the index.
+        if context.db_session is not None:
+            try:
+                from agent_core.knowledge.index import reindex_one
+                reindex_result = await reindex_one(
+                    fs_path=str(file_path),
+                    project_id=context.project_id,
+                    db_session=context.db_session,
+                    knowledge_root=knowledge_dir,
+                )
+                if reindex_result.get("error"):
+                    raise RuntimeError(reindex_result["error"])
+                result["indexed"] = True
+                for w in reindex_result.get("warnings") or []:
+                    result.setdefault("warnings", []).append(w)
+            except Exception:
+                _log.warning("Knowledge reindex failed for slug=%s project=%s", slug, context.project_id, exc_info=True)
+                # A detail file without an index row is invisible to the
+                # deferred list — the failure must be visible, not silent.
                 result.setdefault("warnings", []).append(
                     f"File written but knowledge index NOT updated for {slug} "
-                    "(no database session). Detail files missing an index row "
-                    "are invisible to the deferred list."
+                    "(reindex failed). Detail files missing an index row are "
+                    "invisible to the deferred list — run "
+                    'knowledge_rw(operation="write") again or reindex the project.'
                 )
-            # Full invalidate: the cached entries list is what feeds
-            # deferred_entries/status on the next conversation (cached
-            # per-file content is never populated) — a reindexed file would
-            # otherwise keep serving stale metadata (title/summary/word_count)
-            # until process restart. Mirrors _op_delete.
-            if result["indexed"] and context.knowledge_cache is not None:
-                context.knowledge_cache.invalidate(context.project_id)
-            # Notify the frontend so the knowledge progress bar updates in real time.
-            if context.session is not None:
-                try:
-                    await context.session.emit("knowledge_updated", slug=slug)
-                except Exception:
-                    _log.debug("knowledge_updated emit failed for slug=%s", slug, exc_info=True)
+        else:
+            result.setdefault("warnings", []).append(
+                f"File written but knowledge index NOT updated for {slug} "
+                "(no database session). Detail files missing an index row "
+                "are invisible to the deferred list."
+            )
+        # Full invalidate: the cached entries list is what feeds
+        # deferred_entries/status on the next conversation (cached
+        # per-file content is never populated) — a reindexed file would
+        # otherwise keep serving stale metadata (title/summary/word_count)
+        # until process restart. Mirrors _op_delete.
+        if result["indexed"] and context.knowledge_cache is not None:
+            context.knowledge_cache.invalidate(context.project_id)
+        # Notify the frontend so the knowledge progress bar updates in real time.
+        # An unchanged write that repaired a missing/stale row also changed
+        # the index, so it emits as well.
+        if context.session is not None and (result.get("changed") or result["indexed"]):
+            try:
+                await context.session.emit("knowledge_updated", slug=slug)
+            except Exception:
+                _log.debug("knowledge_updated emit failed for slug=%s", slug, exc_info=True)
 
+        if result.get("changed"):
             # Warn if a primary API file is too large without detail children
             result = self._check_split_warning(slug, content, knowledge_dir, result)
 

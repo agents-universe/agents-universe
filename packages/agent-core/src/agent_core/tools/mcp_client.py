@@ -669,9 +669,20 @@ class McpConnectionManager:
         self._sessions.clear()
 
 
-def _matches_any(name: str, patterns: list[str]) -> bool:
-    """Check if a name matches any glob pattern in the list."""
-    return any(fnmatch.fnmatch(name, p) for p in patterns)
+def _matches_any(name: str, patterns: Any) -> bool:
+    """Check if a name matches any glob pattern.
+
+    A hand-written catalog can put a scalar where the template documents a
+    list (``allowlist: read_*``). Iterating that string matches one pattern
+    per CHARACTER, so the lone ``*`` inside it matches every tool — a scalar
+    allowlist silently allowed (or a scalar denylist silently hid) every
+    tool. Treat a string as one pattern and ignore non-string entries.
+    """
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    if not isinstance(patterns, (list, tuple)):
+        return False
+    return any(isinstance(p, str) and fnmatch.fnmatch(name, p) for p in patterns)
 
 
 def _tools_config(server_cfg: dict[str, Any]) -> dict[str, Any]:

@@ -519,6 +519,39 @@ async def test_commit_accepts_leading_dot_slash_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_commit_glob_pathspec_is_literal_not_expanded(tmp_path):
+    """`paths` is documented as exact paths, but git expanded `src/*.py` and
+    pathspec magic (`:/`) — every matching file was staged, the selection
+    check then refused the commit, and the tree stayed fully staged with no
+    unstage operation in the tool. A literal pathspec must match nothing and
+    leave the index untouched."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+
+    (checkout / "src").mkdir()
+    (checkout / "src" / "a.py").write_text("print('a')")
+    (checkout / "src" / "b.py").write_text("print('b')")
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+    for pathspec in ("src/*.py", ":/src"):
+        result = await tool.execute(
+            {
+                "operation": "commit",
+                "repository_path": "repos/repo",
+                "paths": [pathspec],
+                "message": "should not commit",
+            },
+            ctx,
+        )
+        assert "error" in result, result
+
+    porcelain_lines = _run("status", "--porcelain", cwd=checkout).splitlines()
+    assert not any(line.startswith("A ") for line in porcelain_lines)
+    assert "?? src/" in porcelain_lines
+
+
+@pytest.mark.asyncio
 async def test_commit_requires_paths(tmp_path):
     bare = _make_bare_remote(tmp_path)
     checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")

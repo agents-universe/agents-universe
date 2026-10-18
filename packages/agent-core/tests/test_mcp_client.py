@@ -123,6 +123,21 @@ def test_matches_any_empty_patterns():
     assert _matches_any("anything", []) is False
 
 
+def test_matches_any_scalar_pattern_is_one_pattern():
+    """A catalog scalar is one glob, not a character sequence.
+
+    `allowlist: read_*` used to iterate into 'r','e','a','d','_','*' — the
+    middle '*' matched every tool, so the filter allowed everything.
+    """
+    assert _matches_any("read_file", "read_*") is True
+    assert _matches_any("delete_file", "read_*") is False
+
+
+def test_matches_any_ignores_non_string_patterns():
+    assert _matches_any("search", [None, 3, "search"]) is True
+    assert _matches_any("search", None) is False
+
+
 # ---------------------------------------------------------------------------
 # Session proxy resolution
 # ---------------------------------------------------------------------------

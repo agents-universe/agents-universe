@@ -872,7 +872,13 @@ class GitRepoTool(Tool):
                 "unexpected_staged": unexpected_before,
             }
 
-        add = await self._run_git(["add", "--", *paths], repo)
+        # --literal-pathspecs: `paths` is documented as exact paths, but git
+        # otherwise expands wildcards and pathspec magic (`src/*.py`, `:/`).
+        # That staged files beyond the selection, the check below then refused
+        # the commit — leaving the whole tree staged with no unstage operation
+        # in this tool. A literal pathspec that names no file fails cleanly
+        # without touching the index.
+        add = await self._run_git(["--literal-pathspecs", "add", "--", *paths], repo)
         if "error" in add:
             return add
         staged = await self._run_git(["-c", "core.quotepath=false", "diff", "--cached", "--name-only"], repo)

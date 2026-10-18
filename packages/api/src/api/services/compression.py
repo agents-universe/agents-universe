@@ -493,6 +493,19 @@ async def compress_conversation(
         # format_exception follows __context__ by default — the scrub above
         # only covers THIS log line, not any downstream formatter.
         raise CompressionError(502, "压缩失败，请重试。") from None
+    finally:
+        # _resolve_provider builds an SDK-backed provider that owns an HTTP
+        # client; without this close every compression leaks a connection
+        # pool. Best-effort: a close error must not replace the summary (or
+        # the CompressionError) the caller expects.
+        try:
+            await provider.close()
+        except Exception:
+            _log.debug(
+                "Failed to close compression provider for %s",
+                conversation_id,
+                exc_info=True,
+            )
 
     # Persist under the conversation row lock (serializes sequence_num
     # assignment, same pattern as websocket/handlers.py). The status filter

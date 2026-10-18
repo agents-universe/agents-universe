@@ -991,6 +991,54 @@ def test_default_model_returns_provider_native_ids():
 
 
 @pytest.mark.asyncio
+async def test_compress_closes_provider_on_success_and_failure(db, make_project, monkeypatch):
+    """_resolve_provider builds an SDK-backed provider that owns an HTTP
+    client; both the success path and the 502 path must close it, or every
+    manual compression leaks a connection pool."""
+    from api.services.compression import CompressionError, compress_conversation
+
+    class ClosableProvider:
+        def __init__(self, fail: bool = False):
+            self.fail = fail
+            self.closed = False
+
+        async def complete(self, messages, tools=None):
+            if self.fail:
+                raise RuntimeError("llm down")
+            return SimpleNamespace(message=SimpleNamespace(content="summary of earlier conversation"))
+
+        async def close(self):
+            self.closed = True
+
+        def scrub(self, text):
+            return text
+
+    import api.services.compression as compression_service
+
+    project = await make_project()
+    success_provider = ClosableProvider()
+
+    async def _resolve_ok(db_, user_id):
+        return success_provider
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve_ok)
+    conv = await _seed_conversation(db, project, message_count=20)
+    await compress_conversation(db, str(conv.conversation_id), "test-user")
+    assert success_provider.closed is True
+
+    failing_provider = ClosableProvider(fail=True)
+
+    async def _resolve_fail(db_, user_id):
+        return failing_provider
+
+    monkeypatch.setattr(compression_service, "_resolve_provider", _resolve_fail)
+    conv2 = await _seed_conversation(db, project, message_count=20)
+    with pytest.raises(CompressionError):
+        await compress_conversation(db, str(conv2.conversation_id), "test-user")
+    assert failing_provider.closed is True
+
+
+@pytest.mark.asyncio
 async def test_follower_does_not_hold_the_global_guard(monkeypatch):
     """A follower awaiting an in-flight compression must not hold the global
     singleflight guard — otherwise one slow summarization serializes every

@@ -164,7 +164,13 @@ class GoogleGeminiProvider(LLMProvider):
                             "args": args,
                         }
                     })
-                contents.append({"role": "model", "parts": parts})
+                # A delegated child's persisted reply can sit immediately
+                # before its parent's tool-using final message; merge into
+                # that model turn instead of emitting an adjacent one.
+                if contents and contents[-1]["role"] == "model":
+                    contents[-1]["parts"].extend(parts)
+                else:
+                    contents.append({"role": "model", "parts": parts})
                 continue
             role = "model" if msg.role == "assistant" else "user"
             if isinstance(msg.content, str):
@@ -181,14 +187,16 @@ class GoogleGeminiProvider(LLMProvider):
                         })
                     else:
                         parts.append({"text": part.get("text", "")})
-            # Consecutive user messages — a mid-run injection lands right
-            # after the tool-results turn, two queued injections land back
-            # to back, and a persisted injection is rebuilt after the
-            # synthesized tool rows on every later turn. Gemini rejects
-            # adjacent user contents the same way it rejects adjacent
-            # function_response turns, so merge the text into the previous
-            # user content instead of starting a new turn.
-            if role == "user" and contents and contents[-1]["role"] == "user":
+            # Consecutive same-role contents — a mid-run injection lands
+            # right after the tool-results turn, two queued injections land
+            # back to back, a persisted injection is rebuilt after the
+            # synthesized tool rows on every later turn, and a delegated
+            # child's persisted reply is replayed right before its parent's.
+            # Gemini rejects adjacent user OR model contents ("multiturn
+            # requests alternate between user and model"), so merge the
+            # parts into the previous content instead of starting a new
+            # turn.
+            if contents and contents[-1]["role"] == role:
                 contents[-1]["parts"].extend(parts)
             else:
                 contents.append({"role": role, "parts": parts})

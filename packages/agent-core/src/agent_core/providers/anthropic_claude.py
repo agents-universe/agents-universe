@@ -81,6 +81,43 @@ def _thinking_rejected(exc: BaseException) -> bool:
     return "thinking" in text.lower()
 
 
+def _content_blocks(content: str | list) -> list[dict]:
+    """Normalize an entry's content field into a block list."""
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    return list(content)
+
+
+def _merge_same_role_turns(out: list[dict]) -> list[dict]:
+    """Fold adjacent turns of one role together.
+
+    The direct Messages API combines consecutive same-role turns, but
+    Bedrock-style gateways reject the request outright ("roles must
+    alternate between user and assistant"). Agent histories do produce
+    them: several injections dequeued at one step boundary, an injection
+    consumed right after a tool-results turn, a delegated child's persisted
+    reply replayed ahead of its parent's on the next turn, and a pause_turn
+    continuation appended after the paused assistant turn. Tool results
+    already lead their user turn, so appended text lands after them as the
+    API expects.
+    """
+    merged: list[dict] = []
+    for entry in out:
+        if not merged or merged[-1]["role"] != entry["role"]:
+            merged.append(entry)
+            continue
+        prev = merged[-1]
+        blocks = _content_blocks(entry["content"])
+        if entry["role"] == "assistant":
+            # Signed thinking blocks must lead the assistant turn's content.
+            thinking = [b for b in blocks if b.get("type") == "thinking"]
+            other = [b for b in blocks if b.get("type") != "thinking"]
+            prev["content"] = thinking + _content_blocks(prev["content"]) + other
+        else:
+            prev["content"] = _content_blocks(prev["content"]) + blocks
+    return merged
+
+
 class AnthropicClaudeProvider(LLMProvider):
     """Anthropic Claude via the anthropic SDK (direct) or raw httpx (gateway).
 
@@ -293,7 +330,7 @@ class AnthropicClaudeProvider(LLMProvider):
                     out.append({"role": msg.role, "content": content})
                 else:
                     out.append({"role": msg.role, "content": msg.content})
-        return system, out
+        return system, _merge_same_role_turns(out)
 
     def _to_anthropic_tools(self, tools: list[ToolDefinition]) -> list[dict]:
         return [

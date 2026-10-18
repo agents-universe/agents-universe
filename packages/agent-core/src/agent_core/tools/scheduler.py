@@ -490,13 +490,18 @@ class SchedulerTool(Tool):
         row = await self._find(context, schedule_id, ScheduledTask)
         if row is None:
             return {"error": "Scheduled task not found in this project"}
-        row.enabled = enabled
+        # Compute BEFORE mutating: on CronError this returns with the row
+        # untouched — assigning row.enabled first and returning would leave
+        # the change dirty in the shared session, and the next op's commit
+        # (e.g. create) would flush an enabled task with a stale next_run_at.
         try:
-            row.next_run_at = (
+            next_run = (
                 next_run_at(row.cron_expr, row.timezone, _now()) if enabled else None
             )
         except CronError as exc:
             return {"error": f"Stored cron expression is invalid: {exc}"}
+        row.enabled = enabled
+        row.next_run_at = next_run
         row.updated_at = _now()
         await context.db_session.commit()
         return {"success": True, **self._serialize(row)}

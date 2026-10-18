@@ -136,3 +136,50 @@ async def test_images_non_list_does_not_crash_the_turn():
     types = [t for t, _ in events]
     assert "error" not in types
     assert not [d for t, d in events if t == "image_output"]
+
+
+# ── task loop (plan_task subtasks run here; it needs the SAME guard) ────────
+
+
+async def _run_task_turn(agent: Agent, provider: _ScriptedProvider) -> list[tuple[str, dict]]:
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+    await agent._run_task_loop(
+        [Message(role="user", content="hi")], [], provider, session,
+        task_id="task-1", turn=1, task_tool_ctx=agent._tool_ctx,
+    )
+    await session.stop_drainer()
+    return session.events_emitted
+
+
+@pytest.mark.asyncio
+async def test_task_loop_files_count_does_not_crash():
+    """repo_graph's files=<int> summary in a plan_task subtask.
+
+    The emit block sits outside the tool try/except — before the guard the
+    TypeError failed the subtask ("Execution error: 'int' object is not
+    iterable") and cascaded skipped to every dependent task, while the same
+    call in chat mode worked.
+    """
+    skipped = {"status": "skipped", "reason": "too_many_files", "files": 12345}
+    events = await _run_task_turn(_make_agent(skipped), _ScriptedProvider("probe", "{}"))
+    types = [t for t, _ in events]
+    assert "error" not in types
+    assert not [d for t, d in events if t == "file_output"]
+
+
+@pytest.mark.asyncio
+async def test_task_loop_files_list_still_emits_file_output():
+    result = {"files": [{"url": "/api/media/x.png", "name": "x.png"}]}
+    events = await _run_task_turn(_make_agent(result), _ScriptedProvider("probe", "{}"))
+    emitted = [d for t, d in events if t == "file_output"]
+    assert len(emitted) == 1
+    assert [f["name"] for f in emitted[0]["files"]] == ["x.png"]
+
+
+@pytest.mark.asyncio
+async def test_task_loop_images_non_list_does_not_crash():
+    events = await _run_task_turn(_make_agent({"images": 3}), _ScriptedProvider("probe", "{}"))
+    types = [t for t, _ in events]
+    assert "error" not in types
+    assert not [d for t, d in events if t == "image_output"]

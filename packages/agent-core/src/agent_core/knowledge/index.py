@@ -687,14 +687,19 @@ async def reindex_one(
     if created:
         action = "created"
     else:
-        old_version = KnowledgeVersion(
+        # Mirror the API path's write_knowledge_version: the snapshot row is
+        # filed under the NEW version number carrying the new body — the old
+        # scheme stored it under the pre-bump number, producing two rows with
+        # the same version_num and none for the latest.
+        new_version_num = (km.version or 0) + 1
+        new_version = KnowledgeVersion(
             knowledge_id=km.knowledge_id,
-            version_num=km.version or 1,
+            version_num=new_version_num,
             content=content,
             changed_by="indexer",
             change_summary="Reindex",
         )
-        db_session.add(old_version)
+        db_session.add(new_version)
 
         km.title = title
         km.category = category
@@ -713,7 +718,7 @@ async def reindex_one(
         km.content_hash = new_hash
         km.word_count = word_count
         km.updated_at = file_mtime
-        km.version = (km.version or 0) + 1
+        km.version = new_version_num
         km.knowledge_level = knowledge_level
         km.parent_slug = parent_slug_val
         km.children_slugs = children_slugs_val

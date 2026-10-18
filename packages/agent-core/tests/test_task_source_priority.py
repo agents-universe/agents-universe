@@ -220,3 +220,36 @@ def test_real_routing_skill_drives_the_directive():
     directive = agent._task_source_priority("帮我处理这个合并请求")
     assert directive is not None
     assert "`github` tool FIRST" in directive
+
+
+# ── Malformed frontmatter degrades, never raises ────────────────────────────
+
+
+def test_non_numeric_priority_does_not_raise():
+    """routing is agent-editable YAML: `priority: high` must sort as 0, not
+    blow up run() with ValueError before the tool loop."""
+    routing = [
+        {"id": "jira-card", "priority": "high", "label": "a Jira card",
+         "anchors": [r"(?<![A-Za-z0-9])[A-Z]{2,}-\d+(?![A-Za-z0-9])"],
+         "tool": "jira", "first_ops": ["get_issue"]},
+    ]
+    agent = _make_agent(["jira"], routing=routing)
+    directive = agent._task_source_priority("帮我对 QA-123 这张卡生成自动化测试")
+    assert directive is not None
+    assert "`jira` tool FIRST" in directive
+
+
+def test_invalid_anchor_regex_is_skipped_not_fatal():
+    """A broken anchor (e.g. `JIRA-[0-9+`) must be skipped with the other
+    entries still routing — re.error here killed every subsequent turn."""
+    routing = [
+        {"id": "broken", "priority": 20, "label": "broken",
+         "anchors": ["JIRA-[0-9+"], "tool": "jira", "first_ops": []},
+        {"id": "jira-card", "priority": 10, "label": "a Jira card",
+         "anchors": [r"(?<![A-Za-z0-9])[A-Z]{2,}-\d+(?![A-Za-z0-9])"],
+         "tool": "jira", "first_ops": ["get_issue"]},
+    ]
+    agent = _make_agent(["jira"], routing=routing)
+    directive = agent._task_source_priority("帮我对 QA-123 这张卡生成自动化测试")
+    assert directive is not None  # the valid entry below still routes
+    assert "`jira` tool FIRST" in directive

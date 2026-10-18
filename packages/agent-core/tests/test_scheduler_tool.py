@@ -289,6 +289,37 @@ class TestListGetUpdate:
         assert enabled["enabled"] is True
         assert enabled["next_run_at"] is not None
 
+    async def test_toggle_cron_error_leaves_row_untouched(self, sched_env):
+        """April 31 never exists: validate_cron accepts both fields (in range)
+        but next_run_at finds no occurrence and raises CronError. The toggle
+        must return the error WITHOUT mutating row.enabled first — a dirty
+        assignment would be flushed by the next op's commit, silently enabling
+        a task whose next_run_at is stale."""
+        tool, context, session, _ = sched_env
+        row = ScheduledTask(
+            project_id="p1", name="impossible", target_type="script",
+            cron_expr="0 0 31 4 *", timezone="UTC", enabled=False,
+            created_by="u1",
+        )
+        session.add(row)
+        await session.commit()
+        sid = row.schedule_id
+
+        result = await tool.execute({"operation": "enable", "schedule_id": sid}, context)
+        assert "error" in result
+
+        # Nothing pending for a later commit to flush...
+        assert row not in session.dirty
+        # ...and a subsequent commit must not flip the flag in the DB.
+        await session.commit()
+        session.expire_all()
+        fresh = (
+            await session.execute(
+                select(ScheduledTask).where(ScheduledTask.schedule_id == sid)
+            )
+        ).scalar_one()
+        assert fresh.enabled is False
+
     async def test_update_does_not_revalidate_unchanged_conversation(self, sched_env):
         """The stored conversation was validated when it was bound and the
         runtime re-checks it against created_by at fire time; the model

@@ -622,9 +622,13 @@ class KnowledgeRWTool(Tool):
 
             row = (await context.db_session.execute(
                 text(
+                    # Project row wins when a global row shadows the same slug
+                    # (project-first; .first() takes the FIRST row — the loader's
+                    # identical CASE there folds into a dict where the LAST, i.e.
+                    # project, entry wins).
                     "SELECT knowledge_id FROM knowledge_metadata "
                     "WHERE slug = :slug AND (project_id = :pid OR project_id IS NULL) "
-                    "ORDER BY CASE WHEN project_id IS NULL THEN 0 ELSE 1 END"
+                    "ORDER BY CASE WHEN project_id IS NULL THEN 1 ELSE 0 END"
                 ),
                 {"slug": slug, "pid": context.project_id},
             )).first()

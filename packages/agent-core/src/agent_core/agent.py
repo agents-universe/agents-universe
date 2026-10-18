@@ -587,14 +587,32 @@ class Agent:
         prio_skill = self._skill_registry.get(self._TASK_SOURCE_PRIORITY_SKILL)
         if not prio_skill or not prio_skill.routing:
             return None
-        entries = sorted(
-            prio_skill.routing,
-            key=lambda e: int(e.get("priority", 0)),
-            reverse=True,
-        )
+
+        # Frontmatter is an agent-editable surface: a non-numeric priority or a
+        # malformed regex anchor must degrade to a skipped entry, never raise —
+        # this runs unconditionally in run() before the tool loop, so an
+        # exception here would kill every subsequent user turn.
+        def _priority(entry: dict) -> int:
+            try:
+                return int(entry.get("priority", 0))
+            except (TypeError, ValueError):
+                return 0
+
+        entries = sorted(prio_skill.routing, key=_priority, reverse=True)
         for entry in entries:
             anchors = entry.get("anchors") or []
-            if not any(re.search(a, user_message, re.IGNORECASE) for a in anchors):
+            matched = False
+            for a in anchors:
+                try:
+                    if re.search(a, user_message, re.IGNORECASE):
+                        matched = True
+                        break
+                except re.error:
+                    _log.warning(
+                        "task-source-priority: invalid anchor regex %r skipped",
+                        a,
+                    )
+            if not matched:
                 continue
             tool = entry.get("tool")
             if tool not in self._tools:
@@ -2407,11 +2425,18 @@ class Agent:
                     **progress,
                 )
 
-                if result.get("images"):
-                    await session.emit("image_output", message_id=message_id, images=result["images"])
+                # Same type guard as the chat loop: some tools report a COUNT
+                # under these keys (repo_graph's too_many_files summary carries
+                # files=<int>), and iterating an int here — outside the tool
+                # try/except — fails the whole subtask with
+                # "'int' object is not iterable" (cascading to dependents).
+                images = result.get("images")
+                if isinstance(images, list) and images:
+                    await session.emit("image_output", message_id=message_id, images=images)
 
-                if result.get("files"):
-                    _deliverable = [f for f in result["files"] if isinstance(f, dict) and f.get("url")]
+                out_files = result.get("files")
+                if isinstance(out_files, list) and out_files:
+                    _deliverable = [f for f in out_files if isinstance(f, dict) and f.get("url")]
                     if _deliverable:
                         await session.emit("file_output", message_id=message_id, files=_deliverable)
 

@@ -44,3 +44,29 @@ async def test_tag_filter_still_rejects_a_non_matching_tag(client, memory):
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# 20 six-character CJK tags: 200 characters as text (under the 500 limit an
+# ensure_ascii=False check would measure), but each character becomes \uXXXX
+# in the stored JSON — about 800 characters, past the Unicode(500) column.
+_OVERFLOWING_TAGS = ["一二三四五六"] * 20
+
+
+async def test_create_rejects_tags_that_only_overflow_after_json_escaping(client, make_project):
+    project = await make_project()
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/memories/personal",
+        json={"content": "x", "tags": _OVERFLOWING_TAGS},
+    )
+    assert resp.status_code == 422
+
+
+async def test_update_rejects_tags_that_only_overflow_after_json_escaping(
+    client, memory
+):
+    project, created, _ = memory
+    resp = await client.put(
+        f"/api/projects/{project.project_id}/memories/personal/{created['memory_id']}",
+        json={"tags": _OVERFLOWING_TAGS},
+    )
+    assert resp.status_code == 422

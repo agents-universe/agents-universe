@@ -42,6 +42,101 @@ def _make_request(cookie_value: str | None = "valid-session-id"):
     return req
 
 
+class _FakeWS:
+    """One message frame, then a disconnect."""
+
+    def __init__(self, message: dict) -> None:
+        self.cookies = {"x-auth-token": "sid-1"}
+        self.sent: list[dict] = []
+        self._message = json.dumps(message)
+
+    async def accept(self) -> None:
+        pass
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def receive_text(self) -> str:
+        if self._message is not None:
+            message, self._message = self._message, None
+            return message
+        from starlette.websockets import WebSocketDisconnect
+        raise WebSocketDisconnect()
+
+    async def close(self, code: int = 1000) -> None:
+        pass
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.expire_calls: list[tuple[str, int]] = []
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    async def get(self, key: str) -> str:
+        return json.dumps({"user_id": "test-user", "display_name": "Test"})
+
+    async def expire(self, key: str, ttl: int) -> None:
+        self.expire_calls.append((key, ttl))
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        self.setex_calls.append((key, ttl, value))
+
+
+async def test_ws_message_renews_the_session_without_recreating_it(
+    db, make_project, monkeypatch
+):
+    """A socket opened before logout must not resurrect the deleted session.
+
+    The handler used to re-write the cached session payload with SETEX on
+    every message, so a session revoked elsewhere came back to life. Renewal
+    is an EXPIRE on the existing key: missing stays missing.
+    """
+    from types import SimpleNamespace
+
+    from api.models.conversation import Conversation
+    from api.websocket.handlers import conversation_ws
+    from api.websocket.manager import ConnectionManager
+
+    project = await make_project()
+    conv = Conversation(
+        project_id=project.project_id,
+        user_id="test-user",
+        status="active",
+        title="renew",
+    )
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(
+        "api.services.redis_client._get_pool", lambda: fake_redis
+    )
+    monkeypatch.setattr(
+        "api.config.get_settings",
+        lambda: SimpleNamespace(
+            auth_bypass_enabled=False,
+            auth_bypass_user_id=None,
+            auth_cookie_name="x-auth-token",
+            session_ttl=3600,
+        ),
+    )
+    monkeypatch.setattr(
+        "api.websocket.handlers.manager", ConnectionManager()
+    )
+
+    async def _noop(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("api.websocket.handlers._handle_message", _noop)
+
+    ws = _FakeWS({"type": "message", "content": "hi"})
+    await conversation_ws(conv.conversation_id, ws)
+
+    assert fake_redis.expire_calls == [("session:sid-1", 3600)]
+    assert fake_redis.setex_calls == []
+
+
 # ── get_current_user renews TTL after valid session ──────────────
 
 async def test_renews_ttl_after_valid_session(_mock_settings, _mock_redis):

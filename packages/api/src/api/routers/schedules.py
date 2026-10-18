@@ -451,7 +451,7 @@ async def run_schedule_now(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    from api.services.scheduled_runs import ScheduleBusy, spawn_run
+    from api.services.scheduled_runs import ScheduleBusy, ScheduleNotFound, spawn_run
 
     task = await _load_task(db, schedule_id)
     project = await authorize_project(str(task.project_id), db, current_user)
@@ -471,6 +471,10 @@ async def run_schedule_now(
     )
     try:
         run_id = await spawn_run(request.app, schedule_id, trigger="manual")
+    except ScheduleNotFound:
+        # The row was deleted between _load_task and the spawner's re-select.
+        # The resource is gone, not the server failing.
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
     except ScheduleBusy as exc:
         # The exception distinguishes "previous run still active" from
         # "process-wide queue full" — a fixed detail would mislabel the

@@ -39,8 +39,10 @@ class PersonalMemoryCreate(BaseModel):
     def validate_tags_serialized_length(cls, v: list[str] | None) -> list[str] | None:
         # max_length only bounds the list COUNT — a single huge tag
         # still overflows the Unicode(500) JSON column on MSSQL. Bound the
-        # serialized form the DB actually stores.
-        if v and len(json.dumps(v, ensure_ascii=False)) > 500:
+        # exact serialized form the DB stores: the writer uses json.dumps'
+        # default ensure_ascii=True, so a non-ASCII character costs six
+        # characters (\uXXXX) and measuring the raw text would undercount.
+        if v and len(json.dumps(v)) > 500:
             raise ValueError("tags too large when serialized (max 500 chars total)")
         return v
 
@@ -52,7 +54,7 @@ class PersonalMemoryUpdate(BaseModel):
     @field_validator("tags")
     @classmethod
     def validate_tags_serialized_length(cls, v: list[str] | None) -> list[str] | None:
-        if v and len(json.dumps(v, ensure_ascii=False)) > 500:
+        if v and len(json.dumps(v)) > 500:
             raise ValueError("tags too large when serialized (max 500 chars total)")
         return v
 

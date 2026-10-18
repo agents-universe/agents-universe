@@ -257,6 +257,20 @@ async def run_turn(
                 return
             conv, project = row
 
+            # Headless callers (scheduled fires, the published SSE endpoint)
+            # reach this kernel without the REST/WS authorization gate. A user
+            # removed from a private project must not keep running turns with
+            # its workspace and project secrets just because their old
+            # conversation row still matches.
+            from api.dependencies.auth import has_project_access
+            if not await has_project_access(db, project, turn_user_id):
+                await _send_turn_error(
+                    transport,
+                    conversation_id,
+                    {"type": "error", "message": "Project access denied"},
+                )
+                return
+
             project_id = str(conv.project_id)
             correlation_ctx_var.set({
                 "conversation_id": conversation_id,

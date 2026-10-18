@@ -113,7 +113,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
       agentic_loop_completed, abort_ack
     """
     from api.config import get_settings
-    from api.services.redis_client import _get_pool, get_session, save_session
+    from api.services.redis_client import _get_pool, get_session, renew_session_ttl
 
     settings = get_settings()
 
@@ -407,15 +407,18 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     manager.release_turn(conversation_id)
                     raise
                 # Renew session TTL on each user message — best-effort like
-                # the REST side (renew_session_ttl): a transient Redis
-                # failure must not drop the user's message or kill the
-                # connection, so the session entry simply ages out sooner.
+                # the REST side. EXPIRE (not SETEX) is required: re-writing
+                # the cached payload would recreate a session that logout (or
+                # an admin revocation) deleted while this socket stayed open,
+                # silently un-revoking the cookie. A missing key stays
+                # missing; the turn still runs for this frame, but the next
+                # authenticated request sees 401.
                 if not settings.auth_bypass_enabled:
                     try:
-                        await save_session(redis, session_id, session_data, settings.session_ttl)
+                        await renew_session_ttl(redis, session_id, settings.session_ttl)
                     except Exception:
                         _log.warning(
-                            "save_session failed for session %s (continuing)",
+                            "renew_session_ttl failed for session %s (continuing)",
                             session_id, exc_info=True,
                         )
                 active_task = asyncio.create_task(

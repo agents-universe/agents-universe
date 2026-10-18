@@ -490,6 +490,30 @@ class TestRunNow:
         # progress" would mislabel the queue-full rejection on an idle task.
         assert resp.json()["detail"] == "Background execution queue is full"
 
+    async def test_run_now_returns_404_when_task_vanished(
+        self, client, db, make_project, monkeypatch
+    ):
+        """A concurrent delete between the router's _load_task and spawn_run's
+        re-select must surface as 404, not escape as a 500."""
+        from api.services.scheduled_runs import ScheduleNotFound
+
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+        created = (
+            await client.post(
+                f"/api/projects/{project.project_id}/schedules",
+                json=_body(project, script_id=str(script.script_id)),
+            )
+        ).json()
+
+        async def fake_spawn(app, schedule_id, *, trigger):
+            raise ScheduleNotFound(schedule_id)
+
+        monkeypatch.setattr("api.services.scheduled_runs.spawn_run", fake_spawn)
+        resp = await client.post(f"/api/schedules/{created['schedule_id']}/run")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Scheduled task not found"
+
     async def test_run_now_skips_author_time_conversation_recheck(
         self, client, db, make_project, monkeypatch
     ):

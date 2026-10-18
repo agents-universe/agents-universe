@@ -59,6 +59,32 @@ async def test_list_subdirectory_and_lazy_path(client, make_project):
 
 
 @pytest.mark.asyncio
+async def test_list_survives_entry_stat_failure(client, make_project, monkeypatch):
+    """A dangling symlink (or an entry deleted mid-listing) must not take the
+    whole directory down — the entry stays listed without metadata."""
+    project = await make_project("ws-dangling")
+    ws = _ws(project)
+    (ws / "dangling.txt").write_text("x", encoding="utf-8")
+    (ws / "ok.txt").write_text("ok", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def fake_stat(self, *args, **kwargs):
+        if self.name == "dangling.txt":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+    res = await client.get(f"/api/projects/{project.project_id}/workspace/files")
+    assert res.status_code == 200
+    entries = {e["name"]: e for e in res.json()["entries"]}
+    assert entries["dangling.txt"]["size_bytes"] == 0
+    assert entries["dangling.txt"]["mtime"] == 0
+    assert entries["ok.txt"]["size_bytes"] == 2
+
+
+@pytest.mark.asyncio
 async def test_path_escape_rejected(client, make_project):
     project = await make_project("ws-escape")
     for path in ["..", "../outside", "knowledge/../../outside", "C:\\evil", "C:/evil"]:

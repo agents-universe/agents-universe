@@ -68,7 +68,13 @@ def _list_entries(base: Path, target: Path) -> list[dict]:
             continue
         is_dir = entry.is_dir()
         rel = entry.relative_to(base).as_posix()
-        stat = entry.stat() if not is_dir else None
+        try:
+            stat = entry.stat() if not is_dir else None
+        except OSError:
+            # Dangling symlink, or an entry removed between the scan and the
+            # stat: list it without metadata rather than failing the whole
+            # directory. The agent-side filesystem tool degrades the same way.
+            stat = None
         entries.append({
             "name": entry.name,
             "path": rel,

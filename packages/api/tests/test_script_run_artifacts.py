@@ -341,6 +341,11 @@ def test_report_token_roundtrip_and_rejection():
     assert sa.verify_report_token("run-1", "not-a-token") is False
     assert sa.verify_report_token("run-1", "") is False
     assert sa.verify_report_token("run-1", sa.mint_report_token("run-1", ttl_seconds=-5)) is False
+    # `isdigit()` admits characters int() rejects (superscripts), and int()
+    # rejects overlong digit strings. The token arrives from an
+    # unauthenticated URL path, so both must answer False, not raise.
+    assert sa.verify_report_token("run-1", "².sig") is False
+    assert sa.verify_report_token("run-1", "9" * 5000 + ".sig") is False
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -530,6 +535,11 @@ async def test_report_endpoint_requires_a_valid_token(client, db, make_project):
     assert (await client.get(f"/api/scripts/runs/{run.run_id}/report/bogus/index.html")).status_code == 403
     assert (await client.get(
         f"/api/scripts/runs/{run.run_id}/report/{sa.mint_report_token(str(run.run_id), ttl_seconds=-5)}/index.html"
+    )).status_code == 403
+    # A digit look-alike in the expiry is just another bad token: 403, not a
+    # 500 out of int().
+    assert (await client.get(
+        f"/api/scripts/runs/{run.run_id}/report/².x/index.html"
     )).status_code == 403
 
 

@@ -717,9 +717,17 @@ def mint_report_token(run_id: str, ttl_seconds: int = REPORT_TOKEN_TTL_SECONDS) 
 
 def verify_report_token(run_id: str, token: str) -> bool:
     expires_raw, _, signature = (token or "").partition(".")
-    if not expires_raw.isdigit() or not signature:
+    # `isdigit()` is not "int()-parseable": it accepts superscripts and other
+    # digit look-alikes that int() rejects, and int() itself refuses digit
+    # strings past the interpreter's length limit. This token comes straight
+    # off an unauthenticated URL path, so malformed input must answer False
+    # instead of raising into a 500.
+    if not signature or not expires_raw.isascii() or not expires_raw.isdigit():
         return False
-    expires = int(expires_raw)
+    try:
+        expires = int(expires_raw)
+    except ValueError:
+        return False
     if expires < time.time():
         return False
     return hmac.compare_digest(_report_signature(run_id, expires), signature)

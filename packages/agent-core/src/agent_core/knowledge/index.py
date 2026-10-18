@@ -740,7 +740,18 @@ async def reindex_one(
             select(KnowledgeMetadata.children_slugs, KnowledgeMetadata.slug).where(
                 KnowledgeMetadata.slug == parent_slug_val,
                 (KnowledgeMetadata.project_id == project_id) | (KnowledgeMetadata.project_id == None),  # noqa: E711
-            ).limit(1)
+            )
+            # Same project-shadows-global rule as the depth walk above: both
+            # scopes match the filter, and picking the global row would check
+            # the wrong children list and warn about a parent that does list
+            # this child.
+            .order_by(
+                case(
+                    (KnowledgeMetadata.project_id == project_id, 0),
+                    else_=1,
+                )
+            )
+            .limit(1)
         )).first()
         if parent_row is None:
             warnings.append(

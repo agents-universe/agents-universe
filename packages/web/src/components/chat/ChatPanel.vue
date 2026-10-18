@@ -422,10 +422,11 @@ function handleSubmit(payload: { content: string; config_id?: string; attachment
 
 function handleAbort() {
   const sent = wsAbort()
-  if (!sent && wsStatus.value !== 'connected') {
-    // on a dead connection the abort frame never reaches the
-    // server — it keeps running. Don't fabricate a stopped state locally;
-    // the reconnect flow restores the true state from the server.
+  if (!sent) {
+    // The frame didn't leave the client (socket CLOSING/CLOSED — e.g. a
+    // half-open connection whose onclose hasn't fired yet, so wsStatus can
+    // still read 'connected'): the server keeps running. Don't fabricate a
+    // stopped state locally; the reconnect flow restores the true state.
     convStore.addMessage({
       id: `abort-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',

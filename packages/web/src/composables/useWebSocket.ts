@@ -40,6 +40,15 @@ interface ConnectionEntry {
 // Module-level state: one entry per conversation with an open WS
 const _connections = new Map<string, ConnectionEntry>()
 
+// Structural revision of _connections. The Map itself is not reactive, and the
+// status computed tracks only the statusRef it read at evaluation time —
+// replacing an entry (cleanup + connect() building a fresh entry with a new
+// ref) would strand the computed on the orphaned ref: the new socket opens
+// 'connected' but the banner keeps reading 'disconnected'. Bumping this
+// counter on every delete/set re-arms the computed. (_failedConversations
+// alone can't cover it: deleting an absent key is a no-op trigger.)
+const _connRevision = ref(0)
+
 // Conversations whose connection has been down past the fast phase. Retries
 // continue in the background (the ladder never terminates), but the UI needs
 // to distinguish "reconnecting, be patient" from "this is not coming back on
@@ -125,6 +134,7 @@ function _cleanupConnection(id: string) {
     entry.ws = null
   }
   _connections.delete(id)
+  _connRevision.value++
 }
 
 /** Close all WS connections (used on project/agent switch). */
@@ -152,6 +162,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
   const memory = useMemoryStore()
 
   const status = computed<WsStatus>(() => {
+    _connRevision.value // dependency: re-read the Map after an entry swap
     if (!conversationId.value) return 'disconnected'
     if (_failedConversations.has(conversationId.value)) return 'failed'
     return _connections.get(conversationId.value)?.status.value ?? 'disconnected'
@@ -200,6 +211,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         staleProbeSent: false,
       }
       _connections.set(id, entry)
+    _connRevision.value++
       // Re-arms the same entry instead of re-entering connect(): connect()
       // rebuilds the entry with retries: 0, so the give-up check below was
       // dead code and a saturated server retried forever with the UI stuck
@@ -243,6 +255,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       staleProbeSent: false,
     }
     _connections.set(id, entry)
+    _connRevision.value++
     _open(id, entry)
   }
 

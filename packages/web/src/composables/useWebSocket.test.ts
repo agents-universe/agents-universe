@@ -144,6 +144,24 @@ describe('useWebSocket image/file output payload guards', () => {
     expect(status.value).toBe('connecting')
   })
 
+  it('status follows a replaced connection entry, not the orphaned ref', () => {
+    // Regression: _connections is a plain Map, so the status computed tracked
+    // only the statusRef read at evaluation time. A non-degraded replacement
+    // (tab refocus kicking connect() during fast backoff) swapped in a fresh
+    // entry with a new ref — the new socket opened 'connected' but the banner
+    // kept reading the orphaned 'disconnected' until a conversation switch.
+    useConversationStore().startConversation('conv-swap')
+    const { ws, reconnect, status } = mount('conv-swap')
+
+    ws.onclose!({} as CloseEvent)
+    expect(status.value).toBe('connecting') // fast-backoff retry pending
+
+    expect(reconnect()).toBe(true)
+    const fresh = instances[instances.length - 1]
+    fresh.onopen!(new Event('open'))
+    expect(status.value).toBe('connected')
+  })
+
   it('closeAllConnections clears every failed tombstone', () => {
     const store = useConversationStore()
     store.startConversation('conv-fail-b')

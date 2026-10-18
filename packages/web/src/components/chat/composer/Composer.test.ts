@@ -150,6 +150,27 @@ describe('Composer auto model option', () => {
   })
 })
 
+describe('Composer mention popup cursor safety', () => {
+  it('a selection-only move away from "@" closes the popup', async () => {
+    // Regression: the update listener only reacted to docChanged, so moving
+    // the cursor (click back into the editor, Home/End) left the popup open.
+    // insertMention then blindly replaced `head-1` — at pos 0 that dispatched
+    // from -1 (CodeMirror RangeError), elsewhere it silently ate the wrong
+    // character.
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    const view = EditorView.findFromDOM(wrapper.find('.cm-content').element as HTMLElement)!
+
+    view.dispatch({ changes: { from: 0, insert: '@' }, selection: { anchor: 1 } })
+    await nextTick()
+    expect(wrapper.find('.mention-popup').exists()).toBe(true)
+
+    view.dispatch({ selection: { anchor: 0 } })
+    await nextTick()
+    expect(wrapper.find('.mention-popup').exists()).toBe(false)
+  })
+})
+
 describe('Composer selection hydration on page load', () => {
   let wrapper: VueWrapper | undefined
 

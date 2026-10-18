@@ -352,7 +352,13 @@ const agentStore = useAgentStore()
 const projectId = computed(() => route.params.projectId as string)
 
 const { logs, logPanel, connectToRun, closeLog } = useScriptRunLog({
-  onDone: () => { void reloadHistoryIfExpanded() },
+  // The done frame only carries the terminal status — the verdict/artifacts
+  // live on the run-detail endpoint, so refresh the drawer's snapshot too
+  // (mirror of WorkspacePage's onDone), not just the history list.
+  onDone: ({ runId }) => {
+    if (logOpen.value) void loadRunResult(runId)
+    void reloadHistoryIfExpanded()
+  },
 })
 // Verdict/artifacts of the run in the drawer, fetched alongside the log.
 const {
@@ -449,9 +455,17 @@ async function toggleHistory(task: ScheduledTask) {
     const runs = await schedulesApi.runs(task.schedule_id)
     if (expandedId.value === task.schedule_id) history.value = runs
   } catch (e) {
-    setMessage(e instanceof Error ? e.message : t('scheduledTasks.loadRunsFailed'), false)
+    // Only surface the error while THIS row is still expanded — a slow
+    // fetch that rejects after the user opened another row would paint a
+    // misleading error over the new row's view.
+    if (expandedId.value === task.schedule_id) {
+      setMessage(e instanceof Error ? e.message : t('scheduledTasks.loadRunsFailed'), false)
+    }
   } finally {
-    historyLoading.value = false
+    // Same staleness guard: the old row's finally must not clear the NEW
+    // row's spinner while its fetch is still in flight (the panel then
+    // flashes "暂无运行记录" with no loading state).
+    if (expandedId.value === task.schedule_id) historyLoading.value = false
   }
 }
 

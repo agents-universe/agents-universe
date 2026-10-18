@@ -299,7 +299,24 @@ onMounted(() => {
   ])
 
   const updateListener = EditorView.updateListener.of((update) => {
-    if (!update.docChanged) return
+    if (!update.docChanged) {
+      // Selection-only moves (click back into the editor, Home/End) don't
+      // change the doc but do move the cursor away from the '@' / '/' that
+      // opened a popup — closing here keeps insertMention's `head-1`
+      // assumption true; otherwise a later popup click replaces the wrong
+      // character or dispatches from pos-1 = -1 (RangeError).
+      if (update.selectionSet && !update.composing) {
+        if (showMention.value || showSlash.value) {
+          const head = update.state.selection.main.head
+          const prev = update.state.doc.sliceString(head - 1, head)
+          if (showMention.value && prev !== '@') showMention.value = false
+          if (showSlash.value && update.state.doc.toString().trim() !== '/') {
+            showSlash.value = false
+          }
+        }
+      }
+      return
+    }
     const text = update.state.doc.toString()
     isEmpty.value = !text.trim()
 
@@ -441,6 +458,17 @@ defineExpose({ clearDraft, addFiles })
 function insertMention(agent: { slug: string; label: string }) {
   if (!view) return
   const pos = view.state.selection.main.head
+  // The popup assumes the cursor sits right after the '@' that opened it.
+  // If the cursor moved since (the guard in the update listener normally
+  // closes the popup first — this is the belt to that suspenders), dispatch
+  // from pos-1 anyway would replace a DIFFERENT character, and at pos 0 it
+  // would crash CodeMirror with RangeError(from: -1). Bail without editing.
+  const triggerAt = pos >= 1 && view.state.doc.sliceString(pos - 1, pos) === '@'
+  if (!triggerAt) {
+    showMention.value = false
+    view.focus()
+    return
+  }
   // Replace the trailing '@' + insert the UI display name - the user picks
   // agents by the name they see, and the mention stays readable in chat.
   view.dispatch({

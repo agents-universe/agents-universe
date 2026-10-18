@@ -201,6 +201,42 @@ describe('SchedulesPage', () => {
     expect(rows[1].find('button').exists()).toBe(false)
   })
 
+  it('a stale slow history fetch cannot clobber the newly expanded row', async () => {
+    // Regression: only the `history.value = runs` write was guarded by
+    // expandedId — a late `finally`/`catch` from the previously expanded row
+    // cleared the new row's spinner and painted its error over the new view.
+    schedulesApi.list.mockResolvedValue([
+      makeTask({ schedule_id: 's-1', name: '任务A' }),
+      makeTask({ schedule_id: 's-2', name: '任务B' }),
+    ])
+    const wrapper = mount(SchedulesPage)
+    await flushPromises()
+
+    let rejectA!: (e: Error) => void
+    schedulesApi.runs.mockImplementationOnce(
+      () => new Promise<never>((_, rej) => { rejectA = rej }),
+    )
+    schedulesApi.runs.mockResolvedValueOnce([{
+      run_id: 'r-b', schedule_id: 's-2', trigger: 'schedule', status: 'completed',
+      script_run_id: null, conversation_id: null, summary: 'B 的结果', error: null,
+      started_at: null, completed_at: null, created_at: '2026-09-09T01:00:00+00:00',
+    }])
+
+    // Two cards × [toggle, history] buttons — expand A (hangs), then B.
+    const buttons = wrapper.findAll('.schedule-card-actions-left button')
+    await buttons[1].trigger('click')
+    await buttons[3].trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.schedule-run-row')[0].text()).toContain('B 的结果')
+
+    // A's fetch finally rejects — the error belongs to A, not to B's view.
+    rejectA(new Error('load failed'))
+    await flushPromises()
+
+    expect(wrapper.find('.schedules-message.error').exists()).toBe(false)
+    expect(wrapper.findAll('.schedule-run-row')[0].text()).toContain('B 的结果')
+  })
+
   it('shows the verdict and artifacts of a scheduled run in the log drawer', async () => {
     schedulesApi.list.mockResolvedValue([makeTask()])
     schedulesApi.runs.mockResolvedValue([

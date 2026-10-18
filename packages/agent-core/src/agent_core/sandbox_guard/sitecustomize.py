@@ -220,9 +220,15 @@ if _project_root:
     _WRITE_ONE_PATH = frozenset({
         "os.remove", "os.unlink", "os.mkdir", "os.rmdir", "os.chmod", "os.utime",
     })
-    _WRITE_TWO_PATHS = frozenset({
-        "os.rename", "os.replace", "os.link", "os.symlink", "shutil.copyfile",
-    })
+    # Copy-shaped events are asymmetric: the source is only read (copying a
+    # template out of a read-only root into the project is legitimate), so
+    # only the destination must be in the write roots.
+    _COPY_TWO_PATHS = frozenset({"os.symlink", "shutil.copyfile"})
+    # Move/link events consume their source too: os.rename (also what
+    # os.replace emits) removes it from its old directory, and os.link makes a
+    # second name for the same inode, so a later write through the new name
+    # would modify the source. Both paths must stay in the write roots.
+    _MOVE_TWO_PATHS = frozenset({"os.rename", "os.link"})
     # Read-class events: the path argument must stay in the read roots.
     # NOTE: os.stat/os.access/os.readlink currently emit no audit events in
     # CPython 3.12; they are listed anyway in case a future version adds them.
@@ -450,13 +456,14 @@ if _project_root:
                 _check("write", args[0], _WRITE_ROOTS)
             return
 
-        if event in _WRITE_TWO_PATHS:
+        if event in _MOVE_TWO_PATHS:
             if len(args) >= 2:
-                # Two-path ops are asymmetric: args[0] is the source (a read,
-                # e.g. the src of os.rename / shutil.copyfile) and args[1] is
-                # the destination (the only write). Checking both against
-                # write roots denied copying a file from a read-only root
-                # (site-packages, the framework source) into the project.
+                _check("write", args[0], _WRITE_ROOTS)
+                _check("write", args[1], _WRITE_ROOTS)
+            return
+
+        if event in _COPY_TWO_PATHS:
+            if len(args) >= 2:
                 _check("read", args[0], _READ_ROOTS)
                 _check("write", args[1], _WRITE_ROOTS)
             return

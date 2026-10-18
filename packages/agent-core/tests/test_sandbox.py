@@ -545,6 +545,45 @@ def test_guard_denies_rename_across_projects(sandbox_dirs):
     assert not (proj_b / "moved.txt").exists()
 
 
+def test_guard_denies_rename_out_of_readonly_root(sandbox_dirs, tmp_path):
+    """os.rename consumes its source: moving a file out of a read-only root
+    must be denied, just like writing into one. PLAYWRIGHT_BROWSERS_PATH is a
+    read root by design, which gives the test one on the project's volume."""
+    proj_a, _, fake_temp = sandbox_dirs
+    read_root = tmp_path / "read-root"
+    read_root.mkdir()
+    probe = read_root / "probe.txt"
+    probe.write_text("probe", encoding="utf-8")
+    env = guarded_env(proj_a, fake_temp)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(read_root)
+    r = run_python(
+        f"import os; os.rename({str(probe)!r}, 'moved.txt'); print('MOVED')",
+        cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr, (r.stdout, r.stderr)
+    assert probe.exists()
+    assert not (proj_a / "moved.txt").exists()
+
+
+def test_guard_denies_hardlink_from_readonly_root(sandbox_dirs, tmp_path):
+    """A hard link is a writable second name for the same inode: linking out
+    of a read-only root would let a later write modify the source."""
+    proj_a, _, fake_temp = sandbox_dirs
+    read_root = tmp_path / "read-root"
+    read_root.mkdir()
+    source = read_root / "template.py"
+    source.write_text("SECRET = 1\n", encoding="utf-8")
+    env = guarded_env(proj_a, fake_temp)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(read_root)
+    r = run_python(
+        f"import os; os.link({str(source)!r}, 'linked.py'); print('LINKED')",
+        cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr, (r.stdout, r.stderr)
+    assert not (proj_a / "linked.py").exists()
+    assert source.read_text(encoding="utf-8") == "SECRET = 1\n"
+
+
 def test_guard_denies_copyfile_outside(sandbox_dirs):
     proj_a, proj_b, fake_temp = sandbox_dirs
     r = run_python(

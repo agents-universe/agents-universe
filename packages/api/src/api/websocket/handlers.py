@@ -243,7 +243,12 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     continue
 
             if msg.get("type") == "user_selection_response":
-                prompt_id = msg.get("prompt_id") or msg.get("request_id", "")
+                # prompt_id keys in-memory dicts (pending payloads and
+                # Futures): a JSON object/array is unhashable and would raise
+                # TypeError out of the per-message loop, cancelling the
+                # running turn. Anything but a string addresses no prompt.
+                raw_prompt_id = msg.get("prompt_id") or msg.get("request_id", "")
+                prompt_id = raw_prompt_id if isinstance(raw_prompt_id, str) else ""
                 is_secret = msg.get("secret", False)
                 save_to_project = msg.get("save_to_project_secrets", False)
                 save_to_user = msg.get("save_to_user_tokens", False)

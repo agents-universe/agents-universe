@@ -8,7 +8,7 @@ from pathlib import Path
 
 import frontmatter as _fm
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -542,7 +542,9 @@ _MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 class KnowledgeWrite(BaseModel):
     content: str
-    change_summary: str = "Updated"
+    # Matches KnowledgeVersion.change_summary's column width: an overlong
+    # summary would otherwise fail at commit (MSSQL) after the file write.
+    change_summary: str = Field(default="Updated", max_length=500)
 
 
 @router.put("/knowledge/{slug:path}")

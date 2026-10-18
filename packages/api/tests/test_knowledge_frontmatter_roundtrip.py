@@ -51,6 +51,23 @@ async def test_bom_file_get_strips_frontmatter_and_put_preserves_it(client, make
     assert post.content.strip() == "Body text."
 
 
+async def test_put_rejects_an_overlong_change_summary(client, make_project):
+    """change_summary maps to a Unicode(500) column — an overlong value must
+    be rejected at validation, not fail at commit after the file write."""
+    project = await make_project()
+    _write(
+        project.slug,
+        "domain/summary.md",
+        "---\ntitle: Summary\ncategory: technical\n---\n\nBody.\n",
+    )
+    url = f"/api/projects/{project.project_id}/knowledge/domain/summary"
+
+    resp = await client.put(
+        url, json={"content": "Body.\n", "change_summary": "x" * 501}
+    )
+    assert resp.status_code == 422
+
+
 async def test_empty_body_put_does_not_duplicate_frontmatter(client, make_project):
     project = await make_project()
     target = _write(

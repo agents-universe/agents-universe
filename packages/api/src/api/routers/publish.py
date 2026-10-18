@@ -23,6 +23,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
@@ -210,6 +211,19 @@ async def create_publish(
     if cfg_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=400, detail="模型配置不存在或不属于你")
 
+    # One publish per (publisher, agent) — the DB enforces it too, but a
+    # pre-check turns the duplicate into a clear 409 instead of a 500.
+    existing = (
+        await db.execute(
+            select(AgentPublish.publish_id).where(
+                AgentPublish.owner_id == current_user.user_id,
+                AgentPublish.agent_slug == body.agent_slug,
+            )
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="该智能体已发布，请勿重复创建")
+
     publish = AgentPublish(
         owner_id=current_user.user_id,
         agent_slug=body.agent_slug,
@@ -219,7 +233,13 @@ async def create_publish(
         description=body.description,
     )
     db.add(publish)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Lost the race against a concurrent create: same outcome as the
+        # pre-check, not a 500.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="该智能体已发布，请勿重复创建") from None
     return {
         "publish_id": str(publish.publish_id),
         "agent_slug": publish.agent_slug,

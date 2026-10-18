@@ -181,12 +181,20 @@ async def test_api_key(
         if provider == "anthropic":
             import anthropic
             client = anthropic.AsyncAnthropic(api_key=plain)
-            await client.models.list()
+            # The SDK client owns a pooled httpx client; without an explicit
+            # close every connectivity test leaks a connection pool.
+            try:
+                await client.models.list()
+            finally:
+                await client.close()
             return {"ok": True, "provider": provider}
         elif provider == "openai":
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=plain)
-            await client.models.list()
+            try:
+                await client.models.list()
+            finally:
+                await client.close()
             return {"ok": True, "provider": provider}
         else:
             return {"ok": True, "provider": provider, "note": "connectivity test not implemented for this provider"}

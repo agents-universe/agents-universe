@@ -310,7 +310,11 @@ async def run_turn(
 
             # Defaults may fall back, but an explicit selection must never run
             # under a different model than the one shown in the UI.
-            config_id_override = msg.get("config_id") or msg.get("provider")
+            # Client-supplied config ids are dict keys below: a JSON object or
+            # array would raise TypeError and kill the turn. Anything but a
+            # string is treated as "no explicit selection".
+            _raw_config_id = msg.get("config_id") or msg.get("provider")
+            config_id_override = _raw_config_id if isinstance(_raw_config_id, str) else None
             is_auto = config_id_override == _AUTO_CONFIG_ID
             auto_classification: str | None = None
             target_config: str | None = None
@@ -1782,8 +1786,15 @@ async def _load_history(
         if m.tool_calls:
             try:
                 raw_tcs = _json.loads(m.tool_calls)
+                # A dict/str payload iterates into keys/characters, and a
+                # string item has no .get — an AttributeError would escape the
+                # (ValueError, TypeError) catch and kill the whole turn.
+                if not isinstance(raw_tcs, list):
+                    raw_tcs = []
                 tool_calls = []
                 for tc in raw_tcs:
+                    if not isinstance(tc, dict):
+                        continue
                     if "type" in tc and "function" in tc:
                         call_id = tc.get("id", "")
                         tool_calls.append(tc)

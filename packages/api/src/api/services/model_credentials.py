@@ -151,6 +151,10 @@ async def load_model_credentials(
     # Pinned config resolution happens after all sources loaded: the pin must
     # be honored over auto routing. The caller maps the failure to a concrete
     # message via the error hint below.
+    # The pin is client-supplied and used as a dict key: a JSON object/array
+    # is unhashable and would raise TypeError here, killing the turn.
+    if not isinstance(fixed_config_id, str):
+        fixed_config_id = None
     if fixed_config_id is not None:
         if fixed_config_id in azure_configs_missing_endpoint:
             return credentials, tier_models, tier_map, "azure_endpoint_required"

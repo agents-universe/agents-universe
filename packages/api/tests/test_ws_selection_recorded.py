@@ -266,3 +266,23 @@ async def test_failed_secret_save_without_session_reports_error(db, make_project
 
     assert ws.frames_of("error")
     assert not any("密钥已保存" in f.get("message", "") for f in ws.frames_of("info"))
+
+
+async def test_non_string_prompt_id_does_not_kill_the_socket(db, make_project, ws_manager):
+    """prompt_id is a dict/list key. A JSON object would raise unhashable
+    TypeError, and the outer handler would answer with a generic internal
+    error and drop the socket instead of reporting the unknown prompt."""
+    conv = await _make_conversation(db, make_project)
+    session = ConversationSession(conv.conversation_id, conv.project_id, "test-user")
+    ws_manager.register_session(conv.conversation_id, session)
+
+    ws = _FakeWS([{
+        "type": "user_selection_response",
+        "prompt_id": {"not": "a string"},
+        "value": "dev",
+    }])
+    await conversation_ws(conv.conversation_id, ws)
+
+    messages = [f.get("message", "") for f in ws.frames_of("error")]
+    assert any("No pending prompt" in m for m in messages)
+    assert not any("internal error" in m for m in messages)

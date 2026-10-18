@@ -725,6 +725,15 @@ async def _execute_playwright(
             await db.commit()
             raise
         except Exception as e:
+            # A failed flush (progress/npm persistence) leaves the session in
+            # a pending-rollback state: assigning fields alone would make the
+            # final commit raise PendingRollbackError and strand the row at
+            # "running", blocking project deletion. Roll back and re-fetch so
+            # the terminal state lands on a clean session.
+            await db.rollback()
+            run = await db.get(ScriptRun, run_id)
+            if run is None:
+                return
             run.status = "failed"
             run.stderr_log = str(e)[:_STDERR_CAP]
             run.exit_code = -1

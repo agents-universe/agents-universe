@@ -303,3 +303,15 @@ async def mcp_test_server_url():
         await asyncio.wait_for(task, timeout=5)
     except TimeoutError:
         task.cancel()
+
+
+async def test_create_rejects_fields_wider_than_the_columns(client):
+    resp = await _create(client, slug="s" * 101)
+    assert resp.status_code == 422
+
+
+async def test_create_rejects_an_oversized_options_payload(client):
+    # options is serialized into a String(4000) column.
+    resp = await _create(client, options={"blob": "x" * 4000})
+    assert resp.status_code == 400
+    assert "options" in resp.text

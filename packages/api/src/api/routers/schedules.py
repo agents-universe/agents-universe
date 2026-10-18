@@ -317,10 +317,13 @@ async def create_schedule(
         name=body.name,
         description=body.description,
         target_type=body.target_type,
-        script_id=body.script_id,
-        spec_slug=body.spec_slug,
-        agent_slug=body.agent_slug,
-        prompt=body.prompt,
+        # Keep only the active target's fields: a create form that posts every
+        # field would otherwise leave stale values behind, and a later PATCH
+        # that switches target_type would resurrect them.
+        script_id=body.script_id if body.target_type == "script" else None,
+        spec_slug=body.spec_slug if body.target_type == "playwright" else None,
+        agent_slug=body.agent_slug if body.target_type == "agent" else None,
+        prompt=body.prompt if body.target_type == "agent" else None,
         env_json=_env_json(body.env),
         conversation_id=body.conversation_id,
         cron_expr=body.cron_expr,

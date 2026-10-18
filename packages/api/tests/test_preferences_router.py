@@ -94,3 +94,38 @@ async def test_me_creates_row_once(client, as_user):
         first = (await _me(client))["preferences"]
         second = (await _me(client))["preferences"]
         assert second == first
+
+
+async def test_concurrent_first_access_recovers_from_the_insert_race(
+    db, monkeypatch
+):
+    """Two first requests both see no row and both INSERT. The loser's
+    IntegrityError must not escape: the winner's committed row is read back.
+
+    The stale read is simulated by making the first get() miss the row that
+    another request already committed.
+    """
+    from api.database import AsyncSessionLocal
+    from api.models.user import UserPreference
+    from api.services.preferences import get_or_create_preferences
+
+    user_id = "u-pre-race"
+    async with AsyncSessionLocal() as other:
+        other.add(UserPreference(user_id=user_id))
+        await other.commit()
+
+    async with AsyncSessionLocal() as session:
+        real_get = session.get
+        calls = {"n": 0}
+
+        async def stale_first_get(entity, pk, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None  # the racing request's row was not visible yet
+            return await real_get(entity, pk, *args, **kwargs)
+
+        monkeypatch.setattr(session, "get", stale_first_get)
+        row = await get_or_create_preferences(session, user_id)
+
+        assert row.user_id == user_id
+        assert calls["n"] == 2

@@ -199,6 +199,41 @@ async def _reload_run(run_id: str) -> ScriptRun:
 
 
 @pytest.mark.asyncio
+async def test_execute_playwright_recovers_from_a_failed_flush(
+    client, db, make_project, monkeypatch
+):
+    """A DB failure mid-run leaves the session pending-rollback. The executor
+    must roll back and re-fetch before writing the terminal state; otherwise
+    the final commit raises PendingRollbackError and the row stays "running"
+    forever, blocking project deletion."""
+    project = await make_project("exec-pw-flush")
+    run, project_fs = await _seed_playwright_run(db, project)
+    run_id = str(run.run_id)
+
+    async def fake_deps(*args, **kwargs):
+        return None
+
+    real_persist = scripts_router._persist_run_log
+
+    def failing_persist(run_, log_acc):
+        real_persist(run_, log_acc)
+        # An unsupported bind type makes the next commit fail at the driver,
+        # poisoning the transaction (SQLAlchemy marks it pending-rollback).
+        run_.status = object()
+
+    monkeypatch.setattr(scripts_router, "_persist_run_log", failing_persist)
+    monkeypatch.setattr("agent_core.tools.shell.ensure_node_deps", fake_deps)
+
+    await scripts_router._execute_playwright(
+        run_id, "flush-1", {}, "test-user", str(project_fs),
+    )
+
+    refreshed = await _reload_run(run_id)
+    assert refreshed.status == "failed"
+    assert refreshed.exit_code == -1
+
+
+@pytest.mark.asyncio
 async def test_execute_playwright_captures_result_and_artifacts(
     client, db, make_project, monkeypatch
 ):

@@ -3,6 +3,80 @@ raw SDK exception must never leak the key value back to the client."""
 
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("provider", "client_attr"),
+    [("openai", "AsyncOpenAI"), ("anthropic", "AsyncAnthropic")],
+)
+async def test_api_key_test_closes_the_sdk_client_on_success(
+    client, monkeypatch, provider, client_attr
+):
+    """The SDK client owns a pooled httpx client; a connectivity test that
+    never closes it leaks a connection pool per call."""
+    resp = await client.put(
+        f"/api/api-keys/{provider}", json={"value": "test-key-1234567890"}
+    )
+    assert resp.status_code == 200
+
+    module = importlib.import_module(provider)
+    closed: list[bool] = []
+
+    class _Models:
+        async def list(self):
+            return []
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.models = _Models()
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(module, client_attr, _FakeClient)
+
+    resp = await client.post(f"/api/api-keys/{provider}/test")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    ("provider", "client_attr"),
+    [("openai", "AsyncOpenAI"), ("anthropic", "AsyncAnthropic")],
+)
+async def test_api_key_test_closes_the_sdk_client_on_failure(
+    client, monkeypatch, provider, client_attr
+):
+    resp = await client.put(
+        f"/api/api-keys/{provider}", json={"value": "test-key-1234567890"}
+    )
+    assert resp.status_code == 200
+
+    module = importlib.import_module(provider)
+    closed: list[bool] = []
+
+    class _Models:
+        async def list(self):
+            raise RuntimeError("provider rejected the key")
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.models = _Models()
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(module, client_attr, _FakeClient)
+
+    resp = await client.post(f"/api/api-keys/{provider}/test")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is False
+    assert closed == [True]
+
 
 async def test_api_key_test_does_not_leak_key_in_error(client):
     """OpenAI's 401 body echoes the key ('Incorrect API key provided: sk-...')

@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,17 +38,19 @@ _AUTH_TYPES = ("none", "bearer", "header")
 
 
 class MCPServerBody(BaseModel):
-    slug: str
-    name: str | None = None
-    description: str | None = None
-    transport: str = "auto"
-    url: str | None = None
+    # Widths mirror the model columns: an overlong value would otherwise fail
+    # at commit (MSSQL) instead of being rejected at validation.
+    slug: str = Field(max_length=100)
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    transport: str = Field(default="auto", max_length=32)
+    url: str | None = Field(default=None, max_length=1000)
     headers: dict[str, str] | None = None
-    auth_type: str = "none"
-    secret_ref: str | None = None
-    secret_scope: str = "project"
-    auth_header_name: str | None = None
-    auth_value_template: str | None = None
+    auth_type: str = Field(default="none", max_length=16)
+    secret_ref: str | None = Field(default=None, max_length=100)
+    secret_scope: str = Field(default="project", max_length=16)
+    auth_header_name: str | None = Field(default=None, max_length=100)
+    auth_value_template: str | None = Field(default=None, max_length=200)
     options: dict[str, Any] | None = None
     enabled: bool = True
 
@@ -83,6 +85,16 @@ def validate_mcp_server_body(body: MCPServerBody) -> None:
                 status_code=400,
                 detail=f"header {name!r} 属敏感字段，请用 auth_type/secret_ref 配置认证",
             )
+    # headers/options are serialized into String(4000) columns — reject an
+    # oversize object at write time rather than at commit.
+    for field_name, value in (("headers", body.headers), ("options", body.options)):
+        if value:
+            dumped = json.dumps(value, ensure_ascii=False)
+            if len(dumped) > 4000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field_name} 序列化后 {len(dumped)} 字符，上限 4000",
+                )
 
 
 def _apply_body(row: MCPServer, body: MCPServerBody) -> None:

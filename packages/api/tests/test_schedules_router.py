@@ -61,6 +61,29 @@ class TestCreate:
             2026, 9, 10, 1, 0, tzinfo=timezone.utc
         ) or datetime.fromisoformat(data["next_run_at"]).hour == 1
 
+    async def test_create_stores_only_the_active_target_fields(self, client, db, make_project):
+        # A form that posts every target field must not leave stale values on
+        # the row: a later PATCH that switches target_type would resurrect them.
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+
+        resp = await client.post(
+            f"/api/projects/{project.project_id}/schedules",
+            json=_body(
+                project,
+                script_id=str(script.script_id),
+                spec_slug="leftover-spec",
+                agent_slug="leftover-agent",
+                prompt="leftover prompt",
+            ),
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["script_id"] == str(script.script_id)
+        assert data["spec_slug"] is None
+        assert data["agent_slug"] is None
+        assert data["prompt"] is None
+
     async def test_disabled_task_has_no_next_run(self, client, db, make_project):
         project = await make_project()
         script = await _make_script(db, str(project.project_id))

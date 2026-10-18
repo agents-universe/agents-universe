@@ -1,6 +1,7 @@
 """Per-user onboarding state."""
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.user import UserPreference
@@ -15,9 +16,19 @@ async def get_or_create_preferences(db: AsyncSession, user_id: str) -> UserPrefe
     """
     row = await db.get(UserPreference, user_id)
     if row is None:
-        row = UserPreference(user_id=user_id)
-        db.add(row)
-        await db.flush()
+        # Two concurrent first requests for the same user both see no row and
+        # both INSERT. A savepoint confines the loser's IntegrityError so the
+        # caller's other pending changes survive; the winner's committed row
+        # is then read back.
+        try:
+            async with db.begin_nested():
+                row = UserPreference(user_id=user_id)
+                db.add(row)
+                await db.flush()
+        except IntegrityError:
+            row = await db.get(UserPreference, user_id)
+            if row is None:
+                raise
     return row
 
 

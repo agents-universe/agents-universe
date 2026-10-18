@@ -198,6 +198,20 @@ async def test_create_and_list_publish(client, db, make_project, as_user):
     assert any(p["publish_id"] == pubid for p in r.json())
 
 
+async def test_create_duplicate_publish_conflicts(client, db, make_project, as_user):
+    """One publish per (publisher, agent): the second POST is a clear 409, not
+    a 500 from the unique constraint."""
+    publish, cfg = await _make_publish(db, make_project)
+
+    async with as_user("test-user"):
+        r = await client.post("/api/publishes", json={
+            "agent_slug": publish.agent_slug,
+            "project_id": publish.project_id,
+            "model_config_id": cfg.config_id,
+        })
+    assert r.status_code == 409, r.text
+
+
 async def test_publish_key_plaintext_shown_once(client, db, make_project, as_user):
     publish, _ = await _make_publish(db, make_project)
     async with as_user("test-user"):

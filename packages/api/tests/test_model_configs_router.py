@@ -286,6 +286,17 @@ async def test_created_config_threads_thinking_into_cred(client, db):
     assert "reasoning_effort" not in creds2[cid2]
 
 
+async def test_unhashable_fixed_config_id_is_treated_as_no_pin(db):
+    """fixed_config_id is a client-supplied WS frame value used as a dict key.
+    A JSON object/array must mean "no pin", not raise TypeError."""
+    from api.services.model_credentials import load_model_credentials
+
+    _creds, _tier_models, _tier_map, fixed = await load_model_credentials(
+        db, "test-user", fixed_config_id={"not": "an id"},
+    )
+    assert fixed is None
+
+
 async def test_delete(client):
     created = (await _create(client, model_id="claude-sonnet-5")).json()
     resp = await client.delete(f"/api/model-configs/{created['config_id']}")

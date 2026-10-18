@@ -49,5 +49,21 @@ def test_empty_body_returns_empty_string():
     assert derive_summary("---\ntitle: X\n---\n") == ""
 
 
+def test_clear_scan_caches_drops_summary_cache():
+    """derive_summary is keyed on the FULL file content (up to 512KB per
+    entry) — without riding the clear_scan_caches funnel every edit adds a
+    new key and the previous body is retained for the process lifetime."""
+    from agent_core.knowledge import loader
+
+    content = "---\ntitle: X\n---\nCached body paragraph.\n"
+    derive_summary(content)
+    derive_summary(content)
+    assert derive_summary.cache_info().hits >= 1
+
+    loader.clear_scan_caches()
+
+    assert derive_summary.cache_info().currsize == 0
+
+
 def test_no_frontmatter_still_derives():
     assert derive_summary("Plain paragraph text.") == "Plain paragraph text."

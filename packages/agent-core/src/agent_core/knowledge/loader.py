@@ -141,8 +141,12 @@ def _directory_entries(path: str, mtime_ns: int, ctime_ns: int) -> tuple[tuple[s
 
 
 def clear_scan_caches() -> None:
-    """Drop memoized directory listings and parsed files (see _read_primary_file).
+    """Drop memoized directory listings, parsed files and derived summaries.
 
+    ``derive_summary`` is keyed on the FULL file content (up to
+    ``MAX_FILE_SIZE`` per entry), so it must ride the same invalidation
+    funnel as ``_read_primary_file`` — otherwise every edit adds a new key
+    and the previous body is retained for the process lifetime.
     Called from the production invalidation funnel
     (``KnowledgeCache.invalidate``) after any knowledge write/reindex, so a
     change the fingerprint missed cannot be served until process restart.
@@ -150,6 +154,7 @@ def clear_scan_caches() -> None:
     """
     _read_primary_file.cache_clear()
     _directory_entries.cache_clear()
+    derive_summary.cache_clear()
 
 
 def _iter_markdown_files(root: Path) -> list[Path]:

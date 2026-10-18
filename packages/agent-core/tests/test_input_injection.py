@@ -665,3 +665,44 @@ async def test_malformed_plan_task_degrades_to_tool_error():
     assert last.role == "tool"
     assert last.name == "plan_task"
     assert "error" in last.content
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_persist_wait_unwinds_the_loop():
+    """Cancelling the turn while an injection's persist is in flight must
+    propagate: swallowing CancelledError inside _await_persist marked the
+    entry consumed and let the loop issue ANOTHER LLM call after the abort
+    watcher had already torn the session down."""
+    agent = _make_agent()
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+    provider = _ScriptedProvider()
+    provider.release.set()  # first stream finishes → boundary → persist wait
+
+    # persist future intentionally left unresolved: the loop parks in
+    # _await_persist until the test cancels the task.
+    entry = _make_entry("inj-x", "never persisted")
+    assert session.enqueue_user_input(entry)
+
+    run_task = asyncio.create_task(agent._run_loop(
+        [Message(role="user", content="Initial")], [], provider, session, "cfg1"
+    ))
+
+    # Boundary reached once the frozen-partial stream_end was emitted; give
+    # the loop a tick to enter wait_for(shield(entry.persisted)).
+    for _ in range(500):
+        if any(t == "stream_end" for t, _ in session.events_emitted):
+            break
+        await asyncio.sleep(0.01)
+    assert any(t == "stream_end" for t, _ in session.events_emitted)
+    await asyncio.sleep(0.05)
+
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+
+    # The entry was never accepted: the loop unwound before any provider
+    # call (the boundary consume runs BEFORE the first stream).
+    assert provider.calls == []
+    assert not entry.consumed
+    await session.stop_drainer()

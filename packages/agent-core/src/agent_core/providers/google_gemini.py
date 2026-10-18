@@ -168,7 +168,7 @@ class GoogleGeminiProvider(LLMProvider):
                 continue
             role = "model" if msg.role == "assistant" else "user"
             if isinstance(msg.content, str):
-                contents.append({"role": role, "parts": [{"text": msg.content}]})
+                parts = [{"text": msg.content}]
             else:
                 parts = []
                 for part in msg.content:
@@ -181,6 +181,16 @@ class GoogleGeminiProvider(LLMProvider):
                         })
                     else:
                         parts.append({"text": part.get("text", "")})
+            # Consecutive user messages — a mid-run injection lands right
+            # after the tool-results turn, two queued injections land back
+            # to back, and a persisted injection is rebuilt after the
+            # synthesized tool rows on every later turn. Gemini rejects
+            # adjacent user contents the same way it rejects adjacent
+            # function_response turns, so merge the text into the previous
+            # user content instead of starting a new turn.
+            if role == "user" and contents and contents[-1]["role"] == "user":
+                contents[-1]["parts"].extend(parts)
+            else:
                 contents.append({"role": role, "parts": parts})
         return system, contents
 

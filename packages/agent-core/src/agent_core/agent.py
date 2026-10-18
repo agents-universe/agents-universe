@@ -1040,9 +1040,13 @@ class Agent:
                 return await asyncio.wait_for(
                     asyncio.shield(entry.persisted), timeout=self._INJECT_PERSIST_TIMEOUT
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except asyncio.TimeoutError:
                 # Timeout only gates durability, not agent progress — degrade
                 # to success so a stuck handler never stalls the loop.
+                # CancelledError must NOT be caught here: it means the turn
+                # itself is being torn down (abort watcher / shutdown), and
+                # swallowing it would let the loop append the entry and start
+                # another LLM call after the session was already closed.
                 return True
 
         oks = await asyncio.gather(*[_await_persist(e) for e in entries])

@@ -429,4 +429,32 @@ describe('WorkspacePage', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/projects/p1/knowledge/global-rules')
     expect(wrapper.find('.workspace-md-body').text()).toContain('Global')
   })
+
+  it('switching the tree selection closes the previous run log', async () => {
+    // Regression: onSelect reset the result card but left the previous run's
+    // live socket attached — its log kept streaming under the new header and
+    // its done frame landed the old run's verdict there (refreshRun has no
+    // selection guard).
+    const wrapper = mountPage()
+    await flushPromises()
+
+    // Select "hello" and start a live run.
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('hello'))!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.workspace-content-actions .btn-primary').trigger('click')
+    await flushPromises()
+    const live = lastSocket()
+    live.emit({ type: 'log', log: 'streaming line' })
+    await flushPromises()
+    expect(wrapper.find('.script-log-output').text()).toContain('streaming line')
+
+    // Switch to the Playwright spec: the old socket must be closed and its
+    // buffer dropped.
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('Login flow'))!.trigger('click')
+    await flushPromises()
+
+    expect(live.readyState).toBe(3)
+    expect(wrapper.find('.script-log-output').exists()).toBe(false)
+    expect(wrapper.find('.workspace-run-empty').exists()).toBe(true)
+  })
 })

@@ -535,12 +535,14 @@ export const useConversationStore = defineStore('conversation', () => {
     // exist in history at an equal-or-newer timestamp, unregistering their
     // pending entries; a genuinely unconsumed injection has no history row
     // and is preserved.
+    const droppedDuplicates = new Set<string>()
     const pendingOptimistic = oldMessages.filter((m) => {
       if (!pendingIds.has(m.id)) return false
       if (m.role === 'user'
           && history.some((h) => h.role === 'user' && h.content === m.content
                           && h.timestamp >= m.timestamp)) {
         unregisterInjectedMessage(m.id, id)
+        droppedDuplicates.add(m.id)
         return false
       }
       return true
@@ -562,6 +564,10 @@ export const useConversationStore = defineStore('conversation', () => {
     const lastTs = history.length ? history[history.length - 1].timestamp : 0
     for (const m of oldMessages) {
       if (keptIds.has(m.id)) continue
+      // A dedup-dropped optimistic copy shares its history row's exact
+      // timestamp — the straggler rule below would otherwise re-add the
+      // very duplicate the filter just removed.
+      if (droppedDuplicates.has(m.id)) continue
       if (m.timestamp >= lastTs) rt.messages.push(m)
     }
     // History replaced — a previous turn's abort snapshot is stale.

@@ -372,6 +372,9 @@ function onSelect(node: WorkspaceTreeNode) {
   deselectAll()
   node.selected = true
   if (node.kind === 'script' || node.kind === 'playwright') {
+    const prevTarget = selection.value && selection.value.kind !== 'file'
+      ? selection.value.path
+      : null
     // Ensure latest script/spec metadata
     if (node.kind === 'script') {
       const sc = scripts.value.find((s) => `script:${s.script_id}` === node.key)
@@ -391,8 +394,14 @@ function onSelect(node: WorkspaceTreeNode) {
         file: sp?.file,
       }
     }
-    // Another target: its own history, and no verdict card until it has run
-    // (or a past run is picked from the list).
+    if (prevTarget !== node.path) {
+      // Another target: the previous run's live log socket must stop
+      // streaming into this panel, and its done frame must not land its
+      // verdict under the new header (refreshRun has no selection guard).
+      closeLog()
+    }
+    // Its own history, and no verdict card until it has run (or a past run
+    // is picked from the list).
     resetRunResult()
     void loadHistoryForSelection()
     return

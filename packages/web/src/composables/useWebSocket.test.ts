@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
-import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES } from './useWebSocket'
+import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES, MAX_CONNECTIONS } from './useWebSocket'
 
 const conversationsApi = vi.hoisted(() => ({
   getMessages: vi.fn(),
@@ -492,5 +492,55 @@ describe('useWebSocket error frame settlement', () => {
 
     fire(ws, { type: 'stream_end', message_id: 'e1' })
     expect(store.messages).toHaveLength(1)
+  })
+})
+
+describe('useWebSocket connection-cap eviction', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('a parked waiter is never evicted to free a slot', () => {
+    // Fill every slot with OPEN sockets whose conversations are streaming,
+    // then park two waiters. The first waiter's slot-free timer must not
+    // evict the second waiter: _cleanupConnection clears its retry timer and
+    // deletes the entry, and nothing re-arms a connection for an id no
+    // longer in the map — the visible conversation would show "disconnected"
+    // until the user switched away and back.
+    const store = useConversationStore()
+    for (let i = 0; i < MAX_CONNECTIONS; i++) {
+      const id = `conv-busy-${i}`
+      store.startConversation(id)
+      const { ws } = mount(id)
+      ws.readyState = WebSocket.OPEN
+      ws.onopen!(new Event('open'))
+      store.startThinking(id) // mark streaming → not evictable
+    }
+
+    store.startConversation('conv-wait-a')
+    const a = mount('conv-wait-a')
+    store.startConversation('conv-wait-b')
+    const b = mount('conv-wait-b')
+    // Both parked: no socket yet, retryWhenFull armed.
+    expect(a.status.value).toBe('connecting')
+    expect(b.status.value).toBe('connecting')
+
+    // A's 5s slot-free tick fires: every real socket is streaming, and B is
+    // a waiter — nothing may be evicted.
+    vi.advanceTimersByTime(5_000)
+    expect(a.status.value).toBe('connecting')
+    expect(b.status.value).toBe('connecting')
   })
 })

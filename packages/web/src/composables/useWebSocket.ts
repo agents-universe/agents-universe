@@ -23,7 +23,7 @@ const PING_INTERVAL_MS = 30_000
 // healthy connection always produces a frame within one interval. 3× gives
 // slack for busy agent runs where the server event loop may lag.
 const STALE_MS = PING_INTERVAL_MS * 3
-const MAX_CONNECTIONS = 5
+export const MAX_CONNECTIONS = 5
 
 interface ConnectionEntry {
   ws: WebSocket | null
@@ -103,13 +103,17 @@ function _promptFromEvent(data: Record<string, unknown>): SelectionPrompt {
  * Returns true if a connection was evicted. */
 function _closeOldestIdle(excludeId: string): boolean {
   const conv = useConversationStore()
-  for (const [id] of _connections) {
+  for (const [id, entry] of _connections) {
     if (id === excludeId) continue
-    const isStreaming = !!conv.streamingIds[id]
-    if (!isStreaming) {
-      _cleanupConnection(id)
-      return true
-    }
+    if (conv.streamingIds[id]) continue
+    // Only an ESTABLISHED socket frees real capacity when closed. Evicting a
+    // parked waiter (no socket yet) or a mid-handshake entry strands that
+    // conversation for good: _cleanupConnection clears its retry timer and
+    // deletes the entry, and nothing re-arms a connection for an id no
+    // longer in the map (the lifecycle kick iterates only known ids).
+    if (!entry.ws || entry.ws.readyState !== WebSocket.OPEN) continue
+    _cleanupConnection(id)
+    return true
   }
   return false
 }

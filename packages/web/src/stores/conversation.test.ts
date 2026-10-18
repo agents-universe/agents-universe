@@ -1361,3 +1361,31 @@ describe('setContextOccupancy', () => {
     expect(store.contextWindow).toBeNull()
   })
 })
+
+describe('loadHistory injection dedup vs straggler re-append', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('an exact-timestamp dedup drop is not re-added by the straggler loop', () => {
+    // The optimistic copy's timestamp can tie its persisted row's (same ms).
+    // The dedup drops the copy, but the "keep stragglers at-or-after the
+    // history tail" loop then re-added the very duplicate the filter had
+    // just removed — the message showed twice after every reload.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const tied = Date.parse('2026-08-25T12:00:00.000Z')
+    store.addMessage({ id: 'opt-inj', role: 'user', content: 'ok', timestamp: tied })
+    store.registerInjectedMessage('opt-inj', 'ok', 'conv-a')
+
+    store.loadHistory([makeDbMessage({
+      message_id: 'srv-1',
+      role: 'user',
+      content: 'ok',
+      created_at: '2026-08-25T12:00:00.000Z',
+    })], 'conv-a')
+
+    expect(store.messages.map((m) => m.id)).toEqual(['srv-1'])
+    expect(store.pendingInjected).toEqual([])
+  })
+})

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import traceback
 
 from sqlalchemy import func, select, text
@@ -206,6 +207,15 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
         tier_row = tier_result.scalar_one_or_none()
         model = tier_row.model_id if tier_row else _default_model(provider)
 
+    # The endpoint dialect belongs to the same config as the base URL. The
+    # runtime hands base_url/url_mode straight to the provider, so this
+    # direct request has to build the identical endpoint: full_url means the
+    # user supplied the complete chat endpoint, and base_url mode keeps a
+    # /vN suffix a gateway already carries. Ignoring either sends the summary
+    # to a doubled path (/v1/v1/…, …/chat/completions/v1/chat/completions)
+    # and the episode is silently skipped.
+    url_mode = getattr(config_row, "url_mode", "base_url") if config_row else "base_url"
+
     # Same SSRF gate as routers/model_configs.py `_do_test` — custom_base_url is
     # user-controlled and this function POSTs the decrypted API key to it. The
     # guard is always-on for literal IPs/metadata hosts (port allowlist NOT
@@ -256,7 +266,6 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
                 # hostname match, like _do_test: a lookalike domain must not
                 # receive the plaintext key as x-api-key.
                 is_direct = urlsplit(base).hostname == "api.anthropic.com"
-                url_mode = getattr(config_row, "url_mode", "base_url")
                 user_content = f"Summarize this conversation:\n\n{transcript}"
                 if is_direct:
                     url = f"{base}/v1/messages"
@@ -314,10 +323,18 @@ async def _call_llm_for_summary(transcript: str, user_id: str, db) -> dict | Non
                 content_path = ("candidates", 0, "content", "parts", 0, "text")
             elif provider == "openai":
                 base_url = (custom_base_url or "https://api.openai.com").rstrip("/")
-                if not base_url.endswith("/v1"):
-                    base_url = f"{base_url}/v1"
+                if url_mode == "full_url":
+                    # Mirror the runtime: the OpenAI SDK strips a
+                    # /chat/completions suffix from the configured full URL
+                    # and re-appends it on request.
+                    url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+                else:
+                    # A gateway that already ends in /vN keeps it; only a bare
+                    # host gets /v1 (runtime openai.py uses the same rule).
+                    url_base = base_url if re.search(r"/v\d+$", base_url) else f"{base_url}/v1"
+                    url = f"{url_base}/chat/completions"
                 resp = await client.post(
-                    f"{base_url}/chat/completions",
+                    url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={"model": model, "max_tokens": 500, "messages": messages_payload},
                 )

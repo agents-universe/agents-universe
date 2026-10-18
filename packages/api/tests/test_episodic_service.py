@@ -259,6 +259,73 @@ async def test_summary_anthropic_full_url_posts_base_as_is(monkeypatch):
     assert payload["anthropic_version"] == "bedrock-2023-05-31"
 
 
+# --- openai dialect: full_url and versioned gateway base URLs ----------------
+# The runtime provider hands base_url/url_mode to the OpenAI SDK, which
+# strips/re-appends /chat/completions under full_url and keeps a /vN suffix
+# in base_url mode. This direct request must build the same endpoint.
+
+
+def _openai_row(base_url: str | None, url_mode: str = "base_url") -> AsyncMock:
+    row = SimpleNamespace(
+        provider="openai",
+        model_id="gpt-4o-mini",
+        base_url=base_url,
+        url_mode=url_mode,
+        encrypted_key=encrypt(CLEAN_KEY, USER_ID),
+        user_id=USER_ID,
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    db = AsyncMock()
+    db.execute.return_value = result
+    return db
+
+
+async def test_summary_openai_endpoint_mirrors_runtime_url_rules(monkeypatch):
+    """Pre-fix every non-standard endpoint got "/v1" appended: a full_url
+    endpoint became …/chat/completions/v1/chat/completions and a gateway
+    already on /v4 became /v4/v1/chat/completions — both 404, so the episode
+    was silently skipped."""
+    scenarios = [
+        (
+            "https://gateway.example.com/custom/chat/completions",
+            "full_url",
+            "https://gateway.example.com/custom/chat/completions",
+        ),
+        (
+            "https://gateway.example.com/custom",
+            "full_url",
+            "https://gateway.example.com/custom/chat/completions",
+        ),
+        (
+            "https://gateway.example.com/openai/v4",
+            "base_url",
+            "https://gateway.example.com/openai/v4/chat/completions",
+        ),
+        (
+            "https://gateway.example.com",
+            "base_url",
+            "https://gateway.example.com/v1/chat/completions",
+        ),
+    ]
+    for base_url, url_mode, expected in scenarios:
+        captured: list = []
+        monkeypatch.setattr(
+            "httpx.AsyncClient",
+            _capture_client(
+                captured,
+                body={"choices": [{"message": {"content": '{"summary": "ok"}'}}]},
+            ),
+        )
+
+        out = await _call_llm_for_summary(
+            "transcript", USER_ID, _openai_row(base_url, url_mode)
+        )
+
+        assert out == {"summary": "ok"}, (base_url, url_mode)
+        assert captured[0][0] == expected, (base_url, url_mode)
+
+
 async def test_summary_legacy_gemini_key_defaults_to_a_gemini_model(monkeypatch):
     """A pre-migration google_gemini key with no user_tier_models row must get
     a gemini default model — pre-fix the table returned "gpt-4o-mini" (an

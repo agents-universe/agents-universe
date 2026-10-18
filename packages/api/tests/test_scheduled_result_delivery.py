@@ -295,6 +295,47 @@ class TestAgentTargetOutcome:
         assert outcome.status == "failed"
         assert outcome.error == "Model refused to respond"
 
+    @pytest.mark.parametrize(
+        ("stop_reason", "refs"),
+        [
+            ("aborted", None),
+            (None, {"interrupted": True}),
+        ],
+    )
+    async def test_interrupted_partial_scores_failed_not_completed(
+        self, db, make_project, monkeypatch, manager_calls, stop_reason, refs
+    ):
+        """A Stop mid-run persists a partial reply. That row exists, so the
+        run used to score completed — reporting a truncated answer as the
+        scheduled task's result."""
+        project = await make_project()
+        conv, target = await self._setup(db, project, monkeypatch)
+
+        async def fake_run_turn(conversation_id, **kwargs):
+            reply_id = str(uuid.uuid4())
+            db.add(Message(
+                message_id=reply_id,
+                conversation_id=conversation_id,
+                role="assistant",
+                content="half an answer",
+                sequence_num=2,
+                knowledge_refs=json.dumps(refs) if refs else None,
+            ))
+            await db.commit()
+            frame = {
+                "type": "stream_end", "message_id": reply_id, "total_tokens": 0,
+            }
+            if stop_reason:
+                frame["stop_reason"] = stop_reason
+            await kwargs["transport"].send(conversation_id, frame)
+
+        self._patch_run(monkeypatch, fake_run_turn)
+        outcome = await scheduled_runs._run_agent_target(None, target)
+
+        assert outcome.status == "failed"
+        assert outcome.error == "The agent run was interrupted"
+        assert outcome.reply_persisted is True
+
     async def test_completed_run_is_not_posted_twice_by_finalize(
         self, db, make_project, monkeypatch, manager_calls
     ):

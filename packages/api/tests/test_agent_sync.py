@@ -243,3 +243,79 @@ async def test_definition_check_predicts_registration(db, tmp_path, make_project
         # resolves to no file at runtime. "Not registered under its own name"
         # is the accurate statement for every ok=False case.
         assert (stem in synced) is expect_ok, stem
+
+
+async def test_overlong_scalars_are_capped_and_overlong_slug_skipped(
+    db, tmp_path, make_project
+):
+    """Frontmatter is user-editable and unbounded. An over-long list used to
+    fail the whole sync commit; an over-long slug cannot be stored at all."""
+    project = await make_project("proj-long")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    long_slug = "proj-long--" + "a" * 110
+    (agents_dir / f"{long_slug}.agent.md").write_text(
+        f'---\nslug: "{long_slug}"\ndisplay_name: "Too long"\n---\n\nBody\n',
+        encoding="utf-8",
+    )
+    many_tools = ", ".join(f'"tool-{i:03d}-abcdefgh"' for i in range(100))
+    (agents_dir / "proj-long--bounded.agent.md").write_text(
+        '---\nslug: "proj-long--bounded"\ndisplay_name: "' + "名" * 300 + '"\n'
+        f"tools: [{many_tools}]\n"
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    synced, _ = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-long--",
+    )
+
+    assert synced == ["proj-long--bounded"]
+    row = (await db.execute(
+        select(Agent).where(Agent.slug == "proj-long--bounded")
+    )).scalar_one()
+    assert len(row.display_name) == 255
+    assert row.tools is not None
+    assert len(row.tools) <= 1000
+    parsed = json.loads(row.tools)
+    assert parsed and parsed[0] == "tool-000-abcdefgh"
+
+
+async def test_commit_failure_reports_nothing_synced(db, tmp_path, make_project, monkeypatch):
+    """A failed commit rolls back every insert/update/delete; returning the
+    attempted slug lists made callers believe the sync applied."""
+    project = await make_project("proj-sync-fail")
+    agents_dir = tmp_path / "agents"
+    _write_agent_file(agents_dir, "proj-sync-fail--kept")
+    await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-sync-fail--",
+    )
+
+    # Replace the kept definition with a new one so the next sync both
+    # inserts and deletes in one transaction.
+    (agents_dir / "proj-sync-fail--kept.agent.md").unlink()
+    _write_agent_file(agents_dir, "proj-sync-fail--new")
+
+    async def _boom():
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(db, "commit", _boom)
+    synced, removed = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-sync-fail--",
+    )
+    monkeypatch.undo()
+
+    assert synced == []
+    assert removed == []
+    # Rollback left the previously synced row in place; the new one is absent.
+    kept = (await db.execute(
+        select(Agent).where(Agent.slug == "proj-sync-fail--kept")
+    )).scalar_one_or_none()
+    new = (await db.execute(
+        select(Agent).where(Agent.slug == "proj-sync-fail--new")
+    )).scalar_one_or_none()
+    assert kept is not None
+    assert new is None

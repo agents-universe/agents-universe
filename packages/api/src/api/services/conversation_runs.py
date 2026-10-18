@@ -185,6 +185,7 @@ async def materialize_interrupted_snapshots(db: AsyncSession) -> int:
     # the ORM instances, and touching an expired attribute in async context
     # raises MissingGreenlet.
     latest_per_conv: dict[str, tuple[str, str | None, str]] = {}
+    all_run_ids = [run.run_id for run in stale_runs]
     for run in stale_runs:  # ascending order: latest run per conversation wins
         latest_per_conv[run.conversation_id] = (
             run.run_id,
@@ -196,6 +197,7 @@ async def materialize_interrupted_snapshots(db: AsyncSession) -> int:
     latest_run_ids: set[str] = set()
     for conversation_id, (run_id, user_message_id, snapshot) in latest_per_conv.items():
         latest_run_ids.add(run_id)
+        will_materialize = False
         try:
             user_seq: int | None = None
             if user_message_id:
@@ -243,13 +245,15 @@ async def materialize_interrupted_snapshots(db: AsyncSession) -> int:
                         knowledge_refs=_json.dumps({"interrupted": True}),
                         sequence_num=max_seq + 1,
                     ))
-                    materialized += 1
+                    will_materialize = True
             await db.execute(
                 update(ConversationRun)
                 .where(ConversationRun.run_id == run_id)
                 .values(streaming_snapshot=None)
             )
             await db.commit()
+            if will_materialize:
+                materialized += 1
         except Exception:
             await db.rollback()
             _log.warning(
@@ -261,7 +265,7 @@ async def materialize_interrupted_snapshots(db: AsyncSession) -> int:
     # Non-latest runs were skipped on purpose - clear their snapshots too, or
     # every later sweep re-processes a partial that is stale by position.
     older_run_ids = [
-        run.run_id for run in stale_runs if run.run_id not in latest_run_ids
+        run_id for run_id in all_run_ids if run_id not in latest_run_ids
     ]
     if older_run_ids:
         try:

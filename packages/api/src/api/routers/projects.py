@@ -477,17 +477,21 @@ async def list_mcp_servers(
         )
         parent_slug = parent_row.scalar_one_or_none()
     catalog_path = _project_fs_path(project, parent_slug) / "knowledge" / "integrations" / "mcp-servers.md"
-    await sync_mcp_servers_from_file(db, project.project_id, catalog_path)
+    # Read before the sync: a failed commit inside it rolls back the session
+    # and expires every ORM instance, so project.project_id afterwards raises
+    # MissingGreenlet instead of listing the servers.
+    project_id = project.project_id
+    await sync_mcp_servers_from_file(db, project_id, catalog_path)
 
     result = await db.execute(
         select(MCPServer).where(
-            or_(MCPServer.project_id == project.project_id, MCPServer.project_id.is_(None))
+            or_(MCPServer.project_id == project_id, MCPServer.project_id.is_(None))
         )
     )
     rows = result.scalars().all()
     refs = {r.secret_ref for r in rows if r.secret_ref}
     configured_refs = await _configured_refs(
-        db, current_user.user_id, project.project_id, refs
+        db, current_user.user_id, project_id, refs
     )
 
     # Project entries shadow global ones with the same slug — the dict
@@ -504,7 +508,7 @@ async def list_mcp_servers(
         serialize_mcp_server(
             row,
             row.secret_ref in configured_refs,
-            "project" if row.project_id == project.project_id else "global",
+            "project" if row.project_id == project_id else "global",
         )
         for row in winning.values()
     ]

@@ -129,3 +129,33 @@ async def test_list_includes_global_servers(client, make_project, db):
     standalone = servers["standalone"]
     assert standalone["scope"] == "global"
     assert standalone["url"] == "https://standalone.example.com"
+
+
+async def test_list_survives_a_sync_commit_rollback(client, make_project, monkeypatch):
+    """The sync runs on the endpoint's session. When its commit failed and
+    rolled back, reading project.project_id afterwards raised MissingGreenlet
+    and the listing 500'd."""
+    from api.models.mcp_server import MCPServer
+
+    project = await make_project()
+    from api.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as seed:
+        seed.add(MCPServer(
+            slug="rollback-global", name="Global", url="https://g.example.com",
+        ))
+        await seed.commit()
+
+    async def _rollback_sync(session, project_id, catalog_path):
+        await session.rollback()
+        return [], []
+
+    monkeypatch.setattr(
+        "api.services.mcp_sync.sync_mcp_servers_from_file", _rollback_sync
+    )
+
+    resp = await client.get(f"/api/projects/{project.project_id}/mcp-servers")
+    assert resp.status_code == 200
+    servers = {s["slug"]: s for s in resp.json()}
+    assert servers["rollback-global"]["scope"] == "global"
+    assert not any(s["scope"] == "project" for s in resp.json())

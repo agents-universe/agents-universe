@@ -36,6 +36,40 @@ from api.models.conversation import Conversation
 log = logging.getLogger("agents_universe.agent_sync")
 
 
+def _truncate(value: object, limit: int) -> str | None:
+    """Coerce a frontmatter scalar to fit its column."""
+    if value is None:
+        return None
+    return str(value)[:limit]
+
+
+def _bounded_json(value: object, limit: int) -> str | None:
+    """Serialize a list field, dropping trailing items until it fits *limit*.
+
+    Frontmatter is user-editable and unbounded; one over-long list would
+    otherwise fail the whole sync commit (SQL Server raises, SQLite silently
+    ignores the width) and roll back every other agent in the directory.
+    """
+    if not value:
+        return None
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        while items:
+            encoded = json.dumps(items, ensure_ascii=False)
+            if len(encoded) <= limit:
+                return encoded
+            items.pop()
+        return None
+    encoded = json.dumps(value, ensure_ascii=False)
+    if len(encoded) <= limit:
+        return encoded
+    # Scalar: trim the string body until its JSON encoding fits.
+    text = str(value)
+    while text and len(json.dumps(text, ensure_ascii=False)) > limit:
+        text = text[:-1]
+    return json.dumps(text, ensure_ascii=False) if text else None
+
+
 def resolve_agent_definition_path(slug: str, project_fs_path: str | None) -> str | None:
     """Resolve an agent definition file for a slug.
 
@@ -98,15 +132,20 @@ async def sync_agents_dir(
             if not validate_agent_slug(slug):
                 log.warning("Agent definition %s has unsafe slug %r, skipped", md_file, slug)
                 continue
+            # agents.slug / agents.definition_path widths. Truncating either
+            # would corrupt identity or stale-row matching, so skip instead.
+            if len(slug) > 100:
+                log.warning("Agent definition %s has an over-long slug, skipped", md_file)
+                continue
+            if len(str(md_file)) > 500:
+                log.warning("Agent definition path %s exceeds the column width, skipped", md_file)
+                continue
             if slug_prefix and not slug.startswith(slug_prefix):
                 log.warning(
                     "Project agent slug %r in %s lacks required prefix %r, skipped",
                     slug, md_file, slug_prefix,
                 )
                 continue
-
-            def _j(v):
-                return json.dumps(v) if v else None
 
             # New-conversation guidance: single-line composer placeholder
             # (truncated to the column length — an over-length value would
@@ -127,15 +166,17 @@ async def sync_agents_dir(
                 prompts = []
 
             attrs = dict(
-                display_name=post.get("display_name", slug),
-                description=post.get("description"),
-                category=post.get("category") or "agile-development",
+                display_name=_truncate(post.get("display_name") or slug, 255),
+                description=_truncate(post.get("description"), 2000),
+                category=_truncate(
+                    post.get("category") or "agile-development", 100
+                ),
                 definition_path=str(md_file),
-                tools=_j(post.get("tools", [])),
-                skills=_j(post.get("skills", [])),
-                workflows=_j(post.get("workflows", [])),
+                tools=_bounded_json(post.get("tools", []), 1000),
+                skills=_bounded_json(post.get("skills", []), 2000),
+                workflows=_bounded_json(post.get("workflows", []), 2000),
                 placeholder=placeholder,
-                starter_prompts=_j(prompts),
+                starter_prompts=json.dumps(prompts, ensure_ascii=False) if prompts else None,
             )
 
             try:
@@ -197,7 +238,12 @@ async def sync_agents_dir(
         await session.commit()
     except Exception:
         # A bad row (e.g. column over length) must not 500 the whole agents
-        # endpoint; roll back and report what was attempted.
+        # endpoint; roll back and report nothing as synced — the rollback
+        # discarded every insert/update/delete attempted above.
         await session.rollback()
-        log.exception("Failed to commit agent sync for %s", agents_dir)
+        log.exception(
+            "Failed to commit agent sync for %s (%d synced, %d removed rolled back)",
+            agents_dir, len(synced), len(removed),
+        )
+        return [], []
     return synced, removed

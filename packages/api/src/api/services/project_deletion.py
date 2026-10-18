@@ -310,10 +310,16 @@ async def delete_project(db: AsyncSession, project_id: str, owner_id: str, confi
 async def startup_sweep(db: AsyncSession) -> None:
     """Retry only durable jobs; never infer deletion from a reused slug."""
     jobs = (await db.execute(select(ProjectDeletionJob).where(ProjectDeletionJob.status.in_(_STATES)))).scalars().all()
-    for job in jobs:
+    # Copy every field up front: a rollback in one job's handler expires ALL
+    # ORM instances, and reading job.* on the next iteration (or in the
+    # handler) then raises MissingGreenlet, aborting the rest of the sweep.
+    job_specs = [
+        (job.job_id, job.slug, job.project_id, job.status) for job in jobs
+    ]
+    for job_id, slug, project_id, status in job_specs:
         try:
-            source, trash = _safe_paths(job.slug, job.job_id)
-            project_exists = (await db.execute(select(Project.project_id).where(Project.project_id == job.project_id))).first() is not None
+            source, trash = _safe_paths(slug, job_id)
+            project_exists = (await db.execute(select(Project.project_id).where(Project.project_id == project_id))).first() is not None
             if project_exists:
                 # A prepared job has not quarantined anything yet, but the
                 # process may have died between the is_active=False commit
@@ -324,8 +330,8 @@ async def startup_sweep(db: AsyncSession) -> None:
                 if source.exists() or source.is_symlink():
                     # Workspace never moved (crash before the rename) — the
                     # project is fully intact, just reopen it.
-                    await db.execute(update(Project).where(Project.project_id == job.project_id).values(is_active=True))
-                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job.job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
+                    await db.execute(update(Project).where(Project.project_id == project_id).values(is_active=True))
+                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
                     await db.commit()
                 elif trash.exists() and not source.exists():
                     # Crash after the rename: restore the workspace and
@@ -334,23 +340,23 @@ async def startup_sweep(db: AsyncSession) -> None:
                     if _reparse_point(trash):
                         raise DeletionError(422, "UNSAFE_PATH", "Trash entry is a reparse point")
                     await asyncio.to_thread(trash.rename, source)
-                    await db.execute(update(Project).where(Project.project_id == job.project_id).values(is_active=True))
-                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job.job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
+                    await db.execute(update(Project).where(Project.project_id == project_id).values(is_active=True))
+                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
                     await db.commit()
                 else:
                     # No workspace directory ever existed — the DB transaction
                     # failed before touching the filesystem. Reopen the project
                     # (never frozen by a failed deletion).
-                    await db.execute(update(Project).where(Project.project_id == job.project_id).values(is_active=True))
-                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job.job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
+                    await db.execute(update(Project).where(Project.project_id == project_id).values(is_active=True))
+                    await db.execute(update(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job_id).values(status="failed", last_attempt_at=_now(), attempt_count=ProjectDeletionJob.attempt_count + 1))
                     await db.commit()
                 continue
             # A missing project is safe to purge only after DB deletion was (or
             # could have been) reached. Source is never touched in this branch.
-            if job.status == "db_deleted":
+            if status == "db_deleted":
                 await asyncio.to_thread(_purge, trash)
-                await db.execute(delete(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job.job_id))
+                await db.execute(delete(ProjectDeletionJob).where(ProjectDeletionJob.job_id == job_id))
                 await db.commit()
         except Exception as exc:
             await db.rollback()
-            _log.error("Project deletion cleanup pending for job %s: %s", job.job_id, exc, exc_info=True)
+            _log.error("Project deletion cleanup pending for job %s: %s", job_id, exc, exc_info=True)

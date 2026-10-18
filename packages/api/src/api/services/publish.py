@@ -326,7 +326,9 @@ async def authorize_publish_viewer(
     """Verify *token* opens *publish_id* for *viewer_id*; return the publish."""
     from api.models.publish import AgentPublish
 
-    if token is None:
+    # hmac.compare_digest raises TypeError on non-ASCII str operands, and the
+    # token arrives from an unauthenticated query parameter.
+    if not isinstance(token, str) or not token.isascii():
         return None
     result = await db.execute(
         select(AgentPublish).where(

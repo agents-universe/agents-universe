@@ -116,6 +116,12 @@ async def sync_mcp_servers_from_file(
     try:
         await session.commit()
     except Exception:
+        # The rollback discarded every insert/update/delete attempted above;
+        # reporting them as applied would lie to the caller.
         await session.rollback()
-        log.exception("Failed to commit MCP server sync for project %s", project_id)
+        log.exception(
+            "Failed to commit MCP server sync for project %s (%d synced, %d removed rolled back)",
+            project_id, len(synced), len(removed),
+        )
+        return [], []
     return synced, removed

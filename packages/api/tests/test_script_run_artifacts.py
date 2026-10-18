@@ -630,3 +630,9 @@ async def test_script_run_list_carries_the_compact_summary(client, db, make_proj
     assert row["run_id"] == str(run.run_id)
     assert row["summary"]["counts"]["passed"] == 2
     assert "result" not in row and "log" not in row
+
+
+def test_report_token_with_non_ascii_signature_returns_false():
+    # compare_digest raises TypeError for a non-ASCII str; the token comes
+    # from an unauthenticated URL path, so this must answer False.
+    assert sa.verify_report_token("run-1", "9999999999.签名") is False

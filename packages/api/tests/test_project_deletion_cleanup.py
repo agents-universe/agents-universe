@@ -125,3 +125,51 @@ def test_delete_project_sweeps_every_table_in_projects_fk_closure():
         + ", ".join(missing)
         + " — delete them (leaf-first) before deleting their parents"
     )
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_survives_one_failed_job(db, make_project, monkeypatch):
+    """A rollback in one job's handler expires every ORM instance. Reading
+    job.job_id afterwards raised MissingGreenlet and aborted the sweep, so
+    the remaining durable jobs were never retried."""
+    from sqlalchemy import update
+
+    from api.models.project_deletion_job import ProjectDeletionJob
+    from api.services.project_deletion import startup_sweep
+
+    project = await make_project("sweep-survivor")
+    pid = str(project.project_id)
+    await db.execute(
+        update(Project).where(Project.project_id == pid).values(is_active=False)
+    )
+    # The unsafe slug makes _safe_paths raise before touching state — the
+    # handler must log and continue, not blow up on the expired ORM row.
+    bad = ProjectDeletionJob(
+        project_id="p-bad", slug="../escape",
+        source_path="/tmp/x", trash_path="/tmp/y", status="prepared",
+    )
+    good = ProjectDeletionJob(
+        project_id=pid, slug=project.slug,
+        source_path="/tmp/source", trash_path="/tmp/trash",
+        status="prepared",
+    )
+    db.add_all([bad, good])
+    await db.commit()
+    bad_id, good_id = str(bad.job_id), str(good.job_id)
+
+    await startup_sweep(db)
+
+    bad_row = (await db.execute(
+        select(ProjectDeletionJob).where(ProjectDeletionJob.job_id == bad_id)
+    )).scalar_one()
+    good_row = (await db.execute(
+        select(ProjectDeletionJob).where(ProjectDeletionJob.job_id == good_id)
+    )).scalar_one()
+    # The bad job stays prepared (its handler rolled back), but the sweep
+    # continued: the surviving project was reopened and its job settled.
+    assert bad_row.status == "prepared"
+    assert good_row.status == "failed"
+    reopened = (await db.execute(
+        select(Project).where(Project.project_id == pid)
+    )).scalar_one()
+    assert reopened.is_active is True

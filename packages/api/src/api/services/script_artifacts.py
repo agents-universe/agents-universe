@@ -722,7 +722,14 @@ def verify_report_token(run_id: str, token: str) -> bool:
     # strings past the interpreter's length limit. This token comes straight
     # off an unauthenticated URL path, so malformed input must answer False
     # instead of raising into a 500.
-    if not signature or not expires_raw.isascii() or not expires_raw.isdigit():
+    if (
+        not signature
+        or not signature.isascii()
+        or not expires_raw.isascii()
+        or not expires_raw.isdigit()
+    ):
+        # compare_digest raises TypeError for a non-ASCII signature — also
+        # fed straight from an unauthenticated URL path.
         return False
     try:
         expires = int(expires_raw)

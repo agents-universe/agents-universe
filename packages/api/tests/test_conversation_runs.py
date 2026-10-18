@@ -12,7 +12,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from agent_core.agent import Agent
 from api.main import app
@@ -600,6 +600,68 @@ async def test_sweep_skips_materialization_when_reply_persisted(db, make_project
     await db.refresh(run)
     assert run.streaming_snapshot is None
     assert len(await _assistant_messages(db, conv.conversation_id)) == 1
+
+
+async def test_sweep_clears_older_snapshots_after_a_per_run_rollback(
+    db, make_project, monkeypatch
+):
+    """A failed materialization rolls back (expiring every ORM instance);
+    the older-run cleanup must not then read run.run_id off an expired row —
+    that raised MissingGreenlet and aborted the whole sweep."""
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    db.add(user)
+    await db.commit()
+    older = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="older partial",
+        started_at=now_utc() - timedelta(seconds=2),
+    )
+    newer = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="newer partial",
+        started_at=now_utc(),
+    )
+    db.add_all([older, newer])
+    await db.commit()
+    newer_id = str(newer.run_id)
+
+    real_commit = db.commit
+    commits = {"n": 0}
+
+    async def _fail_first_commit():
+        commits["n"] += 1
+        if commits["n"] == 1:
+            raise RuntimeError("simulated commit failure")
+        await real_commit()
+
+    monkeypatch.setattr(db, "commit", _fail_first_commit)
+
+    # The per-run failure is swallowed; the sweep must still clear the older
+    # run's stale snapshot in its follow-up commit.
+    n = await materialize_interrupted_snapshots(db)
+    assert n == 0
+    monkeypatch.setattr(db, "commit", real_commit)
+
+    await db.refresh(older)
+    assert older.streaming_snapshot is None
+
+    # The failed run keeps its snapshot (its clearing update rolled back).
+    # Clear it so later global sweeps in the shared test DB don't materialize
+    # it into another test's conversation.
+    await db.execute(
+        update(ConversationRun)
+        .where(ConversationRun.run_id == newer_id)
+        .values(streaming_snapshot=None)
+    )
+    await db.commit()
 
 
 async def test_sweep_materializes_only_latest_run_per_conversation(db, make_project):

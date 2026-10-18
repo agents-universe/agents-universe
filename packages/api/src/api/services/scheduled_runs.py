@@ -567,7 +567,7 @@ async def _run_agent_target(app, target: _Target) -> _Outcome:
         )
 
         async with AsyncSessionLocal() as db:
-            text, errored = await _last_reply(db, transport)
+            text, failure = await _last_reply(db, transport)
         if transport.error:
             # A turn-level error event means this run failed, whatever the
             # history holds — scoring it from the latest assistant row would
@@ -575,7 +575,15 @@ async def _run_agent_target(app, target: _Target) -> _Outcome:
             return _Outcome(
                 "failed", None, transport.error, reply_persisted=bool(text)
             )
-        if errored:
+        if failure == "interrupted":
+            # A stop/abort left a partial message row. It must not score as
+            # completed, or the schedule reports a truncated answer as the
+            # result; deliver_result still sees the persisted partial.
+            return _Outcome(
+                "failed", None, "The agent run was interrupted",
+                reply_persisted=bool(text),
+            )
+        if failure == "error":
             # The turn persisted its own failure notice (refusal, content
             # filter, empty output) — a message row exists, but the run failed.
             return _Outcome(
@@ -635,19 +643,22 @@ async def _resolve_conversation(db, target: _Target) -> str | None:
     return conversation_id
 
 
-async def _last_reply(db, transport: _NullTransport) -> tuple[str, bool]:
-    """``(content, is_failure_notice)`` of the assistant message THIS turn persisted.
+async def _last_reply(db, transport: _NullTransport) -> tuple[str, str | None]:
+    """``(content, failure_kind)`` of the assistant message THIS turn persisted.
 
-    Only the id carried by this turn's stream_end counts: a failed turn sends
-    either no stream_end at all or a synthetic id that was never written to
-    messages, and falling back to the conversation's latest assistant row
-    would score the run completed with the previous turn's reply.
+    *failure_kind* is ``"interrupted"`` (user Stop / aborted turn), ``"error"``
+    (the turn persisted its own failure notice), or None. Only the id carried
+    by this turn's stream_end counts: a failed turn sends either no stream_end
+    at all or a synthetic id that was never written to messages, and falling
+    back to the conversation's latest assistant row would score the run
+    completed with the previous turn's reply.
     """
     from api.models.conversation import Message as DbMessage
 
-    message_id = (transport.stream_end or {}).get("message_id")
+    end_frame = transport.stream_end or {}
+    message_id = end_frame.get("message_id")
     if not message_id:
-        return "", False
+        return "", None
     row = (
         await db.execute(
             select(DbMessage.content, DbMessage.knowledge_refs).where(
@@ -656,16 +667,21 @@ async def _last_reply(db, transport: _NullTransport) -> tuple[str, bool]:
         )
     ).one_or_none()
     if row is None:
-        return "", False
+        return "", None
     content, refs_json = row
     errored = False
+    interrupted = end_frame.get("stop_reason") in ("aborted", "interrupted")
     if refs_json:
         try:
             parsed = json.loads(refs_json)
         except (TypeError, ValueError):
             parsed = None
-        errored = bool(parsed.get("error")) if isinstance(parsed, dict) else False
-    return content or "", errored
+        if isinstance(parsed, dict):
+            errored = bool(parsed.get("error"))
+            interrupted = interrupted or bool(parsed.get("interrupted"))
+    if interrupted:
+        return content or "", "interrupted"
+    return content or "", ("error" if errored else None)
 
 
 def _script_summary(

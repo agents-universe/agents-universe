@@ -1394,3 +1394,17 @@ async def test_drain_normal_completion_does_not_abort(monkeypatch):
     assert "stream_end" in frames[0]
     assert aborted == []
     assert not task.cancelled()
+
+
+async def test_session_non_ascii_token_is_rejected_not_500(
+    client, db, make_project, as_user
+):
+    """compare_digest raises TypeError on non-ASCII str; the viewer token is
+    an unauthenticated query parameter, so it must 404 like any bad token."""
+    publish, _ = await _make_publish(db, make_project)
+    async with as_user("other-user"):
+        r = await client.get(
+            f"/api/p/{publish.publish_id}/session",
+            params={"token": "签名签名签名签名"},
+        )
+    assert r.status_code == 404

@@ -85,10 +85,15 @@ async def list_personal_memories(
     )
     if tag:
         # The tags column stores a JSON array string; contains() compiles to
-        # LIKE '%"tag"%'. Escape LIKE wildcards so a tag like "100%" or
-        # "a_b" matches literally instead of as a pattern.
-        escaped = tag.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-        query = query.where(PersonalMemory.tags.contains(f'"{escaped}"', escape="\\"))
+        # LIKE '%needle%'. The needle must be the tag's exact JSON encoding,
+        # not the raw text: json.dumps escapes non-ASCII as \uXXXX and
+        # backslash-escapes quotes inside a value, so a Chinese tag or one
+        # containing '"' would otherwise never match. Escape LIKE wildcards
+        # afterwards so a tag like "100%" or "a_b" matches literally instead
+        # of as a pattern.
+        needle = json.dumps(tag)
+        escaped = needle.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+        query = query.where(PersonalMemory.tags.contains(escaped, escape="\\"))
     query = query.offset(offset).limit(limit)
 
     result = await db.execute(query)

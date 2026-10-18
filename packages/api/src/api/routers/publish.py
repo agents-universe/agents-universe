@@ -406,6 +406,22 @@ async def revoke_publish_key(
 # ── Public API (API Key) ───────────────────────────────────────────────────
 
 
+def _is_terminal_frame(evt: dict) -> bool:
+    """True only for the turn's final stream_end.
+
+    A turn can emit several stream_end frames: one per plan subtask (which
+    carries ``task_id`` and closes that task's panel stream), one at a
+    mid-turn injection boundary (``injection``), a synthetic one after an
+    abort, and the real terminal frame. Ending the SSE response on any of
+    the former truncated the answer while the run kept going.
+    """
+    return (
+        evt.get("type") == "stream_end"
+        and not evt.get("task_id")
+        and not evt.get("injection")
+    )
+
+
 async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversation: str):
     """Yield SSE frames for one publish run until terminal, then end the stream.
 
@@ -419,7 +435,7 @@ async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversat
             try:
                 evt = await asyncio.wait_for(stream.queue.get(), timeout=0.5)
                 yield sse_format(evt)
-                if evt.get("type") == "stream_end":
+                if _is_terminal_frame(evt):
                     # Terminal frame; the task may still be unwinding.
                     saw_terminal = True
                     break
@@ -432,7 +448,7 @@ async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversat
                 evt = stream.queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            if evt.get("type") == "stream_end":
+            if _is_terminal_frame(evt):
                 saw_terminal = True
             yield sse_format(evt)
         # A run that crashed before any terminal frame would otherwise

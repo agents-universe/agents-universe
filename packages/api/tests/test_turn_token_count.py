@@ -177,6 +177,59 @@ async def test_turn_delta_parked_on_final_message(agent_spy, db, make_project):
     assert fresh.tokens_used == 57
 
 
+async def test_turn_ledger_survives_mcp_sync_rollback(
+    agent_spy, db, make_project, monkeypatch
+):
+    """mcp_sync rolls back the turn's own session when its catalog commit
+    fails, and a rollback expires every ORM instance. Reading
+    conv.tokens_used afterwards raised MissingGreenlet: the successful reply
+    was followed by a synthetic error frame, and the turn's usage never
+    reached the conversation ledger."""
+    import agent_core.tools.mcp_client as mcp_client
+    from agent_core.agent import AgentConfig
+
+    real_from_file = AgentConfig.from_file
+
+    def _with_mcp(path):
+        config = real_from_file(path)
+        config.tools = [*config.tools, "mcp"]
+        return config
+
+    monkeypatch.setattr(AgentConfig, "from_file", staticmethod(_with_mcp))
+
+    async def _rollback_sync(session, project_id, catalog_path):
+        await session.rollback()
+
+    monkeypatch.setattr(
+        "api.services.mcp_sync.sync_mcp_servers_from_file", _rollback_sync
+    )
+
+    async def _no_tools(tool_context, markers):
+        return []
+
+    monkeypatch.setattr(mcp_client, "attach_mcp_tools", _no_tools)
+
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        session = kwargs["session"]
+        session.add_usage(prompt_tokens=12, completion_tokens=3)
+        await session.emit("stream_delta", delta="answer")
+        await session.emit("stream_end", message_id=msg_id, total_tokens=15)
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    fresh = await _fresh_conversation(db, conv.conversation_id)
+    assert fresh.tokens_used == 15
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert [m.message_id for m in msgs] == [msg_id]
+    assert msgs[0].content == "answer"
+    assert msgs[0].token_count == 15
+
+
 async def test_injection_partial_stays_clean_final_carries_turn_total(agent_spy, db, make_project):
     """The frozen partial keeps NULL; the final message carries the WHOLE
     turn's usage, so per-message counts still sum to the conversation ledger."""

@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from fastapi import HTTPException
 from sqlalchemy import case, select
 
+from api.json_utils import dumps as json_dumps
+
 _log = logging.getLogger("agents_universe.publish")
 
 # External key namespace prefix — the raw key carries the publish id so a
@@ -112,8 +114,13 @@ class SSEStream:
 
 
 def sse_format(data: dict) -> str:
-    """Render a turn event as one SSE ``data:`` frame (JSON, no id/retry)."""
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    """Render a turn event as one SSE ``data:`` frame (JSON, no id/retry).
+
+    Turn events can carry datetimes (tool results, injected message
+    timestamps); the date-safe encoder keeps one such value from aborting the
+    whole response mid-stream.
+    """
+    return f"data: {json_dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _find_publish_conversation_id(

@@ -1324,6 +1324,55 @@ async def test_drain_cancelled_at_await_stops_the_run(monkeypatch):
     assert task.cancelled()
 
 
+async def test_drain_ignores_subtask_and_injection_stream_end(monkeypatch):
+    """Only the turn's final stream_end closes the SSE response.
+
+    Plan subtasks emit stream_end per task (task_id) and a mid-turn injection
+    emits one at its step boundary (injection=True); breaking on either cut
+    the HTTP stream while the agent kept working.
+    """
+    from api.routers.publish import _drain_publish_stream
+    from api.services.publish import SSEStream
+
+    aborted = _spy_abort(monkeypatch)
+    stream = SSEStream()
+    stream.queue.put_nowait(
+        {"type": "stream_end", "message_id": "m-task", "task_id": "t1"}
+    )
+    stream.queue.put_nowait({"type": "stream_delta", "delta": "after subtask"})
+    stream.queue.put_nowait(
+        {"type": "stream_end", "message_id": "m-frozen", "injection": True}
+    )
+    stream.queue.put_nowait({"type": "stream_delta", "delta": "after injection"})
+    stream.queue.put_nowait({"type": "stream_end", "message_id": "m-final"})
+    task = asyncio.create_task(asyncio.sleep(3600))
+
+    gen = _drain_publish_stream(stream, task, "conv-task")
+    frames = [f async for f in gen]
+
+    assert len(frames) == 5
+    assert "m-final" in frames[-1]
+    assert aborted == []
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_sse_format_encodes_datetimes():
+    """Turn events can carry datetimes from tool results; a plain json.dumps
+    raised TypeError mid-stream and killed the whole SSE response."""
+    import json
+    from datetime import datetime, timezone
+
+    from api.services.publish import sse_format
+
+    frame = sse_format(
+        {"type": "tool_call_end", "output": {"at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)}}
+    )
+    payload = json.loads(frame.strip().removeprefix("data: "))
+    assert payload["output"]["at"] == "2026-01-02T03:04:05+00:00"
+
+
 async def test_drain_normal_completion_does_not_abort(monkeypatch):
     """Exhausting the stream after stream_end must not signal abort — the run
     is meant to finish (or be unwinding) on its own."""

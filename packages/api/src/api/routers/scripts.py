@@ -266,6 +266,9 @@ async def run_script(
 # ── Playwright specs (QA-generated tests) ────────────────────────────────────
 
 _PW_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# ScriptRun.spec_slug is String(100); an overlong slug would pass the charset
+# check and fail later at INSERT on dialects that enforce the length.
+_PW_SLUG_MAX = 100
 _PW_ENV_KEY_RE = re.compile(r"^APP_[A-Z0-9_]+$")
 _PW_SPEC_TITLE_RE = re.compile(r"test\.describe\(\s*['\"]([^'\"]+)['\"]")
 _PLAYWRIGHT_ANCHOR_NAME = "__playwright__"
@@ -402,7 +405,7 @@ async def run_playwright_spec(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    if not _PW_SLUG_RE.match(slug):
+    if not _PW_SLUG_RE.match(slug) or len(slug) > _PW_SLUG_MAX:
         raise HTTPException(status_code=422, detail="Invalid spec slug")
     request_env = _validated_playwright_env(body.env if body else {})
 

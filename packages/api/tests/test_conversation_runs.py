@@ -249,6 +249,45 @@ async def test_injection_boundary_does_not_settle_the_run(agent_spy, db, make_pr
     assert _json.loads(msgs[0].knowledge_refs).get("interrupted") is True
 
 
+async def test_task_scoped_stream_frames_stay_out_of_the_main_message(agent_spy, db, make_project):
+    """plan_task subtasks run concurrently and emit deltas on the same session
+    with a task_id; their text belongs to the per-task panels.
+
+    Regression: the first subtask's stream_end was treated as the turn's
+    terminal frame. It persisted a row assembled from interleaved subtask
+    text (and their thinking), cleared the buffers, and settled the run —
+    while later subtasks and the main answer were still streaming. The real
+    final frame then lost to finish_run's running-only guard.
+    """
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    task_msg_id, final_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def _run(kwargs):
+        session = kwargs["session"]
+        await session.emit("stream_delta", delta="main start ")
+        await session.emit("thinking_delta", delta="main thought")
+        await session.emit("stream_delta", delta="subtask one", task_id="t1")
+        await session.emit("thinking_delta", delta="task thought", task_id="t1")
+        await session.emit(
+            "stream_end", message_id=task_msg_id, total_tokens=4, task_id="t1"
+        )
+        await session.emit("stream_delta", delta="main end")
+        await session.emit("stream_end", message_id=final_id, total_tokens=9)
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "completed"
+    assert run.tokens_used == 9
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert [m.message_id for m in msgs] == [final_id]
+    assert msgs[0].content == "main start main end"
+    assert msgs[0].thinking == "main thought"
+
+
 async def test_run_failed_on_agent_exception(agent_spy, db, make_project):
     conv = await _make_conversation(db, make_project)
     await _add_config(db)

@@ -54,6 +54,17 @@ async def test_run_rejects_invalid_slug(client, make_project):
 
 
 @pytest.mark.asyncio
+async def test_run_rejects_overlong_slug(client, make_project):
+    """ScriptRun.spec_slug is String(100): a longer slug passes the charset
+    check and would fail at INSERT on length-enforcing dialects."""
+    project = await make_project("pw-long")
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/playwright/specs/{'a' * 101}/run"
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_run_rejects_bad_env_without_side_effects(client, db, make_project):
     """Non-APP_* keys are refused before any slot/anchor work happens."""
     project = await make_project("pw-env")

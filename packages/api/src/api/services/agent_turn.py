@@ -256,6 +256,11 @@ async def run_turn(
                 await _send_turn_error(transport, conversation_id, {"type": "error", "message": "Conversation not found"})
                 return
             conv, project = row
+            # Snapshot the ledger the turn started from. mcp_sync may commit
+            # or roll back this same session later, and a rollback expires
+            # every ORM instance — reading conv.tokens_used at turn end would
+            # then raise MissingGreenlet under the async driver.
+            conv_tokens_at_start = conv.tokens_used
 
             # Headless callers (scheduled fires, the published SSE endpoint)
             # reach this kernel without the REST/WS authorization gate. A user
@@ -805,7 +810,13 @@ async def run_turn(
                         session.current_turn_phase = "running_tool"
                     elif event.type == "stream_delta" and event.data.get("delta"):
                         session.current_turn_phase = "responding"
-                    if event.type == "thinking_delta":
+                    # A task-scoped frame describes one plan subtask's own
+                    # bubble; its thinking belongs to that task, not to the
+                    # main turn's persisted message.
+                    if (
+                        event.type == "thinking_delta"
+                        and not event.data.get("task_id")
+                    ):
                         _thinking_buf += event.data.get("delta", "")
                         session.current_streaming_thinking = _thinking_buf
 
@@ -820,6 +831,22 @@ async def run_turn(
 
                     # Persist events to DB alongside forwarding
                     try:
+                        # Task-scoped stream frames (plan subtasks run
+                        # concurrently, so their deltas interleave) belong to
+                        # the per-task panels the client routes them to.
+                        # Mixing subtask text into the main-turn buffers
+                        # duplicated output across assistant rows, and
+                        # treating a subtask's stream_end as terminal settled
+                        # the run while the plan was still executing. Tool-call
+                        # frames stay buffered: they carry task_id, and the UI
+                        # renders them under their task after a history reload.
+                        if event.data.get("task_id") and event.type in (
+                            "stream_delta",
+                            "stream_end",
+                            "thinking_delta",
+                            "thinking_end",
+                        ):
+                            continue
                         if event.type == "model_selected":
                             _model_name = event.data.get("model") or None
                         elif event.type == "stream_delta":
@@ -1459,7 +1486,7 @@ async def run_turn(
                 manager.deregister_session(conversation_id)
 
             from sqlalchemy import update
-            tokens_delta = session.tokens_used - conv.tokens_used
+            tokens_delta = session.tokens_used - conv_tokens_at_start
             values: dict = {"tokens_used": Conversation.tokens_used + tokens_delta}
             # Only write occupancy when a provider actually reported usage —
             # a turn that died before any LLM call must not zero the values

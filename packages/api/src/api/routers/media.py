@@ -193,10 +193,12 @@ async def upload_media(
             detail=f"File exceeds the {settings.max_upload_size_mb}MB limit",
         )
 
-    # Sanitize suffix: alphanumeric only, short (e.g. ".png", ".xlsx") — anything
-    # weird is dropped so the stored filename stays server-controlled.
+    # Sanitize suffix: ASCII alphanumeric only, short (e.g. ".png", ".xlsx") —
+    # anything weird is dropped so the stored filename stays server-controlled.
+    # The serve route validates filenames against an ASCII-only pattern, so a
+    # non-ASCII extension kept here would produce a URL that always 400s.
     suffix = Path(file.filename or "").suffix.lower()
-    if not suffix or len(suffix) > 16 or not suffix[1:].isalnum():
+    if not suffix or len(suffix) > 16 or not (suffix[1:].isascii() and suffix[1:].isalnum()):
         suffix = ""
     storage_name = f"{uuid.uuid4().hex}{suffix}"
 

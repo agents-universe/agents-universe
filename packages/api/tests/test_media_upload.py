@@ -151,7 +151,9 @@ async def test_weird_client_filenames_safe(client, make_project):
     project = await make_project()
     cid = await _make_conversation(client, str(project.project_id))
 
-    for fname in ("../../evil.txt", "中文 名称.xlsx", "no_ext"):
+    # "报告.文档" also covers a non-ASCII extension: the stored name must stay
+    # within the ASCII filename whitelist the serve route enforces.
+    for fname in ("../../evil.txt", "中文 名称.xlsx", "报告.文档", "no_ext"):
         resp = await client.post(
             f"/api/media/{project.project_id}/{cid}",
             files={"file": (fname, b"data", "application/octet-stream")},

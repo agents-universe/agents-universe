@@ -227,3 +227,42 @@ async def test_no_session_writes_no_row(db, make_project, ws_manager):
     rows = await _user_rows(db, conv.conversation_id)
     assert rows == []
     assert ws.frames_of("error")
+
+
+async def test_secret_saved_without_session_reports_success(db, make_project, ws_manager):
+    """The post-session secret-save path must still confirm a SUCCESSFUL save."""
+    conv = await _make_conversation(db, make_project)
+
+    ws = _FakeWS([{
+        "type": "user_selection_response",
+        "prompt_id": "prompt-1",
+        "secret": True,
+        "save_to_project_secrets": True,
+        "service_key": "OPENAI_API_KEY",
+        "value": "sk-must-not-leak",
+    }])
+    await conversation_ws(conv.conversation_id, ws)
+
+    infos = ws.frames_of("info")
+    assert any("密钥已保存" in f.get("message", "") for f in infos)
+    assert "sk-must-not-leak" not in str(ws.sent)
+
+
+async def test_failed_secret_save_without_session_reports_error(db, make_project, ws_manager):
+    """saved=False (here: empty value) with no live session must NOT claim
+    密钥已保存 — the user would believe the credential was stored while the
+    next tool call still failed for lack of it."""
+    conv = await _make_conversation(db, make_project)
+
+    ws = _FakeWS([{
+        "type": "user_selection_response",
+        "prompt_id": "prompt-1",
+        "secret": True,
+        "save_to_project_secrets": True,
+        "service_key": "OPENAI_API_KEY",
+        # deliberately no "value" → _save_secret_from_response returns False
+    }])
+    await conversation_ws(conv.conversation_id, ws)
+
+    assert ws.frames_of("error")
+    assert not any("密钥已保存" in f.get("message", "") for f in ws.frames_of("info"))

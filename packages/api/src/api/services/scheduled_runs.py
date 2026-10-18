@@ -116,7 +116,17 @@ class _NullTransport(Transport):
 
     async def send(self, conversation_id: str, data: dict) -> bool:
         if data.get("type") == "stream_end":
-            self.stream_end = data
+            # One turn emits at most ONE real stream_end (carrying the
+            # persisted message id), but run_turn's tails emit synthetic ones
+            # after it (abort: message_id=None; outer-exception: a fresh id
+            # never written to messages). _last_reply trusts only this frame,
+            # so the FIRST id-bearing frame wins: a synthetic tail never
+            # overwrites it, while an id-less frame is upgradeable by a later
+            # real one (ordering between drain and tails is not fixed).
+            recorded = self.stream_end or {}
+            if not recorded.get("message_id"):
+                if self.stream_end is None or data.get("message_id"):
+                    self.stream_end = data
         elif data.get("type") == "error":
             self.error = data.get("message")
         return False
@@ -586,7 +596,14 @@ async def _resolve_conversation(db, target: _Target) -> str | None:
         agent = (
             await db.execute(select(Agent).where(Agent.slug == target.agent_slug))
         ).scalars().first()
-        agent_id = str(agent.agent_id) if agent else None
+        # Mirror routers/conversations.create_conversation: a project-scoped
+        # agent row is valid only within its own project — binding a foreign
+        # project's row would drag its FK into this conversation (and break
+        # the foreign project's deletion). Leave unbound rather than bind wrong.
+        if agent is not None and (
+            agent.project_id is None or agent.project_id == target.project_id
+        ):
+            agent_id = str(agent.agent_id)
 
     conv = Conversation(
         project_id=target.project_id,

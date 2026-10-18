@@ -1340,6 +1340,9 @@ async def run_turn(
                 # The drain timed out: terminal task events still sitting in the
                 # queue would be swept to failed below — drain and persist them
                 # directly (bounded: queue ≤ maxsize, agent already finished).
+                # G9: same nested guard as forward_events' persistence and the
+                # sweep below — a delegated child's events belong to ITS turn,
+                # never to the parent conversation's task tables.
                 while True:
                     try:
                         _ev = session._event_queue.get_nowait()
@@ -1347,7 +1350,7 @@ async def run_turn(
                         break
                     if _ev is None:
                         break
-                    if _ev.type in ("task_completed", "task_failed", "task_skipped"):
+                    if _ev.type in ("task_completed", "task_failed", "task_skipped") and not nested:
                         try:
                             await _persist_terminal_task_event(event_db, conversation_id, _ev)
                         except Exception:
@@ -2637,6 +2640,27 @@ async def _prepare_attachment(att: dict, media_path: Path, conversation_id: str,
 # receive loop and the run_turn claim-window drain, so these live in the turn
 # kernel rather than the WS shell.
 
+
+# messages.agent_slug is String(100); the orphan-persist path writes the raw
+# injection agent_id there without resolving it against the agent table.
+_AGENT_SLUG_MAX = 100
+
+
+def _sanitize_agent_slug(value) -> str | None:
+    """Clamp a client-supplied agent slug for messages.agent_slug.
+
+    Non-strings become None (no attribution beats wrong attribution); strings
+    are truncated to the column width so a hostile/buggy client cannot overflow
+    the column and kill the persist with a DataError.
+    """
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value[:_AGENT_SLUG_MAX]
+
+
 async def _enqueue_injected_message(
     conversation_id: str, session, msg: dict
 ) -> None:
@@ -2685,7 +2709,11 @@ async def _enqueue_injected_message(
         message_id=str(_uuid_mod.uuid4()),
         content=content,
         attachments=attachments,
-        agent_id=msg.get("agent_id"),
+        # Sanitize at the boundary: the orphan-persist watchdog writes this
+        # value straight into messages.agent_slug (String(100)) — a raw
+        # client value could overflow the column (DataError on strict
+        # dialects silently lost the acked message) or spoof attribution.
+        agent_id=_sanitize_agent_slug(msg.get("agent_id")),
         config_id=msg.get("config_id"),
     )
     entry.persisted = asyncio.get_running_loop().create_future()

@@ -274,8 +274,15 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     if sess:
                         sess.resolve_user_selection_secret(prompt_id, saved=saved)
                     else:
-                        # Agent already finished; secret is saved for next invocation
-                        await ws.send_json({"type": "info", "message": "密钥已保存。下次调用时将自动使用。"})
+                        # Agent already finished; the secret (if the save
+                        # succeeded) applies on the next invocation. A FAILED
+                        # save must say so — reporting success here left the
+                        # user believing the credential was stored while the
+                        # next tool call still failed for lack of it.
+                        if saved:
+                            await ws.send_json({"type": "info", "message": "密钥已保存。下次调用时将自动使用。"})
+                        else:
+                            await ws.send_json({"type": "error", "message": "密钥保存失败，请重试。"})
                 elif is_secret and save_to_user:
                     saved = await _save_user_token_from_response(
                         user_id, msg
@@ -294,7 +301,11 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     if sess:
                         sess.resolve_user_selection_secret(prompt_id, saved=saved)
                     else:
-                        await ws.send_json({"type": "info", "message": "密钥已保存到用户仓库。下次调用时将自动使用。"})
+                        # Same contract as the project-secrets branch above.
+                        if saved:
+                            await ws.send_json({"type": "info", "message": "密钥已保存到用户仓库。下次调用时将自动使用。"})
+                        else:
+                            await ws.send_json({"type": "error", "message": "密钥保存失败，请重试。"})
                 else:
                     if is_secret:
                         # A secret response frame without a save_to_* flag

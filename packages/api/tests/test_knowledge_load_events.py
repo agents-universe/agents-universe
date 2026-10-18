@@ -123,6 +123,70 @@ async def test_load_writes_event_and_unload_is_symmetric(db, tmp_path):
     assert [e.event_type for e in events] == ["load", "unload"]
 
 
+async def test_load_event_binds_project_row_over_global_shadow(db, tmp_path):
+    """When a project file shadows a global one (same slug), the load event
+    must bind to the PROJECT row's knowledge_id — the loader resolves the
+    project row too, and an event parked on the global id outlives the
+    project file's delete (delete_one cleans only the project row's events)
+    and rehydrates stale context."""
+    from agent_core.knowledge.loader import KnowledgeContextResult, KnowledgeEntry
+    from agent_core.tools.base import ToolContext
+    from agent_core.tools.knowledge_rw import KnowledgeRWTool
+
+    project, convo = await _make_conversation(db)
+    global_row = KnowledgeMetadata(
+        project_id=None,
+        slug="technical/api/users",
+        title="Users (global)",
+        category="technical",
+        fs_path="/framework/technical/api/users.md",
+        knowledge_level="detail",
+    )
+    proj_row = _detail_row(project.project_id, "technical/api/users")
+    db.add(global_row)
+    db.add(proj_row)
+    await db.commit()
+    await db.refresh(global_row)
+    await db.refresh(proj_row)
+
+    kdir = tmp_path / "knowledge"
+    f = kdir / "technical" / "api" / "users.md"
+    f.parent.mkdir(parents=True)
+    f.write_text(
+        "---\ntitle: Users\nknowledge_level: detail\n---\nGET /users\n",
+        encoding="utf-8",
+    )
+    ctx_result = KnowledgeContextResult()
+    ctx_result.deferred_entries["technical/api/users"] = KnowledgeEntry(
+        knowledge_id=str(proj_row.knowledge_id), slug="technical/api/users",
+        title="Users", fs_path=str(f), category="technical",
+        cross_references=[], word_count=3, knowledge_level="detail",
+        project_id=project.project_id,
+    )
+    tool_ctx = ToolContext(
+        project_id=project.project_id,
+        project_fs_path=str(tmp_path),
+        conversation_id=convo.conversation_id,
+        user_id="test-user",
+        db_session=db,
+        project_context=ctx_result,
+    )
+
+    tool = KnowledgeRWTool()
+    result = await tool.execute(
+        {"operation": "load", "slug": "technical/api/users"}, tool_ctx
+    )
+    assert result["status"] == "loaded"
+
+    events = (await db.execute(
+        select(KnowledgeLoadEvent).where(
+            KnowledgeLoadEvent.conversation_id == convo.conversation_id
+        )
+    )).scalars().all()
+    assert len(events) == 1
+    assert events[0].knowledge_id == str(proj_row.knowledge_id)
+
+
 async def test_load_without_metadata_row_skips_event(db, tmp_path):
     """FK guard: no knowledge_metadata row → no event, but the in-memory load
     still succeeds (the warning tells the agent to reindex)."""

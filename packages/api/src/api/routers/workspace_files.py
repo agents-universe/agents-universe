@@ -223,7 +223,10 @@ async def write_workspace_file(
 
         async def _reindex_in_new_session():
             async with AsyncSessionLocal() as new_db:
-                await reindex_knowledge(str(target), project_id, new_db)
+                await reindex_knowledge(
+                    str(target), project_id, new_db,
+                    knowledge_root=Path(canonical(project_fs)) / "knowledge",
+                )
             if cache is not None:
                 cache.invalidate(project_id)
 

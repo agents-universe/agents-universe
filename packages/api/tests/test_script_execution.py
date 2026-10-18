@@ -59,6 +59,80 @@ async def test_execute_script_streams_output_and_completes(client, db, make_proj
 
 
 @pytest.mark.asyncio
+async def test_execute_script_recovers_from_a_failed_flush(
+    client, db, make_project, monkeypatch
+):
+    """Same failure mode as the Playwright executor: a poisoned session must
+    not make the terminal commit raise and strand the row at "running"."""
+    project = await make_project("exec-py-flush")
+    script = AutomationScript(
+        project_id=str(project.project_id),
+        name="poison",
+        script_type="python",
+        content="print('hi')\n",
+    )
+    db.add(script)
+    await db.commit()
+    await db.refresh(script)
+    run = ScriptRun(script_id=script.script_id, status="pending")
+    db.add(run)
+    await db.commit()
+    run_id = str(run.run_id)
+
+    from api.paths import PROJECTS_ROOT
+
+    async def poisoned_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+        # An unsupported bind type fails the next commit at the driver and
+        # leaves the session pending-rollback.
+        run_.status = object()
+        await db_.commit()
+        return 0
+
+    monkeypatch.setattr("agent_core.scripts.runner.stream_subprocess", poisoned_stream)
+
+    await scripts_router._execute_script(
+        run_id, script.content, "python", "test-user",
+        str(PROJECTS_ROOT / project.slug),
+    )
+
+    refreshed = await _reload_run(run_id)
+    assert refreshed.status == "failed"
+    assert refreshed.exit_code == -1
+
+
+@pytest.mark.asyncio
+async def test_execute_script_rejects_ansi_c_quoting(client, db, make_project):
+    """$'\\x2fetc\\x2fpasswd' only becomes /etc/passwd when bash decodes it;
+    the static checks see the escaped text. The runner must refuse the RAW
+    form before the subprocess starts."""
+    project = await make_project("exec-ansi-c")
+    script = AutomationScript(
+        project_id=str(project.project_id),
+        name="ansi-c",
+        script_type="bash",
+        content="cat $'\\x2fetc\\x2fpasswd'\n",
+    )
+    db.add(script)
+    await db.commit()
+    await db.refresh(script)
+    run = ScriptRun(script_id=script.script_id, status="pending")
+    db.add(run)
+    await db.commit()
+    run_id = str(run.run_id)
+
+    from api.paths import PROJECTS_ROOT
+
+    await scripts_router._execute_script(
+        run_id, script.content, "bash", "test-user",
+        str(PROJECTS_ROOT / project.slug),
+    )
+
+    refreshed = await _reload_run(run_id)
+    assert refreshed.status == "failed"
+    assert "ANSI-C quoting" in (refreshed.stderr_log or "")
+
+
+@pytest.mark.asyncio
 async def test_execute_playwright_reports_phase_progress(client, db, make_project, monkeypatch):
     """The Playwright executor appends phase markers so the WS log view shows
     progress during the long silent phases; the test command's exit code

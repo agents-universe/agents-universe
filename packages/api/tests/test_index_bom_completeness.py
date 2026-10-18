@@ -66,3 +66,38 @@ async def test_reindex_one_scores_bom_file_like_index_directory(db, make_project
         f"reindex_one scored {reindexed_score}, index_directory scored {full_score}"
     )
     assert result["completeness_score"] == full_score
+
+
+@pytest.mark.asyncio
+async def test_reindex_one_keeps_nested_knowledge_dir_in_slug(db, make_project, tmp_path):
+    """A slug may itself contain a directory named "knowledge"
+    (technical/knowledge/foo). Deriving the root by scanning path segments
+    truncated it to "foo"; the caller-supplied root keeps the full relative
+    path."""
+    project = await make_project()
+    kdir = tmp_path / "knowledge"
+    nested = kdir / "technical" / "knowledge"
+    nested.mkdir(parents=True)
+    (nested / "foo.md").write_text(
+        "---\ntitle: Foo\ncategory: technical\n---\n\nbody text\n",
+        encoding="utf-8",
+    )
+
+    result = await index_mod.reindex_one(
+        fs_path=str(nested / "foo.md"),
+        project_id=project.project_id,
+        db_session=db,
+        knowledge_root=kdir,
+    )
+    assert "error" not in result, result
+    assert result["slug"] == "technical/knowledge/foo"
+
+    from api.models.knowledge import KnowledgeMetadata
+
+    row = (await db.execute(
+        select(KnowledgeMetadata).where(
+            KnowledgeMetadata.project_id == project.project_id,
+            KnowledgeMetadata.slug == "technical/knowledge/foo",
+        )
+    )).scalar_one_or_none()
+    assert row is not None

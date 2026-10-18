@@ -24,14 +24,21 @@ async def reindex_knowledge(
     fs_path: str,
     project_id: str | None,
     db: AsyncSession,
+    knowledge_root: str | Path | None = None,
 ) -> dict:
-    """Re-index a single knowledge file."""
+    """Re-index a single knowledge file.
+
+    knowledge_root should be passed whenever the caller has it: the slug is
+    then the exact path relative to the root, so a nested directory named
+    "knowledge" cannot truncate it.
+    """
     try:
         from agent_core.knowledge.index import reindex_one
         return await reindex_one(
             fs_path=fs_path,
             project_id=project_id,
             db_session=db,
+            knowledge_root=knowledge_root,
         )
     except Exception as e:
         _log.exception("reindex_knowledge failed for %s (project %s)", fs_path, project_id)

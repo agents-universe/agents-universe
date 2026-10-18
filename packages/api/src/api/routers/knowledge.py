@@ -393,7 +393,7 @@ async def copy_knowledge_template(
         # Inline reindex: this inserts one new row, so unlike the PUT path
         # (which uses a background task to dodge its own row locks) there is
         # nothing to deadlock against.
-        result = await reindex_knowledge(str(dest), project_id, db)
+        result = await reindex_knowledge(str(dest), project_id, db, knowledge_root=knowledge_dir)
         if not result or "error" in result:
             # The file is on disk and the list falls back to disk reads —
             # same visibility stance as knowledge_rw: written-but-unindexed
@@ -614,7 +614,9 @@ async def update_knowledge(
         async def _reindex_in_new_session():
             from api.database import AsyncSessionLocal
             async with AsyncSessionLocal() as new_db:
-                await reindex_knowledge(km.fs_path, project_id, new_db)
+                await reindex_knowledge(
+                    km.fs_path, project_id, new_db, knowledge_root=knowledge_dir,
+                )
             if cache is not None:
                 cache.invalidate(project_id)
 

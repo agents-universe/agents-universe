@@ -390,6 +390,51 @@ def test_validate_command_denies_absolute_path_to_sibling(tmp_path):
     assert reason is not None
 
 
+def test_validate_command_escaped_parens_do_not_hide_find_exec(tmp_path):
+    """Escaped parens are literal find grouping, but shlex drops the backslash
+    and the separator splitter treated them as command boundaries — -delete
+    and -exec became their own segment's command word, skipping the find
+    guard entirely."""
+    for command in (
+        r"find . \( -true \) -delete",
+        r"find . \( -true \) -exec sh -c 'cat /etc/passwd' \;",
+    ):
+        reason = validate_command(command, cwd=tmp_path, project_root=tmp_path)
+        assert reason is not None and "find" in reason, command
+    # Legitimate grouping with a non-executing action still passes.
+    assert validate_command(
+        r"find . \( -name '*.py' \) -print", cwd=tmp_path, project_root=tmp_path
+    ) is None
+
+
+def test_validate_command_rejects_git_config_env_injection(tmp_path):
+    """GIT_CONFIG_COUNT/KEY_n/VALUE_n is the env twin of `git -c`: it hands
+    git arbitrary executable config (diff.external, core.sshCommand, ...)."""
+    command = (
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external "
+        "GIT_CONFIG_VALUE_0='cat /etc/passwd' git diff"
+    )
+    reason = validate_command(command, cwd=tmp_path, project_root=tmp_path)
+    assert reason is not None and "GIT_CONFIG_COUNT" in reason
+
+
+def test_validate_command_rejects_run_time_command_words_in_bash_mode(tmp_path):
+    """Bash mode has no command allowlist; the blocklist scans literal text,
+    so a command name assembled at run time expanded to any program."""
+    for command in (
+        "B=rl; A=cu$B; $A http://example.com",
+        "A=curl; ${A} http://example.com",
+        "$(echo curl) http://example.com",
+    ):
+        assert validate_command(
+            command, cwd=tmp_path, project_root=tmp_path, allow_substitution=True
+        ) is not None, command
+    # Expansion in an argument is still data.
+    assert validate_command(
+        "echo $HOME", cwd=tmp_path, project_root=tmp_path, allow_substitution=True
+    ) is None
+
+
 def test_validate_command_substitution_literal_dollar_filename(tmp_path):
     """`cat file$` — a trailing $ is a literal filename character, not
     command substitution (only a bare `$` or directory-attached `/$` is).
@@ -1127,6 +1172,22 @@ def test_browser_url_gate_blocks_inet_aton_alternate_ip_forms(tmp_path, monkeypa
     _check_browser_url("http://010.0.0.1/")  # 8.0.0.1 — public
     _check_browser_url("http://8.8.8.8/")
     _check_browser_url("http://example.com/")
+
+
+def test_websocket_gate_maps_ws_schemes_and_blocks_internal_hosts(monkeypatch):
+    """``route`` never sees ws/wss handshakes; the websocket gate must apply
+    the same literal host/port rules to the TLS-equivalent HTTP URL."""
+    from agent_core.tools.browser_playwright import _check_websocket_url
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    _check_websocket_url("wss://example.com/socket")
+    _check_websocket_url("ws://8.8.8.8:5173/socket")
+    with pytest.raises(Exception, match="Blocked metadata host"):
+        _check_websocket_url("ws://169.254.169.254/latest")
+    with pytest.raises(Exception, match="Blocked IP"):
+        _check_websocket_url("ws://10.0.0.5/socket")  # hygiene:allow-url
+    with pytest.raises(Exception, match="Blocked IP"):
+        _check_websocket_url("wss://2130706433/socket")
 
 
 def test_api_request_rejects_inet_aton_alternate_ip_forms(monkeypatch):

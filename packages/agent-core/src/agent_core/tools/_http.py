@@ -30,6 +30,11 @@ def _header_value_problem(value: str) -> str | None:
         return "contains a non-ASCII character"
     if any(ch != "\t" and ord(ch) < 0x20 for ch in value):
         return "contains a control character (a pasted trailing newline, perhaps)"
+    # h11 rejects leading/trailing OWS and echoes the whole value in the
+    # error — for a rendered secret that message IS the credential. Interior
+    # spaces/tabs between non-space runs are legal.
+    if value != value.strip(" \t"):
+        return "has leading or trailing whitespace (a pasted trailing space, perhaps)"
     return None
 
 

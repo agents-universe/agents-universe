@@ -26,6 +26,8 @@ from .base import Tool, ToolContext
 _NAME_MAX = 255
 _DESCRIPTION_MAX = 2000
 _ENV_MAX = 2000
+# Matches models/schedule.py's String(100) and the tool schema's maxLength.
+_CRON_MAX = 100
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _DEFAULT_TZ = "Asia/Shanghai"
 
@@ -39,6 +41,18 @@ _SECRET_HINTS = (
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_bool(value: Any) -> bool:
+    """Coerce a tool argument to bool, honoring stringified booleans.
+
+    Tool arguments arrive as untyped JSON values; models routinely stringify
+    scalars. ``bool("false")`` is True, which would create an enabled task
+    when the caller asked for a disabled one.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(value)
 
 
 def _secret_hint(prompt: str) -> str | None:
@@ -195,6 +209,11 @@ class SchedulerTool(Tool):
         return result.scalar_one_or_none()
 
     def _check_cron(self, cron_expr: str, timezone_name: str) -> dict[str, Any] | None:
+        # validate_cron accepts arbitrarily long comma lists; the column is
+        # String(100), so overlong input would raise DataError at commit on
+        # strict dialects (MSSQL/MySQL).
+        if len(cron_expr) > _CRON_MAX:
+            return {"error": f"cron_expr must be at most {_CRON_MAX} characters"}
         problem = validate_cron(cron_expr)
         if problem:
             return {"error": f"Invalid cron expression: {problem}"}
@@ -266,23 +285,28 @@ class SchedulerTool(Tool):
         return None
 
     async def _check_conversation(
-        self, context: ToolContext, conversation_id: str | None
+        self, context: ToolContext, conversation_id: str | None,
+        owner_id: str | None = None,
     ) -> dict[str, Any] | None:
         if not conversation_id:
             return None
         from api.models.conversation import Conversation
+        # A scheduled run executes and delivers as the task's creator
+        # (scheduled_runs.py filters Conversation.user_id == created_by), so
+        # an update must bind a conversation owned by the creator — not by
+        # whoever happens to be editing the task.
         row = (
             await context.db_session.execute(
                 select(Conversation).where(
                     Conversation.conversation_id == conversation_id,
                     Conversation.project_id == context.project_id,
-                    Conversation.user_id == context.user_id,
+                    Conversation.user_id == (owner_id or context.user_id),
                     Conversation.status == "active",
                 )
             )
         ).scalar_one_or_none()
         if row is None:
-            return {"error": "Target conversation not found in this project for the current user"}
+            return {"error": "Target conversation not found in this project for the task owner"}
         return None
 
     def _serialize(self, task: Any) -> dict[str, Any]:
@@ -313,7 +337,7 @@ class SchedulerTool(Tool):
         timezone_name = params.get("timezone") or _DEFAULT_TZ
         description = params.get("description")
         conversation_id = params.get("conversation_id")
-        enabled = params.get("enabled", True)
+        enabled = _as_bool(params.get("enabled", True))
 
         if not name:
             return {"error": "name is required"}
@@ -359,7 +383,7 @@ class SchedulerTool(Tool):
             conversation_id=conversation_id or None,
             cron_expr=cron_expr,
             timezone=timezone_name,
-            enabled=bool(enabled),
+            enabled=enabled,
             next_run_at=next_run_at(cron_expr, timezone_name, _now()) if enabled else None,
             created_by=context.user_id,
         )
@@ -401,7 +425,7 @@ class SchedulerTool(Tool):
         prompt = params.get("prompt") if params.get("prompt") is not None else row.prompt
         cron_expr = params.get("cron_expr") or row.cron_expr
         timezone_name = params.get("timezone") or row.timezone
-        enabled = row.enabled if params.get("enabled") is None else bool(params["enabled"])
+        enabled = row.enabled if params.get("enabled") is None else _as_bool(params["enabled"])
         conversation_id = (
             params.get("conversation_id")
             if params.get("conversation_id") is not None
@@ -430,20 +454,27 @@ class SchedulerTool(Tool):
             params.get("conversation_id") is not None
             and params.get("conversation_id") != row.conversation_id
         ):
-            conv_error = await self._check_conversation(context, conversation_id)
+            conv_error = await self._check_conversation(
+                context, conversation_id, owner_id=row.created_by,
+            )
             if conv_error:
                 return conv_error
 
+        # Validate every field BEFORE mutating the shared row: an error
+        # return leaves the change dirty in the session otherwise, and the
+        # next tool's commit flushes the rejected update.
+        name = row.name
         if params.get("name") is not None:
             name = str(params["name"]).strip()
             if not name or len(name) > _NAME_MAX:
                 return {"error": f"name must be 1-{_NAME_MAX} characters"}
-            row.name = name
         if params.get("description") is not None:
             description = params["description"] or None
             if description and len(description) > _DESCRIPTION_MAX:
                 return {"error": f"description must be at most {_DESCRIPTION_MAX} characters"}
-            row.description = description
+        else:
+            description = row.description
+        env_json = row.env_json
         if params.get("env") is not None:
             env = params["env"] or {}
             if not isinstance(env, dict):
@@ -453,8 +484,20 @@ class SchedulerTool(Tool):
             # column and strict dialects (MSSQL) raised DataError at commit.
             if env_json and len(env_json) > _ENV_MAX:
                 return {"error": f"env is too large (max {_ENV_MAX} characters as JSON)"}
-            row.env_json = env_json
 
+        # Capture cadence state BEFORE the assignments below overwrite it. A
+        # name-only update must not push a due occurrence (next_run_at <=
+        # now, scheduler tick not yet fired) into the future; the REST
+        # router's PATCH follows the same rule.
+        cadence_changed = (
+            cron_expr != row.cron_expr
+            or timezone_name != row.timezone
+            or enabled != bool(row.enabled)
+        ) or (enabled and row.next_run_at is None)
+
+        row.name = name
+        row.description = description
+        row.env_json = env_json
         row.target_type = target_type
         row.script_id = script_id if target_type == "script" else None
         row.spec_slug = spec_slug if target_type == "playwright" else None
@@ -464,7 +507,8 @@ class SchedulerTool(Tool):
         row.cron_expr = cron_expr
         row.timezone = timezone_name
         row.enabled = enabled
-        row.next_run_at = next_run_at(cron_expr, timezone_name, _now()) if enabled else None
+        if cadence_changed:
+            row.next_run_at = next_run_at(cron_expr, timezone_name, _now()) if enabled else None
         row.updated_at = _now()
         await context.db_session.commit()
         return {"success": True, **self._serialize(row)}

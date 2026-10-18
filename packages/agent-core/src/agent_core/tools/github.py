@@ -160,15 +160,16 @@ class GitHubTool(Tool):
                 return {"error": f"Unknown operation: {operation}"}
             return await handler(params, api_url, headers, http)
         except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else ""
-            status = e.response.status_code
+            status = e.response.status_code if e.response else "error"
             # Gateways echo the submitted credential back in error bodies
             # ("Bad credentials: <token>") — the same pattern kong.py
-            # redacts. Scrub the resolved token before the body reaches the
-            # LOG as well as the LLM/history, then truncate so a masked value
-            # is never cut off.
-            body = redact_secrets(body, {"git": token})[:500]
-            _log.warning("github %s HTTP %d: %s", operation, status, body[:200])
+            # redacts. Redact BEFORE truncating so a credential straddling
+            # the cut is not left half-matched and partially leaked.
+            body = (
+                redact_secrets(e.response.text, {"git": token})[:500]
+                if e.response else ""
+            )
+            _log.warning("github %s HTTP %s: %s", operation, status, body[:200])
             hint = ""
             if status == 403:
                 hint = (

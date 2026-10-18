@@ -43,9 +43,24 @@ def _http_error_message(client: "_JiraClient", e: httpx.HTTPStatusError,
     Kept in one place so the two cannot drift.
     """
     status = e.response.status_code if e.response is not None else "error"
-    body = _redact(client, e.response.text[:500])[:500] if e.response is not None else ""
+    # Redact BEFORE truncating: a body cut mid-credential no longer contains
+    # the whole secret, so the pattern match misses and its prefix leaks.
+    body = _redact(client, e.response.text)[:500] if e.response is not None else ""
     _log.warning("jira %s HTTP %s: %s", operation, status, body[:200])
     return f"Jira API returned {status}: {body}"
+
+
+class _StatusBody:
+    """Minimal response stand-in carrying what the error formatter reads.
+
+    ``_get_capped`` consumes a bounded prefix of an error body while the
+    response is still streaming; httpx never records ``_content`` for a
+    streamed response, so the real object's ``.text`` raises ResponseNotRead.
+    """
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
 
 
 def _failure_text(client: "_JiraClient", e: BaseException, operation: str) -> str:
@@ -63,6 +78,10 @@ def _failure_text(client: "_JiraClient", e: BaseException, operation: str) -> st
 # limit is instance-configured and often lower than this — past it the upload
 # is a slow way to get a 413.
 _MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+# Error bodies are quoted in tool results; a bounded prefix is enough to carry
+# Jira's errorMessages/message JSON without buffering a hostile body whole.
+_MAX_ERROR_BODY = 64_000
 
 
 def _attachment_too_large(rel_path: str, size: int, *, upstream: bool = False) -> dict[str, Any]:
@@ -549,7 +568,26 @@ class _JiraClient:
         async with self._http.stream(
             method, url, headers=self._headers, json=json_body
         ) as resp:
-            resp.raise_for_status()
+            status = getattr(resp, "status_code", 200)
+            if status >= 400:
+                # Read a bounded prefix of the error body BEFORE raising:
+                # response.text on a still-streaming response raises
+                # ResponseNotRead, which escaped the tool handler and hid the
+                # real HTTP error. The cap keeps a hostile error body from
+                # being buffered whole.
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) >= _MAX_ERROR_BODY:
+                        break
+                raise httpx.HTTPStatusError(
+                    f"HTTP {status} for {url}",
+                    request=getattr(resp, "request", None),
+                    response=_StatusBody(
+                        status,
+                        bytes(body[:_MAX_ERROR_BODY]).decode("utf-8", "replace"),
+                    ),
+                )
             total = 0
             chunks: list[bytes] = []
             async for chunk in resp.aiter_bytes():

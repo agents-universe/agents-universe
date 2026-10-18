@@ -65,6 +65,35 @@ def _context_window(model: str) -> int:
     return 1_048_576
 
 
+# Output-token ceilings per model family. Agent configs default max_tokens to
+# 128000 (agent.py AgentConfig), which Gemini rejects with 400
+# INVALID_ARGUMENT. The Anthropic and OpenAI providers clamp for the same
+# reason; Gemini must not forward the default raw.
+def _max_output_tokens(model: str) -> int:
+    m = model.lower()
+    if "gemini-2.5" in m or "gemini-3" in m:
+        # The API's upper bound is exclusive, so 65535 is the largest valid
+        # request for the 65536-token families.
+        return 65_535
+    # 1.5/2.0 families cap at 8192.
+    return 8_192
+
+
+# Finish reasons that mean the model produced content but it was blocked or
+# withheld. Masking any of these as END_TURN would end the turn silently:
+# no truncation warning, no refusal signal, the UI never learns why.
+_BLOCKED_FINISH_REASONS = frozenset({
+    "SAFETY",
+    "RECITATION",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+    "IMAGE_SAFETY",
+    "IMAGE_PROHIBITED_CONTENT",
+    "IMAGE_RECITATION",
+})
+
+
 def _part_text(part) -> str | None:
     """Part.text raises ValueError when the part carries no text field
     (unlike the old SDK, which returned None)."""
@@ -72,6 +101,14 @@ def _part_text(part) -> str | None:
         return part.text
     except ValueError:
         return None
+
+
+async def _prepend_chunk(first, rest):
+    """Yield an already-consumed first chunk before iterating *rest*."""
+    if first is not None:
+        yield first
+    async for chunk in rest:
+        yield chunk
 
 
 class GoogleGeminiProvider(LLMProvider):
@@ -232,7 +269,7 @@ class GoogleGeminiProvider(LLMProvider):
         max_tokens: int, temperature: float, thinking: bool = True,
     ) -> genai_types.GenerateContentConfig:
         kwargs: dict = dict(
-            max_output_tokens=max_tokens,
+            max_output_tokens=min(max_tokens, _max_output_tokens(self._model_name)),
             temperature=temperature,
             system_instruction=system or None,
             tools=self._to_gemini_tools(tools) if tools else None,
@@ -263,7 +300,7 @@ class GoogleGeminiProvider(LLMProvider):
             return StopReason.TOOL_USE
         if fr_name == "MAX_TOKENS":
             return StopReason.MAX_TOKENS
-        if fr_name in ("SAFETY", "RECITATION"):
+        if fr_name in _BLOCKED_FINISH_REASONS:
             return StopReason.REFUSAL
         return StopReason.END_TURN
 
@@ -317,7 +354,8 @@ class GoogleGeminiProvider(LLMProvider):
                 tool_calls.append({
                     "id": f"call_{uuid.uuid4().hex[:12]}",
                     "type": "function",
-                    "function": {"name": fc.name, "arguments": json.dumps(dict(fc.args))},
+                    # A no-argument call reports args=None; dict(None) raises.
+                    "function": {"name": fc.name, "arguments": json.dumps(dict(fc.args or {}))},
                 })
                 continue
             text = _part_text(part)
@@ -353,6 +391,14 @@ class GoogleGeminiProvider(LLMProvider):
                 contents=contents,
                 config=config,
             )
+            # The SDK method is a coroutine that only builds the async
+            # iterator; the HTTP request is issued on the first iteration.
+            # Prefetch one chunk so a request-time ThinkingConfig rejection
+            # surfaces in this try instead of inside the loop below.
+            chunk_iter = chunk_stream.__aiter__()
+            first_chunk = await chunk_iter.__anext__()
+        except StopAsyncIteration:
+            first_chunk = None
         except Exception as exc:
             if config.thinking_config is not None and "think" in str(exc).lower():
                 self._disable_thinking(f"stream rejected thinking_config: {exc}")
@@ -361,6 +407,11 @@ class GoogleGeminiProvider(LLMProvider):
                     contents=contents,
                     config=self._request_config(system, tools, max_tokens, temperature, thinking=False),
                 )
+                chunk_iter = chunk_stream.__aiter__()
+                try:
+                    first_chunk = await chunk_iter.__anext__()
+                except StopAsyncIteration:
+                    first_chunk = None
             else:
                 raise
         tool_call_index = 0
@@ -376,7 +427,7 @@ class GoogleGeminiProvider(LLMProvider):
         # (see _continuation_target_index) instead of assuming the most
         # recent call - parallel calls interleave their continuation chunks.
         seen_arg_keys: dict[int, set[str]] = {}
-        async for chunk in chunk_stream:
+        async for chunk in _prepend_chunk(first_chunk, chunk_iter):
             # Capture usage BEFORE the content short-circuits below: Gemini
             # reports usage_metadata on the terminal chunk, which carries
             # finish_reason but no parts — the old placement (after the
@@ -457,7 +508,7 @@ class GoogleGeminiProvider(LLMProvider):
             fr_name = str(getattr(last_finish_reason, "name", ""))
             if fr_name == "MAX_TOKENS":
                 yield StreamChunk(finish_reason="max_tokens", stop_reason=StopReason.MAX_TOKENS, usage=usage_dict)
-            elif fr_name in ("SAFETY", "RECITATION"):
+            elif fr_name in _BLOCKED_FINISH_REASONS:
                 yield StreamChunk(finish_reason="refusal", stop_reason=StopReason.REFUSAL, usage=usage_dict)
             else:
                 yield StreamChunk(finish_reason="stop", stop_reason=StopReason.END_TURN, usage=usage_dict)

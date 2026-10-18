@@ -291,8 +291,10 @@ def _check_allowlist_per_segment(command: str) -> str | None:
     Leading VAR=value assignments are skipped to reach the actual command
     token.  Returns None if all segments pass, else the first offending token.
     """
-    # Only chain operators, NOT ( ) — see docstring.
-    _chain_seps = frozenset({"&&", "||", ";;", ";", "|", "&"})
+    # Only chain operators, NOT ( ) — see docstring. "|&" is bash's
+    # pipe-with-stderr operator and shlex emits it as one token; without it
+    # the second command of `git|&rm -rf *` was never allowlist-checked.
+    _chain_seps = frozenset({"&&", "||", ";;", ";", "|", "|&", "&"})
 
     for line, is_heredoc_body in split_logical_lines(command):
         if is_heredoc_body:
@@ -474,7 +476,18 @@ def _required_node_bins(pkg_dir: Path, command: str) -> list[str]:
     needs_typescript = "typescript" in declared or re.search(r"\btsc\b|typecheck", command)
     needs_eslint = "eslint" in declared or re.search(r"\beslint\b|lint", command)
     if needs_playwright:
-        requirements.append(("@playwright/test", pkg_dir / "node_modules/@playwright/test", "playwright"))
+        # The bare `playwright` package also ships the CLI, and a project that
+        # declares only it will never gain node_modules/@playwright/test from
+        # `npm install` — checking that fixed path blocked every command with
+        # "required local binaries are still missing after npm rebuild".
+        playwright_pkg = (
+            "playwright"
+            if "playwright" in declared and "@playwright/test" not in declared
+            else "@playwright/test"
+        )
+        requirements.append(
+            (playwright_pkg, pkg_dir / "node_modules" / playwright_pkg, "playwright")
+        )
     if needs_typescript:
         requirements.append(("typescript", pkg_dir / "node_modules/typescript", "tsc"))
     if needs_eslint:
@@ -538,7 +551,11 @@ async def ensure_node_deps(
         npm_cache = _resolve_npm_cache_dir(pkg_dir, command)
         if npm_cache is None:
             return "Failed to prepare npm cache: no writable cache directory found"
-        prefix = f"npm_config_cache={npm_cache} "
+        # The cache value can come from the project's .npmrc (a file that may
+        # arrive with a cloned repo) or from an env prefix in the command.
+        # Interpolating it raw let `cache=/tmp/$(id)` run command substitution
+        # in the shell that starts this install.
+        prefix = f"npm_config_cache={shlex.quote(npm_cache)} "
     else:
         prefix = ""
     lockfile = pkg_dir / "package-lock.json"
@@ -1006,7 +1023,10 @@ class ShellTool(Tool):
             pkg_dir = _find_package_dir(cwd, project_root, command) or Path(cwd)
             cache_dir = _resolve_npm_cache_dir(pkg_dir, command)
             if cache_dir is not None:
-                command = f"npm_config_cache={cache_dir} {command}"
+                # Same quoting as the install phase: the value is
+                # attacker-influenced through .npmrc/env prefixes and is
+                # word-split by the shell otherwise.
+                command = f"npm_config_cache={shlex.quote(cache_dir)} {command}"
         return command
 
     async def _ensure_node_deps(self, command: str, cwd: str, context: ToolContext) -> str | None:

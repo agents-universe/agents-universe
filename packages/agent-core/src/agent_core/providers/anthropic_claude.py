@@ -447,17 +447,21 @@ class AnthropicClaudeProvider(LLMProvider):
         payload: dict = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": clamped_max,
-            "temperature": temperature,
             "messages": anthropic_messages,
         }
         if system:
             payload["system"] = system
         if tools:
             payload["tools"] = self._to_anthropic_tools(tools)
-        if thinking:
-            param = self._thinking_param(clamped_max)
-            if param:
-                payload["thinking"] = param
+        thinking_param = self._thinking_param(clamped_max) if thinking else None
+        if thinking_param:
+            payload["thinking"] = thinking_param
+        else:
+            # The Messages API rejects any temperature other than 1 while
+            # thinking is enabled. Omitting the field keeps the API default
+            # (1); sending the agent's 0.0 would 400 every call and trip the
+            # retry-without-thinking fallback, silently disabling thinking.
+            payload["temperature"] = temperature
         return payload
 
     async def _gateway_complete(
@@ -639,6 +643,16 @@ class AnthropicClaudeProvider(LLMProvider):
                         } if usage else None,
                     )
 
+                elif event_type == "error":
+                    # The direct SDK raises on mid-stream error events; the
+                    # gateway path must too. Silently returning here ended the
+                    # turn as a normal END_TURN with a truncated reply.
+                    err = event.get("error") or {}
+                    raise RuntimeError(
+                        "Anthropic gateway stream error: "
+                        f"{err.get('type') or 'error'}: {err.get('message') or 'no message'}"
+                    )
+
     # ─── Lifecycle ────────────────────────────────────────────────────────
 
     async def close(self) -> None:
@@ -658,17 +672,19 @@ class AnthropicClaudeProvider(LLMProvider):
         kwargs: dict = dict(
             model=self._model,
             max_tokens=clamped_max,
-            temperature=temperature,
             messages=anthropic_messages,
         )
         if system:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._to_anthropic_tools(tools)
-        if thinking:
-            param = self._thinking_param(clamped_max)
-            if param:
-                kwargs["thinking"] = param
+        thinking_param = self._thinking_param(clamped_max) if thinking else None
+        if thinking_param:
+            kwargs["thinking"] = thinking_param
+        else:
+            # Any temperature other than 1 is rejected while thinking is on;
+            # the API default is 1, so omit the field in that case.
+            kwargs["temperature"] = temperature
         return kwargs
 
     async def complete(
@@ -689,6 +705,9 @@ class AnthropicClaudeProvider(LLMProvider):
             if "thinking" in kwargs and _thinking_rejected(exc):
                 self._disable_thinking(f"request rejected thinking param: {exc}")
                 kwargs.pop("thinking", None)
+                # The retry dropped the thinking param, so the temperature
+                # that was omitted for it can go back in.
+                kwargs.setdefault("temperature", temperature)
                 response = await self._client.messages.create(**kwargs)
             else:
                 raise

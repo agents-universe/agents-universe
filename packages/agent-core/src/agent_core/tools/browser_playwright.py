@@ -81,14 +81,17 @@ def _forget_context(owner: Any, context: Any) -> None:
         contexts.remove(context)
 
 
-async def _register_ssrf_route(page: Any) -> None:
-    """Install the SSRF guard on *page* for its whole lifetime.
+async def _register_ssrf_route(ctx: Any) -> None:
+    """Install the SSRF guard on a browser *context* for its whole lifetime.
 
     It was first registered inside ``goto`` and unrouted in finally — a later
     click (link navigation), form submit, or evaluate("location=...") navigated
     WITHOUT any check, letting an internal/metadata page be read by
-    get_text/evaluate afterwards. Registered at page creation, every request of
-    every subsequent navigation is validated before it leaves the browser.
+    get_text/evaluate afterwards. It then moved to the page, which still left
+    popups (``window.open``) and requests made by a page's service worker
+    outside the guard. A context route covers every page in the context —
+    including popups — and service workers are blocked at context creation
+    because their requests bypass routing entirely.
     """
 
     async def _ssrf_route(route, req):
@@ -109,7 +112,68 @@ async def _register_ssrf_route(page: Any) -> None:
         except Exception:
             pass  # navigation may already be torn down
 
-    await page.route("**/*", _ssrf_route)
+    await ctx.route("**/*", _ssrf_route)
+
+
+def _check_websocket_url(url: str) -> None:
+    """Validate a ws:// or wss:// target with the same host/port/IP rules.
+
+    ``validate_url`` only accepts http(s), so the scheme is mapped to its
+    TLS-equivalent HTTP form and everything else is checked unchanged.
+    """
+    scheme, sep, rest = url.partition(":")
+    mapped = "https" if scheme.lower() == "wss" else "http"
+    _check_browser_url(f"{mapped}{sep}{rest}")
+
+
+async def _register_ws_ssrf_route(ctx: Any) -> None:
+    """Validate WebSocket handshakes; ``route`` never sees ws/wss requests.
+
+    Without this a page could open ``new WebSocket("ws://169.254.169.254/")``
+    (or any internal service) and reach it unchecked. ``route_web_socket``
+    only exists in Playwright >= 1.48, hence the feature check.
+    """
+    route_web_socket = getattr(ctx, "route_web_socket", None)
+    if route_web_socket is None:
+        return
+
+    async def _ws_route(ws):
+        try:
+            _check_websocket_url(ws.url)
+        except SSRFError as e:
+            _log.warning("browser blocked SSRF websocket: %s (%s)", ws.url, e)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            return
+        try:
+            await ws.connect_to_server()
+        except Exception:
+            pass  # page may already be gone
+
+    await route_web_socket("**/*", _ws_route)
+
+
+async def _new_guarded_context(
+    browser: Any, tool_context: ToolContext, **extra: Any
+) -> Any:
+    """Create a context whose every request passes the SSRF guard.
+
+    Service workers are blocked because their requests bypass route handlers
+    entirely; without that a page could register one and reach any internal
+    target. The routes are installed before the first page exists so a
+    WebSocket opened while the page loads is already covered.
+    """
+    ctx = await browser.new_context(
+        ignore_https_errors=not getattr(tool_context, "browser_ssl_verify", True),
+        accept_downloads=True,
+        service_workers="block",
+        **extra,
+    )
+    await _register_ssrf_route(ctx)
+    await _register_ws_ssrf_route(ctx)
+    return ctx
 
 
 def _register_context(owner: Any, context: Any) -> None:
@@ -164,11 +228,12 @@ async def _close_context(context: ToolContext, owner: Any, ctx: Any) -> None:
 async def _get_page(context: ToolContext, owner: Any) -> Any:
     """Return this task's live page, rebuilding context/page when needed.
 
-    Every page the tool drives comes from here, so the SSRF route is installed
-    exactly once per page on the only path that can create one. The context is
-    explicit (rather than ``browser.new_page``'s implicit one) because
-    recording has to swap in a context created with ``record_video_dir`` —
-    Playwright cannot add video to a context after the fact.
+    Every page the tool drives comes from here. Contexts are built by
+    ``_new_guarded_context``, which installs the SSRF guard for every page in
+    the context (popups included). The context is explicit rather than
+    ``browser.new_page``'s implicit one because recording has to swap in a
+    context created with ``record_video_dir`` — Playwright cannot add video to
+    a context after the fact.
     """
     browser = await context.ensure_browser()
 
@@ -201,21 +266,13 @@ async def _get_page(context: ToolContext, owner: Any) -> Any:
             ctx = None
 
     if ctx is None:
-        ctx = await browser.new_context(
-            ignore_https_errors=not getattr(context, "browser_ssl_verify", True),
-            accept_downloads=True,
-        )
+        ctx = await _new_guarded_context(browser, context)
         context._browser_context = ctx
         _register_context(owner, ctx)
         page = None
 
     if page is None:
         page = await ctx.new_page()
-    # Every page this tool can drive funnels through here, so the SSRF route is
-    # installed exactly once per page — including a page rebuilt on a context
-    # that outlived the old one (an SSRF redirect block closes the page and
-    # leaves its context open), which registering only on fresh contexts missed.
-    await _register_ssrf_route(page)
 
     context._browser_page = page
     _register_page(owner, page)
@@ -554,7 +611,7 @@ class BrowserPlaywrightTool(Tool):
                                 width: Math.round(r.width), height: Math.round(r.height),
                             },
                             fullPage: {
-                                x: Math.round(r.x),
+                                x: Math.round(r.x + window.scrollX),
                                 y: Math.round(r.y + window.scrollY),
                                 width: Math.round(r.width),
                                 height: Math.round(r.height),
@@ -619,18 +676,15 @@ class BrowserPlaywrightTool(Tool):
                 tmp_dir.mkdir(parents=True, exist_ok=True)
                 browser = await context.ensure_browser()
                 ctx_kwargs: dict[str, Any] = {
-                    "ignore_https_errors": not getattr(context, "browser_ssl_verify", True),
-                    "accept_downloads": True,
                     "record_video_dir": str(tmp_dir),
                     "record_video_size": {"width": 1280, "height": 720},
                 }
                 if state:
                     ctx_kwargs["storage_state"] = state
-                new_ctx = await browser.new_context(**ctx_kwargs)
+                new_ctx = await _new_guarded_context(browser, context, **ctx_kwargs)
                 context._browser_context = new_ctx
                 _register_context(owner, new_ctx)
                 page = await new_ctx.new_page()
-                await _register_ssrf_route(page)
                 context._browser_page = page
                 _register_page(owner, page)
 

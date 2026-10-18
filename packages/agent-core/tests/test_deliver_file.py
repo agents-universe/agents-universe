@@ -72,6 +72,27 @@ async def test_deliver_file_already_in_media_dir_no_copy(project):
     assert rec["size"] == 5
 
 
+async def test_media_dir_file_with_unservable_name_gets_a_copy(project):
+    """A file already in the media dir is only returned in place when its name
+    passes the media router whitelist; otherwise the URL it would produce is a
+    guaranteed 400, so it must be copied under a generated name."""
+    media_dir = project / ".tmp" / "media" / "conv"
+    media_dir.mkdir(parents=True)
+    existing = media_dir / "my report.txt"
+    existing.write_text("hello", encoding="utf-8")
+
+    result = await DeliverFileTool().execute(
+        {"path": ".tmp/media/conv/my report.txt"},
+        make_context(str(project)),
+    )
+    rec = result["files"][0]
+    fname = rec["url"].rsplit("/", 1)[-1]
+    assert _MEDIA_FILENAME_RE.match(fname), f"unsafe media filename: {fname}"
+    assert fname != "my report.txt"
+    assert (media_dir / fname).read_text(encoding="utf-8") == "hello"
+    assert rec["name"] == "my report.txt"
+
+
 async def test_deliver_file_path_escape_rejected(project, tmp_path):
     # a file OUTSIDE the workspace must not be reachable via ../ or abs path
     outside = tmp_path / "secret.txt"

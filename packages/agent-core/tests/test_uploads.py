@@ -86,6 +86,29 @@ def test_virtual_media_path_prefers_attachment_store(tmp_path):
     assert payload.source == "attachment"
 
 
+def test_virtual_media_alias_enforces_size_cap(tmp_path):
+    """The store-backed branch returned before the byte check, so the same
+    bytes were accepted or rejected depending on how the path named them."""
+    ctx = make_context(tmp_path, {"big.bin": b"x" * 65})
+    with pytest.raises(UploadSourceError, match="above the 64B limit"):
+        resolve_upload_spec(ctx, {"path": ".tmp/media/c/big.bin"}, max_bytes=64)
+
+
+def test_path_source_rejects_symlink_to_hidden_file(tmp_path):
+    """The hidden-file guard ran on the request string only; a symlink with
+    an innocuous name resolved to .env and uploaded its bytes."""
+    (tmp_path / ".env").write_bytes(b"SECRET=1")
+    try:
+        (tmp_path / "innocuous").symlink_to(tmp_path / ".env")
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+    with pytest.raises(UploadSourceError, match="Hidden files"):
+        resolve_upload_spec(
+            make_context(tmp_path), {"source": "path", "path": "innocuous"}
+        )
+
+
 def test_attachment_source_lookup_and_miss_hint(tmp_path):
     ctx = make_context(tmp_path, {"upload_ab12.csv": b"a,b\n"})
     payload = resolve_upload_spec(ctx, {"source": "attachment", "name": "upload_ab12.csv"})

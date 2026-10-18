@@ -71,6 +71,32 @@ def _text_width(draw: Any, text: str, font: Any) -> int:
         return cjk * font.size + (len(text) - cjk) * font.size // 2
 
 
+def _coord(value: Any, default: float = 0.0) -> float:
+    """Coerce a numeric annotation field; LLMs routinely stringify numbers.
+
+    One malformed area must not abort the whole annotation, so anything
+    non-numeric falls back to the caller's default instead of raising.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _footer_entries(focus_areas: list[dict]) -> list[tuple[int, str]]:
+    """Pair each detail with its focus-area number so chips and footer agree.
+
+    The number is the area's position among ALL focus areas, not among the
+    filtered details — otherwise an area without a detail renumbers every
+    later footer entry and the markers point at the wrong chip.
+    """
+    return [
+        (i + 1, str(fa.get("detail")))
+        for i, fa in enumerate(focus_areas)
+        if fa.get("detail")
+    ]
+
+
 class ImageAnnotatorTool(Tool):
     name = "image_annotator"
     prompt_hint = (
@@ -187,19 +213,18 @@ class ImageAnnotatorTool(Tool):
             return {"error": f"Failed to open image: {e}"}
         img_w, img_h = img.size
 
-        title = params.get("title", "")
-        subtitle = params.get("subtitle", "")
-        # The schema declares arrays but LLMs routinely stringify them —
-        # a bare string would iterate character-by-character below and crash
-        # on .get(). A list of strings crashes the same way. Reject both
-        # instead of producing an unannotated image.
+        title = str(params.get("title") or "")
+        subtitle = str(params.get("subtitle") or "")
+        # The schema declares arrays but LLMs routinely stringify them or send
+        # a single object — either would iterate character/key-wise below and
+        # crash on .get(). Reject anything that is not an array of objects.
         focus_areas = params.get("focus_areas", []) or []
         annotations = params.get("annotations", []) or []
         if (
-            isinstance(focus_areas, str)
-            or isinstance(annotations, str)
-            or (isinstance(focus_areas, list) and any(not isinstance(fa, dict) for fa in focus_areas))
-            or (isinstance(annotations, list) and any(not isinstance(ann, dict) for ann in annotations))
+            not isinstance(focus_areas, list)
+            or not isinstance(annotations, list)
+            or any(not isinstance(fa, dict) for fa in focus_areas)
+            or any(not isinstance(ann, dict) for ann in annotations)
         ):
             return {
                 "error": (
@@ -220,11 +245,22 @@ class ImageAnnotatorTool(Tool):
         chip_pad = max(6, round(6 * scale))
 
         # ---- header / footer geometry ----
-        header_height = (30 if title else 0) + (20 if subtitle else 0)
+        # The header grows with the scaled fonts — fixed 30/20px bands put the
+        # 2x title past the divider and over the pasted screenshot.
+        title_y = 6
+        subtitle_y = 6 + (font_title.size + 6 if title else 0)
+        if subtitle:
+            header_height = subtitle_y + font_small.size + 6
+        elif title:
+            header_height = title_y + font_title.size + 6
+        else:
+            header_height = 0
 
-        footer_lines = [fa.get("detail", "") for fa in focus_areas if fa.get("detail")]
+        # Keep each detail paired with its focus-area number so chips and
+        # footer entries agree when only some areas carry a detail.
+        footer_entries = _footer_entries(focus_areas)
         footer_line_h = font_small.size + 7
-        footer_height = (8 + len(footer_lines) * footer_line_h + 6) if footer_lines else 0
+        footer_height = (8 + len(footer_entries) * footer_line_h + 6) if footer_entries else 0
 
         canvas_h = img_h + header_height + footer_height
         canvas = Image.new("RGBA", (img_w, canvas_h), (255, 255, 255, 255))
@@ -313,20 +349,20 @@ class ImageAnnotatorTool(Tool):
             color_solid = (*color_rgb, 255)
 
             if all(k in fa for k in ("xPct", "yPct", "widthPct", "heightPct")):
-                x = int(fa["xPct"] / 100 * img_w)
-                y = int(fa["yPct"] / 100 * img_h) + header_height
-                w = int(fa["widthPct"] / 100 * img_w)
-                h = int(fa["heightPct"] / 100 * img_h)
+                x = int(_coord(fa["xPct"]) / 100 * img_w)
+                y = int(_coord(fa["yPct"]) / 100 * img_h) + header_height
+                w = int(_coord(fa["widthPct"]) / 100 * img_w)
+                h = int(_coord(fa["heightPct"]) / 100 * img_h)
             else:
-                x = int(fa.get("x", 0))
-                y = int(fa.get("y", 0)) + header_height
-                w = int(fa.get("width", 100))
-                h = int(fa.get("height", 50))
+                x = int(_coord(fa.get("x"), 0))
+                y = int(_coord(fa.get("y"), 0)) + header_height
+                w = int(_coord(fa.get("width"), 100))
+                h = int(_coord(fa.get("height"), 50))
 
             draw_hollow_box(x, y, w, h, color_solid)
 
-            label = fa.get("label", f"Focus {i + 1}")
-            chip_label = f"{i + 1}. {label}" if footer_lines else label
+            label = str(fa.get("label") or f"Focus {i + 1}")
+            chip_label = f"{i + 1}. {label}" if footer_entries else label
             cx, cy, cw = chip_geometry(d, x, y, w, h, chip_label)
             draw_chip(cx, cy, cw, color_solid)
             chip_texts.append((cx + chip_pad, cy + (chip_h - font_small.size) // 2 - 1, chip_label))
@@ -337,11 +373,11 @@ class ImageAnnotatorTool(Tool):
             color_rgb = parse_color(ann.get("color", "#FF6B00"))
             color_solid = (*color_rgb, 255)
 
-            x = int(ann.get("x", 0))
-            y = int(ann.get("y", 0)) + header_height
-            w = int(ann.get("w", 100))
-            h = int(ann.get("h", 50))
-            label = ann.get("label", "")
+            x = int(_coord(ann.get("x"), 0))
+            y = int(_coord(ann.get("y"), 0)) + header_height
+            w = int(_coord(ann.get("w"), 100))
+            h = int(_coord(ann.get("h"), 50))
+            label = str(ann.get("label") or "")
 
             if ann_type in ("box", "highlight"):
                 # Hollow highlight: keep the underlying content readable.
@@ -366,8 +402,8 @@ class ImageAnnotatorTool(Tool):
                 draw_chip(cx, cy, cw, color_solid)
                 chip_texts.append((cx + chip_pad, cy + (chip_h - font_small.size) // 2 - 1, label))
             elif ann_type == "arrow":
-                x2 = int(ann.get("x2", x + 50))
-                y2 = int(ann.get("y2", y + 50))
+                x2 = int(_coord(ann.get("x2"), x + 50))
+                y2 = int(_coord(ann.get("y2"), y + 50))
                 if "y2" in ann:
                     y2 += header_height
                 d.line([S(x), S(y), S(x2), S(y2)], fill=color_solid, width=S(outline_width))
@@ -393,18 +429,18 @@ class ImageAnnotatorTool(Tool):
             draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font_small)
 
         if title:
-            draw.text((10, 6), title, fill=_COLOR_TITLE, font=font_title)
+            draw.text((10, title_y), title, fill=_COLOR_TITLE, font=font_title)
             draw.line([(0, header_height - 1), (img_w, header_height - 1)],
                       fill=_COLOR_DIVIDER, width=1)
         if subtitle:
-            draw.text((10, 28 if title else 6), subtitle, fill=_COLOR_SUBTITLE, font=font_small)
+            draw.text((10, subtitle_y), subtitle, fill=_COLOR_SUBTITLE, font=font_small)
 
-        if footer_lines:
+        if footer_entries:
             div_y = img_h + header_height
             draw.line([(0, div_y + 1), (img_w, div_y + 1)], fill=_COLOR_DIVIDER, width=1)
             y_offset = div_y + 8
-            for i, detail in enumerate(footer_lines):
-                marker = f"[{i + 1}] "
+            for number, detail in footer_entries:
+                marker = f"[{number}] "
                 draw.text((10, y_offset), marker + detail, fill=_COLOR_DETAIL, font=font_small)
                 y_offset += footer_line_h
 

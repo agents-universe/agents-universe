@@ -201,6 +201,14 @@ class FakeContext:
         self.closed = False
         self.storage_state_value = {"cookies": [{"name": "session", "value": "s3cret"}], "origins": []}
         self.storage_state_calls = 0
+        self.routes: list[tuple[str, object]] = []
+        self.ws_routes: list[tuple[str, object]] = []
+
+    async def route(self, pattern: str, handler) -> None:
+        self.routes.append((pattern, handler))
+
+    async def route_web_socket(self, pattern: str, handler) -> None:
+        self.ws_routes.append((pattern, handler))
 
     async def new_page(self, **kwargs) -> FakePage:
         if self.closed:

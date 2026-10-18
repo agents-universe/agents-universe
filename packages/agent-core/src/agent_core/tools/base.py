@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -410,6 +411,15 @@ class ToolContext:
                 _log.debug("browser context close failed", exc_info=True)
         self._browser_contexts = []
         self._browser_context = None
+        # Closing the contexts above finalizes an in-flight video into its
+        # scratch dir. A recording that was never stopped is promised to be
+        # discarded at turn end — remove the dir the context just wrote to.
+        rec = getattr(self, "_browser_recording", None)
+        if isinstance(rec, dict) and rec.get("dir"):
+            try:
+                shutil.rmtree(rec["dir"], ignore_errors=True)
+            except Exception:
+                _log.debug("recording cleanup failed", exc_info=True)
         self._browser_recording = None
         pages = list(getattr(self, "_browser_pages", None) or [])
         own_page = getattr(self, "_browser_page", None)

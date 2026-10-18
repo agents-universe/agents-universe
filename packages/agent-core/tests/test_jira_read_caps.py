@@ -2,9 +2,10 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
-from agent_core.tools.jira import _JiraClient
+from agent_core.tools.jira import _JiraClient, _http_error_message
 
 
 class _StreamResp:
@@ -90,6 +91,52 @@ async def test_get_capped_raises_on_oversize():
 
     with pytest.raises(ValueError, match="too large"):
         await client.get_issue("DDM-1")
+
+
+class _ErrorStreamResp:
+    """Streamed error response: httpx never records _content, so .text raises
+    ResponseNotRead unless the body is consumed first."""
+
+    status_code = 404
+
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = chunks
+
+    async def aiter_bytes(self):
+        for c in self._chunks:
+            yield c
+
+
+class _ErrorStreamHTTP:
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = chunks
+
+    def stream(self, method, url, **kw):
+        chunks = self._chunks
+
+        class _Ctx:
+            async def __aenter__(self):
+                return _ErrorStreamResp(chunks)
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _Ctx()
+
+
+async def test_get_capped_error_body_is_read_before_raise():
+    """raise_for_status inside the stream context left the body unread;
+    formatting the error then hit ResponseNotRead and the real HTTP status
+    vanished behind an unexpected exception."""
+    http = _ErrorStreamHTTP([b'{"errorMessages": ["Issue does not exist"]}'])
+    client = _client(http)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        await client.get_issue("DDM-404")
+
+    assert excinfo.value.response.status_code == 404
+    assert "Issue does not exist" in excinfo.value.response.text
+    assert _http_error_message(client, excinfo.value).startswith("Jira API returned 404")
 
 
 async def test_search_sends_jql_via_capped_post():

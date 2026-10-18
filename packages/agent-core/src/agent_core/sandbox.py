@@ -777,8 +777,19 @@ def validate_command(
     for line, is_heredoc_body in split_logical_lines(command):
         if is_heredoc_body:
             continue
+        # Escaped parens are literal arguments (`find . \( -true \) -delete`),
+        # but shlex in posix mode drops the backslash and emits "(" / ")".
+        # The separator splitter below then treats them as command
+        # boundaries, turning -delete/-exec into a segment's command word and
+        # skipping the find guard. Sentinels keep the escaped tokens intact;
+        # the shell still receives the original text.
+        tokenized = (
+            line.replace("\\(", "\x01").replace("\\)", "\x02")
+            if "\\(" in line or "\\)" in line
+            else line
+        )
         try:
-            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer = shlex.shlex(tokenized, posix=True, punctuation_chars=True)
             lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError as exc:
@@ -844,6 +855,17 @@ def _validate_segment(
         return None
 
     cmd = tokens[i]
+    # In substitution-allowed mode (code_executor's bash branch) there is no
+    # command allowlist — the blocklist is the only gate, and it scans literal
+    # text. A command word built at run time (`B=rl; A=cu$B; $A ...`, or
+    # `$(echo curl)`) contains no blocked substring yet expands to any
+    # program, so refuse every expansion in command position.
+    if allow_substitution and ("$" in cmd or "`" in cmd):
+        return (
+            f"Command {cmd!r}: a command name built from a variable or "
+            "command substitution cannot be checked against the blocked "
+            "command list; use a literal command"
+        )
     # A ./-prefixed command executes an in-project script whose CONTENT was
     # never validated — `echo 'cat /etc/passwd' > run; chmod +x run; ./run`
     # smuggles an arbitrary host-read past every check (the `. run` dot-form
@@ -1339,6 +1361,12 @@ _EXECUTION_ENV_VARS = frozenset({
     "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 })
 
+# GIT_CONFIG_COUNT + the paired GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n inject
+# arbitrary git config exactly like `git -c`: diff.external, core.sshCommand,
+# core.pager and filter drivers all execute a value chosen by the command.
+# The indexed names cannot be enumerated in the set above.
+_GIT_CONFIG_ENV_RE = re.compile(r"^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$")
+
 
 def _check_assignment(tok: str, *, allow_dollar: bool,
                       assigned_vars: set[str] | None = None) -> str | None:
@@ -1353,7 +1381,7 @@ def _check_assignment(tok: str, *, allow_dollar: bool,
     rejected.
     """
     name, eq, value = tok.partition("=")
-    if name in _EXECUTION_ENV_VARS:
+    if name in _EXECUTION_ENV_VARS or _GIT_CONFIG_ENV_RE.match(name):
         return (
             f"Assignment to {name!r} is not allowed: it changes how commands "
             "are resolved or executed (path hijack, external diff/editor, "

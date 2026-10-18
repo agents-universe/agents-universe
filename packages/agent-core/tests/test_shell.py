@@ -1313,6 +1313,76 @@ def test_inject_npm_cache_env_uses_same_resolution_as_install(tmp_path, monkeypa
 
 
 @_skip_win32
+def test_inject_npm_cache_env_quotes_shell_metacharacters(tmp_path, monkeypatch):
+    """The cache value can come from a cloned repo's .npmrc; interpolating it
+    unquoted ran command substitution in the shell that started the command."""
+    import shlex
+
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    (tmp_path / ".npmrc").write_text("cache=.npm-cache;touch pwned\n", encoding="utf-8")
+
+    command = tool._inject_npm_cache_env("npm run build", str(tmp_path), str(tmp_path))
+    tokens = shlex.split(command)
+    # The metacharacter stays INSIDE the env value instead of ending it.
+    assert tokens[0] == f"npm_config_cache={tmp_path / '.npm-cache;touch pwned'}"
+    assert tokens[1:] == ["npm", "run", "build"]
+
+
+@_skip_win32
+@pytest.mark.asyncio
+async def test_ensure_node_deps_install_quotes_cache_value(tmp_path, monkeypatch):
+    """The dependency-install prefix interpolates the same .npmrc value."""
+    import shlex
+
+    tool = shell_module.ShellTool()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shell_module, "_NPM_CACHE_FALLBACK", "/definitely/not/writable")
+    (tmp_path / ".npmrc").write_text("cache=.npm-cache;touch pwned\n", encoding="utf-8")
+    ctx = make_context(project_fs_path=str(tmp_path))
+
+    installs: list[str] = []
+
+    def fake_install(*args, **kwargs):
+        installs.append(str(args[-1] if args else kwargs))
+        return make_proc(out=b"", err=b"", returncode=0)
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fake_install),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fake_install),
+    ):
+        result = await tool._ensure_node_deps("npm install", str(tmp_path), ctx)
+
+    assert result is None
+    tokens = shlex.split(installs[0])
+    assert tokens[0] == f"npm_config_cache={tmp_path / '.npm-cache;touch pwned'}"
+    assert tokens[1] == "npm"
+
+
+def test_required_node_bins_accepts_declared_playwright_package(tmp_path):
+    """A project that declares the bare `playwright` package never gains
+    node_modules/@playwright/test from npm install; requiring that fixed path
+    reported the deps as permanently missing."""
+    import json
+
+    (tmp_path / "package.json").write_text(
+        json.dumps({"devDependencies": {"playwright": "^1.46.0"}}), encoding="utf-8"
+    )
+    (tmp_path / "node_modules" / "playwright").mkdir(parents=True)
+    (tmp_path / "node_modules" / ".bin").mkdir()
+    (tmp_path / "node_modules" / ".bin" / "playwright").write_text("", encoding="utf-8")
+
+    assert shell_module._required_node_bins(tmp_path, "npx playwright test") == []
+
+
+def test_allowlist_checks_both_sides_of_bash_pipe_and_stderr():
+    """`|&` is one shlex token and bash's pipe-with-stderr operator; missing
+    it from the separator set left the second command unchecked."""
+    assert shell_module._check_allowlist_per_segment("git|&rm -rf *") == "rm"
+
+
+@_skip_win32
 def test_inject_npm_cache_env_leaves_explicit_cache_untouched(tmp_path):
     tool = shell_module.ShellTool()
     cmd = "NPM_CONFIG_CACHE=.npm-cache npm run typecheck"

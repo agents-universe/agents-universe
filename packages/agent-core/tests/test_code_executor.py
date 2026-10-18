@@ -536,6 +536,40 @@ async def test_bash_heredoc_not_falsely_rejected(sibling_projects, guarded_temp)
     assert "hello world" in result["stdout"]
 
 
+async def test_bash_heredoc_apostrophe_cannot_hide_obfuscated_command(
+    sibling_projects, guarded_temp
+):
+    """An apostrophe in a heredoc body made whole-code shlex raise; the raw
+    fallback then scanned the literal text and missed `c\\url` on a later
+    line, which bash unescapes back to `curl` and executes."""
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {
+            "code": "cat <<EOF\ndon't\nEOF\nc\\url http://example.com\n",
+            "language": "bash",
+        },
+        make_context(str(proj_a)),
+    )
+    assert "error" in result, result
+    assert "example.com" not in result.get("stdout", "")
+
+
+async def test_bash_command_assembled_from_variables_rejected(
+    sibling_projects, guarded_temp
+):
+    """The blocklist scans text, so `B=rl; A=cu$B; $A ...` expands to curl
+    with no blocked substring anywhere in the script."""
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {"code": "B=rl\nA=cu$B\n$A http://example.com\n", "language": "bash"},
+        make_context(str(proj_a)),
+    )
+    assert "error" in result, result
+    assert "example.com" not in result.get("stdout", "")
+
+
 async def test_bash_heredoc_space_before_delim(sibling_projects, guarded_temp):
     """`cat << EOF` (whitespace between << and the delimiter) is valid bash
     and must enter heredoc mode, not be validated as commands."""

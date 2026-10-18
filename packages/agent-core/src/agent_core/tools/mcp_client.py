@@ -115,9 +115,15 @@ def _validate_mcp_url(url: str, allowed_hosts: list[str] | None, allow_private: 
             from ._ssrf import validate_url as ssrf_validate_url
             ssrf_validate_url(url, allow_any_port=True)
             # DNS-level check (SSRF_ENABLED gate): a hostname resolving to an
-            # internal address is invisible to the literal checks above.
-            from ._http import validate_outbound_url
-            validate_outbound_url(url)
+            # internal address is invisible to the literal checks above. Run
+            # resolve_and_validate directly — validate_outbound_url re-applies
+            # the global port allowlist and defeats allow_any_port above (MCP
+            # endpoints are user-configured and legitimately run on any port).
+            from ._http import _is_ssrf_enabled
+            if _is_ssrf_enabled():
+                from ._ssrf import resolve_and_validate
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                resolve_and_validate(host, port)
         except Exception as exc:
             return f"SSRF check failed: {exc}"
 
@@ -372,7 +378,16 @@ class McpServerSession:
                 raise McpConnectError(
                     f"MCP server {self.slug!r}: redirect to {next_url!r} blocked ({error})"
                 )
-            if urlsplit(next_url).netloc.lower() != urlsplit(current).netloc.lower():
+            # Origin is scheme + host + port. netloc alone treated an
+            # HTTPS→HTTP downgrade on the same host:port as same-origin and
+            # kept Authorization/X-API-Key, sending credentials in cleartext.
+            def _origin(u: str) -> tuple[str, str, int | None]:
+                split = urlsplit(u)
+                scheme = split.scheme.lower()
+                default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+                return (scheme, (split.hostname or "").lower(), split.port or default_port)
+
+            if _origin(next_url) != _origin(current):
                 # Strip ALL sensitive headers before the next hop is probed —
                 # httpx's built-in stripping covers only Authorization/Cookie,
                 # while auth here can also ride in X-API-Key and friends.
@@ -594,8 +609,9 @@ class McpConnectionManager:
 
             # Build proxy tools from discovered tools.
             server_cfg = servers[slug]
-            allowlist = server_cfg.get("tools", {}).get("allowlist") or []
-            denylist = server_cfg.get("tools", {}).get("denylist") or []
+            tools_cfg = _tools_config(server_cfg)
+            allowlist = tools_cfg.get("allowlist") or []
+            denylist = tools_cfg.get("denylist") or []
             server_name = server_cfg.get("name", slug)
 
             count = 0
@@ -656,6 +672,17 @@ class McpConnectionManager:
 def _matches_any(name: str, patterns: list[str]) -> bool:
     """Check if a name matches any glob pattern in the list."""
     return any(fnmatch.fnmatch(name, p) for p in patterns)
+
+
+def _tools_config(server_cfg: dict[str, Any]) -> dict[str, Any]:
+    """The server's `tools` options, tolerating null or malformed shapes.
+
+    YAML ``tools:`` with no value yields None, and a hand-edited catalog can
+    put a list there. Calling ``.get`` on that raised outside the per-server
+    error isolation and aborted discovery for EVERY server.
+    """
+    value = server_cfg.get("tools")
+    return value if isinstance(value, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +760,7 @@ class McpProxyTool(Tool):
 
     async def _needs_confirmation(self, params: dict[str, Any], context: ToolContext) -> bool:
         """Check if this tool call requires user confirmation."""
-        tools_cfg = self._server_cfg.get("tools") or {}
+        tools_cfg = _tools_config(self._server_cfg)
 
         # Explicit require_confirmation patterns.
         require_patterns = tools_cfg.get("require_confirmation") or []

@@ -24,6 +24,30 @@ _FORBIDDEN_KEYWORDS = re.compile(
 )
 
 
+def _consume_delimited(query: str, i: int, out: list[str], close_ch: str) -> int:
+    """Copy a delimited identifier/string starting at *i* through its close.
+
+    Both scanners must treat ``[...]`` (SQL Server identifiers) and ``"..."``
+    (SQL standard identifiers, MySQL string literals) as opaque: an apostrophe
+    or comment marker inside them is data, never a state transition. A doubled
+    closing character is the escape form (``]]`` / ``""``). Returns the index
+    just past the closing delimiter.
+    """
+    n = len(query)
+    out.append(query[i])
+    i += 1
+    while i < n:
+        out.append(query[i])
+        if query[i] == close_ch:
+            if i + 1 < n and query[i + 1] == close_ch:
+                out.append(query[i + 1])  # escaped closing character
+                i += 1
+            else:
+                return i + 1
+        i += 1
+    return i
+
+
 def _strip_comments(query: str) -> str:
     """Remove -- and /* */ comments, preserving string literals.
 
@@ -51,20 +75,10 @@ def _strip_comments(query: str) -> str:
             in_literal = True
             out.append(ch)
             i += 1
-        elif ch == "[":
-            # SQL Server quoted identifier ([weird--name]) — keep verbatim
-            out.append(ch)
-            i += 1
-            while i < n:
-                out.append(query[i])
-                if query[i] == "]":
-                    if i + 1 < n and query[i + 1] == "]":
-                        out.append(query[i + 1])  # escaped ]] inside the name
-                        i += 1
-                    else:
-                        i += 1
-                        break
-                i += 1
+        elif ch in ("[", '"'):
+            # Quoted identifier ([weird--name] / "weird--name") — keep
+            # verbatim so its contents cannot open a literal or hide comments.
+            i = _consume_delimited(query, i, out, "]" if ch == "[" else '"')
         elif ch == "-" and i + 1 < n and query[i + 1] == "-":
             out.append(" ")  # line comment → whitespace
             while i < n and query[i] != "\n":
@@ -86,8 +100,10 @@ def _mask_string_literals(query: str) -> str:
 
     The keyword/table blocklists must not trip on data inside literals
     (``SELECT 'DROP TABLE'`` is a harmless read) — but they must still see
-    real identifiers, which never appear inside quotes. Masking the checked
-    text is deterministic and leaves the executed text untouched, so
+    real identifiers. Single-quoted literals are blanked; delimited
+    identifiers (``[...]`` and ``"..."``) are kept verbatim so the blocklists
+    can still match a quoted table name. Masking the checked text is
+    deterministic and leaves the executed text untouched, so
     validate-and-execute-the-same-text still holds.
     """
     out: list[str] = []
@@ -111,23 +127,13 @@ def _mask_string_literals(query: str) -> str:
             in_literal = True
             out.append(ch)
             i += 1
-        elif ch == "[":
-            # SQL Server quoted identifier ([weird--name]) — keep it VERBATIM:
-            # the blocklists must still see the identifier, and an apostrophe
-            # inside it must not open a literal that blanks the rest of the
-            # query (that hid `FROM user_tokens` from every check).
-            out.append(ch)
-            i += 1
-            while i < n:
-                out.append(query[i])
-                if query[i] == "]":
-                    if i + 1 < n and query[i + 1] == "]":
-                        out.append(query[i + 1])  # escaped ]] inside the name
-                        i += 1
-                    else:
-                        i += 1
-                        break
-                i += 1
+        elif ch in ("[", '"'):
+            # Quoted identifier ([weird--name] / "weird--name") — keep it
+            # VERBATIM: the blocklists must still see the identifier, and an
+            # apostrophe inside it must not open a literal that blanks the
+            # rest of the query (that hid `FROM user_tokens` from every
+            # check).
+            i = _consume_delimited(query, i, out, "]" if ch == "[" else '"')
         else:
             out.append(ch)
             i += 1

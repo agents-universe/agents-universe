@@ -29,6 +29,7 @@ from ..sandbox import (
     has_unclosed_quote,
     python_guard_env,
     spawn_in_new_session,
+    split_logical_lines,
     terminate_process_tree,
     validate_command,
 )
@@ -212,14 +213,22 @@ class CodeExecutorTool(Tool):
             # \b-word 正则跑在原始代码上可被反斜杠混淆绕过（`c\url ...` 中
             # "curl" 不是连续子串，但 bash 执行时反斜杠转义还原出真正的
             # `curl`）。先按 shlex 还原转义再匹配，堵住该旁路。
+            # Scan PER LOGICAL LINE and skip heredoc bodies: whole-code shlex
+            # raised on an apostrophe in a heredoc body and the raw-text
+            # fallback then missed a backslash-obfuscated command on a later
+            # line (`c\url http://...`), which _validate_bash unescapes and
+            # executes for real. A line that cannot be tokenized is refused.
             try:
-                lexer = shlex.shlex(code, posix=True)
-                lexer.whitespace_split = True
-                unescaped = " ".join(list(lexer))
+                for logical, is_heredoc_body in split_logical_lines(code):
+                    if is_heredoc_body:
+                        continue
+                    lexer = shlex.shlex(logical, posix=True)
+                    lexer.whitespace_split = True
+                    unescaped = " ".join(list(lexer))
+                    if self._BLOCKED_BASH.search(unescaped):
+                        return {"error": "Bash code_executor is for data processing only. Use the shell tool for external commands."}
             except ValueError:
-                unescaped = code
-            if self._BLOCKED_BASH.search(unescaped):
-                return {"error": "Bash code_executor is for data processing only. Use the shell tool for external commands."}
+                return {"error": "Bash code could not be parsed safely; refusing to run."}
 
         project_cwd = Path(context.project_fs_path)
 

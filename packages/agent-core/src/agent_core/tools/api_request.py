@@ -856,12 +856,23 @@ class ApiRequestTool(Tool):
                         "error": "auth_header_name is required when auth_type is 'custom_header'",
                     }
                 if auth_prefix and "{" in auth_prefix:
-                    # Multi-secret template: e.g. "{username}:{password}"
+                    # Multi-secret template: e.g. "{username}:{password}".
+                    # str.format raises KeyError (unknown name), IndexError
+                    # (positional "{}"), ValueError ("{bad spec}") and
+                    # AttributeError ("{a.b}") — none may escape as an
+                    # unhandled tool crash.
                     try:
                         request_headers[auth_header_name] = auth_prefix.format(**secrets)
                     except KeyError as exc:
                         return {
                             "error": f"auth_prefix placeholder {exc} not found in secret_refs",
+                        }
+                    except (IndexError, ValueError, AttributeError) as exc:
+                        return {
+                            "error": (
+                                "auth_prefix could not be applied — use named "
+                                f"placeholders like {{username}}: {exc}"
+                            ),
                         }
                 else:
                     if len(secrets) > 1:
@@ -975,6 +986,31 @@ class ApiRequestTool(Tool):
                 method, parsed_host, integration_key, environment, endpoint_key, detail,
             )
             return {"error": f"Network error: {detail}", "integration_key": integration_key}
+        except httpx.InvalidURL as exc:
+            # InvalidURL is NOT a RequestError — it escaped the tool entirely.
+            # Its message quotes the URL, so scrub resolved secrets first.
+            detail = _redact_secret_text(str(exc), secrets)
+            _log.warning(
+                "api_request invalid URL: %s %s | integration=%r env=%r endpoint=%r | %s",
+                method, parsed_host, integration_key, environment, endpoint_key, detail,
+            )
+            return {"error": f"Invalid request URL: {detail}", "integration_key": integration_key}
+        except UnicodeEncodeError as exc:
+            # A non-ASCII header value (a pasted credential, an extra header)
+            # is encoded as ascii by httpx; the error names the character, not
+            # the value, but it still escaped as an unhandled exception.
+            detail = _redact_secret_text(str(exc), secrets)
+            _log.warning(
+                "api_request non-encodable request: %s %s | integration=%r env=%r endpoint=%r | %s",
+                method, parsed_host, integration_key, environment, endpoint_key, detail,
+            )
+            return {
+                "error": (
+                    f"Request header value cannot be encoded as ASCII: {detail} — "
+                    "re-save the stored secret without non-ASCII characters"
+                ),
+                "integration_key": integration_key,
+            }
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         response_size = len(response_text)

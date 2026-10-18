@@ -43,7 +43,9 @@ def _http_error_message(client: "_ConfluenceClient", e: httpx.HTTPStatusError,
     the two cannot drift.
     """
     status = e.response.status_code if e.response is not None else "error"
-    body = _redact(client, e.response.text[:500])[:500] if e.response is not None else ""
+    # Redact BEFORE truncating: a body cut mid-credential no longer contains
+    # the whole secret, so the pattern match misses and its prefix leaks.
+    body = _redact(client, e.response.text)[:500] if e.response is not None else ""
     _log.warning("confluence %s HTTP %s: %s", operation, status, body[:200])
     return f"Confluence API returned {status}: {body}"
 

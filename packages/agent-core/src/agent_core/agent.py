@@ -365,6 +365,22 @@ class Agent:
         return result
 
     @staticmethod
+    def _parse_tool_arguments(tc: dict):
+        """Parse one tool call's streamed arguments, blank meaning no args.
+
+        Anthropic and Gemini stream a zero-argument call as an empty
+        arguments string — there is no JSON fragment to delimit — so a blank
+        value must mean ``{}`` rather than malformed JSON. The stored call is
+        normalized so the next provider request carries valid JSON too.
+        Raises ``JSONDecodeError``/``TypeError`` for genuinely bad values.
+        """
+        raw = tc["function"].get("arguments")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            tc["function"]["arguments"] = "{}"
+            return {}
+        return json.loads(raw)
+
+    @staticmethod
     def _accumulate_tool_delta(buffer: dict, delta: dict) -> None:
         """Accumulate a streaming tool-call delta chunk into the buffer keyed by index."""
         idx = delta.get("index", 0)
@@ -1534,7 +1550,7 @@ class Agent:
                     if not tool_name or not tool_id:
                         continue
                     try:
-                        args = json.loads(tc["function"].get("arguments", "{}"))
+                        args = self._parse_tool_arguments(tc)
                     except (json.JSONDecodeError, TypeError) as _e:
                         # Keep the assistant tool call serializable for the next
                         # provider request; Anthropic reparses this field.
@@ -2378,7 +2394,7 @@ class Agent:
                 if not tool_name or not tool_id:
                     continue
                 try:
-                    args = json.loads(tc["function"].get("arguments", "{}"))
+                    args = self._parse_tool_arguments(tc)
                 except (json.JSONDecodeError, TypeError) as _e:
                     # Preserve a valid provider history when the next tool-loop
                     # iteration serializes this assistant message.

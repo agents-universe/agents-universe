@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..paths import PathEscapeError, resolve_within
+from ..paths import PathEscapeError, canonical, resolve_within
 from ._media import media_type_for
 
 # A single uploaded file. Chat attachments are capped at max_upload_size_mb
@@ -139,6 +139,12 @@ def _resolve_path(context, spec: dict[str, Any], max_bytes: int) -> UploadPayloa
         if lookup is not None:
             data = lookup(parts[3])
             if data is not None:
+                # Same byte ceiling as the disk path: the same bytes must not
+                # be accepted or rejected depending on which alias names them.
+                if len(data) > max_bytes:
+                    raise UploadSourceError(
+                        f"Upload {rel!r} is {_mb(len(data))}, above the {_mb(max_bytes)} limit"
+                    )
                 name = _clean_name(spec.get("name"), fallback=_clean_name(parts[3]))
                 return UploadPayload(
                     name=name,
@@ -157,6 +163,15 @@ def _resolve_path(context, spec: dict[str, Any], max_bytes: int) -> UploadPayloa
         full = resolve_within(context.project_fs_path, rel)
     except PathEscapeError as exc:
         raise UploadSourceError(f"Access denied: path is outside the project workspace ({rel!r})") from exc
+    # Re-check the CANONICAL path: a symlink (or hardlink) named `innocuous`
+    # that points at `.env` has no hidden component in the request string, but
+    # the read returns the dotfile's bytes.
+    resolved_rel = full.relative_to(canonical(context.project_fs_path)).as_posix()
+    hidden = _hidden_part(resolved_rel)
+    if hidden is not None:
+        raise UploadSourceError(
+            f"Hidden files and directories cannot be uploaded ({hidden!r}): {rel!r}"
+        )
     if not full.is_file():
         raise UploadSourceError(f"File not found: {rel}")
 

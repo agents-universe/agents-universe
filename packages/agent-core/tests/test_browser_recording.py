@@ -31,11 +31,12 @@ async def test_record_start_swaps_in_a_video_context(ctx):
     video_dir = new_context.kwargs["record_video_dir"]
     assert Path(video_dir).is_dir()
     assert new_context.kwargs["record_video_size"] == {"width": 1280, "height": 720}
-    # Cookies/localStorage survive the swap; the SSRF route is re-installed on
-    # the new page or the recording session browses unguarded.
+    # Cookies/localStorage survive the swap; the SSRF guard is re-installed on
+    # the new context or the recording session browses unguarded.
     assert first_context.storage_state_calls == 1
     assert new_context.kwargs["storage_state"] == first_context.storage_state_value
-    assert ctx._browser_page.routes == ["**/*"]
+    assert [pattern for pattern, _ in new_context.routes] == ["**/*"]
+    assert new_context.kwargs["service_workers"] == "block"
     assert result["page_url"] == "http://site.test/form"
     assert ctx._browser_page.url == "http://site.test/form"
 
@@ -139,3 +140,17 @@ async def test_cleanup_closes_a_context_left_recording(ctx):
 
     assert recording_context.closed is True
     assert ctx._browser_recording is None
+
+
+async def test_cleanup_discards_unfinished_recording_scratch_dir(ctx):
+    """A recording never stopped is promised to be discarded at turn end —
+    closing the context writes the .webm into the scratch dir, so cleanup
+    must remove that dir or the promise is broken."""
+    tool = BrowserPlaywrightTool()
+    await tool.execute({"operation": "record_start"}, ctx)
+    tmp_dir = Path(ctx._browser_recording["dir"])
+    assert tmp_dir.is_dir()
+
+    await ctx.cleanup()
+
+    assert not tmp_dir.exists()

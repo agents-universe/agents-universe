@@ -444,3 +444,92 @@ async def test_illegal_header_error_does_not_echo_secret():
     blob = json.dumps(result)
     assert "SUPERSECRET" not in blob, blob
     assert "[REDACTED" in blob  # the rest of the message is still reported
+
+
+@pytest.mark.asyncio
+async def test_invalid_url_error_is_structured_and_redacts_secrets():
+    """httpx.InvalidURL is not a RequestError; it escaped execute() as an
+    unhandled exception. Its message quotes the URL, so secrets in it must be
+    scrubbed before the message reaches the LLM."""
+    secret = "sk-live-SUPERSECRET123"
+    http = AsyncMock()
+    http.stream = Mock(
+        side_effect=httpx.InvalidURL(f"Invalid character in URL: '{secret}'")
+    )
+
+    with patch(
+        "agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value=secret)
+    ):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/health",
+                "base_url": "https://api.example.com",
+                "auth_type": "bearer",
+                "secret_ref": "svc:token",
+                "secret_scope": "user",
+            },
+            http,
+        )
+
+    assert "Invalid request URL" in result["error"]
+    assert "SUPERSECRET" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_header_value_returns_structured_error():
+    """httpx encodes header values as ASCII; a non-ASCII secret raised an
+    uncaught UnicodeEncodeError instead of an actionable result."""
+    http = AsyncMock()
+    http.stream = Mock(
+        side_effect=UnicodeEncodeError("ascii", "ключ", 0, 1, "ordinal not in range(128)")
+    )
+
+    with patch(
+        "agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value="ключ")
+    ):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/health",
+                "base_url": "https://api.example.com",
+                "auth_type": "bearer",
+                "secret_ref": "svc:token",
+                "secret_scope": "user",
+            },
+            http,
+        )
+
+    assert "ASCII" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template", ["{username!q}", "{}"])
+async def test_malformed_auth_prefix_returns_error_instead_of_raising(template):
+    """str.format raises more than KeyError: a bad conversion (`!q`) is a
+    ValueError and a positional `{}` is an IndexError; both escaped as tool
+    crashes."""
+    http = _mock_stream_response(AsyncMock(), FakeResponse(200, {"ok": True}))
+
+    with patch(
+        "agent_core.tools._auth.get_token_optional", new=AsyncMock(return_value="u1")
+    ):
+        result = await _run(
+            {
+                "integration_key": "svc",
+                "method": "GET",
+                "path": "/health",
+                "base_url": "https://api.example.com",
+                "auth_type": "custom_header",
+                "auth_header_name": "X-Service-Auth",
+                "auth_prefix": template,
+                "secret_refs": {"username": "svc:user"},
+                "secret_scope": "user",
+            },
+            http,
+        )
+
+    assert "auth_prefix" in result["error"]
+    assert "u1" not in result["error"]

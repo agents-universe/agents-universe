@@ -159,6 +159,19 @@ class TestCreate:
         result = await _create(tool, context, script_id=str(script.script_id), cron_expr="0 9 * *")
         assert "cron" in result["error"].lower()
 
+    async def test_rejects_overlong_cron_expression(self, sched_env):
+        """validate_cron accepts arbitrarily long comma lists; cron_expr is
+        String(100), so overlong input raised DataError at commit on strict
+        dialects instead of returning a validation error."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        result = await _create(
+            tool, context, script_id=str(script.script_id),
+            cron_expr="0 9 * * " + ",".join(["1"] * 120),
+        )
+        assert "cron_expr" in result.get("error", "").lower(), result
+        assert "100" in result["error"]
+
     async def test_rejects_unknown_timezone(self, sched_env):
         tool, context, session, _ = sched_env
         script = await _add_script(session)
@@ -225,6 +238,16 @@ class TestCreate:
         result = await _create(tool, context, script_id=str(script.script_id), enabled=False)
         assert result["next_run_at"] is None
 
+    async def test_create_honors_stringified_disabled_flag(self, sched_env):
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        result = await _create(
+            tool, context, script_id=str(script.script_id), enabled="false",
+        )
+        assert result["success"] is True, result
+        assert result["enabled"] is False
+        assert result["next_run_at"] is None
+
 
 class TestListGetUpdate:
     async def test_list_scopes_to_project(self, sched_env):
@@ -271,6 +294,87 @@ class TestListGetUpdate:
         assert result["success"] is True
         assert result["cron_expr"] == "0 10 * * *"
         assert result["next_run_at"] != created["next_run_at"]
+
+    async def test_update_name_only_keeps_existing_next_run(self, sched_env):
+        """A rename must not push a due occurrence into the future.
+
+        next_run_at is only recomputed when the cadence changes; rewriting it
+        on every update delayed a run whose fire time had already passed but
+        that the scheduler tick had not yet claimed.
+        """
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        created = await _create(tool, context, script_id=str(script.script_id))
+
+        due = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        row = (
+            await session.execute(
+                select(ScheduledTask).where(
+                    ScheduledTask.schedule_id == created["schedule_id"]
+                )
+            )
+        ).scalar_one()
+        row.next_run_at = due
+        await session.commit()
+
+        result = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "name": "renamed",
+        }, context)
+        assert result["success"] is True, result
+        assert datetime.fromisoformat(result["next_run_at"]) == due
+
+    async def test_update_honors_stringified_disabled_flag(self, sched_env):
+        """Models routinely stringify booleans; bool("false") is True."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        created = await _create(tool, context, script_id=str(script.script_id))
+
+        result = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "enabled": "false",
+        }, context)
+        assert result["success"] is True, result
+        assert result["enabled"] is False
+        assert result["next_run_at"] is None
+
+    async def test_update_validates_conversation_against_task_owner(self, sched_env):
+        """A scheduled run executes and delivers as row.created_by, so an
+        editor (a different user) must not rebind the task to a conversation
+        the creator cannot use."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        owner_conv = Conversation(project_id="p1", user_id="u1", status="active")
+        editor_conv = Conversation(project_id="p1", user_id="u2", status="active")
+        session.add_all([owner_conv, editor_conv])
+        await session.commit()
+        created = await _create(tool, context, script_id=str(script.script_id))
+
+        editor_context = ToolContext(
+            project_id="p1",
+            project_fs_path=context.project_fs_path,
+            conversation_id="c2",
+            user_id="u2",
+            db_session=session,
+            db_session_factory=context.db_session_factory,
+        )
+        denied = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "conversation_id": str(editor_conv.conversation_id),
+        }, editor_context)
+        assert "conversation" in denied.get("error", "").lower(), denied
+
+        # The task owner's own conversation is valid for the same editor.
+        allowed = await tool.execute({
+            "operation": "update",
+            "schedule_id": created["schedule_id"],
+            "conversation_id": str(owner_conv.conversation_id),
+        }, editor_context)
+        assert allowed.get("success") is True, allowed
+        assert allowed["conversation_id"] == str(owner_conv.conversation_id)
 
     async def test_enable_disable_round_trip(self, sched_env):
         tool, context, session, _ = sched_env
@@ -384,6 +488,9 @@ class TestListGetUpdate:
                 )
             )
         ).scalar_one()
+        # The rejected value was never assigned, so nothing is pending for
+        # the next tool's commit to flush.
+        assert row not in session.dirty
         assert row.env_json is None
 
     async def test_delete_removes_task(self, sched_env):

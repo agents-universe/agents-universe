@@ -312,7 +312,11 @@ class OpenAIProvider(LLMProvider):
                             finish_reason=finish,
                             stop_reason=normalized,
                         )
-                elif chunk.usage:
+                # Usage is independent of choices: LiteLLM attaches the final
+                # usage object to a chunk that still carries an empty choice,
+                # and vLLM reports running stats on ordinary chunks. Gating it
+                # on an empty choices list dropped those counts entirely.
+                if chunk.usage:
                     yield StreamChunk(
                         usage={
                             "prompt_tokens": chunk.usage.prompt_tokens,
@@ -495,7 +499,9 @@ class AzureOpenAIProvider(OpenAIProvider):
                             finish_reason=finish,
                             stop_reason=normalized,
                         )
-                elif chunk.usage:
+                # Same independent usage capture as the OpenAI path: gateways
+                # may attach usage to a chunk that still carries a choice.
+                if chunk.usage:
                     yield StreamChunk(
                         usage={
                             "prompt_tokens": chunk.usage.prompt_tokens,

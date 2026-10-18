@@ -3,10 +3,11 @@ credential-key guard (final segment "KEY") would never return it."""
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 from agent_core.tools.base import ToolContext
-from agent_core.tools.jira import JiraTool, _JiraClient
+from agent_core.tools.jira import JiraTool, _JiraClient, _http_error_message
 
 
 def _ctx(**over) -> ToolContext:
@@ -21,6 +22,28 @@ def _ctx(**over) -> ToolContext:
     for k, v in over.items():
         setattr(ctx, k, v)
     return ctx
+
+
+def test_http_error_body_redacts_before_truncating():
+    """Truncating first cut the credential in half, so the full-value match
+    missed and its prefix reached the LLM and the log."""
+    token = "ATATT" + "B" * 96
+    client = _JiraClient(
+        api_token=token, email="", base_url="https://jira.example.com",
+        jira_path="", auth_type="bearer", http=None,
+    )
+    resp = httpx.Response(
+        401,
+        text="x" * 480 + token,
+        request=httpx.Request("GET", "https://jira.example.com/rest/api/2/issue/X"),
+    )
+    err = httpx.HTTPStatusError("Unauthorized", request=resp.request, response=resp)
+
+    message = _http_error_message(client, err)
+
+    assert token not in message
+    assert "B" * 40 not in message
+    assert "REDACTED" in message
 
 
 @pytest.mark.asyncio

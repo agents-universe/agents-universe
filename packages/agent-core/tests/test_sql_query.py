@@ -23,6 +23,27 @@ def test_strip_comments_bracket_identifier_preserved():
     assert _strip_comments("SELECT [a]]b] FROM t") == "SELECT [a]]b] FROM t"
 
 
+def test_strip_comments_double_quoted_identifier_preserved():
+    assert _strip_comments('SELECT "a--b" FROM t') == 'SELECT "a--b" FROM t'
+    assert _strip_comments('SELECT "a""b" FROM t') == 'SELECT "a""b" FROM t'
+
+
+def test_double_quoted_apostrophe_cannot_hide_blocked_table():
+    # An apostrophe inside a delimited identifier used to open a string
+    # literal in both scanners, blanking the rest of the query for every
+    # check while the untouched text was executed.
+    err, _ = _validate_readonly_select('SELECT 1 AS "x\'y", * FROM user_tokens')
+    assert err and "credential table" in err
+
+    err, _ = _validate_readonly_select('SELECT * FROM "user_tokens"')
+    assert err and "credential table" in err
+
+
+def test_double_quoted_apostrophe_cannot_hide_statement_batch():
+    err, _ = _validate_readonly_select('SELECT 1 AS "x\'y"; DROP TABLE audit_log')
+    assert err == "Multiple SQL statements are not allowed."
+
+
 def test_strip_comments_removes_real_comments():
     # a comment collapses to a single space, joining the surrounding spaces
     assert _strip_comments("SELECT 1 -- drop stuff") == "SELECT 1  "

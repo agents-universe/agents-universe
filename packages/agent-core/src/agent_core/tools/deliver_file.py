@@ -6,6 +6,7 @@ already inside the media directory are returned as-is without a copy.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -13,6 +14,15 @@ from typing import Any
 
 from ._media import media_type_for, media_url, sanitize_suffix
 from .base import Tool, ToolContext
+
+# Mirror of routers/media.py's whitelist (plus its separate ".." rejection):
+# a file already in the media directory must still be SERVABLE, or the URL
+# handed to the model is guaranteed to 400.
+_SERVABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-][A-Za-z0-9_\-.]*$")
+
+
+def _servable_media_name(name: str) -> bool:
+    return bool(_SERVABLE_NAME_RE.match(name)) and ".." not in name
 
 
 class DeliverFileTool(Tool):
@@ -54,9 +64,13 @@ class DeliverFileTool(Tool):
             return {"error": f"file not found: {path}"}
 
         media_dir = Path(context.conversation_media_dir)
-        if src.parent == media_dir.resolve():
+        if src.parent == media_dir.resolve() and _servable_media_name(src.name):
             dest = src  # already in the served media directory — no copy
         else:
+            # A file the agent wrote into the media dir under an unservable
+            # name (spaces, leading dot, non-ASCII) still needs a copy under a
+            # generated name — returning its own name produced a URL that
+            # every /api/media request rejects.
             media_dir.mkdir(parents=True, exist_ok=True)
             dest = media_dir / f"{uuid.uuid4().hex[:8]}{sanitize_suffix(src.name)}"
             try:

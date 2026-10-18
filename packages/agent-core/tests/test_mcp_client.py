@@ -187,6 +187,10 @@ def test_header_value_problem_rejects_only_what_httpx_rejects():
     assert _header_value_problem("a\tb") is None
     assert _header_value_problem("sk-abc\n") is not None       # pasted newline
     assert _header_value_problem("a\rb") is not None
+    # h11 rejects leading/trailing OWS and echoes the whole value (the secret).
+    assert _header_value_problem("sk-abc ") is not None
+    assert _header_value_problem("sk-abc\t") is not None
+    assert _header_value_problem(" sk-abc") is not None
     assert _header_value_problem("ключ") is not None           # non-ASCII
 
 
@@ -878,6 +882,73 @@ async def test_resolve_final_url_keeps_headers_on_same_origin_redirect(monkeypat
     assert final_url == "https://origin.example.com/v2/mcp"
     assert headers["Authorization"] == "Bearer tok"
     assert headers["X-API-Key"] == "k"
+
+
+@pytest.mark.asyncio
+async def test_resolve_final_url_strips_headers_on_scheme_downgrade(monkeypatch):
+    """Same host, but HTTPS→HTTP sends credentials in cleartext — the origin
+    comparison must include the scheme, not just the netloc."""
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    responses = [
+        _FakeResp(302, {"location": "http://origin.example.com/mcp"}),
+        _FakeResp(200, {}),
+    ]
+
+    def _fake_client(**kwargs):
+        return _FakeProbe(responses)
+
+    with patch("httpx2.AsyncClient", _fake_client):
+        session = McpServerSession(
+            "srv",
+            {"url": "https://origin.example.com/mcp",
+             "allowed_hosts": ["origin.example.com"]},
+            {"Authorization": "Bearer tok", "X-API-Key": "k"},
+        )
+        _final_url, headers = await session._resolve_final_url(
+            "https://origin.example.com/mcp"
+        )
+
+    assert "Authorization" not in headers
+    assert "X-API-Key" not in headers
+
+
+@pytest.mark.asyncio
+async def test_resolve_final_url_keeps_headers_across_default_port_spelling(monkeypatch):
+    """https://host and https://host:443 are the same origin; an implicit
+    default port must not be treated as a different host."""
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    responses = [
+        _FakeResp(302, {"location": "https://origin.example.com:443/v2/mcp"}),
+        _FakeResp(200, {}),
+    ]
+
+    def _fake_client(**kwargs):
+        return _FakeProbe(responses)
+
+    with patch("httpx2.AsyncClient", _fake_client):
+        session = McpServerSession(
+            "srv",
+            {"url": "https://origin.example.com/mcp",
+             "allowed_hosts": ["origin.example.com"]},
+            {"Authorization": "Bearer tok"},
+        )
+        _final_url, headers = await session._resolve_final_url(
+            "https://origin.example.com/mcp"
+        )
+
+    assert headers["Authorization"] == "Bearer tok"
+
+
+def test_tools_config_tolerates_null_and_malformed_shapes():
+    """``tools:`` with no value is None and a hand-edited catalog may hold a
+    list; both must degrade to defaults instead of aborting discovery."""
+    from agent_core.tools.mcp_client import _tools_config
+
+    assert _tools_config({}) == {}
+    assert _tools_config({"tools": None}) == {}
+    assert _tools_config({"tools": ["allowlist"]}) == {}
+    cfg = {"allowlist": ["search_*"]}
+    assert _tools_config({"tools": cfg}) is cfg
 
 
 @pytest.mark.asyncio

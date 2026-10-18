@@ -72,7 +72,12 @@ _CJK_RE = re.compile(
 @lru_cache(maxsize=256)
 def _estimate_tokens(text: str) -> int:
     if text.isascii():
-        return int(len(text.split()) * TOKENS_PER_WORD)
+        # Word count alone collapses a whitespace-free ASCII payload
+        # (minified JSON, base64, a single-line file read) to one "word", so a
+        # 500 KB tool result counted as ~1 token and slipped past both the
+        # oversized-tool-message truncation and the history compression
+        # threshold. Keep a 4-chars-per-token floor alongside the estimate.
+        return int(max(len(text.split()) * TOKENS_PER_WORD, len(text) / 4))
     cjk_chars = len(_CJK_RE.findall(text))
     cjk_tokens = int(cjk_chars * TOKENS_PER_CJK_CHAR)
     non_cjk_text = _CJK_RE.sub("", text)

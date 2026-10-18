@@ -218,6 +218,42 @@ async def test_update_fields_partial_and_isolation(script_env):
     assert (await tool.execute({"operation": "update", "script_id": script_id}, context))["error"]
 
 
+@pytest.mark.asyncio
+async def test_update_rejected_field_leaves_row_untouched(script_env):
+    """Fields were assigned as they were validated, so a later invalid field
+    returned an error with the earlier ones already dirty in the shared
+    session — the next tool's commit flushed the rejected rename."""
+    tool, context, session, _ = script_env
+    created = await _create(tool, context)
+    script_id = created["script_id"]
+
+    from sqlalchemy import select
+
+    row = (
+        (await session.execute(
+            select(AutomationScript).where(AutomationScript.script_id == script_id)
+        )).scalar_one()
+    )
+    result = await tool.execute({
+        "operation": "update",
+        "script_id": script_id,
+        "name": "renamed",
+        "script_type": "powershell",
+    }, context)
+    assert "script_type" in result.get("error", "").lower(), result
+    assert row not in session.dirty
+
+    await session.commit()
+    session.expire_all()
+    fresh = (
+        (await session.execute(
+            select(AutomationScript).where(AutomationScript.script_id == script_id)
+        )).scalar_one()
+    )
+    assert fresh.name == "daily-summary"
+    assert fresh.script_type == "python"
+
+
 # ── run ──────────────────────────────────────────────────────────────────────
 
 

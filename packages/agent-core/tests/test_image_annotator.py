@@ -13,7 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from agent_core.tools.base import ToolContext
-from agent_core.tools.image_annotator import ImageAnnotatorTool
+from agent_core.tools.image_annotator import ImageAnnotatorTool, _footer_entries
 
 
 def make_context(project_fs_path: str) -> ToolContext:
@@ -98,7 +98,8 @@ async def test_chip_flips_below_when_box_hugs_top(setup):
         {"x": 100, "y": 0, "width": 200, "height": 40, "label": "贴顶区域"},
     ])
     res = Image.open(out).convert("RGB")
-    hdr = 30  # title only
+    # title-only header: 6px pad + 16px title + 6px pad (scales with the font)
+    hdr = 6 + 16 + 6
     # box occupies rows hdr..hdr+40 at x 100..300; chip must be at rows hdr+44..hdr+66
     # and nothing colored may sit in the header band rows 0..hdr-1 except title text
     # at x<=~60. Check a slice well right of the title text:
@@ -239,3 +240,63 @@ async def test_string_list_annotations_rejected_cleanly(setup):
     )
     assert "error" in result
     assert "array" in result["error"].lower()
+
+
+async def test_object_focus_areas_rejected_cleanly(setup):
+    """A single object instead of an array iterated its KEYS and crashed on
+    fa.get() — reject it with the same actionable message."""
+    project, src, out = setup
+    result = await ImageAnnotatorTool().execute(
+        {
+            "image_path": str(src),
+            "output_path": str(out),
+            "focus_areas": {"x": 100, "y": 100, "width": 50, "height": 20},
+        },
+        make_context(str(project)),
+    )
+    assert "error" in result
+    assert "array" in result["error"].lower()
+
+
+async def test_stringified_percent_coordinates_are_coerced(setup):
+    """LLMs stringify schema numbers ('23.4'); they must map to pixels
+    instead of raising TypeError mid-draw."""
+    project, src, out = setup
+    await annotate(project, src, out, focus_areas=[
+        {"xPct": "23.4375", "yPct": "37.5", "widthPct": "15.625",
+         "heightPct": "2.5", "label": "P"},
+    ])
+    res = Image.open(out).convert("RGB")
+    src_img = Image.open(src).convert("RGB")
+    got, want = res.getpixel((400, 310)), src_img.getpixel((400, 310))
+    assert all(abs(got[i] - want[i]) <= 3 for i in range(3)), (got, want)
+
+
+async def test_malformed_coordinate_falls_back_without_crashing(setup):
+    project, src, out = setup
+    await annotate(project, src, out, focus_areas=[
+        {"x": "not-a-number", "y": None, "width": "200", "height": 20, "label": "A"},
+    ])
+    assert Image.open(out).size[0] == Image.open(src).size[0]
+
+
+async def test_header_height_scales_with_title_fonts(setup):
+    """The header band must contain the full scaled title + subtitle — the old
+    fixed 30/20px bands let the 2x title overrun the divider."""
+    project, src, out = setup
+    await annotate(project, src, out, title="Title", subtitle="Subtitle",
+                   focus_areas=[{"x": 300, "y": 300, "width": 200, "height": 20}])
+    src_img = Image.open(src)
+    res = Image.open(out)
+    # title 16px + subtitle 11px + 6px paddings/gap at 1280px width (scale 1.0)
+    assert res.size[1] - src_img.size[1] == 6 + 16 + 6 + 11 + 6
+
+
+def test_footer_entries_keep_focus_area_numbering():
+    """Detail-less areas must not renumber later footer markers."""
+    areas = [
+        {"label": "no detail"},
+        {"label": "has detail", "detail": "second area"},
+    ]
+    assert _footer_entries(areas) == [(2, "second area")]
+    assert _footer_entries([{"detail": "only"}]) == [(1, "only")]

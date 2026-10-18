@@ -1,9 +1,10 @@
 """Confluence tool: numeric params must tolerate LLM stringified numbers."""
 from __future__ import annotations
 
+import httpx
 import pytest
 
-from agent_core.tools.confluence import ConfluenceTool
+from agent_core.tools.confluence import ConfluenceTool, _ConfluenceClient, _http_error_message
 
 
 class _FakeClient:
@@ -176,3 +177,25 @@ class _MinimalCtx:
 
     def cfg(self, key, default=None):
         return default
+
+
+def test_http_error_body_redacts_before_truncating():
+    """Truncating first cut the credential in half, so the full-value match
+    missed and its prefix reached the LLM and the log."""
+    token = "ATATT" + "C" * 96
+    client = _ConfluenceClient(
+        api_token=token, email="", base_url="https://conf.example.com",
+        conf_path="", auth_type="bearer", http=None,
+    )
+    resp = httpx.Response(
+        401,
+        text="x" * 480 + token,
+        request=httpx.Request("GET", "https://conf.example.com/wiki/rest/api/content/1"),
+    )
+    err = httpx.HTTPStatusError("Unauthorized", request=resp.request, response=resp)
+
+    message = _http_error_message(client, err)
+
+    assert token not in message
+    assert "C" * 40 not in message
+    assert "REDACTED" in message

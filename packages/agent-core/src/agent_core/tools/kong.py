@@ -149,20 +149,30 @@ class KongTool(Tool):
         _ENV_LABELS = {"dev": "Dev", "uat": "UAT", "int": "INT"}
         env_label = _ENV_LABELS.get(env, env.upper())
         prompt_id = str(uuid.uuid4())
-        result = await session.request_user_selection(
-            prompt_id=prompt_id,
-            field_key=token_key,
-            question=f"Kong {env_label} 环境需要 API Token，请输入：",
-            kind="text",
-            title=f"需要 Kong Token ({env_label})",
-            message="该 token 不会发送给大模型，将直接加密保存到当前项目 Secrets，并由 Kong 工具在服务端内部使用。",
-            secret=True,
-            task_id=context.current_task_id,
-            service_key=token_key,
-            environment=env,
-            save_to_project_secrets=True,
-            timeout=300.0,
-        )
+        try:
+            result = await session.request_user_selection(
+                prompt_id=prompt_id,
+                field_key=token_key,
+                question=f"Kong {env_label} 环境需要 API Token，请输入：",
+                kind="text",
+                title=f"需要 Kong Token ({env_label})",
+                message="该 token 不会发送给大模型，将直接加密保存到当前项目 Secrets，并由 Kong 工具在服务端内部使用。",
+                secret=True,
+                task_id=context.current_task_id,
+                service_key=token_key,
+                environment=env,
+                save_to_project_secrets=True,
+                timeout=300.0,
+            )
+        except RuntimeError as exc:
+            # Timeout / abort / headless refusal all subclass RuntimeError.
+            # Without this the prompt error escaped execute() and replaced the
+            # actionable "token not configured" result.
+            _log.warning(
+                "kong._resolve_token: prompt failed key=%r env=%r: %s",
+                token_key, env, exc,
+            )
+            return None
 
         if result == "secret_saved":
             # The secret was saved by a separate DB session (_save_secret_from_response).
@@ -281,9 +291,22 @@ class KongTool(Tool):
                 return f"list[{len(q)}]"
             return type(q).__name__
 
+        def _redact_request_text(text: str) -> str:
+            """Mask the token AND every query value in log-bound text.
+
+            httpx exception messages quote the full request URL, which
+            includes the params dict; logging the raw exception leaked them.
+            """
+            secrets = {token_key: token}
+            for key, value in merged_params.items():
+                values = value if isinstance(value, list) else [value]
+                for i, item in enumerate(values):
+                    secrets[f"query:{key}[{i}]"] = str(item)
+            return redact_secrets(text, secrets)
+
         _log.warning(
             "kong.execute: %s %s | env=%r base=%r path=%r query=%s body=%s token_len=%d",
-            method, url, env, base, path, _query_hint(merged_params),
+            method, url, env, base, clean_path, _query_hint(merged_params),
             _body_hint(raw_body),
             len(token),
         )
@@ -327,8 +350,9 @@ class KongTool(Tool):
             _log.warning("kong request timeout: %s %s", method, url)
             return {"error": "Request timed out"}
         except Exception as e:
-            _log.warning("kong request failed: %s %s | %s", method, url, e)
-            return {"error": f"Kong request failed: {e}"}
+            safe_error = _redact_request_text(str(e))
+            _log.warning("kong request failed: %s %s | %s", method, url, safe_error)
+            return {"error": f"Kong request failed: {safe_error}"}
 
         if "json" in content_type and total <= _MAX_RESPONSE:
             try:

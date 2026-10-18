@@ -230,22 +230,33 @@ class ScriptWriterTool(Tool):
         if row is None:
             return {"error": "Script not found in this project"}
 
+        # Validate every field BEFORE mutating the shared row: an error
+        # return leaves the change dirty in the session otherwise, and the
+        # next tool's commit flushes the rejected update.
+        name = None
         if "name" in fields:
             name = str(fields["name"]).strip()
             if not name:
                 return {"error": "name cannot be empty"}
             if len(name) > _NAME_MAX:
                 return {"error": f"name must be at most {_NAME_MAX} characters"}
-            row.name = name
+        description = None
         if "description" in fields:
             description = fields["description"] or None
             if description and len(description) > _DESCRIPTION_MAX:
                 return {"error": f"description must be at most {_DESCRIPTION_MAX} characters"}
-            row.description = description
+        script_type = None
         if "script_type" in fields:
-            if fields["script_type"] not in ("python", "bash"):
-                return {"error": f"script_type must be 'python' or 'bash', got {fields['script_type']!r}"}
-            row.script_type = fields["script_type"]
+            script_type = fields["script_type"]
+            if script_type not in ("python", "bash"):
+                return {"error": f"script_type must be 'python' or 'bash', got {script_type!r}"}
+
+        if name is not None:
+            row.name = name
+        if "description" in fields:
+            row.description = description
+        if script_type is not None:
+            row.script_type = script_type
         if "content" in fields:
             row.content = fields["content"]
 
@@ -340,10 +351,12 @@ class ScriptWriterTool(Tool):
 
         # The executor's own 300s cap plus teardown exceeded the poll window —
         # the run keeps going in the background and stays visible in the page.
+        # There is no fetch-by-run-id operation: calling run again would start
+        # a SECOND execution, not read this one's result.
         return {
             "run_id": run_id,
             "status": "running",
-            "note": "Run continues in the background — open the Script Executor page to watch it live, then call script_writer run again to fetch the result.",
+            "note": "Run continues in the background — open the Script Executor page to watch it live; calling run again would start a new run.",
         }
 
     async def _fetch_run(self, context: ToolContext, ScriptRun, run_id: str) -> dict[str, Any] | None:

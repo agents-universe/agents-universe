@@ -53,21 +53,61 @@ async def test_cleanup_closes_every_task_page_and_context(ctx):
     assert all(c.closed for c in ctx._fake_browser.contexts)
 
 
-async def test_ssrf_route_is_registered_once_per_page(ctx):
+async def test_ssrf_route_is_registered_once_per_context(ctx):
     tool = BrowserPlaywrightTool()
     await tool.execute({"operation": "goto", "url": "http://site.test/"}, ctx)
-    page = ctx._browser_page
-    assert page.routes == ["**/*"]
+    browser_context = ctx._browser_context
+    assert [pattern for pattern, _ in browser_context.routes] == ["**/*"]
 
-    # Later operations reuse the same page and must not stack another route.
+    # Later operations reuse the same context and must not stack another route.
     await tool.execute({"operation": "get_text"}, ctx)
-    assert page.routes == ["**/*"]
+    assert [pattern for pattern, _ in browser_context.routes] == ["**/*"]
+
+
+async def test_context_blocks_service_workers_and_routes_websockets(ctx):
+    """Service-worker fetches bypass route handlers, and ws/wss handshakes are
+    invisible to them — both need explicit coverage."""
+    await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://site.test/"}, ctx
+    )
+    browser_context = ctx._browser_context
+    assert browser_context.kwargs["service_workers"] == "block"
+    assert [pattern for pattern, _ in browser_context.ws_routes] == ["**/*"]
+
+
+class _FakeWs:
+    def __init__(self, url: str):
+        self.url = url
+        self.closed = False
+        self.connected = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def connect_to_server(self) -> None:
+        self.connected = True
+
+
+async def test_websocket_route_blocks_internal_targets(ctx, monkeypatch):
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    await BrowserPlaywrightTool().execute(
+        {"operation": "goto", "url": "http://site.test/"}, ctx
+    )
+    _, handler = ctx._browser_context.ws_routes[0]
+
+    blocked = _FakeWs("ws://169.254.169.254/latest")
+    await handler(blocked)
+    assert blocked.closed is True and blocked.connected is False
+
+    allowed = _FakeWs("wss://example.com/socket")
+    await handler(allowed)
+    assert allowed.connected is True and allowed.closed is False
 
 
 async def test_page_rebuilt_on_a_surviving_context_is_still_guarded(ctx):
     """A page can die while its context lives — the SSRF redirect block does
-    exactly that — and the replacement page must carry the route too, or every
-    later operation browses unguarded."""
+    exactly that — and the replacement page must still be covered by the
+    context route, or every later operation browses unguarded."""
     tool = BrowserPlaywrightTool()
     await tool.execute({"operation": "goto", "url": "http://site.test/"}, ctx)
     live_context = ctx._browser_context
@@ -78,4 +118,4 @@ async def test_page_rebuilt_on_a_surviving_context_is_still_guarded(ctx):
 
     assert ctx._browser_context is live_context  # reused, not rebuilt
     assert ctx._browser_page is not None
-    assert ctx._browser_page.routes == ["**/*"]
+    assert [pattern for pattern, _ in live_context.routes] == ["**/*"]

@@ -250,6 +250,42 @@ async def test_http_error_body_redacts_token(caplog):
 
 
 @pytest.mark.asyncio
+async def test_error_body_credential_straddling_the_cut_is_still_redacted(caplog):
+    """Truncating before redacting cut the token in half, so the full-value
+    match missed and its prefix leaked to the LLM and the log."""
+    token = "ghp_" + "A" * 96  # 100 chars, longer than the 20-char cut overlap
+    body = "x" * 480 + token + " trailer"
+    http = AsyncMock()
+
+    async def _boom(*args, **kwargs):
+        resp = httpx.Response(
+            401,
+            text=body,
+            request=httpx.Request("GET", "https://ghe.example/api/v3/user"),
+        )
+        raise httpx.HTTPStatusError(
+            "Unauthorized", request=resp.request, response=resp
+        )
+
+    http.get.side_effect = _boom
+
+    async def _long_token(context, service_key):
+        return token
+
+    with patch("agent_core.tools.github.get_token", _long_token):
+        result = await GitHubTool().execute(
+            {"operation": "is_starred", "repository": "team/service"},
+            _FakeCtx(http),
+        )
+
+    assert token not in result["error"]
+    assert "A" * 40 not in result["error"]
+    assert "REDACTED" in result["error"]
+    assert token not in caplog.text
+    assert "A" * 40 not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_token_with_control_char_is_refused_without_echoing(caplog):
     """A stored Git token with a pasted trailing newline must be refused
     before headers are built. h11 echoes an illegal value back ("Illegal

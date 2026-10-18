@@ -109,6 +109,30 @@ async def test_path_traversal_rejected(tmp_path):
     assert "Access denied" in result.get("error", "")
 
 
+async def test_framework_prefix_traversal_cannot_read_sibling_project(tmp_path):
+    """PROJECTS_ROOT nests under the framework root, so containing framework
+    paths against framework_root let `agents/../projects/other/.env` read a
+    sibling workspace. Containment must hold against the framework directory
+    the prefix names."""
+    fw = tmp_path / "app"
+    proj_a = fw / "projects" / "proj-a"
+    proj_b = fw / "projects" / "proj-b"
+    _mkdir(proj_a, proj_b, fw / "agents")
+    (proj_b / ".env").write_text("SECRET=1", encoding="utf-8")
+    tool = FilesystemTool()
+
+    for operation, path in (
+        ("read_file", "agents/../projects/proj-b/.env"),
+        ("list_dir", "agents/../projects/proj-b"),
+        ("read_file", "knowledge/_template/../../projects/proj-b/.env"),
+    ):
+        result = await tool.execute(
+            {"operation": operation, "path": path}, _ctx(proj_a, fw)
+        )
+        assert "Access denied" in result.get("error", ""), (path, result)
+        assert "SECRET" not in result.get("content", "")
+
+
 # --- In-memory upload store -------------------------------------------------
 # User attachments never land on disk — the API holds the bytes in memory for
 # the turn and exposes them via ToolContext upload hooks. read_file/list_dir

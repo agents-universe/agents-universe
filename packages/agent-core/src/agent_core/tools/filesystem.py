@@ -246,7 +246,16 @@ class FilesystemTool(Tool):
                     return {"error": f"{rel_path.split('/')[0]}/ directory is read-only"}
                 target = (Path(context.framework_root) / rel_path).resolve()
                 fw_root = Path(context.framework_root).resolve()
-                if not target.is_relative_to(fw_root):
+                # Containment must be against the framework DIRECTORY the
+                # path names, not framework_root itself: with PROJECTS_ROOT
+                # nested under it, `agents/../projects/other-slug/.env`
+                # resolved inside framework_root and read a sibling
+                # workspace, defeating the project isolation boundary.
+                if rel_path.startswith("knowledge/_template"):
+                    scope_root = fw_root / "knowledge" / "_template"
+                else:
+                    scope_root = fw_root / rel_path.split("/", 1)[0]
+                if not target.is_relative_to(scope_root):
                     return {"error": f"Access denied: path {rel_path!r} is outside allowed scope"}
                 if not target.exists():
                     if operation == "list_dir":

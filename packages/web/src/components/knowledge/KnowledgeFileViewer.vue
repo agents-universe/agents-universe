@@ -239,6 +239,9 @@ async function navigateTo(slug: string) {
 
 function navigateBack() {
   if (navStack.value.length > 1) {
+    // Abandon an in-flight navigateTo: the user's last navigation action
+    // wins, so a slower response must not push a panel they just left.
+    navSeq++
     navStack.value.pop()
   }
 }
@@ -250,6 +253,9 @@ function navigateToAncestor(ancestorIndex: number) {
   // Pop until we find it or navigate fresh
   const existingIdx = navStack.value.findIndex((e) => e.slug === targetSlug)
   if (existingIdx >= 0) {
+    // Same rule as navigateBack: a pending load for a child must not land on
+    // top of the ancestor the user just returned to.
+    navSeq++
     navStack.value = navStack.value.slice(0, existingIdx + 1)
   } else {
     navigateTo(targetSlug)

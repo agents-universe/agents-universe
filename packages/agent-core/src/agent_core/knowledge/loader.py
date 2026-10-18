@@ -79,6 +79,24 @@ def _is_deferred_level(meta: dict) -> bool:
     return level == "auto" and bool(meta.get("parent"))
 
 
+def normalize_children(value: object) -> list[str]:
+    """Frontmatter `children` as a list of slugs.
+
+    Authors write a single child as a scalar (`children: technical/api-map`)
+    as often as a list — the same hazard skills/loader._as_list documents.
+    Iterating or `list()`-ing the string yields its characters, which
+    sync_parent_children would then write back to disk and the JSON dumps
+    would persist as per-character lists.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        return [str(c) for c in value]
+    return [str(value)]
+
+
 @lru_cache(maxsize=2048)
 def derive_summary(content: str, limit: int = 160) -> str:
     """Fallback summary when frontmatter has none: first prose paragraph, truncated.
@@ -631,7 +649,7 @@ def update_context_file(result: KnowledgeContextResult, slug: str, new_content: 
                 word_count=len(body.split()) if body else 0,
                 knowledge_level=_normalize_knowledge_level(str(meta.get("knowledge_level", "auto"))),
                 parent_slug=meta.get("parent"),
-                children_slugs=list(meta.get("children") or []),
+                children_slugs=normalize_children(meta.get("children")),
                 summary=str(meta.get("summary") or derive_summary(new_content)),
                 project_id=prior.project_id if prior else None,
             )
@@ -646,7 +664,7 @@ def update_context_file(result: KnowledgeContextResult, slug: str, new_content: 
             if "parent" in meta:
                 entry.parent_slug = meta["parent"]
             if "children" in meta:
-                entry.children_slugs = list(meta["children"] or [])
+                entry.children_slugs = normalize_children(meta.get("children"))
         return
 
     # Primary: full content lives in the static region.
@@ -823,7 +841,7 @@ async def _load_primary_from_disk(
         return {
             "knowledge_level": _normalize_knowledge_level(str(meta.get("knowledge_level", "auto"))),
             "parent_slug": meta.get("parent") or None,
-            "children_slugs": list(meta.get("children") or []),
+            "children_slugs": normalize_children(meta.get("children")),
             "depth": _depth_of(slug),
         }
 

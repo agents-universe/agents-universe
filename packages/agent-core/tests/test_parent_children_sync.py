@@ -240,6 +240,67 @@ async def test_children_from_disk_when_index_missing(tmp_path):
     assert result["children"][0]["summary"] == "billing endpoints"
 
 
+# ── scalar `children` frontmatter ───────────────────────────────────────────
+
+
+def test_normalize_children_scalar_list_and_none():
+    from agent_core.knowledge.loader import normalize_children
+
+    assert normalize_children("technical/api-map") == ["technical/api-map"]
+    assert normalize_children(["a", "b"]) == ["a", "b"]
+    assert normalize_children(None) == []
+    assert normalize_children("") == []
+
+
+async def test_scalar_children_not_iterated_per_character_on_sync(tmp_path):
+    """A parent authored with scalar `children: technical/api-map-old` must be
+    rewritten as a list on sync — iterating the string yields its characters,
+    which the write-back would persist as a per-character children list."""
+    import frontmatter
+
+    from agent_core.knowledge.index import sync_parent_children
+
+    kdir = tmp_path / "knowledge"
+    parent = kdir / "technical" / "api-map.md"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text(
+        "---\ntitle: API Map\nknowledge_level: root\n"
+        "children: technical/api-map-old\n---\nAPI index.\n",
+        encoding="utf-8",
+    )
+
+    synced = await sync_parent_children(
+        child_slug="technical/api/users",
+        parent_slug="technical/api-map",
+        project_id=None,
+        db_session=None,
+        knowledge_dir=kdir,
+    )
+
+    assert synced is True
+    meta = frontmatter.loads(parent.read_text(encoding="utf-8")).metadata
+    assert meta.get("children") == ["technical/api-map-old", "technical/api/users"]
+
+
+async def test_list_counts_scalar_children_as_one(tmp_path):
+    """The scan normalizes scalar children — one child, not one per character."""
+    kdir = tmp_path / "knowledge"
+    parent = kdir / "technical" / "api-map.md"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text(
+        "---\ntitle: API Map\nknowledge_level: root\n"
+        "children: technical/api-map-old\n---\nAPI index.\n",
+        encoding="utf-8",
+    )
+
+    tool = KnowledgeRWTool()
+    ctx = _context(tmp_path)
+    result = await tool.execute({"operation": "list"}, ctx)
+
+    entry = next(f for f in result["files"] if f["slug"] == "technical/api-map")
+    assert entry["children_count"] == 1
+
+
 async def test_parent_reindex_failure_warns_without_raising(tmp_path, caplog):
     """The parent-reindex failure handler logs via module `_log` — a missing
     logger turned every warning path into NameError (surfacing only when a

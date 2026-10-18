@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..sandbox import (
+    _EXECUTION_ENV_VARS,
     python_guard_env,
     spawn_in_new_session,
     split_logical_lines,
@@ -186,6 +187,16 @@ def _build_env(
     return env
 
 
+# Names env_refs may never set: the execution-control denylist (sandbox
+# _EXECUTION_ENV_VARS — "refuse the assignment by name, regardless of the
+# value") plus the Python file-access guard's own keys. _build_env applies
+# env_refs AFTER python_guard_env, so a PYTHONPATH or _AGENT_PROJECT_ROOT
+# entry would silently disarm sitecustomize for every `python` the command
+# spawns, and a BASH_ENV/GIT_PAGER entry would run the vault value as code
+# on every run — the exact invariant the command prefix validation holds.
+_ENV_REF_DENYLIST: frozenset[str] = _EXECUTION_ENV_VARS | frozenset(python_guard_env(""))
+
+
 async def _resolve_env_refs(
     context: ToolContext, env_refs: dict[str, dict]
 ) -> tuple[dict[str, str] | None, list[str], str | None]:
@@ -202,6 +213,22 @@ async def _resolve_env_refs(
     resolved: dict[str, str] = {}
     missing: list[str] = []
     for env_name, spec in env_refs.items():
+        # Name validation before anything else: execve splits KEY=VALUE on the
+        # FIRST '=', so a name of "PATH=x" would set PATH even though the
+        # denylist is an exact-match lookup, and NUL would corrupt the envp
+        # entry outright.
+        if (
+            not isinstance(env_name, str)
+            or not env_name
+            or "=" in env_name
+            or "\0" in env_name
+            or env_name in _ENV_REF_DENYLIST
+        ):
+            return None, [], (
+                f"env_refs[{env_name!r}] is not an allowed environment "
+                "variable name (execution-control and sandbox-guard "
+                "variables cannot be set through env_refs)"
+            )
         if not isinstance(spec, dict) or not isinstance(spec.get("ref"), str) or not spec["ref"]:
             return None, [], f"env_refs[{env_name!r}] must be an object with a string 'ref'"
         scope = spec.get("scope", "user")

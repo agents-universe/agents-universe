@@ -25,6 +25,7 @@ from ..knowledge.loader import (
     _is_log_slug,
     derive_summary,
     dynamic_budget_error,
+    normalize_children,
 )
 from ..paths import KNOWLEDGE_SLUG_RE, PathEscapeError, resolve_within
 from .base import Tool, ToolContext
@@ -226,7 +227,7 @@ class KnowledgeRWTool(Tool):
                     "knowledge_level": level,
                     "summary": summary,
                     "parent_slug": parent,
-                    "children_count": len(children) if isinstance(children, list) else 0,
+                    "children_count": len(normalize_children(children)),
                     # A CJK/invalid slug cannot be read/written through this
                     # tool — flag it so the agent renames instead of retrying.
                     **({} if _SLUG_RE.match(slug) else {"status": "invalid_slug"}),

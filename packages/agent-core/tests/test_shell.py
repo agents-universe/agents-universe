@@ -109,6 +109,55 @@ async def test_resolve_env_refs_invalid_scope():
 
 
 @pytest.mark.asyncio
+async def test_resolve_env_refs_refuses_execution_env_names():
+    """env_refs is a second assignment channel — the sandbox denylist must
+    hold there too (BASH_ENV/GIT_PAGER run the vault value as code)."""
+    for name in ("PATH", "LD_PRELOAD", "BASH_ENV", "GIT_PAGER"):
+        resolved, missing, error = await shell_module._resolve_env_refs(
+            make_context(), {name: {"ref": "qa:login:password"}}
+        )
+        assert resolved is None and name in (error or ""), name
+
+
+@pytest.mark.asyncio
+async def test_resolve_env_refs_refuses_python_guard_names():
+    """_build_env applies env_refs AFTER python_guard_env — a PYTHONPATH
+    entry would overwrite the guard's and disarm sitecustomize."""
+    for name in ("PYTHONPATH", "_AGENT_PROJECT_ROOT"):
+        resolved, missing, error = await shell_module._resolve_env_refs(
+            make_context(), {name: {"ref": "qa:login:password"}}
+        )
+        assert resolved is None and name in (error or ""), name
+
+
+@pytest.mark.asyncio
+async def test_resolve_env_refs_refuses_equals_in_name():
+    # execve splits the envp entry on the first '=' — a name of "PATH=x"
+    # sets PATH regardless of the denylist's exact-match lookup.
+    resolved, missing, error = await shell_module._resolve_env_refs(
+        make_context(), {"PATH=x": {"ref": "qa:login:password"}}
+    )
+    assert resolved is None
+    assert "PATH=x" in (error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_denied_env_ref_name_does_not_run():
+    def fail_subprocess(*args, **kwargs):
+        raise AssertionError("subprocess must not run for a denied env_ref name")
+
+    with (
+        patch("agent_core.tools.shell.asyncio.create_subprocess_exec", side_effect=fail_subprocess),
+        patch("agent_core.tools.shell.asyncio.create_subprocess_shell", side_effect=fail_subprocess),
+    ):
+        result = await shell_module.ShellTool().execute(
+            {"command": "echo hi", "env_refs": {"BASH_ENV": {"ref": "qa:login:password"}}},
+            make_context(),
+        )
+    assert "not an allowed environment" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_resolve_env_refs_project_scope_uses_get_secret_optional():
     with (
         patch("agent_core.tools._auth.get_secret_optional", new=AsyncMock(return_value="proj-secret")) as get_secret,

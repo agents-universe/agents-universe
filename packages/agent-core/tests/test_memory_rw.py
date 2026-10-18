@@ -153,6 +153,37 @@ async def test_recall_tags_filter_accepts_string(memories_db):
 
 
 @pytest.mark.asyncio
+async def test_recall_tags_filter_excludes_untagged_session_notes(memories_db):
+    """Session notes have no tags — under a tags filter they must not fill the
+    limit ahead of the tagged personal rows the caller asked for."""
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+    ctx.session_memories = [
+        {"note": f"scratch {i}", "timestamp": 1.0} for i in range(15)
+    ]
+
+    await tool.execute({"operation": "save", "content": "keeper", "tags": ["alpha"]}, ctx)
+
+    result = await tool.execute(
+        {"operation": "recall", "tags": ["alpha"], "limit": 10},
+        ctx,
+    )
+    assert [m["layer"] for m in result["memories"]] == ["personal"]
+    assert [m["content"] for m in result["memories"]] == ["keeper"]
+
+
+@pytest.mark.asyncio
+async def test_recall_without_tags_keeps_session_notes(memories_db):
+    """No tags filter: session notes keep their session-first ordering."""
+    tool = MemoryRWTool()
+    ctx = _context(memories_db)
+    ctx.session_memories = [{"note": "scratch", "timestamp": 1.0}]
+
+    result = await tool.execute({"operation": "recall", "limit": 10}, ctx)
+    assert [m["layer"] for m in result["memories"]] == ["session"]
+
+
+@pytest.mark.asyncio
 async def test_recall_episodes_pushes_limit_into_sql(db_session):
     """The limit must reach the SQL (LIMIT on SQLite), not a post-fetchall
     Python slice — 30 rows with limit 5 must return exactly 5 newest rows."""

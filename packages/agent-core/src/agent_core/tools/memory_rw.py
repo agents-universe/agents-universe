@@ -267,7 +267,11 @@ class MemoryRWTool(Tool):
 
         results: list[dict] = []
 
-        if scope in ("session", "all"):
+        # Session notes carry no tags (save_session stores note+timestamp only),
+        # so a tags-filtered recall must not return them: they can never match
+        # the filter, and being appended first they would crowd the limit ahead
+        # of the tagged personal rows the caller asked for.
+        if scope in ("session", "all") and not tags_filter:
             session_notes = context.session_memories
             for entry in session_notes:
                 if query and query.lower() not in entry["note"].lower():

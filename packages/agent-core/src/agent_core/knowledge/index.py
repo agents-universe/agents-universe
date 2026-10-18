@@ -22,7 +22,7 @@ from typing import Any
 
 import frontmatter
 
-from .loader import derive_summary
+from .loader import derive_summary, normalize_children
 from .scorer import compute_completeness
 
 _log = logging.getLogger("agent_core.knowledge.index")
@@ -157,7 +157,7 @@ async def index_directory(
             new_hash = _content_hash(content)
             knowledge_level = meta.get("knowledge_level", "auto")
             parent_slug = meta.get("parent", None)
-            children_slugs = json.dumps(meta.get("children", []))
+            children_slugs = json.dumps(normalize_children(meta.get("children")))
             summary = meta.get("summary") or derive_summary(content)
 
             parsed_files.append({
@@ -484,7 +484,10 @@ async def sync_parent_children(
         _log.warning("sync_parent_children: cannot read parent %s", parent_slug, exc_info=True)
         return False
 
-    children = [str(c) for c in (post.metadata.get("children") or [])]
+    # Scalar `children: technical/api-map` must become a one-element list here —
+    # iterating the string yields its characters, which the write-back below
+    # would persist to disk as a per-character children list.
+    children = normalize_children(post.metadata.get("children"))
     if add:
         if child_slug in children:
             return False
@@ -565,7 +568,7 @@ async def reindex_one(
     cross_refs = json.dumps(cross_refs_list)
     knowledge_level = _normalize_knowledge_level(meta.get("knowledge_level", "auto"))
     parent_slug_val = meta.get("parent", None)
-    children_slugs_val = json.dumps(meta.get("children", []))
+    children_slugs_val = json.dumps(normalize_children(meta.get("children")))
     summary_val = meta.get("summary") or derive_summary(content)
 
     # Compute depth by walking parent chain in DB

@@ -171,6 +171,41 @@ describe('Composer mention popup cursor safety', () => {
   })
 })
 
+describe('Composer slash popup cursor safety', () => {
+  it('a selection-only move away from "/" closes the popup', async () => {
+    // Regression: the selection-only branch checked only that the document
+    // trimmed to "/", so Home kept the popup open with the caret at 0. A
+    // later click then dispatched from 0..0, leaving the original "/" behind
+    // ("/plan /").
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    const view = EditorView.findFromDOM(wrapper.find('.cm-content').element as HTMLElement)!
+
+    view.dispatch({ changes: { from: 0, insert: '/' }, selection: { anchor: 1 } })
+    await nextTick()
+    expect(wrapper.find('.slash-popup').exists()).toBe(true)
+
+    view.dispatch({ selection: { anchor: 0 } })
+    await nextTick()
+    expect(wrapper.find('.slash-popup').exists()).toBe(false)
+    expect(view.state.doc.toString()).toBe('/')
+  })
+
+  it('selecting a command still replaces the slash trigger', async () => {
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    const view = EditorView.findFromDOM(wrapper.find('.cm-content').element as HTMLElement)!
+
+    view.dispatch({ changes: { from: 0, insert: '/' }, selection: { anchor: 1 } })
+    await nextTick()
+    await wrapper.find('.slash-popup .mention-item').trigger('click')
+    await nextTick()
+
+    expect(view.state.doc.toString()).toBe('/plan ')
+    expect(wrapper.find('.slash-popup').exists()).toBe(false)
+  })
+})
+
 describe('Composer selection hydration on page load', () => {
   let wrapper: VueWrapper | undefined
 

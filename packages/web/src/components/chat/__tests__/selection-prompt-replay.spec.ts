@@ -137,6 +137,20 @@ describe('pending prompt replay on reconnect', () => {
     expect(store.isStreaming).toBe(false)
   })
 
+  it('a sync without a locally shown prompt drops the zombie dialog', () => {
+    const store = useConversationStore()
+    store.startConversation('c1')
+    useWebSocket(ref('c1'))
+    lastSocket().emit(PROMPT_EVENT)
+
+    // While the socket was down the prompt was cancelled or timed out
+    // server-side — no user_selection_cancelled frame reaches this client.
+    // The reconnect snapshot is authoritative: absence means nothing waits.
+    lastSocket().emit({ type: 'sync', streaming_text: '', tool_calls: [], prompts: [] })
+
+    expect(store.pendingPrompts).toEqual([])
+  })
+
   it('a resolved prompt is dropped by a later sync replay', () => {
     const store = useConversationStore()
     store.startConversation('c1')

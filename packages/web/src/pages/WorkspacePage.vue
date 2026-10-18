@@ -534,6 +534,11 @@ async function runScript(scriptId: string | undefined) {
     if (projectId.value !== pidAtStart) return
     const sc = scripts.value.find((s) => s.script_id === scriptId)
     if (sc) { sc.run_id = result.run_id; sc.status = result.status }
+    // The run card and live log belong to the target that started this run.
+    // If the user selected another file while the request was in flight, its
+    // panel must survive untouched — attaching this run would replace the new
+    // selection's history and verdict with an unrelated script's output.
+    if (selection.value?.kind !== 'script' || selection.value.scriptId !== scriptId) return
     // Drop the previous run's card and refresh the list so the new run shows
     // up as running while its log streams below.
     resetRunResult()
@@ -559,6 +564,9 @@ async function runSpec(slug: string | undefined) {
     if (projectId.value !== pidAtStart) return
     const sp = specs.value.find((s) => s.slug === slug)
     if (sp) { sp.run_id = result.run_id; sp.status = result.status }
+    // Same rule as runScript: only attach the log when the spec that started
+    // the run is still the tree selection.
+    if (selection.value?.kind !== 'playwright' || selection.value.specSlug !== slug) return
     resetRunResult()
     void loadHistoryForSelection()
     connectToRun(result.run_id)

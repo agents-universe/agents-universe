@@ -313,9 +313,7 @@ onMounted(() => {
           const head = update.state.selection.main.head
           const prev = update.state.doc.sliceString(head - 1, head)
           if (showMention.value && prev !== '@') showMention.value = false
-          if (showSlash.value && update.state.doc.toString().trim() !== '/') {
-            showSlash.value = false
-          }
+          if (showSlash.value && prev !== '/') showSlash.value = false
         }
       }
       return
@@ -495,6 +493,17 @@ function closeMention() {
 function insertSlash(cmd: string) {
   if (!view) return
   const pos = view.state.selection.main.head
+  // The popup opens on a lone "/" and assumes the caret still sits right
+  // after it. A selection-only move (Home) normally closes the popup first —
+  // this is the belt to that suspenders: dispatching from 0..pos after the
+  // caret moved would prepend "/<cmd> " and strand the original "/" behind
+  // it ("/plan /"). Bail without editing.
+  const triggerAt = pos >= 1 && view.state.doc.sliceString(pos - 1, pos) === '/'
+  if (!triggerAt) {
+    showSlash.value = false
+    view.focus()
+    return
+  }
   view.dispatch({
     changes: { from: 0, to: pos, insert: `/${cmd} ` },
     selection: { anchor: cmd.length + 2 },

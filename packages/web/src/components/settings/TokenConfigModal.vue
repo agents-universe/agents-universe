@@ -912,6 +912,10 @@ async function loadIntegrationTokens() {
     // reading only savedKeys["jira"] would label the whole service "project"
     // and make saveIntegration drop the typed token without an API call.
     const configuredInUser = new Set<string>()
+    // The project counterpart of configuredInUser: an agent-created
+    // project_secrets row may hold only "jira:email". Counting it keeps the
+    // service out of the "add" list and labels its scope correctly.
+    const configuredInProject = new Set<string>()
     for (const k of Object.keys(projectSecretByKey)) delete projectSecretByKey[k]
     for (const k of Object.keys(integrationScopes)) delete integrationScopes[k]
     // Drop stale hints from earlier sessions (e.g. token deleted elsewhere)
@@ -939,16 +943,21 @@ async function loadIntegrationTokens() {
       const main = projectByKey.get(svc.key)
       if (main) {
         configured.add(svc.key)
+        configuredInProject.add(svc.key)
         projectSecretByKey[svc.key] = { secret_id: main.secret_id, key_hint: main.key_hint }
       }
       for (const field of svc.extraFields ?? []) {
         const pf = projectByKey.get(field.key)
-        if (pf) projectSecretByKey[field.key] = { secret_id: pf.secret_id, key_hint: pf.key_hint }
+        if (pf) {
+          projectSecretByKey[field.key] = { secret_id: pf.secret_id, key_hint: pf.key_hint }
+          configured.add(svc.key)
+          configuredInProject.add(svc.key)
+        }
       }
     }
     for (const key of configured) {
       const hasUser = configuredInUser.has(key)
-      const hasProject = !!projectSecretByKey[key]
+      const hasProject = configuredInProject.has(key)
       integrationScopes[key] = hasUser && hasProject ? 'both' : hasUser ? 'user' : 'project'
     }
     configuredIntegrationKeys.value = configured

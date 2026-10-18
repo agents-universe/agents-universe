@@ -289,17 +289,26 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   function startConversation(id: string) {
+    const switched = activeId.value !== id
     activeId.value = id
     _saveConversationId(id)
     // Ensure runtime exists but don't reset existing state
     ensureRuntime(id)
-    // The knowledge panel's "loaded this turn" chips describe the PREVIOUS
-    // conversation once it switches away — knowledge_loaded events only
-    // update it for the active conversation, so the stale list would linger
-    // against the new session. Clear it here; the next turn's events refill
-    // it. Dynamic import avoids a store cycle (dynamic import is what
-    // project.ts uses for the same reason).
-    import('./knowledge').then(({ useKnowledgeStore }) => useKnowledgeStore().setLoadedThisTurn([]))
+    // The knowledge panel's turn-scoped lists describe the PREVIOUS
+    // conversation once it switches away: knowledge_loaded and
+    // knowledge_dynamic_load only update them while their conversation is
+    // active, and the socket closes with the switch, so a later unload for
+    // the old session never arrives. Clear both on an actual switch;
+    // re-selecting the live conversation keeps its own chips. Dynamic import
+    // avoids a store cycle (dynamic import is what project.ts uses for the
+    // same reason).
+    if (switched) {
+      import('./knowledge').then(({ useKnowledgeStore }) => {
+        const knowledge = useKnowledgeStore()
+        knowledge.setLoadedThisTurn([])
+        knowledge.clearDynamicLoads()
+      })
+    }
   }
 
   function _saveConversationId(id: string) {
@@ -1282,25 +1291,25 @@ export const useConversationStore = defineStore('conversation', () => {
         rt.streamingStartTime = Date.now()
       }
     }
-    // Prompts the server is still waiting on: restore the dialogs this
-    // client dropped when it navigated away and rebuilt the runtime from
-    // history (pendingPrompts is client-only state, history carries no trace
-    // of it). A reconnect with the dialog still on screen must not stack a
-    // second copy — matched by promptId, which identifies the server-side
-    // Future the answer has to resolve.
-    if (sync.prompts?.length) {
-      const shown = new Set(rt.pendingPrompts.map((p) => p.promptId))
-      for (const prompt of sync.prompts) {
-        if (!shown.has(prompt.promptId)) rt.pendingPrompts.push(prompt)
+    // The sync snapshot is the server's authoritative set of prompts still
+    // waiting on the user. Restore the dialogs this client dropped when it
+    // navigated away and rebuilt the runtime from history (pendingPrompts is
+    // client-only state, history carries no trace of it), and drop a local
+    // dialog the server no longer waits on: a prompt cancelled or timed out
+    // while the socket was down leaves no client-side trace otherwise, and
+    // the zombie would answer a Future that no longer exists.
+    if (sync.prompts !== undefined) {
+      rt.pendingPrompts = [...(sync.prompts ?? [])]
+      if (rt.pendingPrompts.length) {
+        // A pending prompt proves the turn is alive and blocked on the user.
+        // Without the flag the composer offers "send" (which would try to
+        // claim a new turn on a claimed conversation) instead of the inject
+        // path, and the sidebar loses the run indicator.
+        rt.isStreaming = true
+        rt.isThinking = false
+        rt.abortSnapshotted = false
+        if (!rt.streamingStartTime) rt.streamingStartTime = Date.now()
       }
-      // A pending prompt proves the turn is alive and blocked on the user.
-      // Without the flag the composer offers "send" (which would try to
-      // claim a new turn on a claimed conversation) instead of the inject
-      // path, and the sidebar loses the run indicator.
-      rt.isStreaming = true
-      rt.isThinking = false
-      rt.abortSnapshotted = false
-      if (!rt.streamingStartTime) rt.streamingStartTime = Date.now()
     }
     // Empty sync (reconnect after the turn already finished server-side)
     // must NOT re-arm the streaming flag — nothing would ever clear it and

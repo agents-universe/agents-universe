@@ -151,4 +151,34 @@ describe('stores survive localStorage failures', () => {
     // Items survive — only the turn-scoped list is cleared
     expect(conv.conversationId).toBe('conv-b')
   })
+
+  it('startConversation clears dynamic loads from the previous conversation', async () => {
+    // The socket closes with the switch, so the old session's unload frames
+    // never arrive; without this clear the "dynamically loaded" chips would
+    // outlive their conversation for the rest of the project session.
+    const knowledge = useKnowledgeStore()
+    knowledge.addDynamicLoad({ slug: 'docs/one.md', boundToTask: null })
+
+    const conv = useConversationStore()
+    conv.startConversation('conv-b')
+
+    await vi.waitFor(() => expect(knowledge.dynamicallyLoaded).toEqual([]))
+  })
+
+  it('re-selecting the live conversation keeps its knowledge chips', async () => {
+    const knowledge = useKnowledgeStore()
+    const conv = useConversationStore()
+    conv.startConversation('conv-a')
+    // Let the first switch's dynamic import settle; its callback must not
+    // land after the chips below are seeded.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    knowledge.setLoadedThisTurn(['docs/one.md'])
+    knowledge.addDynamicLoad({ slug: 'docs/two.md', boundToTask: null })
+    conv.startConversation('conv-a')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(knowledge.loadedThisTurn).toEqual(['docs/one.md'])
+    expect(knowledge.dynamicallyLoaded).toHaveLength(1)
+  })
 })

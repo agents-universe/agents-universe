@@ -313,6 +313,53 @@ async def test_unknown_endpoint_key_errors(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_endpoints_shape_that_is_not_a_mapping_errors_without_crashing(tmp_path):
+    """Hand-written YAML can put a list where the endpoints mapping belongs;
+    the lookup must report "not found", not raise AttributeError out of the
+    tool."""
+    malformed = """\
+```yaml
+integration_key: listy
+environments: [dev]
+auth: bearer
+defaults: [x]
+endpoints:
+  - health
+```
+"""
+    ctx = make_catalog_context(tmp_path, malformed)
+
+    result = await _run({"integration_key": "listy", "endpoint_key": "health", "method": "GET"}, ctx)
+
+    assert "not found in catalog" in result["error"]
+    assert result["endpoint_key"] == "health"
+
+
+def test_non_mapping_sections_are_coerced_to_empty_objects():
+    from agent_core.tools._catalog import resolve_catalog_endpoint
+
+    resolved = resolve_catalog_endpoint(
+        {
+            "svc": {
+                "endpoints": {"ping": {"path": "/ping"}},
+                "environments": ["dev"],
+                "auth": "bearer",
+                "defaults": ["x"],
+            }
+        },
+        "svc",
+        "ping",
+        None,
+    )
+
+    assert resolved is not None
+    assert resolved["endpoint"] == {"path": "/ping"}
+    assert resolved["environments"] == {}
+    assert resolved["auth"] == {}
+    assert resolved["defaults"] == {}
+
+
+@pytest.mark.asyncio
 async def test_malformed_yaml_block_does_not_break_catalog(tmp_path):
     broken = """\
 ```yaml

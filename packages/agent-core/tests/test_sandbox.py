@@ -1153,6 +1153,54 @@ def test_inet_aton_mapper():
     assert _inet_aton_mapped("") is None
 
 
+def test_idna_normalization_covers_dot_and_fullwidth_variants():
+    """getaddrinfo encodes non-ASCII hostnames with the IDNA codec: the
+    ideographic/fullwidth dot variants become ".", and nameprep's NFKC pass
+    maps fullwidth digits to ASCII. The guards must see the same host."""
+    from agent_core.tools._ssrf import _idna_host
+
+    assert _idna_host("127。0。0。1") == "127.0.0.1"  # ideographic full stop
+    assert _idna_host("127．0．0．1") == "127.0.0.1"  # fullwidth full stop
+    assert _idna_host("127｡0｡0｡1") == "127.0.0.1"  # halfwidth ideographic stop
+    assert _idna_host("１２７.０.０.１") == "127.0.0.1"  # fullwidth digits
+    assert _idna_host("example.com") == "example.com"
+
+
+def test_inet_aton_mapper_sees_through_idna():
+    from agent_core.tools._ssrf import _inet_aton_mapped
+
+    assert _inet_aton_mapped("127。0。0。1") == "127.0.0.1"
+    assert _inet_aton_mapped("127．0．0．1") == "127.0.0.1"
+    assert _inet_aton_mapped("１２７.０.０.１") == "127.0.0.1"
+    assert _inet_aton_mapped("１６９.２５４.１６９.２５４") == "169.254.169.254"
+
+
+def test_browser_url_gate_blocks_idna_alternate_ip_forms(tmp_path, monkeypatch):
+    """The literal guard must also catch dot/digit forms the IDNA codec folds
+    into an internal address — the raw string looks like a hostname."""
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    for url in (
+        "http://127。0。0。1/",  # hygiene:allow-url
+        "http://127．0．0．1/",  # hygiene:allow-url
+        "http://１２７.０.０.１/",  # hygiene:allow-url
+    ):
+        with pytest.raises(Exception, match="Blocked IP"):
+            _check_browser_url(url)
+    # The metadata address is recognized as a metadata host once normalized.
+    with pytest.raises(Exception, match="Blocked (IP|metadata host)"):
+        _check_browser_url("http://１６９.２５４.１６９.２５４/latest/meta-data/")
+
+
+def test_browser_url_gate_blocks_metadata_hostname_via_idna(tmp_path, monkeypatch):
+    """Fullwidth letters NFKC-normalize to the metadata hostname the resolver
+    queries, so the metadata-host check must compare the IDNA form."""
+    from agent_core.tools._ssrf import validate_url
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    with pytest.raises(Exception, match="Blocked metadata host"):
+        validate_url("http://ｍｅｔａｄａｔａ.ｇｏｏｇｌｅ.ｉｎｔｅｒｎａｌ/latest")
+
+
 def test_browser_url_gate_blocks_inet_aton_alternate_ip_forms(tmp_path, monkeypatch):
     """The always-on literal-IP guard must also catch the inet_aton alternate
     forms ipaddress rejects — with SSRF_ENABLED off (the default) glibc's
@@ -1204,6 +1252,33 @@ def test_api_request_rejects_inet_aton_alternate_ip_forms(monkeypatch):
         assert _validate_url_safety(url, None) is not None
     assert _validate_url_safety("http://8.8.8.8/x", None) is None
     assert _validate_url_safety("http://example.com/x", None) is None
+
+
+def test_api_request_rejects_idna_alternate_ip_forms(monkeypatch):
+    from agent_core.tools.api_request import _validate_url_safety
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    for url in (
+        "http://127。0。0。1:8000/health",  # hygiene:allow-url
+        "http://127．0．0．1:8000/health",  # hygiene:allow-url
+        "http://１２７.０.０.１:8000/health",  # hygiene:allow-url
+        "http://１６９.２５４.１６９.２５４/latest/meta-data/",  # hygiene:allow-url
+    ):
+        assert _validate_url_safety(url, None) is not None
+
+
+def test_api_request_allow_private_env_permits_private_targets(monkeypatch):
+    """THIRD_PARTY_API_ALLOW_PRIVATE is the documented escape hatch for
+    self-hosted endpoints; the literal/DNS SSRF checks must honour it."""
+    from agent_core.tools.api_request import _validate_url_safety
+
+    monkeypatch.delenv("SSRF_ENABLED", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_ALLOW_PRIVATE", raising=False)
+    assert _validate_url_safety("http://127.0.0.1:8001/admin", None) is not None  # hygiene:allow-url
+
+    monkeypatch.setenv("THIRD_PARTY_API_ALLOW_PRIVATE", "true")
+    assert _validate_url_safety("http://127.0.0.1:8001/admin", None) is None  # hygiene:allow-url
+    assert _validate_url_safety("http://192.168.1.20:8080/api", None) is None  # hygiene:allow-url
 
 
 def test_spawn_in_new_session_platform_kwargs():

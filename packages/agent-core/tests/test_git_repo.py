@@ -980,3 +980,159 @@ def test_remove_clone_in_schema():
     tool = GitRepoTool()
     schema_str = str(tool.parameters)
     assert "remove_clone" in schema_str
+
+
+# ---------------------------------------------------------------------------
+# URL / remote hardening and git output fidelity
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_clone_url_accepts_a_repository_ending_in_git(tmp_path, monkeypatch):
+    """Callers paste clone URLs ("owner/repo.git"); appending .git again asked
+    the host for "repo.git.git"."""
+    async def _token(context, service_key):
+        return "tok"
+
+    monkeypatch.setattr(_git_repo_mod, "get_token_optional", _token)
+    ctx = _make_context("")
+    ctx.cfg.return_value = "https://ghe.example.com"
+
+    token, url, error = await GitRepoTool()._get_token_and_url(
+        {"repository": "owner/repo.git"}, ctx
+    )
+
+    assert error is None
+    assert token == "tok"
+    assert url == "https://ghe.example.com/owner/repo.git"
+
+
+def test_origin_host_parsing_covers_url_and_scp_forms():
+    assert GitRepoTool._host_of("https://ghe.example.com/owner/repo.git") == "ghe.example.com"
+    assert GitRepoTool._host_of("ssh://git@ghe.example.com/owner/repo.git") == "ghe.example.com"
+    assert GitRepoTool._host_of("git@ghe.example.com:owner/repo.git") == "ghe.example.com"
+    assert GitRepoTool._host_of("ghe.example.com") == "ghe.example.com"
+    assert GitRepoTool._host_of("") == ""
+
+
+@pytest.mark.asyncio
+async def test_push_refuses_token_when_origin_host_differs(tmp_path, monkeypatch):
+    """origin lives in the agent-writable .git/config; the askpass helper must
+    not answer a rewritten remote's credential prompt with the project token."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    _run("remote", "set-url", "origin", "https://evil.example.com/owner/repo.git", cwd=checkout)
+
+    async def _token(context, service_key):
+        return "secret-token"
+
+    monkeypatch.setattr(_git_repo_mod, "get_token_optional", _token)
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+    ctx.cfg.side_effect = lambda key, default="": (
+        "https://ghe.example.com" if key == "GIT_BASE_URL" else default
+    )
+
+    calls: list[list[str]] = []
+    real_run = tool._run_git
+
+    async def _record(args, cwd, timeout=30, token=None):
+        calls.append(list(args))
+        return await real_run(args, cwd, timeout=timeout, token=token)
+
+    tool._run_git = _record  # type: ignore[method-assign]
+
+    result = await tool.execute(
+        {"operation": "push", "repository_path": "repos/repo", "branch": "main"},
+        ctx,
+    )
+
+    assert "does not match" in result["error"]
+    assert not any(call and call[0] == "push" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_search_without_matches_is_an_empty_result(tmp_path):
+    """git grep exits 1 for "no matches"; that is not a tool failure."""
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+
+    result = await tool.execute(
+        {"operation": "search", "repository_path": "repos/repo", "query": "zzz-not-present"},
+        ctx,
+    )
+
+    assert "error" not in result, result
+    assert result["matches"] == 0
+    assert result["exit_code"] == 1
+
+    found = await tool.execute(
+        {"operation": "search", "repository_path": "repos/repo", "query": "hello"},
+        ctx,
+    )
+    assert "error" not in found
+    assert "hello" in found["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_status_keeps_non_ascii_paths_raw(tmp_path):
+    """core.quotepath's default escapes non-ASCII names; a path copied from
+    the status listing would then never match the real file at commit time."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    (checkout / "测试.txt").write_text("data")
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+    result = await tool.execute(
+        {"operation": "status", "repository_path": "repos/repo"}, ctx
+    )
+
+    assert result["untracked"] == ["测试.txt"]
+
+
+@pytest.mark.asyncio
+async def test_commit_accepts_interior_dot_segments(tmp_path):
+    """`src/./a.py` is a valid pathspec but git reports it as `src/a.py`; the
+    selection check used to reject the commit as unrelated."""
+    bare = _make_bare_remote(tmp_path)
+    checkout = _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    (checkout / "src").mkdir()
+    (checkout / "src" / "a.py").write_text("x = 1")
+
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+    result = await tool.execute(
+        {
+            "operation": "commit",
+            "repository_path": "repos/repo",
+            "paths": ["src/./a.py"],
+            "message": "add a",
+        },
+        ctx,
+    )
+
+    assert result.get("status") == "committed", result
+    assert result["files"] == ["src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_dot_dot_that_normalization_could_collapse(tmp_path):
+    bare = _make_bare_remote(tmp_path)
+    _clone_from(bare, tmp_path / "ws" / "repos" / "repo")
+    tool = GitRepoTool()
+    ctx = _make_context(str(tmp_path / "ws"))
+
+    result = await tool.execute(
+        {
+            "operation": "commit",
+            "repository_path": "repos/repo",
+            "paths": ["src/../target.py"],
+            "message": "escape",
+        },
+        ctx,
+    )
+
+    assert "error" in result
+    assert "repository-relative" in result["error"]

@@ -7,6 +7,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ._auth import get_token_optional
 from ._git_exec import _TIMEOUT_CLONE, _TIMEOUT_DEFAULT, _TIMEOUT_PULL, _rmtree_force, run_git
@@ -197,6 +198,43 @@ class GitRepoTool(Tool):
         # tests monkeypatch it per instance.
         return await run_git(args, cwd, timeout=timeout, token=token)
 
+    @staticmethod
+    def _host_of(url: str) -> str:
+        """Hostname of an https/ssh/scp-like git URL ('' when unparseable)."""
+        url = url.strip()
+        if "://" not in url:
+            if "@" in url:
+                url = url.split("@", 1)[1]
+            return url.split(":", 1)[0].split("/", 1)[0].lower()
+        try:
+            return (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            return ""
+
+    async def _check_origin(self, repo: Path, context: ToolContext) -> dict[str, Any] | None:
+        """Refuse to hand the git token to a rewritten origin.
+
+        `.git/config` lives in the agent-writable workspace, so `origin` can
+        point anywhere; the askpass helper would then answer that host's
+        credential prompt with the configured token.
+        """
+        expected = self._host_of(context.cfg("GIT_BASE_URL", "") or "")
+        if not expected:
+            return {"error": "GIT_BASE_URL not configured"}
+        origin = await self._run_git(["remote", "get-url", "origin"], repo)
+        if "error" in origin:
+            return {"error": "Repository has no 'origin' remote"}
+        actual = self._host_of(origin.get("stdout", ""))
+        if not actual or actual != expected:
+            return {
+                "error": (
+                    f"origin remote host {actual or 'unknown'!r} does not match the "
+                    f"configured GIT_BASE_URL host {expected!r}; refusing to send "
+                    "the git token there"
+                )
+            }
+        return None
+
     async def _is_clean(self, repo: Path) -> tuple[bool, dict[str, Any] | None]:
         result = await self._run_git(["status", "--porcelain=v1", "--untracked-files=all"], repo)
         if "error" in result:
@@ -235,7 +273,12 @@ class GitRepoTool(Tool):
         if not repository:
             return None, None, {"error": "Parameter 'repository' is required for clone"}
         host = base.rstrip("/").removeprefix("https://").removeprefix("http://")
-        return token, f"https://{host}/{repository}.git", None
+        # Callers copy clone URLs verbatim ("owner/repo.git"); appending .git
+        # again asks the host for "repo.git.git", which does not exist.
+        slug = repository.rstrip("/")
+        if not slug.endswith(".git"):
+            slug += ".git"
+        return token, f"https://{host}/{slug}", None
 
     async def _op_clone(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         if params.get("repository_path"):
@@ -296,9 +339,12 @@ class GitRepoTool(Tool):
         before = await self._run_git(["rev-parse", "HEAD"], repo)
         if "error" in before:
             return before
-        result = await self._run_git(
-            ["pull", "--ff-only"], repo, _TIMEOUT_PULL, await get_token_optional(context, "git")
-        )
+        token = await get_token_optional(context, "git")
+        if token:
+            origin_error = await self._check_origin(repo, context)
+            if origin_error:
+                return origin_error
+        result = await self._run_git(["pull", "--ff-only"], repo, _TIMEOUT_PULL, token)
         if "error" in result:
             return result
         after = await self._run_git(["rev-parse", "HEAD"], repo)
@@ -344,8 +390,12 @@ class GitRepoTool(Tool):
         repo, error = await self._require_repo(params, context)
         if error:
             return error
+        # core.quotepath=false keeps non-ASCII names raw; the default C-escapes
+        # them ("\346\265\213..."), and a path copied from this listing would
+        # never match the file when passed back to commit.
         porcelain = await self._run_git(
-            ["status", "--porcelain=v1", "--untracked-files=all"], repo
+            ["-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=all"],
+            repo,
         )
         head = await self._run_git(["rev-parse", "HEAD"], repo)
         branch = await self._run_git(["symbolic-ref", "--quiet", "--short", "HEAD"], repo)
@@ -390,7 +440,12 @@ class GitRepoTool(Tool):
         command = ["grep", "-n", "--heading", "--", params["query"]]
         if params.get("path"):
             command.append(params["path"])
-        return await self._run_git(command, repo)
+        result = await self._run_git(command, repo)
+        # git grep exits 1 when nothing matched — that is a successful empty
+        # search, not a tool failure. Exit 2 (bad regex/path) stays an error.
+        if result.get("exit_code") == 1 and not result.get("stderr"):
+            return {"stdout": "", "stderr": "", "exit_code": 1, "matches": 0}
+        return result
 
     async def _op_log(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         repo, error = await self._require_repo(params, context)
@@ -539,9 +594,13 @@ class GitRepoTool(Tool):
         shallow_file = (repo / git_dir["stdout"].strip() / "shallow").resolve()
         if not shallow_file.exists():
             return {"status": "already_full"}
+        token = await get_token_optional(context, "git")
+        if token:
+            origin_error = await self._check_origin(repo, context)
+            if origin_error:
+                return origin_error
         result = await self._run_git(
-            ["fetch", "--unshallow"], repo, _TIMEOUT_CLONE,
-            await get_token_optional(context, "git"),
+            ["fetch", "--unshallow"], repo, _TIMEOUT_CLONE, token
         )
         return result if "error" in result else {
             "status": "unshallowed", "path": self._display(repo, context)
@@ -561,7 +620,9 @@ class GitRepoTool(Tool):
     async def _conflict_result(
         self, repo: Path, result: dict[str, Any], branch: str
     ) -> dict[str, Any]:
-        status = await self._run_git(["status", "--porcelain=v1"], repo)
+        status = await self._run_git(
+            ["-c", "core.quotepath=false", "status", "--porcelain=v1"], repo
+        )
         files = [
             self._porcelain_path(line)
             for line in status.get("stdout", "").splitlines()
@@ -584,6 +645,10 @@ class GitRepoTool(Tool):
         if not clean:
             return {"error": "Branch preparation blocked: working tree is dirty", "status": "dirty"}
         token = await get_token_optional(context, "git")
+        if token:
+            origin_error = await self._check_origin(repo, context)
+            if origin_error:
+                return origin_error
         commands = (
             (["fetch", "origin"], _TIMEOUT_PULL),
             (["checkout", "main"], _TIMEOUT_DEFAULT),
@@ -616,6 +681,10 @@ class GitRepoTool(Tool):
         if not clean:
             return {"error": "Branch creation blocked: working tree is dirty", "status": "dirty"}
         token = await get_token_optional(context, "git")
+        if token:
+            origin_error = await self._check_origin(repo, context)
+            if origin_error:
+                return origin_error
         for command, timeout in (
             (["fetch", "origin"], _TIMEOUT_PULL),
             (["checkout", base], _TIMEOUT_DEFAULT),
@@ -700,6 +769,10 @@ class GitRepoTool(Tool):
             return {"error": "Branch synchronization blocked: working tree is dirty", "status": "dirty"}
 
         token = await get_token_optional(context, "git")
+        if token:
+            origin_error = await self._check_origin(repo, context)
+            if origin_error:
+                return origin_error
         fetch = await self._run_git(["fetch", "origin"], repo, _TIMEOUT_PULL, token)
         if "error" in fetch:
             return fetch
@@ -745,24 +818,24 @@ class GitRepoTool(Tool):
         valid: list[str] = []
         for path in paths:
             normalized = path.replace("\\", "/").rstrip("/")
-            # A leading ./ is a valid git pathspec but never appears in
-            # `git diff --name-only` output, so _path_selected compared
-            # "src/a.py" against "./src/a.py" and blocked the commit as
-            # "staged changes exceed selected paths". Normalize it away (the
-            # escape checks below then run on the stripped form).
-            while normalized.startswith("./"):
-                normalized = normalized[2:]
-            raw = Path(normalized)
+            # Absolute paths must be refused before "." segments are
+            # collapsed — otherwise "/etc/passwd" would normalize to the
+            # harmless-looking relative "etc/passwd".
             if (
-                raw.is_absolute()
+                Path(normalized).is_absolute()
                 or normalized.startswith("/")
                 or re.match(r"^[A-Za-z]:", normalized)
-                or normalized in {"", ".", ".."}
-                or normalized.startswith("../")
-                or "/../" in normalized
             ):
                 return None, {"error": f"Commit path must be repository-relative: {path!r}"}
-            valid.append(normalized)
+            # "." segments anywhere are valid git pathspecs but never appear
+            # in `git diff --name-only` output, so _path_selected compared
+            # "src/a.py" against "src/./a.py" and blocked the commit as
+            # "staged changes exceed selected paths". Collapse them; ".."
+            # anywhere still means an escape and is refused.
+            parts = [part for part in normalized.split("/") if part not in ("", ".")]
+            if not parts or ".." in parts:
+                return None, {"error": f"Commit path must be repository-relative: {path!r}"}
+            valid.append("/".join(parts))
         return list(dict.fromkeys(valid)), None
 
     @staticmethod
@@ -858,6 +931,10 @@ class GitRepoTool(Tool):
             push_target = f"https://{host}/{target_repository}.git"
         else:
             push_target = "origin"
+            if token:
+                origin_error = await self._check_origin(repo, context)
+                if origin_error:
+                    return origin_error
         result = await self._run_git(
             ["push", push_target, f"{branch}:{branch}"], repo, _TIMEOUT_PULL, token
         )

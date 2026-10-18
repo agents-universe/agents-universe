@@ -172,25 +172,28 @@ def _validate_url_safety(url: str, allowed_hosts: list[str] | None) -> str | Non
     allow_private = os.environ.get("THIRD_PARTY_API_ALLOW_PRIVATE", "").lower() in (
         "1", "true", "yes"
     )
-    if not allow_private and _is_private_ip(host):
-        return f"Target IP {host!r} is in a blocked range (loopback/private/link-local/multicast)"
+    if not allow_private:
+        if _is_private_ip(host):
+            return f"Target IP {host!r} is in a blocked range (loopback/private/link-local/multicast)"
 
-    try:
-        from ._ssrf import validate_url as ssrf_validate_url
-        ssrf_validate_url(url, allow_any_port=True)
-        # DNS-level check (SSRF_ENABLED gate): the literal IP/host checks
-        # above never see a hostname that resolves to an internal address.
-        # Run resolve_and_validate directly — validate_outbound_url would
-        # re-apply the port allowlist and defeat the allow_any_port above
-        # (api_request targets are user-configured endpoints like Kong:8001
-        # or Ollama:11434; resolved IPs still get blocked.
-        from ._http import _is_ssrf_enabled
-        if _is_ssrf_enabled():
-            from ._ssrf import resolve_and_validate
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-            resolve_and_validate(parsed.hostname, port)
-    except Exception as exc:
-        return f"SSRF check failed: {exc}"
+        try:
+            from ._ssrf import validate_url as ssrf_validate_url
+            # validate_url repeats the literal-IP block — it must be inside
+            # the allow_private gate or the opt-in below is dead code.
+            ssrf_validate_url(url, allow_any_port=True)
+            # DNS-level check (SSRF_ENABLED gate): the literal IP/host checks
+            # above never see a hostname that resolves to an internal address.
+            # Run resolve_and_validate directly — validate_outbound_url would
+            # re-apply the port allowlist and defeat the allow_any_port above
+            # (api_request targets are user-configured endpoints like Kong:8001
+            # or Ollama:11434; resolved IPs still get blocked.
+            from ._http import _is_ssrf_enabled
+            if _is_ssrf_enabled():
+                from ._ssrf import resolve_and_validate
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                resolve_and_validate(parsed.hostname, port)
+        except Exception as exc:
+            return f"SSRF check failed: {exc}"
 
     return None
 

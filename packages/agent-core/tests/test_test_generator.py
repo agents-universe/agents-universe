@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import base64
+import json
+
+import pytest
 
 from agent_core.tools.base import ToolContext
 from agent_core.tools.test_generator import TestGeneratorTool
@@ -44,6 +47,34 @@ async def test_default_output_dir_unaffected(tmp_path):
     result = await tool.execute(_params(), _context(proj_a))
     assert result.get("success") is True
     assert (proj_a / "tests" / "generated" / "proj-1.spec.ts").exists()
+
+
+async def test_output_dir_outside_tests_is_rejected(tmp_path):
+    """The generated Playwright config discovers specs under tests/; a spec
+    written elsewhere is reported as generated but can never run via
+    `npm test`."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    result = await TestGeneratorTool().execute(
+        _params(output_dir="e2e"), _context(proj)
+    )
+    assert "must stay under tests/" in result["error"], result
+    assert not (proj / "e2e" / "proj-1.spec.ts").exists()
+
+
+async def test_custom_output_dir_keeps_script_and_result_paths_in_sync(tmp_path):
+    """The npm script runs from tests/, so the spec path it passes must be
+    relative to tests/ — not to the project root."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    result = await TestGeneratorTool().execute(
+        _params(output_dir="tests/e2e/specs"), _context(proj)
+    )
+    assert result.get("success") is True, result
+    assert result["file_path"] == "tests/e2e/specs/proj-1.spec.ts"
+    assert (proj / "tests" / "e2e" / "specs" / "proj-1.spec.ts").is_file()
+    pkg = json.loads((proj / "tests" / "package.json").read_text(encoding="utf-8"))
+    assert pkg["scripts"]["test:proj-1"] == "playwright test e2e/specs/proj-1.spec.ts"
 
 
 async def test_stringified_test_cases_rejected(tmp_path):
@@ -99,6 +130,49 @@ def test_expected_visible_splits_case_insensitively():
     assertion = _expected_to_assertion("Visible: Welcome back")
     assert "toContainText" not in assertion  # visible → toBeVisible
     assert "Welcome back" in assertion, assertion
+
+
+def test_negated_expected_results_emit_negative_assertions():
+    """Phrasing like "not visible" must produce a negated matcher — a positive
+    one failed exactly when the product behaved correctly."""
+    from agent_core.tools.test_generator import _expected_to_assertion
+
+    for expected in (
+        "The error banner is not visible",
+        "The error banner should not be visible",
+    ):
+        assertion = _expected_to_assertion(expected)
+        assert ".not.toBeVisible()" in assertion, assertion
+
+    assert ".not.toContainText(" in _expected_to_assertion("The page does not contain 'secret'")
+    assert ".not.toContainText(" in _expected_to_assertion("错误提示不显示")
+
+    # Positive wording stays positive.
+    assert ".not." not in _expected_to_assertion("The error banner is visible")
+
+
+def test_text_list_coerces_malformed_fields():
+    from agent_core.tools.test_generator import _text_list
+
+    assert _text_list(None) == []
+    assert _text_list("one step") == ["one step"]
+    assert _text_list(["a", None, 2]) == ["a", "2"]
+    assert _text_list(5) == ["5"]
+
+
+async def test_stringified_steps_generate_one_action_not_per_character(tmp_path):
+    spec = await _generate(
+        tmp_path,
+        {
+            "title": "t",
+            "steps": "Click the Save button",
+            "expected_results": "Welcome banner is visible",
+        },
+    )
+
+    assert spec.count("// Step:") == 1
+    assert "name: /the Save button/i" in spec, spec
+    assert "Welcome banner is visible" in spec, spec
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +292,7 @@ async def test_via_chooser_arms_the_file_chooser(tmp_path):
         ),
     )
     assert "page.waitForEvent('filechooser')" in spec, spec
-    assert "fileChooser.setFiles(" in spec, spec
+    assert "fileChooser_1.setFiles(" in spec, spec
     assert "page.locator(" in spec, spec
     assert "Promise.all" in spec, spec
 
@@ -230,7 +304,7 @@ async def test_needs_path_materializes_the_payload(tmp_path):
     )
     assert "test.info().outputPath('a.txt')" in spec, spec
     assert "require('fs').writeFileSync" in spec, spec
-    assert "setInputFiles('input[type=file]', _uploadFile)" in spec, spec
+    assert "setInputFiles('input[type=file]', _uploadFile_1)" in spec, spec
     assert "declare const require: any;" in spec, spec
 
 
@@ -345,12 +419,40 @@ async def test_conflicting_payload_sources_are_refused(tmp_path):
     assert "exactly one of" in result["error"], result
 
 
-async def test_fixture_path_cannot_escape_tests(tmp_path):
+@pytest.mark.parametrize(
+    "fixture",
+    ["../../etc/passwd", "C:/Windows/win.ini", "/etc/passwd", ""],
+)
+async def test_fixture_path_cannot_escape_tests(tmp_path, fixture):
     result = await _generate_result(
         tmp_path,
-        _upload_case(uploads=[{"filename": "a.txt", "fixture_path": "../../etc/passwd"}]),
+        _upload_case(uploads=[{"filename": "a.txt", "fixture_path": fixture}]),
     )
     assert "must stay under tests/" in result["error"], result
+
+
+async def test_repeated_steps_get_case_unique_const_names(tmp_path):
+    """Two downloads (or two path-materialized uploads) in one callback used to
+    redeclare the same const, so the generated spec did not compile."""
+    spec = await _generate(
+        tmp_path,
+        {
+            "title": "two of each",
+            "steps": [
+                "Download the first report",
+                "Download the second report",
+            ],
+            "uploads": [
+                {"filename": "a.txt", "content": "a", "needs_path": True},
+                {"filename": "b.txt", "content": "b", "needs_path": True},
+            ],
+        },
+    )
+
+    assert "const [download_0]" in spec and "const [download_1]" in spec, spec
+    assert "download_0.saveAs" in spec and "download_1.saveAs" in spec, spec
+    # Payloads no step claimed are emitted after the step list, still unique.
+    assert "const _uploadFile_2" in spec and "const _uploadFile_3" in spec, spec
 
 
 async def test_scaffold_creates_fixtures_dir_and_readme(tmp_path):
@@ -565,3 +667,18 @@ async def test_a_comment_mentioning_storage_state_is_not_a_session(tmp_path):
     assert result.get("success") is True, result
     assert "async function login" in spec, spec
     assert not (tests_dir / "auth.setup.ts").exists()
+
+
+def test_strip_js_comments_keeps_urls_inside_strings():
+    from agent_core.tools.test_generator import _strip_js_comments
+
+    stripped = _strip_js_comments(
+        "// storageState: unused\n"
+        "const baseURL = 'https://example.com/path'; // storageState: x\n"
+        "/* storageState: nope */\n"
+        "export default { testDir: './generated' };\n"
+    )
+
+    assert "storageState" not in stripped
+    assert "https://example.com/path" in stripped
+    assert "export default" in stripped

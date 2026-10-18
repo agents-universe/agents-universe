@@ -115,6 +115,11 @@ class _SSRFPinningTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
 
+    async def aclose(self) -> None:
+        # AsyncBaseTransport.aclose is a no-op; without this override closing
+        # the client leaves the inner transport's connection pool open.
+        await self._inner.aclose()
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if _is_ssrf_enabled():
             await self._pin(request)

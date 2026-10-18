@@ -74,6 +74,27 @@ async def test_pinning_skips_ip_literals_and_non_standard_ports(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aclose_closes_the_inner_transport():
+    """AsyncBaseTransport.aclose is a no-op; the wrapper must close the inner
+    pool or every client shutdown leaks its connections."""
+
+    class _CloseTrackingTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    inner = _CloseTrackingTransport()
+    transport = _http._SSRFPinningTransport(inner)
+    await transport.aclose()
+    assert inner.closed
+
+
+@pytest.mark.asyncio
 async def test_pinning_disabled_passthrough(monkeypatch):
     called = False
 

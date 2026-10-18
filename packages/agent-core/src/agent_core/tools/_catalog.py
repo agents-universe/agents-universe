@@ -111,14 +111,24 @@ def resolve_catalog_endpoint(
     config = catalog.get(integration_key)
     if not config or not isinstance(config, dict):
         return None
-    endpoints = config.get("endpoints") or {}
+    # Every field is coerced: the catalog is hand-written YAML, and a
+    # list/string where an object is expected must yield "not found" rather
+    # than an AttributeError on the caller's .get().
+    endpoints = config.get("endpoints")
+    if not isinstance(endpoints, dict):
+        return None
     endpoint = endpoints.get(endpoint_key)
     if not isinstance(endpoint, dict):
         return None
+
+    def mapping(name: str) -> dict[str, Any]:
+        value = config.get(name)
+        return value if isinstance(value, dict) else {}
+
     return {
         "endpoint": endpoint,
-        "environments": config.get("environments") or {},
-        "auth": config.get("auth") or {},
-        "defaults": config.get("defaults") or {},
+        "environments": mapping("environments"),
+        "auth": mapping("auth"),
+        "defaults": mapping("defaults"),
         "env_name": environment,
     }

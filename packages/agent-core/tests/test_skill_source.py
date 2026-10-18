@@ -589,6 +589,41 @@ async def test_symlinks_are_never_followed_out_of_the_cache(tmp_path, remote):
         _ss._resolve_in_cache(cache, "skills/pdf/link.md")
 
 
+@pytest.mark.asyncio
+async def test_symlinked_skill_md_is_refused_by_read_and_install(tmp_path, remote):
+    """A bundle's SKILL.md itself can be a symlink to a host file; reading or
+    installing must re-check containment after resolving it, and list must not
+    offer the bundle."""
+    ctx, _ = await _fetched(tmp_path, remote, path="skills")
+    cache = _ss._cache_dir(ctx, _ss._parse_source("acme/skills", "github.com"))
+    outside = tmp_path / "outside-skill.md"
+    outside.write_text("---\nname: stolen\n---\n\nsecret body\n", encoding="utf-8")
+    skill_md = cache / "skills" / "pdf" / "SKILL.md"
+    skill_md.unlink()
+    try:
+        skill_md.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available on this platform")
+
+    tool = SkillSourceTool()
+    read = await tool.execute(
+        {"operation": "read", "source": "acme/skills", "path": "skills/pdf"}, ctx
+    )
+    install = await tool.execute(
+        {"operation": "install", "source": "acme/skills", "path": "skills/pdf"}, ctx
+    )
+    listing = await tool.execute(
+        {"operation": "list", "source": "acme/skills", "path": "skills"}, ctx
+    )
+
+    assert "escapes the fetched source" in read["error"]
+    assert "escapes the fetched source" in install["error"]
+    assert "secret body" not in str(read) + str(install)
+    paths = {c["path"] for c in listing["candidates"]}
+    assert "skills/pdf" not in paths
+    assert "skills/notes/single.md" in paths
+
+
 # ---------------------------------------------------------------------------
 # install
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_core.paths import PathEscapeError, resolve_within
+from agent_core.paths import PathEscapeError, canonical, resolve_within
 
 from .base import Tool, ToolContext
 from ._uploads import normalize_mime_type
@@ -185,6 +185,17 @@ class TestGeneratorTool(Tool):
             out_path = resolve_within(context.project_fs_path, output_dir)
         except PathEscapeError:
             return {"error": f"Invalid output_dir: path escapes the project workspace: {output_dir!r}"}
+        # Playwright runs from tests/ (the generated config's testDir is
+        # relative to it): a spec written anywhere else is reported as
+        # generated but never discovered by `npm test`.
+        tests_root = canonical(Path(context.project_fs_path) / "tests")
+        if out_path != tests_root and tests_root not in out_path.parents:
+            return {
+                "error": (
+                    f"Invalid output_dir: {output_dir!r} must stay under tests/ — "
+                    "the generated Playwright config only discovers specs there"
+                )
+            }
         try:
             out_path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -192,7 +203,6 @@ class TestGeneratorTool(Tool):
             return {"error": f"Failed to create output directory: {e}"}
 
         # Ensure tests/ has package.json for Playwright execution.
-        tests_root = Path(context.project_fs_path) / "tests"
         scaffold = _ensure_test_scaffold(tests_root)
         if scaffold.error:
             return {"error": scaffold.error}
@@ -210,6 +220,9 @@ class TestGeneratorTool(Tool):
         slug = _slugify(issue_key)
         filename = f"{slug}.spec.ts"
         filepath = out_path / filename
+        # Path relative to tests/ (the npm script's working directory), so an
+        # output_dir override still gets a runnable focused script.
+        spec_rel = filepath.relative_to(tests_root).as_posix()
 
         spec_content = _generate_spec(
             issue_key=issue_key,
@@ -248,7 +261,7 @@ class TestGeneratorTool(Tool):
             _log.warning("test_generator: failed to write %s: %s", filepath, e)
             return {"error": f"Failed to write spec file: {e}"}
 
-        script_error = _ensure_issue_script(tests_root, slug)
+        script_error = _ensure_issue_script(tests_root, slug, spec_rel)
         if script_error:
             # The newly-created spec must not be reported as usable when its
             # npm entry point could not be configured.
@@ -260,8 +273,8 @@ class TestGeneratorTool(Tool):
 
         result = {
             "success": True,
-            "file_path": f"{output_dir}/{filename}",
-            "relative_path": f"{output_dir}/{filename}",
+            "file_path": f"tests/{spec_rel}",
+            "relative_path": f"tests/{spec_rel}",
             "test_count": len(test_cases),
             "issue_key": issue_key,
         }
@@ -327,8 +340,16 @@ def _prepare_case_uploads(raw: Any, index: int) -> tuple[list[_Upload], str | No
             )
 
         if fixture_path is not None:
-            fixture = str(fixture_path).replace("\\", "/").strip().lstrip("/")
-            if not fixture or ".." in fixture.split("/"):
+            fixture = str(fixture_path).replace("\\", "/").strip()
+            # A drive-letter path is absolute on Windows (and "C:/..." is not
+            # caught by a leading-slash check), so the fixture would be read
+            # from anywhere on the host instead of tests/fixtures/.
+            if (
+                not fixture
+                or fixture.startswith("/")
+                or re.match(r"^[A-Za-z]:", fixture)
+                or ".." in fixture.split("/")
+            ):
                 return [], f"{where}.fixture_path must stay under tests/"
             uploads.append(
                 _Upload(
@@ -406,13 +427,27 @@ _SESSION_STEP_RE = re.compile(
 )
 
 
+def _text_list(value: Any) -> list[str]:
+    """Coerce a steps/expected_results field to a list of strings.
+
+    LLMs stringify arrays; iterating the string would emit one action per
+    character. Non-string entries are stringified so one malformed element
+    cannot crash the generator.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item is not None]
+    return [str(value)]
+
+
 def _needs_fresh_session(tc: dict) -> bool:
     """Whether *tc* has to start from a signed-out browser."""
-    parts = [str(tc.get("title", "")), str(tc.get("objective", ""))]
+    parts = [str(tc.get("title") or ""), str(tc.get("objective") or "")]
     for key in ("steps", "expected_results"):
-        value = tc.get(key) or []
-        # A stringified array would otherwise iterate character by character.
-        parts.extend([value] if isinstance(value, str) else [str(v) for v in value])
+        parts.extend(_text_list(tc.get(key)))
     return any(_SESSION_STEP_RE.search(part) for part in parts)
 
 
@@ -525,10 +560,10 @@ def _case_lines(
 ) -> list[str]:
     """One `test(...)` block. Shared by the plain and session-case describes."""
     lines: list[str] = []
-    title = tc.get("title", f"Test case {index + 1}")
-    objective = tc.get("objective", "")
-    steps = tc.get("steps", [])
-    expected = tc.get("expected_results", [])
+    title = str(tc.get("title") or f"Test case {index + 1}")
+    objective = str(tc.get("objective") or "")
+    steps = _text_list(tc.get("steps"))
+    expected = _text_list(tc.get("expected_results"))
     uploads = list(case_uploads[index]) if case_uploads and index < len(case_uploads) else []
 
     lines.append(f"  test('{_escape_ts(title)}', async ({{ page }}) => {{")
@@ -537,9 +572,14 @@ def _case_lines(
         lines.append(f"    // Objective: {_escape_ts(objective)}")
         lines.append("")
 
-    for step in steps:
+    # Each emitted const needs a case-unique name: two upload steps (or two
+    # downloads) in one test callback otherwise redeclare `_uploadFile` /
+    # `download` in the same scope and the spec no longer compiles.
+    for step_index, step in enumerate(steps):
         upload = uploads.pop(0) if uploads and _classify_step(step) == "upload" else None
-        action = _step_to_action(step, upload=upload, decls=declarations)
+        action = _step_to_action(
+            step, upload=upload, decls=declarations, suffix=f"_{step_index}"
+        )
         lines.append(f"    // Step: {_escape_ts(step)}")
         lines.append(f"    {action}")
         lines.append("")
@@ -548,8 +588,11 @@ def _case_lines(
         # Payloads nothing in the step list claimed — emitting them beats
         # dropping them, but the mismatch is worth a comment: the test
         # still uploads, just not at the step the author pictured.
-        for upload in uploads:
-            action = _step_to_action(f"upload {upload.filename}", upload=upload, decls=declarations)
+        for extra_index, upload in enumerate(uploads, start=len(steps)):
+            action = _step_to_action(
+                f"upload {upload.filename}", upload=upload, decls=declarations,
+                suffix=f"_{extra_index}",
+            )
             lines.append(f"    // Unmatched upload: {_escape_ts(upload.filename)}")
             lines.append(f"    {action}")
             lines.append("")
@@ -601,7 +644,9 @@ def _is_upload_step(step: str) -> bool:
     return bool(_UPLOAD_WORD_RE.search(s)) or any(term in s for term in _UPLOAD_CJK)
 
 
-def _upload_action(upload: _Upload, decls: set[str] | None = None) -> str:
+def _upload_action(
+    upload: _Upload, decls: set[str] | None = None, suffix: str = ""
+) -> str:
     """The Playwright statements that attach *upload* to the page."""
     used: set[str] = set()
     statements: list[str] = []
@@ -622,11 +667,11 @@ def _upload_action(upload: _Upload, decls: set[str] | None = None) -> str:
             # Some widgets read a real path instead of the File object —
             # materialize the payload in the test's own output dir.
             used.add("require")
-            payload = "_uploadFile"
+            payload = f"_uploadFile{suffix}"
             statements.append(
-                "const _uploadFile = test.info().outputPath("
+                f"const _uploadFile{suffix} = test.info().outputPath("
                 f"'{_escape_ts(upload.filename)}');\n"
-                f"    require('fs').writeFileSync(_uploadFile, {buffer_expr});"
+                f"    require('fs').writeFileSync(_uploadFile{suffix}, {buffer_expr});"
             )
 
     selector = f"'{_escape_ts(upload.selector)}'"
@@ -634,11 +679,11 @@ def _upload_action(upload: _Upload, decls: set[str] | None = None) -> str:
         # No visible input: the button opens the OS picker, so the setFiles
         # call must be armed before the click — hence Promise.all.
         statements.append(
-            "const [fileChooser] = await Promise.all([\n"
+            f"const [fileChooser{suffix}] = await Promise.all([\n"
             "      page.waitForEvent('filechooser'),\n"
             f"      page.locator({selector}).click(),\n"
             "    ]);\n"
-            f"    await fileChooser.setFiles({payload});"
+            f"    await fileChooser{suffix}.setFiles({payload});"
         )
     else:
         statements.append(f"await page.setInputFiles({selector}, {payload});")
@@ -690,7 +735,12 @@ def _classify_step(step: str) -> str:
     return "unknown"
 
 
-def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] | None = None) -> str:
+def _step_to_action(
+    step: str,
+    upload: "_Upload | None" = None,
+    decls: set[str] | None = None,
+    suffix: str = "",
+) -> str:
     """Convert a natural-language step into a best-effort Playwright action."""
     kind = _classify_step(step)
     s = step.lower().strip()
@@ -717,7 +767,10 @@ def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] 
             return "await page.getByRole('button').first().click();"
         return f"await page.getByRole('button', {{ name: /{_escape_ts_regex(target)}/i }}).click();"
     if kind == "upload":
-        return _upload_action(upload, decls) if upload is not None else _unmatched_upload_action(step)
+        return (
+            _upload_action(upload, decls, suffix)
+            if upload is not None else _unmatched_upload_action(step)
+        )
     if kind == "fill":
         return f"await page.getByRole('textbox').fill('test-value'); // {_escape_ts(step)}"
     if kind == "wait":
@@ -732,14 +785,14 @@ def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] 
         )
         if target:
             return (
-                f"const [download] = await Promise.all([\n"
+                f"const [download{suffix}] = await Promise.all([\n"
                 # Playwright has no page.waitForDownload() — the download
                 # event is awaited through waitForEvent. The generated spec
                 # otherwise threw "page.waitForDownload is not a function".
                 f"      page.waitForEvent('download'),\n"
                 f"      page.getByRole('link', {{ name: /{_escape_ts_regex(target)}/i }}).click(),\n"
                 f"    ]);\n"
-                f"    await download.saveAs('test-results/{_escape_ts(step.split()[0])}-download' + download.suggested_filename());"
+                f"    await download{suffix}.saveAs('test-results/{_escape_ts(step.split()[0])}-download' + download{suffix}.suggested_filename());"
             )
         return f"// TODO: Download - await page.waitForEvent('download') around the click that triggers it. // {_escape_ts(step)}"
     if kind == "select":
@@ -757,25 +810,49 @@ def _step_to_action(step: str, upload: "_Upload | None" = None, decls: set[str] 
     )
 
 
+# Expected results phrased negatively ("the error is not visible", "does not
+# contain") were rendered as positive assertions — the test failed exactly
+# when the product behaved correctly.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no longer)\s+(?:\w+\s+)?(?:visible|displayed|shown|appear|contain|include)\b"
+    r"|\b(?:is|are|was|were|do|does|did|should|must|can|will)(?:n't|\s+not)\s+"
+    r"(?:\w+\s+)?(?:visible|displayed|shown|appear|contain|include)\b"
+    r"|\bcannot\s+(?:\w+\s+)?(?:visible|displayed|shown|appear|contain|include)\b"
+    r"|不(?:再)?(?:显示|可见|出现|包含|展示)|未(?:显示|出现)",
+    re.IGNORECASE,
+)
+
+
 def _expected_to_assertion(expected: str) -> str:
     """Convert an expected result into a best-effort Playwright assertion."""
     e = expected.lower().strip()
+    neg_match = _NEGATION_RE.search(expected)
+    neg = "not." if neg_match else ""
     if "visible" in e or "displayed" in e or "shown" in e or "appear" in e:
-        # Case-insensitive split (same defect as _step_to_action): "Visible:
-        # Welcome" left the whole string as the expected text.
-        matches = list(re.finditer(r"visible", expected, re.IGNORECASE))
-        text = (
-            expected[matches[-1].end():].strip().strip(":").strip()
-            if matches else expected.strip()
-        )
+        if neg_match:
+            text = expected[:neg_match.start()].strip(" ,.:;-")
+            # Drop the auxiliary the negation was attached to ("the banner
+            # should not be visible" -> "the banner").
+            text = re.sub(
+                r"\b(?:is|are|was|were|should|must|will|can|would|does|do|did)\s*$",
+                "", text, flags=re.IGNORECASE,
+            ).strip()
+        else:
+            # Case-insensitive split (same defect as _step_to_action):
+            # "Visible: Welcome" left the whole string as the expected text.
+            matches = list(re.finditer(r"visible", expected, re.IGNORECASE))
+            text = (
+                expected[matches[-1].end():].strip().strip(":").strip()
+                if matches else expected.strip()
+            )
         if not text:
             text = expected
-        return f"await expect(page.getByText(/{_escape_ts_regex(text)}/i)).toBeVisible();"
+        return f"await expect(page.getByText(/{_escape_ts_regex(text)}/i)).{neg}toBeVisible();"
     if "url" in e or "redirect" in e or "navigate" in e:
-        return f"await expect(page).toHaveURL(/{_escape_ts_regex(expected)}/i);"
+        return f"await expect(page).{neg}toHaveURL(/{_escape_ts_regex(expected)}/i);"
     if "contain" in e or "text" in e:
-        return f"await expect(page.locator('body')).toContainText(/{_escape_ts_regex(expected)}/i);"
-    return f"await expect(page.locator('body')).toContainText(/{_escape_ts_regex(expected)}/i);"
+        return f"await expect(page.locator('body')).{neg}toContainText(/{_escape_ts_regex(expected)}/i);"
+    return f"await expect(page.locator('body')).{neg}toContainText(/{_escape_ts_regex(expected)}/i);"
 
 
 _SCAFFOLD_PACKAGE_JSON = """\
@@ -959,6 +1036,49 @@ _SCAFFOLD_CONFIG_BASELINES = frozenset({
 
 _STORAGE_STATE_RE = re.compile(r"\bstorageState\s*:")
 
+
+def _strip_js_comments(text: str) -> str:
+    """Remove // and /* */ comments, preserving string/template contents.
+
+    Used to decide whether a config actually hands out a storageState: a
+    comment that merely mentions the property must not be read as one, while
+    URLs inside string literals must survive comment stripping.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    quote: str | None = None
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            if text[i + 1] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i = min(i + 2, n)
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
 _SCAFFOLD_FIXTURES_README = """\
 # Test fixtures
 
@@ -1049,7 +1169,7 @@ def _ensure_test_scaffold(tests_root: Path) -> _Scaffold:
         # case, and one that does not must keep the per-case login. Matched as a
         # property assignment so a config that merely mentions storageState in a
         # comment is not read as handing one out.
-        shared_session = _STORAGE_STATE_RE.search(config_text) is not None
+        shared_session = _STORAGE_STATE_RE.search(_strip_js_comments(config_text)) is not None
         setup = tests_root / "auth.setup.ts"
         if shared_session and not setup.exists():
             setup.write_text(_SCAFFOLD_AUTH_SETUP, encoding="utf-8")
@@ -1068,7 +1188,7 @@ def _ensure_test_scaffold(tests_root: Path) -> _Scaffold:
     return _Scaffold(notes=tuple(notes), shared_session=shared_session)
 
 
-def _ensure_issue_script(tests_root: Path, slug: str) -> str | None:
+def _ensure_issue_script(tests_root: Path, slug: str, spec_rel: str) -> str | None:
     """Add a focused npm script while preserving existing package configuration."""
     pkg = tests_root / "package.json"
     try:
@@ -1087,7 +1207,7 @@ def _ensure_issue_script(tests_root: Path, slug: str) -> str | None:
             "test": "playwright test",
             "test:ui": "playwright test --ui",
             "typecheck": "tsc --noEmit",
-            f"test:{slug}": f"playwright test generated/{slug}.spec.ts",
+            f"test:{slug}": f"playwright test {spec_rel}",
         }
         for name, command in required_scripts.items():
             # Always overwrite generator-managed issue scripts so a stale or

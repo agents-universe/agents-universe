@@ -296,6 +296,20 @@ def _resolve_in_cache(cache: Path, rel: str | None) -> Path:
     return target
 
 
+def _resolve_member(cache: Path, path: Path) -> Path:
+    """Resolve a file inside a fetched bundle and re-check containment.
+
+    ``_resolve_in_cache`` checks the path the caller named; a bundle's
+    SKILL.md may itself be a symlink to an arbitrary host file, which
+    ``Path.read_text`` would follow.
+    """
+    base = cache.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(base):
+        raise _SourceError(f"path {path.name!r} escapes the fetched source")
+    return resolved
+
+
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -584,7 +598,11 @@ class SkillSourceTool(Tool):
             ]
             if len(root_path.relative_to(scan_root).parts) >= _MAX_LIST_DEPTH:
                 dirs[:] = []
-            if (root_path / "SKILL.md").is_file():
+            skill_md = root_path / "SKILL.md"
+            # A symlinked SKILL.md may point outside the fetched repo; listing
+            # reads its frontmatter, so it must be skipped like every other
+            # symlink in the walk.
+            if skill_md.is_file() and not skill_md.is_symlink():
                 bundles.append(root_path)
             for name in names:
                 candidate = root_path / name
@@ -603,7 +621,8 @@ class SkillSourceTool(Tool):
                 break
 
         bundle_paths = [b for b in bundles if b != scan_root]
-        if scan_root.is_dir() and (scan_root / "SKILL.md").is_file():
+        root_skill = scan_root / "SKILL.md"
+        if scan_root.is_dir() and root_skill.is_file() and not root_skill.is_symlink():
             bundle_paths.append(scan_root)
 
         results: list[dict[str, Any]] = []
@@ -671,7 +690,7 @@ class SkillSourceTool(Tool):
 
         manifest: list[dict[str, Any]] = []
         if target.is_dir():
-            content_path = target / "SKILL.md"
+            content_path = _resolve_member(cache, target / "SKILL.md")
             if not content_path.is_file():
                 return {
                     "error": f"{rel!r} is a directory without a SKILL.md — use list to find skills",
@@ -735,6 +754,7 @@ class SkillSourceTool(Tool):
         target = _resolve_in_cache(cache, rel)
         is_bundle = target.is_dir()
         content_path = (target / "SKILL.md") if is_bundle else target
+        content_path = _resolve_member(cache, content_path)
         if not content_path.is_file():
             return {"error": f"{rel!r} is not a skill (no SKILL.md and not a file)"}
 

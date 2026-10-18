@@ -80,6 +80,22 @@ def _is_ip_blocked(ip_str: str) -> bool:
 _NUMERIC_HOST_RE = re.compile(r"^[0-9a-fA-FxX.]+$")
 
 
+def _idna_host(host: str) -> str:
+    """ASCII form of *host* under the IDNA codec getaddrinfo applies.
+
+    getaddrinfo encodes non-ASCII hostnames with the IDNA codec, which maps
+    the ideographic/fullwidth dot variants to "." and applies NFKC (fullwidth
+    digits become ASCII). Checking the raw string would call "127。0。0。1" a
+    hostname while the resolver connects to loopback.
+    """
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
 def _inet_aton_mapped(host: str) -> str | None:
     """Dotted quad a numeric *host* resolves to under inet_aton semantics.
 
@@ -90,7 +106,13 @@ def _inet_aton_mapped(host: str) -> str | None:
     not an inet_aton-accepted form — i.e. a real hostname that DNS resolves
     on its own.
     """
-    if not host or len(host) > 64 or not _NUMERIC_HOST_RE.match(host):
+    if not host:
+        return None
+    # Resolve IDNA dot/digit variants before the numeric-shape check — they
+    # are "unicode hostnames" to a raw scan but plain dotted quads to the
+    # resolver.
+    host = _idna_host(host)
+    if len(host) > 64 or not _NUMERIC_HOST_RE.match(host):
         return None
     if host.startswith(".") or host.endswith(".") or ".." in host:
         return None  # inet_aton rejects these; getaddrinfo then fails DNS — inert
@@ -139,15 +161,17 @@ def validate_url(url: str, *, allow_any_port: bool = False) -> None:
     if not host:
         raise SSRFError("URL has no hostname")
 
-    # Block metadata hostnames
-    if host.lower() in _METADATA_IPS:
+    # Block metadata hostnames. Check the IDNA form too: fullwidth letters
+    # normalize to the ASCII name the resolver actually queries.
+    normalized_host = _idna_host(host)
+    if host.lower() in _METADATA_IPS or normalized_host.lower() in _METADATA_IPS:
         raise SSRFError(f"Blocked metadata host: {host}")
 
     # Check if host is a literal IP address
     try:
-        ipaddress.ip_address(host)
+        ipaddress.ip_address(normalized_host)
         # It IS an IP literal — validate it
-        if _is_ip_blocked(host):
+        if _is_ip_blocked(normalized_host):
             raise SSRFError(f"Blocked IP in URL: {host}")
     except ValueError:
         # Not a canonical IP literal — but it may still be an inet_aton

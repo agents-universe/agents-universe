@@ -106,3 +106,31 @@ class TestResolveConversationAgentBinding:
         # Unbound, not bound to another project's row — that row's FK would
         # then ride into this conversation and break the foreign deletion.
         assert await _bound_agent_id(db, conv_id) is None
+
+
+class TestResolveConversationBindsTargetSnapshot:
+    async def test_auto_created_conversation_id_binds_back_to_target(self, db, make_project):
+        """_resolve_conversation creates the first conversation and writes the
+        id back to the ScheduledTask row — it must bind the SAME id onto this
+        run's _Target snapshot, or deliver_result's `if not
+        target.conversation_id` early-return skips the first fire's
+        conversation_updated nudge."""
+        project = await make_project()
+        target = _Target(await _agent_task(db, str(project.project_id), None))
+        assert target.conversation_id is None
+
+        conv_id = await _resolve_conversation(db, target)
+
+        assert target.conversation_id == conv_id
+
+    async def test_existing_conversation_is_returned_untouched(self, db, make_project):
+        project = await make_project()
+        task = await _agent_task(db, str(project.project_id), None)
+        task.conversation_id = "already-bound"
+        await db.commit()
+
+        target = _Target(task)
+        conv_id = await _resolve_conversation(db, target)
+
+        assert conv_id == "already-bound"
+        assert target.conversation_id == "already-bound"

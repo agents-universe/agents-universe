@@ -171,7 +171,12 @@ class DelegationTransport:
             if data.get("message_id"):
                 self.message_id = str(data["message_id"])
             self.tokens_used = int(data.get("total_tokens") or 0)
-            self.stop_reason = data.get("stop_reason")
+            # run_turn's synthetic tails (abort: id-less, no stop_reason
+            # key) must not clobber the real terminal frame's reason —
+            # data.get() would reset "aborted" to None and report the
+            # aborted child as "ok".
+            if "stop_reason" in data:
+                self.stop_reason = data["stop_reason"]
         elif event_type == "turn_token_usage":
             # Captured then dropped below (not in _FORWARDED_EVENTS): the
             # child's own cost must reach the delegator's result, never the

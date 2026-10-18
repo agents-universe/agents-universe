@@ -988,3 +988,41 @@ def test_default_model_returns_provider_native_ids():
     assert _default_model("google_gemini") == "gemini-2.5-flash"
     assert _default_model("anthropic").startswith("claude-")
     assert _default_model("openai").startswith("gpt-")
+
+
+@pytest.mark.asyncio
+async def test_follower_does_not_hold_the_global_guard(monkeypatch):
+    """A follower awaiting an in-flight compression must not hold the global
+    singleflight guard — otherwise one slow summarization serializes every
+    other conversation's compress behind it."""
+    import api.services.compression as compression_service
+    from api.services.compression import compress_once
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def _fake_compress(db, conversation_id, user_id):
+        calls.append(conversation_id)
+        if conversation_id == "conv-a":
+            started.set()
+            await release.wait()
+        return {"ok": True, "conversation_id": conversation_id}
+
+    monkeypatch.setattr(compression_service, "compress_conversation", _fake_compress)
+
+    leader = asyncio.create_task(compress_once(None, "conv-a", "u1"))
+    await started.wait()
+    # Follower joins the same key — give it a tick to reach the guard.
+    follower = asyncio.create_task(compress_once(None, "conv-a", "u1"))
+    await asyncio.sleep(0)
+
+    # An unrelated conversation must complete WHILE conv-a is still running.
+    other = asyncio.create_task(compress_once(None, "conv-b", "u1"))
+    other_result = await asyncio.wait_for(other, timeout=1.0)
+    assert other_result["conversation_id"] == "conv-b"
+    assert calls == ["conv-a", "conv-b"]
+
+    release.set()
+    assert (await leader)["conversation_id"] == "conv-a"
+    assert (await follower)["conversation_id"] == "conv-a"

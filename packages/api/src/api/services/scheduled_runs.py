@@ -116,17 +116,23 @@ class _NullTransport(Transport):
 
     async def send(self, conversation_id: str, data: dict) -> bool:
         if data.get("type") == "stream_end":
-            # One turn emits at most ONE real stream_end (carrying the
-            # persisted message id), but run_turn's tails emit synthetic ones
+            # One turn can emit several stream_end frames: a mid-run
+            # injection freezes the partial under a STEP-boundary id
+            # (injection=True), the real terminal frame carries the
+            # persisted message id, and run_turn's tails add synthetic ones
             # after it (abort: message_id=None; outer-exception: a fresh id
-            # never written to messages). _last_reply trusts only this frame,
-            # so the FIRST id-bearing frame wins: a synthetic tail never
-            # overwrites it, while an id-less frame is upgradeable by a later
-            # real one (ordering between drain and tails is not fixed).
+            # never written to messages). _last_reply trusts only this
+            # frame, so a REAL id-bearing frame (no injection flag) wins
+            # once recorded and is never overwritten; injection/id-less
+            # frames record only as a fallback when no real frame has
+            # arrived yet.
             recorded = self.stream_end or {}
-            if not recorded.get("message_id"):
-                if self.stream_end is None or data.get("message_id"):
-                    self.stream_end = data
+            recorded_real = bool(recorded.get("message_id")) and not recorded.get("injection")
+            frame_real = bool(data.get("message_id")) and not data.get("injection")
+            if frame_real and not recorded_real:
+                self.stream_end = data
+            elif self.stream_end is None:
+                self.stream_end = data
         elif data.get("type") == "error":
             self.error = data.get("message")
         return False
@@ -615,7 +621,11 @@ async def _resolve_conversation(db, target: _Target) -> str | None:
     await db.commit()
     conversation_id = str(conv.conversation_id)
 
-    # Write the id back so later fires reuse the same thread.
+    # Write the id back so later fires reuse the same thread — and bind it
+    # onto this run's snapshot too, or deliver_result's
+    # `if not target.conversation_id` early-return skips the first fire's
+    # conversation_updated nudge for a freshly auto-created conversation.
+    target.conversation_id = conversation_id
     await db.execute(
         update(ScheduledTask)
         .where(ScheduledTask.schedule_id == target.schedule_id)

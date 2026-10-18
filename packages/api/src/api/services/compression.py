@@ -67,10 +67,18 @@ async def compress_once(
     key = (conversation_id, user_id)
     async with _compress_guard:
         future = _compress_inflight.get(key)
-        if future is not None:
-            return await asyncio.shield(future)
-        future = asyncio.get_running_loop().create_future()
-        _compress_inflight[key] = future
+        if future is None:
+            future = asyncio.get_running_loop().create_future()
+            _compress_inflight[key] = future
+            is_leader = True
+        else:
+            is_leader = False
+    if not is_leader:
+        # Await the leader's future OUTSIDE the guard: holding the global
+        # lock across an entire summarization would serialize every other
+        # conversation's compression behind this one — the guard only
+        # guards the inflight map, not the work.
+        return await asyncio.shield(future)
     try:
         result = await compress_conversation(db, conversation_id, user_id)
     except BaseException as exc:

@@ -166,6 +166,22 @@ async def test_transport_status(events, expected):
     assert transport.status == expected
 
 
+async def test_abort_tail_does_not_clobber_stop_reason():
+    # run_turn's abort tail is id-less and carries NO stop_reason key — an
+    # unconditional data.get() capture would reset "aborted" to None and the
+    # delegator would read the stopped child as "ok".
+    transport = DelegationTransport(_Recorder())
+    await transport.send("c1", {
+        "type": "stream_end", "message_id": "m1",
+        "total_tokens": 5, "stop_reason": "aborted",
+    })
+    await transport.send("c1", {"type": "stream_end", "message_id": None, "total_tokens": 5})
+
+    assert transport.stop_reason == "aborted"
+    assert transport.status == "aborted"
+    assert transport.message_id == "m1"
+
+
 # ── end to end: what the socket actually carries ──────────────────────────
 
 

@@ -305,7 +305,10 @@ onMounted(() => {
       // opened a popup — closing here keeps insertMention's `head-1`
       // assumption true; otherwise a later popup click replaces the wrong
       // character or dispatches from pos-1 = -1 (RangeError).
-      if (update.selectionSet && !update.composing) {
+      // `composing` lives on EditorView, not ViewUpdate — an IME composition
+      // moves the selection without a doc change; closing mid-composition
+      // would dismiss the popup the user is about to confirm with.
+      if (update.selectionSet && !view?.composing) {
         if (showMention.value || showSlash.value) {
           const head = update.state.selection.main.head
           const prev = update.state.doc.sliceString(head - 1, head)

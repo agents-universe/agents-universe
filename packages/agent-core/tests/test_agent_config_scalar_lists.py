@@ -84,3 +84,40 @@ def test_agent_static_tool_names_are_not_per_character(tmp_path: Path):
     static = [t for t in cfg.tools if not t.startswith("mcp")]
     # Before the fix this was ['s','h','e','l','l',',',' ','f',...].
     assert static == ["shell", "filesystem"]
+
+
+def _write_raw(tmp_path: Path, extra_frontmatter: str) -> str:
+    f = tmp_path / "raw-config.agent.md"
+    f.write_text(
+        f'---\nslug: "raw-config"\n{extra_frontmatter}\n---\n\nBody\n',
+        encoding="utf-8",
+    )
+    return str(f)
+
+
+def test_quoted_boolean_scalar_is_normalized(tmp_path: Path):
+    """YAML keeps quoted scalars as strings; bool("false") is True and would
+    silently disable api_request's write-confirmation gate."""
+    cfg = AgentConfig.from_file(
+        _write_raw(tmp_path, 'api_request_no_confirm: "false"')
+    )
+    assert cfg.api_request_no_confirm is False
+
+    cfg = AgentConfig.from_file(
+        _write_raw(tmp_path, 'api_request_no_confirm: "yes"')
+    )
+    assert cfg.api_request_no_confirm is True
+
+
+def test_numeric_scalars_are_coerced_and_blank_falls_back(tmp_path: Path):
+    cfg = AgentConfig.from_file(
+        _write_raw(tmp_path, 'max_tokens: "64000"\ntoken_budget: 32000')
+    )
+    assert cfg.max_tokens == 64000
+    assert cfg.token_budget == 32000
+
+    # Blank YAML value -> None, malformed text -> string: both must fall back
+    # instead of reaching min(max_tokens, MAX_OUTPUT_RESERVE) as non-ints.
+    cfg = AgentConfig.from_file(_write_raw(tmp_path, "max_tokens:\ntoken_budget: bogus"))
+    assert cfg.max_tokens == 128000
+    assert cfg.token_budget == 100000

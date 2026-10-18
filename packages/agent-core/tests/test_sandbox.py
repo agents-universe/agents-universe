@@ -1392,3 +1392,99 @@ async def test_terminate_process_tree_kills_grandchild():
     terminate_process_tree(proc)
     await asyncio.wait_for(proc.wait(), timeout=5)
     assert proc.returncode == -signal.SIGKILL
+
+
+# ---------------------------------------------------------------------------
+# Assignment values are re-parsed by bash after validation: field splitting,
+# execution-control env vars, variable-mutating builtins, ANSI-C quoting and
+# option-position splicing must all fail closed.
+# ---------------------------------------------------------------------------
+
+
+def _check(command: str, tmp_path: Path, *, allow_substitution: bool = False):
+    return validate_command(
+        command,
+        cwd=tmp_path,
+        project_root=tmp_path,
+        allow_substitution=allow_substitution,
+    )
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_assignment_field_splitting_cannot_smuggle_absolute_paths(tmp_path, allow):
+    """`x=" /etc/passwd"` validates as one relative word, but bash splits the
+    unquoted expansion into the absolute path at execution time."""
+    assert _check('x=" /etc/passwd"; cat $x', tmp_path, allow_substitution=allow)
+    assert _check('x=" /tmp/pwned"; echo hi > $x', tmp_path, allow_substitution=allow)
+    assert _check('x="a ../b"; cat $x', tmp_path, allow_substitution=allow)
+    # Trailing whitespace detaches the appended literal into its own word.
+    assert _check('x="a "; cat $x/etc/passwd', tmp_path, allow_substitution=allow)
+    # A plain multi-word value in a DATA position stays allowed.
+    assert _check('x="hello world"; echo $x', tmp_path, allow_substitution=allow) is None
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_assignment_option_injection_rejected(tmp_path, allow):
+    """An expanded value beginning with '-' reaches an option slot the
+    token-level option tables never inspect (`sort --output=/etc/passwd`)."""
+    assert _check("x=--output=/etc/passwd; sort $x", tmp_path, allow_substitution=allow)
+    assert _check("x=-o/etc/passwd; sort $x", tmp_path, allow_substitution=allow)
+    assert _check("x=notes.md; cat $x", tmp_path, allow_substitution=allow) is None
+
+
+def test_ifs_assignment_is_execution_control(tmp_path):
+    """IFS changes the word boundaries of every later expansion, so a
+    colon-separated value (`a:/etc/passwd`) becomes two words at run time."""
+    assert _check("IFS=:; x=a:/etc/passwd; cat $x", tmp_path)
+    assert _check("export IFS=:; cat x", tmp_path)
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_variable_mutating_builtins_cannot_launder_paths(tmp_path, allow):
+    """`x=safe` grants trust; a builtin that overwrites x from unseen data
+    must not inherit that trust."""
+    assert _check("x=safe\nread x <<< /etc/passwd\ncat $x", tmp_path, allow_substitution=allow)
+    assert _check(
+        r"x=safe\nprintf -v x '\x2fetc\x2fpasswd'\ncat $x".replace("\\n", "\n"),
+        tmp_path,
+        allow_substitution=allow,
+    )
+    assert _check("x=safe\nmapfile x <<< /etc/passwd\ncat $x", tmp_path, allow_substitution=allow)
+    assert _check("x=safe\ngetopts o x\ncat $x", tmp_path, allow_substitution=allow)
+    assert _check("x=safe\nunset x\ncat $x/etc/passwd", tmp_path, allow_substitution=allow)
+
+
+def test_ansi_c_quoting_rejected_before_shlex_loses_it(tmp_path):
+    """shlex strips the quotes, so the checks see literal \\x2f text while
+    bash decodes an absolute path at run time."""
+    assert _check(r"x=$'\x2fetc\x2fpasswd'; cat $x", tmp_path, allow_substitution=True)
+    assert _check(r"cat $'\x2fetc\x2fpasswd'", tmp_path, allow_substitution=True)
+
+
+def test_command_substitution_value_is_not_trusted(tmp_path):
+    """A captured value can be any project data (`p` contains a path), so the
+    name must not gain path-position trust; the nested payload case matters
+    because the outer raw-line taint scan cannot see inside it."""
+    assert _check("x=$(cat p); cat $x", tmp_path, allow_substitution=True)
+    assert _check('echo "$(x=$(cat p); cat $x)"', tmp_path, allow_substitution=True)
+
+
+def test_declare_nameref_rejected(tmp_path):
+    """`declare -n b=PATH` makes `b=.` rewrite PATH, executing an in-project
+    binary without the ./ wrapper the validator refuses."""
+    assert _check("declare -n b=PATH; b=.; cat x", tmp_path, allow_substitution=True)
+
+
+def test_shared_address_space_is_ssrf_blocked():
+    """RFC 6598 100.64.0.0/10 is neither is_private nor link-local; it
+    includes Alibaba Cloud's metadata endpoint 100.100.100.200."""
+    from agent_core.tools._ssrf import SSRFError, _is_ip_blocked, validate_url
+    from agent_core.tools.api_request import _is_private_ip
+
+    for ip in ("100.64.0.1", "100.100.100.200"):
+        assert _is_ip_blocked(ip) is True
+        assert _is_private_ip(ip) is True
+    assert _is_ip_blocked("8.8.8.8") is False
+    assert _is_private_ip("8.8.8.8") is False
+    with pytest.raises(SSRFError, match="Blocked IP"):
+        validate_url("http://100.100.100.200/latest/meta-data/")  # hygiene:allow-url

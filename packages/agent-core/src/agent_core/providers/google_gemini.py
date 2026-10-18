@@ -103,6 +103,21 @@ def _part_text(part) -> str | None:
         return None
 
 
+def _prompt_block_reason(feedback) -> str:
+    """Name of a prompt-level block reason, or '' when the prompt passed.
+
+    Gemini blocks the PROMPT itself by returning no candidates and setting
+    ``prompt_feedback.block_reason``; the candidate-level finish-reason
+    mapping never sees it, so without this check the turn ends as an empty
+    normal reply with no refusal signal.
+    """
+    reason = getattr(feedback, "block_reason", None)
+    name = getattr(reason, "name", None) or (str(reason) if reason else "")
+    if not name or name.upper() == "BLOCK_REASON_UNSPECIFIED":
+        return ""
+    return name
+
+
 async def _prepend_chunk(first, rest):
     """Yield an already-consumed first chunk before iterating *rest*."""
     if first is not None:
@@ -281,13 +296,18 @@ class GoogleGeminiProvider(LLMProvider):
         return genai_types.GenerateContentConfig(**kwargs)
 
     @staticmethod
-    def _empty_result(model: str) -> CompletionResult:
+    def _empty_result(
+        model: str,
+        *,
+        finish_reason: str = "error",
+        stop_reason: StopReason = StopReason.UNKNOWN,
+    ) -> CompletionResult:
         return CompletionResult(
             message=Message(role="assistant", content="", tool_calls=None),
             usage={"prompt_tokens": 0, "completion_tokens": 0},
             model=model,
-            finish_reason="error",
-            stop_reason=StopReason.UNKNOWN,
+            finish_reason=finish_reason,
+            stop_reason=stop_reason,
         )
 
     @staticmethod
@@ -332,6 +352,12 @@ class GoogleGeminiProvider(LLMProvider):
             else:
                 raise
         if not response.candidates:
+            if _prompt_block_reason(getattr(response, "prompt_feedback", None)):
+                return self._empty_result(
+                    self._model_name,
+                    finish_reason="refusal",
+                    stop_reason=StopReason.REFUSAL,
+                )
             return self._empty_result(self._model_name)
         candidate = response.candidates[0]
         if not candidate.content or not candidate.content.parts:
@@ -422,6 +448,10 @@ class GoogleGeminiProvider(LLMProvider):
         # on a content block) - without it every cut-off reply would read as
         # a normal end of turn.
         last_finish_reason = None
+        # Prompt-level block reason, if Gemini refused the prompt itself.
+        # Such chunks carry no candidates, so nothing in the candidate loop
+        # below would ever record why the reply is empty.
+        prompt_block = ""
         # Argument-key fingerprint per call index: nameless continuation
         # chunks are matched to the call they continue via key overlap
         # (see _continuation_target_index) instead of assuming the most
@@ -434,6 +464,9 @@ class GoogleGeminiProvider(LLMProvider):
             # `continue`) dropped the token counts of every such stream.
             if chunk.usage_metadata:
                 last_usage = chunk.usage_metadata
+            block = _prompt_block_reason(getattr(chunk, "prompt_feedback", None))
+            if block:
+                prompt_block = block
             if not chunk.candidates:
                 continue
             candidate = chunk.candidates[0]
@@ -508,7 +541,7 @@ class GoogleGeminiProvider(LLMProvider):
             fr_name = str(getattr(last_finish_reason, "name", ""))
             if fr_name == "MAX_TOKENS":
                 yield StreamChunk(finish_reason="max_tokens", stop_reason=StopReason.MAX_TOKENS, usage=usage_dict)
-            elif fr_name in _BLOCKED_FINISH_REASONS:
+            elif fr_name in _BLOCKED_FINISH_REASONS or prompt_block:
                 yield StreamChunk(finish_reason="refusal", stop_reason=StopReason.REFUSAL, usage=usage_dict)
             else:
                 yield StreamChunk(finish_reason="stop", stop_reason=StopReason.END_TURN, usage=usage_dict)

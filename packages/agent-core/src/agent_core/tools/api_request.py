@@ -144,6 +144,7 @@ def _is_private_ip(host: str) -> bool:
         or addr.is_multicast
         or addr.is_unspecified
         or addr.is_private
+        or not addr.is_global
         or str(addr) == _METADATA_IP
     )
 

@@ -83,3 +83,50 @@ async def test_usage_from_candidate_less_chunk_is_kept(monkeypatch):
     out = [c async for c in provider.stream([Message(role="user", content="hi")])]
 
     assert out[-1].usage == {"prompt_tokens": 3, "completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_prompt_level_block_streams_as_refusal(monkeypatch):
+    """A prompt block returns no candidates and sets prompt_feedback; it must
+    surface as a refusal, not as an empty normal end of turn."""
+    chunks = [
+        SimpleNamespace(
+            candidates=[],
+            usage_metadata=None,
+            prompt_feedback=SimpleNamespace(
+                block_reason=SimpleNamespace(name="SAFETY"),
+            ),
+        ),
+    ]
+    provider = _provider_with_chunks(monkeypatch, chunks)
+
+    out = [c async for c in provider.stream([Message(role="user", content="hi")])]
+
+    assert out[-1].stop_reason is StopReason.REFUSAL
+    assert out[-1].finish_reason == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_prompt_level_block_completes_as_refusal(monkeypatch):
+    provider = GoogleGeminiProvider(api_key="k", model="gemini-2.0-flash")
+
+    async def _generate_content(**_kwargs):
+        return SimpleNamespace(
+            candidates=[],
+            prompt_feedback=SimpleNamespace(
+                block_reason=SimpleNamespace(name="PROHIBITED_CONTENT"),
+            ),
+        )
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(
+            generate_content=_generate_content,
+        )),
+    )
+    monkeypatch.setattr(provider, "_client", lambda: fake_client)
+
+    result = await provider.complete([Message(role="user", content="hi")])
+
+    assert result.stop_reason is StopReason.REFUSAL
+    assert result.finish_reason == "refusal"
+    assert result.message.content == ""

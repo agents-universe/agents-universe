@@ -105,3 +105,37 @@ async def test_token_update_carries_occupancy_and_billing():
     assert updates[0]["used"] == 1200
     assert updates[1]["used"] == 1200 + 1550
     assert updates[0]["budget"] == session.token_budget
+
+
+class _CumulativeUsageProvider:
+    """One iteration whose usage chunks repeat request-cumulative totals.
+
+    OpenAI-compatible gateways (vLLM running stats) emit usage on ordinary
+    chunks; summing every snapshot would count the same prompt repeatedly.
+    """
+
+    model_name = "fake"
+    supports_vision = False
+    context_window = 100000
+
+    async def stream(self, messages, tools=None, max_tokens=4096, temperature=0.0):
+        yield StreamChunk(delta="done")
+        yield StreamChunk(usage={"prompt_tokens": 1000, "completion_tokens": 100})
+        yield StreamChunk(usage={"prompt_tokens": 1000, "completion_tokens": 200})
+        yield StreamChunk(stop_reason=StopReason.END_TURN)
+
+
+@pytest.mark.asyncio
+async def test_cumulative_usage_snapshots_are_not_summed():
+    agent = _make_agent()
+    session = _DrainingSession(conversation_id="c1", project_id="p1", user_id="u1")
+    session.start_drainer()
+    await agent._run_loop(
+        [Message(role="user", content="hi")], [], _CumulativeUsageProvider(), session, "cfg1"
+    )
+    await session.stop_drainer()
+
+    updates = [d for t, d in session.events_emitted if t == "token_update"]
+    # Two snapshots of the SAME request: 1000/100 then 1000/200.
+    assert [u["used"] for u in updates] == [1100, 1200]
+    assert [u["context_tokens"] for u in updates] == [1100, 1200]

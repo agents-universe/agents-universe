@@ -57,6 +57,11 @@ def _is_ip_blocked(ip_str: str) -> bool:
         return True
     if addr.is_unspecified:
         return True
+    # Any other non-public range: RFC 6598 shared space (100.64.0.0/10,
+    # including Alibaba Cloud's 100.100.100.200 metadata endpoint) is
+    # neither is_private nor is_link_local, so the checks above miss it.
+    if not addr.is_global:
+        return True
 
     # IPv4-mapped IPv6 — check the embedded v4
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:

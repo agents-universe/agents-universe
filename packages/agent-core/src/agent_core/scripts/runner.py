@@ -338,6 +338,12 @@ async def execute_script(
                 # Arms the sitecustomize audit hook: file reads/writes confined
                 # to the project root; strict=True also blocks subprocess (a
                 # child python could otherwise read outside the guard).
+                # HOME must point inside the project: the guard whitelists
+                # $HOME caches (~/.cache, ~/.npm, ~/.semgrep) for tooling, and
+                # inheriting the server user's HOME would whitelist their real
+                # caches as readable — the same reason code_executor points
+                # HOME at its scratch dir.
+                env["HOME"] = str(work_dir)
                 env.update(python_guard_env(project_root, strict=True))
             else:
                 cmd = ["bash", str(script_path)]

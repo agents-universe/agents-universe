@@ -132,6 +132,27 @@ async def test_compress_keeps_full_history_when_summarization_fails():
     assert len(result) == len(messages)
 
 
+async def test_compress_keeps_full_history_when_summary_is_empty():
+    """An empty summary is the same soft failure as an exception: treating it
+    as content would replace the early history with nothing."""
+    messages: list[Message] = []
+    for i in range(10):
+        messages.append(_message("user", f"user payload {i} " * 12))
+        messages.append(_assistant_with_call(i))
+        messages.append(_tool_response(i))
+
+    provider = AsyncMock()
+    provider.complete.return_value = SimpleNamespace(
+        message=SimpleNamespace(content="   ")
+    )
+
+    result = await compress_history(messages, token_budget=100, provider=provider)
+
+    assert result is messages
+    assert len(result) == len(messages)
+    assert not any(SUMMARY_MARKER in m.content for m in result)
+
+
 async def test_compress_summarization_failure_redacts_provider_key(caplog):
     """The summarization exception is logged with exc_info when the provider
     holds no secret — with a key it must be formatted and scrubbed instead,

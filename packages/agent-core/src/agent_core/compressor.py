@@ -487,7 +487,15 @@ async def compress_history(
 
     try:
         response = await provider.complete(summary_messages, tools=None)
-        summary = response.message.content or "Previous conversation context unavailable."
+        summary = (response.message.content or "").strip()
+        if not summary:
+            # Empty content is a failure signal — a prompt-level safety block
+            # or an empty refusal — not a summary. Substituting a placeholder
+            # here would replace the early history with nothing and lose it
+            # for the rest of the turn; keep the full history like the
+            # exception path below.
+            _log.warning("History summarization returned empty content; skipping compression")
+            return messages
     except Exception as e:
         # Compression is a soft budget optimization, never a data-loss path: a
         # transient summarization failure (429/5xx/network) must not replace

@@ -137,6 +137,28 @@ def _attachment_ref(a: dict) -> str:
     )
 
 
+def _consume_usage(
+    usage: dict[str, Any], prev: tuple[int, int]
+) -> tuple[int, int, int, int]:
+    """Split a provider usage snapshot into ledger deltas plus totals.
+
+    Usage chunks carry request-cumulative totals for the current provider
+    call, and OpenAI-compatible gateways repeat them on ordinary chunks
+    (vLLM running stats). Adding each snapshot would count the prompt once
+    per chunk; ``prev`` is the largest snapshot already recorded for this
+    call, so the delta is the growth since then. Returns
+    ``(delta_prompt, delta_completion, total_prompt, total_completion)``.
+    """
+    prompt = int(usage.get("prompt_tokens", 0) or 0)
+    completion = int(usage.get("completion_tokens", 0) or 0)
+    return (
+        max(0, prompt - prev[0]),
+        max(0, completion - prev[1]),
+        prompt,
+        completion,
+    )
+
+
 def build_user_content(user_message: str, attachments: list[dict] | None, supports_vision: bool) -> str | list:
     """Build the user message content for the LLM.
 
@@ -193,6 +215,37 @@ class AgentConfig:
             return [str(v) for v in value]
         return []
 
+    @staticmethod
+    def _as_bool(value: object) -> bool:
+        """Normalize a frontmatter boolean.
+
+        YAML authors quote scalars, and ``bool("false")`` is True — a quoted
+        ``api_request_no_confirm: "false"`` would silently disable
+        api_request's write-confirmation gate. Same semantics as
+        ``scheduler._as_bool``.
+        """
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in ("", "0", "false", "no", "off")
+        return bool(value)
+
+    @staticmethod
+    def _as_int(value: object, default: int) -> int:
+        """Coerce a frontmatter integer; blank or malformed falls back.
+
+        ``max_tokens: "64000"`` is a string and ``max_tokens:`` is None;
+        either reaching ``min(max_tokens, MAX_OUTPUT_RESERVE)`` raises
+        TypeError and ends every turn as an api_error.
+        """
+        if isinstance(value, bool):
+            return default
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
     @classmethod
     def from_file(cls, path: str) -> "AgentConfig":
         post = frontmatter.load(path)
@@ -205,9 +258,9 @@ class AgentConfig:
             skills=cls._list_field(meta.get("skills")),
             workflows=cls._list_field(meta.get("workflows")),
             knowledge=cls._list_field(meta.get("knowledge")),
-            max_tokens=meta.get("max_tokens", 128000),
-            token_budget=meta.get("token_budget", 100000),
-            api_request_no_confirm=bool(meta.get("api_request_no_confirm", False)),
+            max_tokens=cls._as_int(meta.get("max_tokens"), 128000),
+            token_budget=cls._as_int(meta.get("token_budget"), 100000),
+            api_request_no_confirm=cls._as_bool(meta.get("api_request_no_confirm", False)),
         )
 
 
@@ -1376,6 +1429,12 @@ class Agent:
                     # the provider answers, and the UI would otherwise show
                     # only the old bouncing dots.
                     await session.emit("turn_status", phase="waiting_model", message_id=message_id)
+                    # OpenAI-compatible gateways report usage as request-
+                    # cumulative totals and may repeat them on every chunk
+                    # (vLLM running stats). Record the delta since the last
+                    # snapshot of THIS call so tokens_used is not inflated
+                    # by the chunk count.
+                    prev_usage: tuple[int, int] = (0, 0)
                     async for chunk in provider.stream(
                         messages, tool_defs, max_tokens=self._config.max_tokens
                     ):
@@ -1438,14 +1497,18 @@ class Agent:
                             stop_reason = chunk.stop_reason
 
                         if chunk.usage:
+                            d_prompt, d_completion, prompt_tokens, completion_tokens = _consume_usage(
+                                chunk.usage, prev_usage
+                            )
                             session.add_usage(
-                                prompt_tokens=chunk.usage.get("prompt_tokens", 0),
-                                completion_tokens=chunk.usage.get("completion_tokens", 0),
+                                prompt_tokens=d_prompt,
+                                completion_tokens=d_completion,
                             )
-                            session.context_tokens = (
-                                chunk.usage.get("prompt_tokens", 0)
-                                + chunk.usage.get("completion_tokens", 0)
+                            prev_usage = (
+                                max(prev_usage[0], prompt_tokens),
+                                max(prev_usage[1], completion_tokens),
                             )
+                            session.context_tokens = prompt_tokens + completion_tokens
                             session.context_window = provider.context_window
                             await session.emit(
                                 "token_update",
@@ -2269,6 +2332,8 @@ class Agent:
                 _log.info("request degrade succeeded in task loop, resuming")
             try:
                 await session.emit("turn_status", phase="waiting_model", task_id=task_id)
+                # Per-call cumulative usage snapshot — see the chat loop.
+                prev_usage: tuple[int, int] = (0, 0)
                 async for chunk in provider.stream(
                     messages, tool_defs, max_tokens=self._config.max_tokens
                 ):
@@ -2326,14 +2391,18 @@ class Agent:
                     if chunk.stop_reason:
                         stop_reason = chunk.stop_reason
                     if chunk.usage:
-                        session.add_usage(
-                                prompt_tokens=chunk.usage.get("prompt_tokens", 0),
-                                completion_tokens=chunk.usage.get("completion_tokens", 0),
-                            )
-                        session.context_tokens = (
-                            chunk.usage.get("prompt_tokens", 0)
-                            + chunk.usage.get("completion_tokens", 0)
+                        d_prompt, d_completion, prompt_tokens, completion_tokens = _consume_usage(
+                            chunk.usage, prev_usage
                         )
+                        session.add_usage(
+                            prompt_tokens=d_prompt,
+                            completion_tokens=d_completion,
+                        )
+                        prev_usage = (
+                            max(prev_usage[0], prompt_tokens),
+                            max(prev_usage[1], completion_tokens),
+                        )
+                        session.context_tokens = prompt_tokens + completion_tokens
                         session.context_window = provider.context_window
                         await session.emit(
                             "token_update",

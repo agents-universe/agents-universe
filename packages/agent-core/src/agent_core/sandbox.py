@@ -810,6 +810,17 @@ def _check_unquoted_expansions(line: str) -> str | None:
         if c in "<>" and i + 1 < n and line[i + 1] == "(":
             return reason
         if c == "$" and i + 1 < n:
+            if line[i + 1] in ("'", '"'):
+                # ANSI-C quoting decodes escapes only when bash parses the
+                # word; shlex strips the quotes and hands the checks literal
+                # `\x2f...` text, so `$'\x2fetc\x2fpasswd'` becomes an
+                # absolute path at run time. Quoted spans are skipped by the
+                # loop above, so a hit here is real ANSI-C quoting.
+                return (
+                    "ANSI-C quoting ($'...' or $\"...\") is not allowed: it "
+                    "decodes characters after validation, so the resulting "
+                    "path never reaches the checks"
+                )
             if line[i + 1] == "{":
                 end = _skip_braced(line, i + 2)
                 i = end + 1 if end is not None else i + 1
@@ -993,7 +1004,15 @@ def _validate_segment(
         # Only names with a NON-EMPTY value get "assigned" status: `x=`
         # expands to nothing at runtime, so `cat $x/etc/hostname` silently
         # becomes `cat /etc/hostname` — an absolute path — past the checks.
-        if tokens[i].split("=", 1)[1]:
+        # A value captured from command substitution is not tracked either:
+        # in a nested payload (`echo "$(x=$(cat p); cat $x)"`) the captured
+        # text is any project data, so `$x` would later resolve to an
+        # arbitrary path the assignment checks never saw. shlex's
+        # punctuation split turns `x=$(...)` into the token `x=$` (the
+        # opening paren starts the next segment), so a value ending in a
+        # bare `$` is a split substitution too.
+        value = tokens[i].split("=", 1)[1]
+        if value and "$(" not in value and "`" not in value and not value.endswith("$"):
             assigned_vars.add(tokens[i].partition("=")[0])
         i += 1
     if i >= len(tokens):
@@ -1044,6 +1063,45 @@ def _validate_segment(
     elif is_jq:
         pattern_opts = frozenset({"-f", "--from-file"})
     i += 1
+
+    # Variable-mutating builtins assign from data the validator never
+    # inspects — stdin (read/mapfile/getopts) or printf's format argument.
+    # A name that was earlier assigned a safe literal then keeps "assigned"
+    # status while its value becomes any path: `x=safe; printf -v x
+    # '\x2fetc\x2fpasswd'; cat $x` reads an absolute path. `unset` empties a
+    # tracked name, which collapses `$x/etc` into an absolute path.
+    if cmd_base in ("read", "mapfile", "readarray", "getopts", "unset"):
+        return (
+            f"{cmd_base} is not allowed: it assigns variables from data the "
+            "validator never sees, so a later unquoted $VAR expansion could "
+            "smuggle an absolute path past the assignment checks; use "
+            "explicit literal arguments instead"
+        )
+    if cmd_base == "printf":
+        # printf itself is a useful data command; only -v (assign to a
+        # variable) redefines a value the token checks never see.
+        for tok in tokens[i:]:
+            if tok == "--" or not tok.startswith("-"):
+                break
+            if tok.startswith("-v"):
+                return (
+                    "printf -v is not allowed: assigning through printf "
+                    "stores a value the validator never sees, so a later "
+                    "unquoted $VAR expansion could smuggle an absolute path; "
+                    "plain printf without -v is fine"
+                )
+    if cmd_base in ("declare", "typeset", "local"):
+        # `declare -n b=PATH` makes later assignments to b rewrite PATH,
+        # an execution-control variable the assignment checks cannot see.
+        for tok in tokens[i:]:
+            if tok == "--" or not tok.startswith("-"):
+                break
+            if "n" in tok[1:]:
+                return (
+                    f"{cmd_base} nameref (-n) is not allowed: it can alias a "
+                    "later assignment onto PATH or another execution-control "
+                    "variable, which the assignment checks cannot see"
+                )
 
     if cmd_base in ("export", "local", "declare", "typeset", "readonly"):
         # `export NAME=value` (and the declare family) is the same assignment
@@ -1507,10 +1565,12 @@ def _has_param_expansion(value: str) -> bool:
 # (PATH=. python executes ./python; GIT_EXTERNAL_DIFF='cat /etc/passwd' runs
 # on every diff; LD_PRELOAD loads any shared object; GIT_DIR repoints the
 # repo). Their values are never valid project data — refuse the assignment
-# by name, regardless of the value.
+# by name, regardless of the value. IFS belongs here too: it changes the
+# word boundaries of every unquoted expansion, so `IFS=:; x=a:/etc/passwd`
+# turns a single validated word into an absolute path at run time.
 _EXECUTION_ENV_VARS = frozenset({
     "PATH", "CDPATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV",
-    "SHELLOPTS", "BASHOPTS",
+    "SHELLOPTS", "BASHOPTS", "IFS",
     "GIT_EXTERNAL_DIFF", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PAGER",
     "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_ASKPASS",
     "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_DIR", "GIT_WORK_TREE",
@@ -1571,7 +1631,55 @@ def _check_assignment(tok: str, *, allow_dollar: bool,
                     "var; assign a literal or an earlier-assigned name "
                     "instead"
                 )
+    reason = _check_assignment_fields(value)
+    if reason:
+        return reason
     return _check_simple(value)
+
+
+def _check_assignment_fields(value: str) -> str | None:
+    """Validate every word an unquoted ``$name`` expansion will produce.
+
+    Bash performs field splitting on IFS whitespace when the variable is
+    expanded unquoted, so ``x=" /etc/passwd"; cat $x`` validates as one
+    relative word but executes ``cat /etc/passwd``. Each field must
+    therefore pass the standalone-word checks, and a field beginning with
+    ``-`` could be spliced into an option position
+    (``x=--output=/etc/passwd; sort $x``). Trailing whitespace is rejected
+    separately: ``x="dir "; cat $x/etc/passwd`` splits the appended literal
+    off as a second, absolute word.
+    """
+    if not value:
+        return None
+    if value != value.rstrip():
+        return (
+            f"Assigned value {value!r} ends with whitespace; a later "
+            "``$VAR/etc``-style expansion would split the appended path off "
+            "as a separate word; remove the trailing whitespace"
+        )
+    fields = value.split()
+    if not fields:
+        return (
+            f"Assigned value {value!r} is whitespace-only; an unquoted "
+            "expansion of it vanishes, which can collapse ``$VAR/path`` "
+            "into an absolute path"
+        )
+    for field in fields:
+        if field in ("-", "--"):
+            continue
+        if field.startswith("-"):
+            return (
+                f"Assigned value {value!r} contains the option-like word "
+                f"{field!r}; a later unquoted $VAR expansion could place it "
+                "in an option position, so assign plain relative paths only"
+            )
+        reason = _check_simple(field)
+        if reason:
+            return (
+                f"Assigned value {value!r} expands to {field!r} after field "
+                f"splitting, which is unsafe: {reason}"
+            )
+    return None
 
 
 def _check_simple(value: str) -> str | None:

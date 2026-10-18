@@ -87,8 +87,8 @@
                 :placeholder="t('publishPage.placeholder')"
                 :disabled="sending || running"
                 rows="1"
-                @keydown.enter.exact.prevent="submit"
-                @keydown.enter.exact.meta="submit"
+                @keydown.enter.exact="onEnterSubmit"
+                @keydown.enter.exact.meta="onEnterSubmit"
                 @input="autosize"
                 ref="composerEl"
               />
@@ -205,16 +205,26 @@ async function load() {
   }
 }
 
+// Enter commits an IME candidate while composing — submitting on that
+// keystroke sends a half-composed message. preventDefault only on the real
+// submit path so the IME can still handle its own Enter.
+function onEnterSubmit(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  e.preventDefault()
+  submit()
+}
+
 async function submit() {
   const content = draft.value.trim()
   if (!content || inflight || !session.value) return
   inflight = true
   sending.value = true
   const body = content
+  const optimisticId = `tmp-${Date.now()}`
   draft.value = ''
   autosize()
   messages.value.push({
-    message_id: `tmp-${Date.now()}`,
+    message_id: optimisticId,
     role: 'user',
     content: body,
     agent_slug: null,
@@ -254,6 +264,16 @@ async function submit() {
       })
     }
   } catch (e) {
+    // No partialText means the turn was rejected before the stream started
+    // (409 already running, 404 publish gone, network failure) — the server
+    // never persisted the message, so leaving the optimistic bubble makes a
+    // discarded instruction look delivered. Restore it to the composer for a
+    // retry; a mid-stream failure keeps the bubble (the text was sent).
+    if (!(e instanceof ApiError) || e.partialText === undefined) {
+      const idx = messages.value.findIndex(m => m.message_id === optimisticId)
+      if (idx >= 0) messages.value.splice(idx, 1)
+      if (!draft.value) draft.value = body
+    }
     // The finally block clears streamingText; without keeping the partial
     // reply here, a mid-stream failure erased everything the model had
     // already produced and left only the error bubble.

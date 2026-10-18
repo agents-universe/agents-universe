@@ -10,7 +10,7 @@
       <input v-model="newTags" class="input" :placeholder="t('memoryPanels.tagsPlaceholder')" />
       <div class="memory-add-actions">
         <button class="btn-ghost" @click="showAdd = false">{{ t('common.cancel') }}</button>
-        <button class="btn-primary" :disabled="!newContent.trim()" @click="addMemory">{{ t('common.save') }}</button>
+        <button class="btn-primary" :disabled="saving || !newContent.trim()" @click="addMemory">{{ t('common.save') }}</button>
       </div>
     </div>
 
@@ -49,10 +49,14 @@ const showAdd = ref(false)
 const newContent = ref('')
 const newTags = ref('')
 const error = ref<string | null>(null)
+const saving = ref(false)
 
 async function addMemory() {
   const pid = projectStore.currentProject?.project_id
-  if (!pid || !newContent.value.trim()) return
+  // The content stays in the form until the request resolves, so a second
+  // click used to POST the same memory again.
+  if (saving.value || !pid || !newContent.value.trim()) return
+  saving.value = true
   const tags = newTags.value.split(',').map((t) => t.trim()).filter(Boolean)
   try {
     const mem = await memoriesApi.createPersonal(pid, newContent.value.trim(), tags)
@@ -68,6 +72,8 @@ async function addMemory() {
   } catch (e) {
     error.value = e instanceof Error ? e.message : t('memoryPanels.addMemoryFailed')
     console.error('Failed to add memory', e)
+  } finally {
+    saving.value = false
   }
 }
 

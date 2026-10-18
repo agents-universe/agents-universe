@@ -22,9 +22,16 @@ export function applyComposerDraft(text: string): void {
   pendingDraft.value = text
 }
 
-/** Read-and-clear the pending text (null when nothing is staged). */
-export function takeComposerDraft(): string | null {
+/** Read-and-clear the pending text (null when nothing is staged).
+ *
+ *  `expected` narrows the clear to a specific staged value: an async caller
+ *  that abandoned its own draft must not consume one the user staged for a
+ *  newer context in the meantime. Mismatch (or nothing staged) returns null
+ *  and leaves the slot untouched. */
+export function takeComposerDraft(expected?: string): string | null {
   const text = pendingDraft.value
-  if (text != null) pendingDraft.value = null
+  if (text == null) return null
+  if (expected !== undefined && text !== expected) return null
+  pendingDraft.value = null
   return text
 }

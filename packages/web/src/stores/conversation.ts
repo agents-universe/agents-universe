@@ -234,6 +234,10 @@ export const useConversationStore = defineStore('conversation', () => {
    *  conversation — ensureRuntime creates it. */
   function setLastRun(run: ConversationRun | null, targetId?: string) {
     const rt = ensureRuntime(targetId ?? activeId.value!)
+    // The fetch is async and may resolve after the user started a new turn.
+    // Its snapshot predates that turn, so applying it would leave the
+    // previous run's failure notice on screen once the new turn succeeds.
+    if (rt.isStreaming || rt.isThinking) return
     rt.lastRun = run
   }
 
@@ -307,6 +311,11 @@ export const useConversationStore = defineStore('conversation', () => {
         const knowledge = useKnowledgeStore()
         knowledge.setLoadedThisTurn([])
         knowledge.clearDynamicLoads()
+      })
+      // Session notes are per-conversation server state; leaving the old
+      // conversation's notes in the panel mixed them into the new session's.
+      import('./memory').then(({ useMemoryStore }) => {
+        useMemoryStore().clearSessionNotes()
       })
     }
   }
@@ -1328,6 +1337,7 @@ export const useConversationStore = defineStore('conversation', () => {
     activeId.value = null
     runtimes.clear()
     for (const key of Object.keys(streamingIds)) delete streamingIds[key]
+    import('./memory').then(({ useMemoryStore }) => useMemoryStore().clearSessionNotes())
   }
 
   function removeRuntime(id: string) {

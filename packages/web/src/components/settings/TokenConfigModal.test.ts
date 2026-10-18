@@ -19,7 +19,10 @@ const agentsMock = vi.hoisted(() => ({
   syncAgents: vi.fn(),
 }))
 
-vi.mock('@/api/client', () => ({ apiFetch: apiMock.apiFetch }))
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return { ...actual, apiFetch: apiMock.apiFetch }
+})
 vi.mock('@/api/projectSecrets', () => secretsMock)
 vi.mock('@/api/agents', () => ({ agentsApi: agentsMock }))
 vi.mock('@/api/modelConfigs', () => ({

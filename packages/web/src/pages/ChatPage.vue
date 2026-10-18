@@ -21,7 +21,7 @@
         <!-- without !agentSlug the button stayed clickable with no
         agent selected and created an agent-less conversation that the
         backend could never run. (loading already hides the button entirely.) -->
-        <button class="btn-primary" :disabled="!agentSlug" @click="startChat">{{ t('chatPage.startChat') }}</button>
+        <button class="btn-primary" :disabled="!agentSlug" @click="startChat()">{{ t('chatPage.startChat') }}</button>
       </template>
     </div>
   </div>
@@ -240,10 +240,13 @@ function maybeAutoStartChat() {
 // start the conversation — the Composer consumes the draft when it mounts.
 function handleApplyPrompt(prompt: string) {
   applyComposerDraft(prompt)
-  startChat()
+  startChat(prompt)
 }
 
-async function startChat() {
+// `stagedDraft` is the chip text this call put in the composer slot. Only
+// that value may be discarded if the create is superseded or fails — the
+// slot may hold a draft the user staged for a newer context by then.
+async function startChat(stagedDraft?: string) {
   // Auto-start paths (watchers, route query) can race with the button and
   // with each other (rapid "+" clicks); only the first one creates.
   if (convStore.conversationId || loading.value) return
@@ -263,7 +266,7 @@ async function startChat() {
     if (!isCurrentLatestSeq(seq)) {
       // A project/agent switch superseded this create — a staged chip draft
       // belongs to the old context and must not land in the next Composer.
-      takeComposerDraft()
+      if (stagedDraft != null) takeComposerDraft(stagedDraft)
       return
     }
     convStore.startConversation(data.conversation_id)
@@ -275,9 +278,10 @@ async function startChat() {
     // token_budget denominator until the first turn reports the real window.
     convStore.setContextOccupancy(0, null, data.conversation_id)
   } catch (e) {
-    // The conversation never started — drop any staged chip draft so it
-    // cannot surface in a later, unrelated Composer mount.
-    takeComposerDraft()
+    // The conversation never started — drop this attempt's staged chip draft
+    // so it cannot surface in a later, unrelated Composer mount. A draft
+    // staged for a newer context meanwhile is not ours to discard.
+    if (stagedDraft != null) takeComposerDraft(stagedDraft)
     // Same stale-response guard as loadLatestConversation: the failure must
     // only surface on the empty state it belongs to.
     if (!isCurrentLatestSeq(seq)) return

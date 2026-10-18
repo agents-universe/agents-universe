@@ -446,7 +446,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { KeyRound, X, Cpu, Zap, Cloud, GitBranch, BookOpen, Globe, Sparkles } from 'lucide-vue-next'
-import { apiFetch } from '@/api/client'
+import { apiFetch, ApiError } from '@/api/client'
 import { modelConfigsApi } from '@/api/modelConfigs'
 import { createProjectSecret, deleteProjectSecret, listProjectSecrets, updateProjectSecret } from '@/api/projectSecrets'
 import { useAgentStore } from '@/stores/agent'
@@ -1117,6 +1117,16 @@ async function testService(key: string) {
   }
 }
 
+/** A "both"-scoped delete removes two rows in sequence. If the second call
+ *  fails, retrying finds the first already gone — a 404 must count as done,
+ *  or the local state can never be cleaned up (and the project secret never
+ *  deleted) from the UI. */
+function ignoreGone(p: Promise<unknown>): Promise<unknown> {
+  return p.catch((e) => {
+    if (!(e instanceof ApiError) || e.status !== 404) throw e
+  })
+}
+
 async function deleteIntegration(key: string) {
   saving.value = key
   delete messages[key]
@@ -1126,11 +1136,11 @@ async function deleteIntegration(key: string) {
     const svc = integrationServices.find(s => s.key === key)
     // Delete the user token(s) when the integration lives there
     if (scope !== 'project') {
-      await apiFetch(`/api/tokens/${key}`, { method: 'DELETE' })
+      await ignoreGone(apiFetch(`/api/tokens/${key}`, { method: 'DELETE' }))
       if (svc?.extraFields) {
         for (const field of svc.extraFields) {
           if (savedKeys[field.key]) {
-            await apiFetch(`/api/tokens/${field.key}`, { method: 'DELETE' }).catch(() => {})
+            await ignoreGone(apiFetch(`/api/tokens/${field.key}`, { method: 'DELETE' }))
           }
         }
       }
@@ -1139,7 +1149,7 @@ async function deleteIntegration(key: string) {
     if (scope !== 'user' && projectId) {
       const main = projectSecretByKey[key]
       if (main) {
-        await deleteProjectSecret(projectId, main.secret_id)
+        await ignoreGone(deleteProjectSecret(projectId, main.secret_id))
       }
       for (const field of svc?.extraFields ?? []) {
         const pf = projectSecretByKey[field.key]

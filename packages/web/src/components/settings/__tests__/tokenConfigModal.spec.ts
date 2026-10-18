@@ -12,7 +12,10 @@ import { mount, flushPromises } from '@vue/test-utils'
 import TokenConfigModal from '../TokenConfigModal.vue'
 
 const apiMock = vi.hoisted(() => ({ apiFetch: vi.fn() }))
-vi.mock('@/api/client', () => ({ apiFetch: apiMock.apiFetch }))
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return { ...actual, apiFetch: apiMock.apiFetch }
+})
 
 vi.mock('@/api/projectSecrets', () => ({
   listProjectSecrets: vi.fn(async () => []),

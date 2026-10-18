@@ -201,23 +201,41 @@ export const publishApi = {
       }
     }
 
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      // Frames are blank-line separated; parse complete frames as they land.
-      let idx = buffer.indexOf('\n\n')
-      while (idx !== -1) {
-        const frame = buffer.slice(0, idx)
-        buffer = buffer.slice(idx + 2)
-        consumeFrame(frame)
-        idx = buffer.indexOf('\n\n')
+    // A transport failure (connection reset, proxy timeout) must not discard
+    // the deltas already received — the partial is the same only-copy the
+    // error-frame path preserves.
+    let readError: unknown = null
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        // Frames are blank-line separated; parse complete frames as they land.
+        let idx = buffer.indexOf('\n\n')
+        while (idx !== -1) {
+          const frame = buffer.slice(0, idx)
+          buffer = buffer.slice(idx + 2)
+          consumeFrame(frame)
+          idx = buffer.indexOf('\n\n')
+        }
       }
+    } catch (e) {
+      readError = e
     }
     // Flush a trailing frame with no blank-line terminator.
     if (buffer.trim()) consumeFrame(buffer)
     if (errorMessage !== null) {
       const err = new ApiError(500, errorMessage)
+      err.partialText = jsonText
+      throw err
+    }
+    if (readError !== null) {
+      const err = new ApiError(
+        0,
+        readError instanceof Error && readError.message
+          ? readError.message
+          : 'Stream interrupted',
+      )
       err.partialText = jsonText
       throw err
     }

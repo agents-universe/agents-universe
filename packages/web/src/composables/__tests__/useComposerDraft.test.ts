@@ -22,4 +22,14 @@ describe('useComposerDraft', () => {
     applyComposerDraft('')
     expect(takeComposerDraft()).toBe('')
   })
+
+  it('leaves a newer draft untouched when the expected value differs', () => {
+    // A superseded create clears only the chip text it staged; the user may
+    // have staged a prompt for the new context by then.
+    applyComposerDraft('newer prompt')
+    expect(takeComposerDraft('older prompt')).toBeNull()
+    expect(pendingDraft.value).toBe('newer prompt')
+    expect(takeComposerDraft('newer prompt')).toBe('newer prompt')
+    expect(pendingDraft.value).toBeNull()
+  })
 })

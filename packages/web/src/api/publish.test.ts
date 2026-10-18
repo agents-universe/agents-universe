@@ -130,4 +130,36 @@ describe('publishApi.runSession', () => {
     const text = await publishApi.runSession('p1', 'tok', 'hello')
     expect(text).toBe('ok')
   })
+
+  it('keeps the partial reply when the connection dies mid-stream', async () => {
+    // A reset/timed-out connection rejects reader.read(). The deltas already
+    // rendered live were lost to the page's finally-clear, leaving only a
+    // generic error bubble — the same loss the error-frame path already fixed.
+    const encoder = new TextEncoder()
+    const chunk = encoder.encode(
+      `data: ${JSON.stringify({ type: 'stream_delta', delta: '前半段' })}\n\n`,
+    )
+    let sent = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(chunk)
+          return
+        }
+        throw new TypeError('network error')
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body,
+    }))
+
+    await expect(publishApi.runSession('p1', 'tok', 'hello')).rejects.toMatchObject({
+      message: 'network error',
+      partialText: '前半段',
+    })
+  })
 })

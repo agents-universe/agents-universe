@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mapDbTasks, useConversationStore } from './conversation'
+import { useMemoryStore } from './memory'
 import type { ToolCallRecord, DbMessage, DbTask } from '@/types'
 
 function makeDbMessage(over: Partial<DbMessage> = {}): DbMessage {
@@ -1038,6 +1039,17 @@ describe('conversation store - durable last-run status', () => {
     expect(store.lastRun).toBeNull()
   })
 
+  it('ignores a run snapshot that resolves during a live turn', () => {
+    // getLatestRun is fetched on connect; its snapshot predates a turn the
+    // user starts while the request is in flight. Storing it re-armed the
+    // previous run's failure notice after the new turn finished.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.startThinking('conv-a')
+    store.setLastRun(failedRun)
+    expect(store.lastRun).toBeNull()
+  })
+
   it('clearLastRun nulls the run without touching other state', () => {
     const store = useConversationStore()
     store.startConversation('conv-a')
@@ -1063,6 +1075,36 @@ describe('conversation store - durable last-run status', () => {
     store.setLastRun(failedRun)
     store.reset()
     expect(store.lastRun).toBeNull()
+  })
+})
+
+describe('conversation store - session notes scope', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('clears session notes when the conversation switches', async () => {
+    // session_memory_added carries per-conversation note text; keeping the
+    // list across a switch showed the previous conversation's notes in the
+    // new one's panel.
+    const store = useConversationStore()
+    const memory = useMemoryStore()
+    store.startConversation('conv-a')
+    memory.addSessionNote('note from A')
+
+    store.startConversation('conv-b')
+    await vi.waitFor(() => expect(memory.sessionNotes).toEqual([]))
+  })
+
+  it('clears session notes on reset', async () => {
+    const store = useConversationStore()
+    const memory = useMemoryStore()
+    store.startConversation('conv-a')
+    memory.addSessionNote('note from A')
+
+    store.reset()
+    await vi.waitFor(() => expect(memory.sessionNotes).toEqual([]))
   })
 })
 

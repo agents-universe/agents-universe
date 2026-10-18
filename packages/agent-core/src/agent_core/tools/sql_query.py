@@ -177,6 +177,19 @@ def _validate_readonly_select(query: str) -> tuple[str | None, str]:
     return None, stripped
 
 
+async def _rollback_quietly(context: ToolContext) -> None:
+    """Return the shared session to a usable state after a failed statement.
+
+    ToolContext.db_session is reused by every tool call in the turn; on
+    Postgres a failed statement leaves the transaction aborted, so the next
+    use raises PendingRollbackError until someone rolls back.
+    """
+    try:
+        await context.db_session.rollback()
+    except Exception:
+        pass
+
+
 class SqlQueryTool(Tool):
     name = "sql_query"
     prompt_hint = (
@@ -239,11 +252,21 @@ class SqlQueryTool(Tool):
                     truncated = True
                     break
                 row_dict: dict = {}
-                for k, v in row._mapping.items():
+                # Read positionally: when two columns share a name (SELECT
+                # a.id, b.id / SELECT 1 AS x, 2 AS x), RowMapping's keyed
+                # access resolves both to the same value, so the first column
+                # was silently replaced by the second. Disambiguate the key
+                # instead of dropping a column.
+                for (k, v) in zip(row._mapping.keys(), tuple(row)):
+                    key = k
+                    suffix = 2
+                    while key in row_dict:
+                        key = f"{k}_{suffix}"
+                        suffix += 1
                     if isinstance(v, str) and len(v) > _MAX_CELL_CHARS:
-                        row_dict[k] = v[:_MAX_CELL_CHARS] + "…"
+                        row_dict[key] = v[:_MAX_CELL_CHARS] + "…"
                     else:
-                        row_dict[k] = v
+                        row_dict[key] = v
                 rows.append(row_dict)
             out = {"rows": rows, "row_count": len(rows), "truncated": truncated}
             if truncated:
@@ -251,6 +274,7 @@ class SqlQueryTool(Tool):
             return out
         except Exception as e:
             _log.warning("sql_query failed: %s | query: %.200s", e, query)
+            await _rollback_quietly(context)
             return {"error": f"Query failed: {e}"}
 
     async def _reindex_knowledge(self, op_params: dict, context: ToolContext) -> dict:
@@ -284,6 +308,7 @@ class SqlQueryTool(Tool):
                 return {"success": True, "stats": stats}
             except Exception as e:
                 _log.warning("reindex_knowledge (full) failed: %s", e, exc_info=True)
+                await _rollback_quietly(context)
                 return {"error": f"Reindex failed: {e}"}
 
         try:
@@ -309,4 +334,5 @@ class SqlQueryTool(Tool):
             return result
         except Exception as e:
             _log.warning("reindex_knowledge (single) failed for %s: %s", fs_path, e, exc_info=True)
+            await _rollback_quietly(context)
             return {"error": f"Reindex failed: {e}"}

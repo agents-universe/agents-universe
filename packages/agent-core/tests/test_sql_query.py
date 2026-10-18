@@ -5,7 +5,16 @@ string literals — a comment marker inside '...' is data, not a comment.
 """
 from __future__ import annotations
 
-from agent_core.tools.sql_query import _strip_comments, _validate_readonly_select
+from unittest.mock import AsyncMock
+
+import pytest
+
+from agent_core.tools.base import ToolContext
+from agent_core.tools.sql_query import (
+    SqlQueryTool,
+    _strip_comments,
+    _validate_readonly_select,
+)
 
 
 def test_strip_comments_preserves_literal_comment_markers():
@@ -99,3 +108,45 @@ def test_validate_apostrophe_in_bracket_identifier_cannot_hide_blocked_table():
     err, stripped = _validate_readonly_select("SELECT *, 1 AS [a'b] FROM user_tokens")
     assert err and "blocked" in err
     assert "user_tokens" in stripped
+
+
+def _ctx(tmp_path, session) -> ToolContext:
+    return ToolContext(
+        project_id="p1",
+        project_fs_path=str(tmp_path),
+        conversation_id="c1",
+        user_id="u1",
+        db_session=session,
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_column_names_keep_every_value(tmp_path):
+    """RowMapping's keyed access resolves same-named columns to one value, so
+    `SELECT a.id, b.id` returned the second id twice and dropped the first."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with AsyncSession(engine) as session:
+            result = await SqlQueryTool().execute(
+                {"query": "SELECT 1 AS a, 2 AS a, 3 AS b"}, _ctx(tmp_path, session)
+            )
+    finally:
+        await engine.dispose()
+
+    assert result["rows"] == [{"a": 1, "a_2": 2, "b": 3}]
+
+
+@pytest.mark.asyncio
+async def test_failed_query_rolls_back_the_shared_session(tmp_path):
+    """The session is reused by later tool calls; on Postgres the failed
+    statement aborts the transaction and every later use raises
+    PendingRollbackError until someone rolls back."""
+    session = AsyncMock()
+    session.execute.side_effect = RuntimeError("syntax error")
+
+    result = await SqlQueryTool().execute({"query": "SELECT broken"}, _ctx(tmp_path, session))
+
+    assert "Query failed" in result["error"]
+    session.rollback.assert_awaited_once()

@@ -188,11 +188,19 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       return
     }
 
-    // Enforce max connections. Replacing an existing entry reuses its slot,
-    // so only a brand-new conversation may evict another connection — the
+    // Enforce max connections. Replacing an entry that holds a socket reuses
+    // its slot, so only a socketless id may evict another connection — the
     // lifecycle kick reconnects a retrying background id and would otherwise
-    // close a healthy (possibly visible) connection for no capacity gain.
-    if (!existing && _connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
+    // close a healthy (possibly visible) connection for no capacity gain. A
+    // capacity-full waiter is parked with ws === null and holds NO slot:
+    // treating it like an active entry let the lifecycle kick open a socket
+    // for every parked conversation on top of the limit.
+    const parked = existing !== undefined && existing.ws === null
+    if ((!existing || parked) && _connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
+      // Already parked: its retry chain keeps polling for a freed slot.
+      // Replacing the entry would orphan that timer, which could later fire
+      // and open a socket outside the cap.
+      if (parked) return
       // Every existing connection is streaming a live run. Evicting one
       // would permanently kill that conversation's UI updates: its entry is
       // deleted, streamingIds[id] never clears (events stop arriving) and
@@ -290,6 +298,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       // preserveDraft keeps the localStorage draft so loadHistory →
       // _applyDraft can rebuild an interrupted-execution recovery message.
       conv.clearStreamingState(id, { preserveDraft: true })
+      // Prompts are live-session state, replayed by the server's sync frame
+      // below only while a turn is still waiting on the user. Clear the
+      // local dialogs first: after a server restart / session expiry no
+      // sync arrives, and a stale user_confirm would otherwise sit there
+      // answering a Future that no longer exists.
+      conv.clearPendingPrompts(id)
       void _reloadHistory(id)
     }
 

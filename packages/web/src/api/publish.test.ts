@@ -62,6 +62,27 @@ describe('publishApi.runSession', () => {
       .rejects.toThrowError('模型调用失败')
   })
 
+  it('keeps the partial reply when a later error frame fails the run', async () => {
+    // The page clears its live streaming text in `finally`. Throwing at the
+    // error frame discarded every delta already received, leaving only the
+    // error bubble; the partial answer must travel on the rejection instead.
+    const frames = [
+      `data: ${JSON.stringify({ type: 'stream_delta', delta: '前半段' })}`,
+      `data: ${JSON.stringify({ type: 'error', message: '模型调用失败' })}`,
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body: sseStream(frames),
+    }))
+
+    await expect(publishApi.runSession('p1', 'tok', 'hello')).rejects.toMatchObject({
+      message: '模型调用失败',
+      partialText: '前半段',
+    })
+  })
+
   it('throws with the server detail on non-ok responses', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,

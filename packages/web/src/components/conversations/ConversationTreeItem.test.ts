@@ -306,6 +306,21 @@ describe('ConversationTreeItem', () => {
     expect(wrapper.emitted('rename')).toHaveLength(1)
   })
 
+  it('leaves the rename open on an IME composition Enter', async () => {
+    // Enter commits the IME candidate while composing; acting on it emitted a
+    // rename with the half-composed title.
+    const wrapper = mountItem({ title: '旧标题' })
+    await wrapper.find('.conv-tree-rename-btn').trigger('click')
+    const input = wrapper.find('.conv-tree-rename-input')
+    await input.setValue('新标')
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    Object.defineProperty(ev, 'isComposing', { value: true })
+    input.element.dispatchEvent(ev)
+
+    expect(wrapper.emitted('rename')).toBeUndefined()
+    expect(wrapper.find('.conv-tree-rename-input').exists()).toBe(true)
+  })
+
   it('cancels on Esc without emitting and restores the title', async () => {
     const wrapper = mountItem({ title: '旧标题' })
     await wrapper.find('.conv-tree-rename-btn').trigger('click')

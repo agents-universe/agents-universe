@@ -24,8 +24,8 @@
             class="input"
             :placeholder="t('createProjectDialog.namePlaceholder')"
             autofocus
-            @keydown.enter="create"
-            @keydown.esc="emit('close')"
+            @keydown.enter="onEnter"
+            @keydown.esc="onEscape"
           />
           <div v-if="categories.length" class="category-picker-block">
             <CategoryPicker v-model="selectedCategory" :categories="categories" />
@@ -82,6 +82,20 @@ onMounted(async () => {
     // 静默降级:保持仅 software 默认分类
   }
 })
+
+// IME composition owns Enter/Escape until the candidate is committed;
+// creating the project on that Enter cut the name off mid-character.
+function isComposing(e: KeyboardEvent) {
+  return e.isComposing || e.keyCode === 229
+}
+function onEnter(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  void create()
+}
+function onEscape(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  emit('close')
+}
 
 async function create() {
   if (!name.value.trim() || loading.value) return

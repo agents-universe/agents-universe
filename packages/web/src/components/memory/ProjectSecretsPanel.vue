@@ -60,6 +60,10 @@ const showAddForm = ref(false)
 const newKey = ref({ service_key: '', environment: '', display_name: '', value: '' })
 
 watch(projectId, (id) => {
+  // A half-typed key belongs to the previous project — leaving the form open
+  // would save it against the newly selected one.
+  newKey.value = { service_key: '', environment: '', display_name: '', value: '' }
+  showAddForm.value = false
   if (id) {
     store.load(id)
   } else {

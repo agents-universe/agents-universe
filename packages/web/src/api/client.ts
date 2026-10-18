@@ -1,6 +1,9 @@
 import { withApi } from '@/utils/basePath'
 
 export class ApiError extends Error {
+  /** Partial assistant text received before a streaming error killed the run. */
+  partialText?: string
+
   constructor(
     public status: number,
     message: string,

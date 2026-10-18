@@ -66,4 +66,34 @@ describe('ProjectSecretsPanel project switch', () => {
     expect(secretsStore.secrets.map((s) => s.secret_id)).toEqual(['s-b'])
     wrapper.unmount()
   })
+
+  it('resets the add form when the project changes', async () => {
+    secretsApi.listProjectSecrets.mockResolvedValue([])
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const projectStore = useProjectStore()
+
+    projectStore.setCurrentProject(makeProject('p-a'))
+    await flushPromises()
+    const wrapper = mount(ProjectSecretsPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+
+    await wrapper.find('.section-header button').trigger('click')
+    const inputs = wrapper.findAll('.add-form input')
+    await inputs[0].setValue('aws:key')
+    await inputs[3].setValue('half-typed-secret')
+
+    projectStore.setCurrentProject(makeProject('p-b'))
+    await flushPromises()
+
+    // The form is closed: an open form would save the old project's key
+    // against the newly selected project on the next click.
+    expect(wrapper.find('.add-form').exists()).toBe(false)
+    await wrapper.find('.section-header button').trigger('click')
+    const reopened = wrapper.findAll('.add-form input')
+    expect((reopened[0].element as HTMLInputElement).value).toBe('')
+    expect((reopened[3].element as HTMLInputElement).value).toBe('')
+    wrapper.unmount()
+  })
 })

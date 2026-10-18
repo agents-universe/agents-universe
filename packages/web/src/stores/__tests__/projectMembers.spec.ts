@@ -29,7 +29,7 @@ describe('projectMembers store mutation guard', () => {
     // the remove skip its local update and leave the removed row visible.
     let resolveRemove!: () => void
     const removePending = new Promise<void>((resolve) => { resolveRemove = resolve })
-    addMock.mockResolvedValue(undefined)
+    addMock.mockResolvedValue(member('u1'))
     removeMock.mockReturnValue(removePending)
     listMock.mockResolvedValue([member('u1'), member('u2')])
     const store = useProjectMembersStore()

@@ -550,6 +550,32 @@ describe('useWebSocket connection-cap eviction', () => {
     expect(idle.status.value).toBe('connected')
   })
 
+  it('a lifecycle kick never opens sockets for parked waiters', () => {
+    // Parked waiters (capacity full, ws === null) hold NO slot. The lifecycle
+    // kick re-runs connect() for every tracked id; treating a parked entry
+    // like an active one skipped the cap check and opened a socket for it on
+    // top of MAX_CONNECTIONS live ones.
+    const store = useConversationStore()
+    for (let i = 0; i < MAX_CONNECTIONS; i++) {
+      const id = `conv-live-${i}`
+      store.startConversation(id)
+      const { ws } = mount(id)
+      ws.readyState = WebSocket.OPEN
+      ws.onopen!(new Event('open'))
+      store.startThinking(id) // streaming → not evictable
+    }
+
+    store.startConversation('conv-parked')
+    const parked = mount('conv-parked')
+    expect(parked.status.value).toBe('connecting')
+    const before = instances.length
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(instances).toHaveLength(before)
+    expect(parked.status.value).toBe('connecting')
+  })
+
   it('a parked waiter is never evicted to free a slot', () => {
     // Fill every slot with OPEN sockets whose conversations are streaming,
     // then park two waiters. The first waiter's slot-free timer must not

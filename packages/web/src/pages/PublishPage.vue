@@ -254,6 +254,25 @@ async function submit() {
       })
     }
   } catch (e) {
+    // The finally block clears streamingText; without keeping the partial
+    // reply here, a mid-stream failure erased everything the model had
+    // already produced and left only the error bubble.
+    if (e instanceof ApiError && e.partialText) {
+      messages.value.push({
+        message_id: `tmp-a-${Date.now()}`,
+        role: 'assistant',
+        content: e.partialText,
+        agent_slug: session.value?.agent?.slug ?? null,
+        model_name: null,
+        tool_calls: [],
+        images: null,
+        attachments: null,
+        interrupted: true,
+        error: false,
+        sequence_num: 0,
+        created_at: new Date().toISOString(),
+      })
+    }
     messages.value.push({
       message_id: `err-${Date.now()}`,
       role: 'assistant',

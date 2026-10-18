@@ -46,7 +46,7 @@
         class="text-input input"
         :placeholder="secret ? t('selectionDialog.secretPlaceholder') : t('selectionDialog.inputPlaceholder')"
         autocomplete="off"
-        @keydown.enter="submit"
+        @keydown.enter="onEnter"
       />
     </template>
 
@@ -109,6 +109,13 @@ const canSubmit = computed(() => {
   }
   return textValue.value.trim().length > 0
 })
+
+// Enter during an IME composition commits the candidate — submitting here
+// answered the prompt with the half-composed text (secrets included).
+function onEnter(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  submit()
+}
 
 function submit() {
   if (submitted.value || !canSubmit.value) return

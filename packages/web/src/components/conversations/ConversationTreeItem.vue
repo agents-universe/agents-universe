@@ -13,8 +13,8 @@
           class="conv-tree-rename-input"
           :maxlength="255"
           @click.stop
-          @keydown.enter.prevent="commitRename"
-          @keydown.esc.prevent="cancelRename"
+          @keydown.enter="onEnter"
+          @keydown.esc="onEscape"
           @blur="commitRename"
         />
         <span v-else class="conv-tree-title">{{ conversation.title || t('conversations.untitled') }}</span>
@@ -95,6 +95,23 @@ function startRename() {
     inputEl.value?.focus()
     inputEl.value?.select()
   })
+}
+
+// While an IME composition is open, Enter commits the candidate and Escape
+// cancels it — preventing their defaults or committing the rename here
+// truncated the title being typed in Chinese/Japanese/Korean.
+function isComposing(e: KeyboardEvent) {
+  return e.isComposing || e.keyCode === 229
+}
+function onEnter(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  e.preventDefault()
+  commitRename()
+}
+function onEscape(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  e.preventDefault()
+  cancelRename()
 }
 
 function commitRename() {

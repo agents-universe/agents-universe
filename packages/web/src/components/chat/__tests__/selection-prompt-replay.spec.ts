@@ -4,6 +4,13 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
 import { useWebSocket, closeAllConnections } from '@/composables/useWebSocket'
 
+const conversationsApi = vi.hoisted(() => ({
+  getMessages: vi.fn(async () => []),
+  getTasks: vi.fn(async () => []),
+  getLatestRun: vi.fn(async () => null),
+}))
+vi.mock('@/api/conversations', () => ({ conversationsApi }))
+
 // Regression: "和智能体对话出现确认框时，切换到别的智能体再切回来，对话框看不见
 // 了，但是对话还在等待用户输入"
 //
@@ -110,6 +117,21 @@ describe('pending prompt replay on reconnect', () => {
     expect(store.isStreaming).toBe(true)
     // Same rendering as the live dialog: the card is settled, not spinning.
     expect(store.activeToolCalls[0].status).toBe('done')
+  })
+
+  it('a reconnect without a live session drops the stale dialog', () => {
+    const store = useConversationStore()
+    store.startConversation('c1')
+    useWebSocket(ref('c1'))
+    lastSocket().emit(PROMPT_EVENT)
+    expect(store.pendingPrompts).toHaveLength(1)
+
+    // The socket dropped; while it was down the agent session expired (TTL /
+    // server restart). The server sends NO sync frame when no session exists,
+    // so the local dialog would answer a Future that no longer exists.
+    lastSocket().onopen!({})
+
+    expect(store.pendingPrompts).toEqual([])
   })
 
   it('does not stack a second dialog when the reconnect repeats a prompt already on screen', () => {

@@ -5,10 +5,10 @@
       class="mention-search"
       :placeholder="t('mentionPopup.searchPlaceholder')"
       autofocus
-      @keydown.esc="emit('close')"
-      @keydown.enter="selectCurrent"
-      @keydown.arrow-down.prevent="moveDown"
-      @keydown.arrow-up.prevent="moveUp"
+      @keydown.esc="onEscape"
+      @keydown.enter="onEnter"
+      @keydown.arrow-down="onArrowDown"
+      @keydown.arrow-up="onArrowUp"
     />
     <div class="mention-list">
       <div
@@ -64,6 +64,32 @@ function moveDown() { if (filtered.value.length) cursor.value = (cursor.value + 
 function moveUp() { if (filtered.value.length) cursor.value = (cursor.value - 1 + filtered.value.length) % filtered.value.length }
 function selectCurrent() {
   if (filtered.value[cursor.value]) emit('select', filtered.value[cursor.value])
+}
+
+// Enter/arrows/escape belong to the IME while a composition is open: Enter
+// commits the candidate, arrows pick one, Escape cancels. Acting on them
+// selected an agent mid-typing (and preventing an arrow's default broke
+// candidate navigation).
+function isComposing(e: KeyboardEvent) {
+  return e.isComposing || e.keyCode === 229
+}
+function onEnter(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  selectCurrent()
+}
+function onArrowDown(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  e.preventDefault()
+  moveDown()
+}
+function onArrowUp(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  e.preventDefault()
+  moveUp()
+}
+function onEscape(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  emit('close')
 }
 
 // Narrowing the query can shrink the list below the highlighted index; without

@@ -239,11 +239,95 @@ function clearAttachments() {
   attachments.value = []
 }
 
+// --- Draft persistence -------------------------------------------------------
+
+// The editor state is the only copy of the typed text; switching a top-level
+// tab (/chat → /workspace) unmounts the Composer and used to lose it. Drafts
+// are keyed per conversation so text can never surface in another one's
+// composer.
+const DRAFT_STORAGE_PREFIX = 'agents-universe:composer-draft:'
+
+interface StoredDraft {
+  text: string
+  attachments: AttachmentRecord[]
+}
+
+function draftKey(conversationId: string): string {
+  return `${DRAFT_STORAGE_PREFIX}${conversationId}`
+}
+
+function forgetStoredDraft(conversationId: string) {
+  try {
+    localStorage.removeItem(draftKey(conversationId))
+  } catch {
+    // Storage unavailable (private mode/quota): drafts are best-effort.
+  }
+}
+
+function saveStoredDraft() {
+  if (!view) return
+  const text = view.state.doc.toString()
+  const ready = attachments.value
+    .filter(a => a.status === 'ready' && a.record)
+    .map(a => a.record!)
+  try {
+    if (!text.trim() && !ready.length) {
+      localStorage.removeItem(draftKey(props.conversationId))
+      return
+    }
+    const stored: StoredDraft = { text, attachments: ready }
+    localStorage.setItem(draftKey(props.conversationId), JSON.stringify(stored))
+  } catch {
+    // Storage unavailable — falling back to losing the draft on unmount.
+  }
+}
+
+function restoreStoredDraft(conversationId: string) {
+  if (!view) return
+  let stored: StoredDraft | null = null
+  try {
+    const raw = localStorage.getItem(draftKey(conversationId))
+    if (raw) stored = JSON.parse(raw) as StoredDraft
+  } catch {
+    // Malformed or unavailable storage: start with an empty composer.
+  }
+  if (!stored) return
+  if (typeof stored.text === 'string' && stored.text) setDraft(stored.text)
+  for (const record of Array.isArray(stored.attachments) ? stored.attachments : []) {
+    // The uploaded bytes live server-side and the record references them;
+    // the File is only the display/removal handle, so an empty placeholder
+    // is enough to re-stage the attachment.
+    if (!record || typeof record.id !== 'string' || typeof record.name !== 'string') continue
+    attachments.value.push(reactive<PendingAttachment>({
+      key: genKey(),
+      file: new File([], record.name, { type: record.media_type || '' }),
+      status: 'ready',
+      record,
+    }))
+  }
+}
+
+function clearEditor() {
+  if (!view) return
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } })
+  isEmpty.value = true
+  mentionedAgents = []
+  clearAttachments()
+}
+
 // Clear draft (editor text + attachments) when switching conversations.
 // Without this, text typed for conversation A follows the reused component
 // into conversation B and gets sent there. Uploaded bytes live in the
 // server's in-memory store and expire via TTL — nothing to clean up.
-watch(() => props.conversationId, clearDraft)
+watch(() => props.conversationId, (next, prev) => {
+  // The old conversation's draft is discarded on switch (matching the rule
+  // above), so drop its persisted copy too — a later visit must not
+  // resurrect abandoned text. The new conversation may have its own draft
+  // saved by an earlier unmount.
+  if (prev && prev !== next) forgetStoredDraft(prev)
+  clearEditor()
+  restoreStoredDraft(next)
+})
 
 function onFileInput(e: Event) {
   const input = e.target as HTMLInputElement
@@ -384,9 +468,10 @@ onMounted(() => {
   })
 
   // Chip clicked on ChatPage's pre-conversation card: the draft was staged
-  // before this Composer existed.
+  // before this Composer existed and wins over a persisted draft.
   const staged = takeComposerDraft()
   if (staged != null) setDraft(staged)
+  else restoreStoredDraft(props.conversationId)
 })
 
 // Chip clicked while the Composer is already mounted (zero-message card).
@@ -395,6 +480,8 @@ watch(pendingDraft, (v) => {
 })
 
 onBeforeUnmount(() => {
+  // Persist before destroying the view — the editor state is the only copy.
+  saveStoredDraft()
   view?.destroy()
   // Revoke any pending attachment object URLs — nothing else does on teardown.
   clearAttachments()
@@ -438,11 +525,10 @@ function submit() {
 }
 
 function clearDraft() {
-  if (!view) return
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } })
-  isEmpty.value = true
-  mentionedAgents = []
-  clearAttachments()
+  clearEditor()
+  // Successful send: the parent clears the draft, and the persisted copy must
+  // go with it or a remount would resurrect the message that was just sent.
+  forgetStoredDraft(props.conversationId)
 }
 
 /** Replace the whole draft (starter-prompt chip) and focus the editor. */

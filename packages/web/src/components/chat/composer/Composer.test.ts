@@ -229,6 +229,69 @@ describe('Composer slash popup cursor safety', () => {
   })
 })
 
+describe('Composer draft persistence across unmounts', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    mediaMock.upload.mockReset()
+  })
+
+  function type(wrapper: VueWrapper, text: string) {
+    const view = EditorView.findFromDOM(wrapper.find('.cm-content').element as HTMLElement)!
+    view.dispatch({ changes: { from: 0, insert: text } })
+    return view
+  }
+
+  it('restores the draft after a tab switch unmounts and remounts the composer', async () => {
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    type(wrapper, '写到一半的草稿')
+    wrapper.unmount()
+
+    const again = mount(Composer, { props: makeProps() })
+    await nextTick()
+    const view = EditorView.findFromDOM(again.find('.cm-content').element as HTMLElement)!
+    expect(view.state.doc.toString()).toBe('写到一半的草稿')
+    again.unmount()
+  })
+
+  it('clearDraft drops the persisted copy', async () => {
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    type(wrapper, '已发送')
+    ;(wrapper.vm as unknown as { clearDraft: () => void }).clearDraft()
+    wrapper.unmount()
+
+    const again = mount(Composer, { props: makeProps() })
+    await nextTick()
+    const view = EditorView.findFromDOM(again.find('.cm-content').element as HTMLElement)!
+    expect(view.state.doc.toString()).toBe('')
+    again.unmount()
+  })
+
+  it('re-stages uploaded attachments from the saved draft', async () => {
+    mediaMock.upload.mockResolvedValue({
+      id: 'm-1',
+      url: '/api/media/m-1',
+      name: 'cat.png',
+      media_type: 'image/png',
+      size: 1024,
+    })
+    const wrapper = mount(Composer, { props: makeProps() })
+    await nextTick()
+    await selectFile(wrapper, 'cat.png')
+    await flushPromises()
+    expect(wrapper.find('.composer-attachment').exists()).toBe(true)
+    wrapper.unmount()
+
+    const again = mount(Composer, { props: makeProps() })
+    await nextTick()
+    expect(again.find('.attachment-name').text()).toBe('cat.png')
+    // A restored ready attachment keeps a pure-attachment send enabled.
+    expect(again.find('.submit-btn').attributes('disabled')).toBeUndefined()
+    again.unmount()
+  })
+})
+
 describe('Composer selection hydration on page load', () => {
   let wrapper: VueWrapper | undefined
 

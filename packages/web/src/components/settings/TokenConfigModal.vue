@@ -213,7 +213,7 @@
                 <button class="btn-sm secondary" @click="testNewConfig" :disabled="!newProvider || !newModelId || !newApiKey || testing === '__new__'">
                   {{ testing === '__new__' ? t('common.testing') : t('common.test') }}
                 </button>
-                <button class="btn-sm secondary" @click="showAddForm = false">{{ t('common.cancel') }}</button>
+                <button class="btn-sm secondary" @click="resetAddForm">{{ t('common.cancel') }}</button>
                 <span v-if="messages['__new__']" class="token-inline-msg" :class="messages['__new__'].ok ? 'success' : 'error'">
                   {{ messages['__new__'].ok ? '✓' : '✗' }} {{ messages['__new__'].text }}
                 </span>
@@ -655,6 +655,24 @@ watch([newProvider, newModelId], ([provider, modelId]) => {
   newContextWindow.value = String(inferContextWindow(provider, modelId))
 })
 
+// Clear the add-model form. Cancel used to only hide it, so the abandoned
+// provider/model/API key silently seeded the next "add" attempt.
+function resetAddForm() {
+  newProvider.value = ''
+  newModelId.value = ''
+  newApiKey.value = ''
+  newBaseUrl.value = ''
+  newUrlMode.value = 'base_url'
+  newTier.value = null
+  newTierDirty.value = false
+  newContextWindow.value = ''
+  newContextWindowDirty.value = false
+  newThinking.value = null
+  newReasoningEffort.value = null
+  showAddForm.value = false
+  delete messages['__new__']
+}
+
 async function addConfig() {
   saving.value = '__new__'
   delete messages['__new__']
@@ -682,18 +700,7 @@ async function addConfig() {
       tierDirty: false,
       windowDirty: false,
     }
-    newProvider.value = ''
-    newModelId.value = ''
-    newApiKey.value = ''
-    newBaseUrl.value = ''
-    newUrlMode.value = 'base_url'
-    newTier.value = null
-    newTierDirty.value = false
-    newContextWindow.value = ''
-    newContextWindowDirty.value = false
-    newThinking.value = null
-    newReasoningEffort.value = null
-    showAddForm.value = false
+    resetAddForm()
     messages['__new__'] = { ok: true, text: t('common.added') }
   } catch (e) {
     messages['__new__'] = { ok: false, text: e instanceof Error ? e.message : t('common.addFailed') }
@@ -1011,7 +1018,6 @@ async function saveIntegration(svc: IntegrationService) {
           body: JSON.stringify({ value: tokenVal, base_url: baseUrlVal || null }),
         })
         savedKeys[svc.key] = res.key_hint
-        formValues[svc.key] = ''
       } else {
         // Update base_url only, keep existing token
         await apiFetch(`/api/tokens/${svc.key}`, {
@@ -1039,7 +1045,6 @@ async function saveIntegration(svc: IntegrationService) {
         })
         projectSecretByKey[svc.key] = { secret_id: res.secret_id, key_hint: res.key_hint }
       }
-      formValues[svc.key] = ''
     }
     // Save extra fields (e.g. jira:email) into the same scopes as the parent
     if (svc.extraFields) {
@@ -1065,6 +1070,11 @@ async function saveIntegration(svc: IntegrationService) {
         formValues[field.key] = ''
       }
     }
+    // Clear the token only after every target scope accepted it. Clearing it
+    // inside the user branch lost the value when the later project write
+    // failed: the retry found an empty input, skipped both branches, and still
+    // reported "saved" while the project secret was never written.
+    if (tokenVal) formValues[svc.key] = ''
     messages[svc.key] = { ok: true, text: t('common.saved') }
   } catch (e) {
     messages[svc.key] = { ok: false, text: e instanceof Error ? e.message : t('common.saveFailed') }

@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="modal-overlay" ref="overlayEl" @keydown.esc="emit('close')">
+    <div class="modal-overlay" ref="overlayEl" @keydown.esc="onEscape">
       <div class="modal-dialog picker-dialog">
         <!-- Header -->
         <div class="modal-header">
@@ -23,7 +23,7 @@
             class="picker-search"
             :placeholder="t('projectPicker.searchPlaceholder')"
             autofocus
-            @keydown.esc="emit('close')"
+            @keydown.esc="onEscape"
           />
         </div>
 
@@ -83,8 +83,8 @@
               v-model="newName"
               class="picker-search"
               :placeholder="t('projectPicker.namePlaceholder')"
-              @keydown.enter="createProject"
-              @keydown.esc="showCreateForm = false"
+              @keydown.enter="onCreateEnter"
+              @keydown.esc="onCreateEscape"
               ref="createInput"
             />
             <button
@@ -207,6 +207,25 @@ const filteredProjects = computed(() => {
 watch(showCreateForm, (v) => {
   if (v) nextTick(() => createInput.value?.focus())
 })
+
+// Enter/Escape belong to the IME while a composition is open: Enter commits
+// the candidate and Escape cancels it. Acting on them created the project
+// with a half-typed name or closed the dialog mid-composition.
+function isComposing(e: KeyboardEvent) {
+  return e.isComposing || e.keyCode === 229
+}
+function onEscape(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  emit('close')
+}
+function onCreateEnter(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  void createProject()
+}
+function onCreateEscape(e: KeyboardEvent) {
+  if (isComposing(e)) return
+  showCreateForm.value = false
+}
 
 async function createProject() {
   if (!newName.value.trim() || creating.value) return

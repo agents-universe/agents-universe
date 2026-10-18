@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import ProjectPickerDialog from './ProjectPickerDialog.vue'
+import { projectsApi } from '@/api/projects'
 import type { Project } from '@/types'
 
 const router = vi.hoisted(() => ({ push: vi.fn() }))
@@ -136,6 +137,29 @@ describe('ProjectPickerDialog', () => {
       expect(projectStore.setCurrentProject).not.toHaveBeenCalled()
       expect(router.push).not.toHaveBeenCalled()
     })
+  })
+
+  it('does not create the project on an IME composition Enter', async () => {
+    // Enter commits the IME candidate while composing; creating here used
+    // the half-typed name and closed the dialog mid-composition.
+    projectStore.projects = []
+    wrapper = mount(ProjectPickerDialog, { attachTo: document.body })
+    await vi.waitFor(() => {
+      expect(document.querySelector('.picker-create-btn')).not.toBeNull()
+    })
+    document.querySelector<HTMLElement>('.picker-create-btn')!.click()
+    await wrapper.vm.$nextTick()
+
+    const input = document.querySelector<HTMLInputElement>('.picker-create-form input')!
+    input.value = '半'
+    input.dispatchEvent(new Event('input'))
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    Object.defineProperty(ev, 'isComposing', { value: true })
+    input.dispatchEvent(ev)
+    await wrapper.vm.$nextTick()
+
+    expect(projectsApi.createProject).not.toHaveBeenCalled()
+    expect(document.querySelector('.picker-create-form')).not.toBeNull()
   })
 
   it('marks favorited rows with the favorited class', async () => {

@@ -179,8 +179,11 @@ export const publishApi = {
     const decoder = new TextDecoder()
     let buffer = ''
     let jsonText = ''
+    let errorMessage: string | null = null
 
     // One "data: {json}" SSE frame. Malformed frames are skipped, not fatal.
+    // Error frames are recorded, not thrown: the text streamed before the
+    // failure is the only copy the page has, and throwing here abandoned it.
     const consumeFrame = (frame: string): void => {
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue
@@ -189,11 +192,10 @@ export const publishApi = {
           if (evt.type === 'stream_delta' && typeof evt.delta === 'string') {
             jsonText += evt.delta
             onDelta?.(evt.delta)
-          } else if (evt.type === 'error' && evt.message) {
-            throw new ApiError(500, evt.message)
+          } else if (evt.type === 'error' && evt.message && errorMessage === null) {
+            errorMessage = evt.message
           }
-        } catch (e) {
-          if (e instanceof ApiError) throw e
+        } catch {
           // ignore malformed frames
         }
       }
@@ -214,6 +216,11 @@ export const publishApi = {
     }
     // Flush a trailing frame with no blank-line terminator.
     if (buffer.trim()) consumeFrame(buffer)
+    if (errorMessage !== null) {
+      const err = new ApiError(500, errorMessage)
+      err.partialText = jsonText
+      throw err
+    }
     return jsonText
   },
 }

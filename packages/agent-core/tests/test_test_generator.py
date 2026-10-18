@@ -1,6 +1,8 @@
 """Tests for test_generator output_dir confinement."""
 from __future__ import annotations
 
+import base64
+
 from agent_core.tools.base import ToolContext
 from agent_core.tools.test_generator import TestGeneratorTool
 
@@ -176,6 +178,27 @@ async def test_binary_upload_uses_the_given_base64(tmp_path):
     )
     assert "Buffer.from('iVBORw0KGgo=', 'base64')" in spec, spec
     assert "mimeType: 'image/png'" in spec, spec
+
+
+async def test_wrapped_base64_upload_is_canonicalized(tmp_path):
+    """Line-wrapped base64 is accepted and re-encoded without the wrapping,
+    so it can be embedded in a single-quoted JS literal."""
+    raw = b"\x89PNG\r\n\x1a\n" + b"x" * 40
+    encoded = base64.b64encode(raw).decode()
+    wrapped = "\n".join(encoded[i:i + 20] for i in range(0, len(encoded), 20)) + "\n"
+    spec = await _generate(
+        tmp_path,
+        _upload_case(
+            uploads=[
+                {
+                    "filename": "logo.png",
+                    "content_base64": wrapped,
+                    "mime_type": "image/png",
+                }
+            ]
+        ),
+    )
+    assert f"Buffer.from('{encoded}', 'base64')" in spec, spec
 
 
 async def test_fixture_path_reference(tmp_path):

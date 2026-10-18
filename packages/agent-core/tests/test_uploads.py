@@ -122,6 +122,18 @@ def test_inline_base64_source_decodes_and_infers_mime(tmp_path):
     assert payload.mime_type == "image/png"
 
 
+def test_inline_base64_tolerates_line_wrapping(tmp_path):
+    """Whitespace-wrapped base64 (CLI encoder output) decodes, not fails."""
+    raw = b"\x89PNG\r\n\x1a\n" + b"x" * 40
+    encoded = base64.b64encode(raw).decode()
+    wrapped = "\n".join(encoded[i:i + 20] for i in range(0, len(encoded), 20)) + "\n"
+    payload = resolve_upload_spec(
+        make_context(tmp_path),
+        {"source": "inline", "name": "logo.png", "content_base64": wrapped},
+    )
+    assert payload.data == raw
+
+
 def test_inline_rejects_bad_base64_without_echoing_it(tmp_path):
     with pytest.raises(UploadSourceError, match="not valid base64") as exc:
         resolve_upload_spec(

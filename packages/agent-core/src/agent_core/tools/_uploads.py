@@ -226,7 +226,10 @@ def _resolve_inline(context, spec: dict[str, Any], inline_max: int) -> UploadPay
         if not isinstance(content_b64, str) or not _BASE64_RE.match(content_b64):
             raise UploadSourceError("content_base64 is not valid base64")
         try:
-            data = base64.b64decode(content_b64, validate=True)
+            # Wrapped base64 (what CLI encoders emit) passes the character gate
+            # above, but validate=True rejects the whitespace it was allowed to
+            # carry — strip it before the strict decode.
+            data = base64.b64decode("".join(content_b64.split()), validate=True)
         except (binascii.Error, ValueError) as exc:
             # Never echo the payload — it is caller content, not a credential,
             # but a decode error message must still stay value-free.

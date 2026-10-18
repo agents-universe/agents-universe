@@ -215,6 +215,22 @@ def test_safe_env_strips_ssh_agent_socket(monkeypatch):
     assert "SSH_AUTH_SOCK" not in env
 
 
+def test_safe_env_strips_legacy_mssql_connection_string(monkeypatch):
+    """MSSQL_CONNECTION_STRING is a documented .env fallback holding a full
+    user:password@host URL, and docker-compose's env_file puts it in the
+    process env. Neither deny rule covers it (ends in STRING, starts with
+    MSSQL_), so it must be exact-matched like DATABASE_URL."""
+    monkeypatch.setenv(
+        "MSSQL_CONNECTION_STRING", "mssql+aioodbc://sa:placeholder@db.example.com/x"
+    )
+    assert "MSSQL_CONNECTION_STRING" not in make_context().safe_env()
+
+    # The graph builder's git-env filter mirrors the tool lists.
+    from agent_core.knowledge.graph.builder import _ENV_DENY_EXACT
+
+    assert "MSSQL_CONNECTION_STRING" in _ENV_DENY_EXACT
+
+
 def test_build_env_normalizes_proxy_env(monkeypatch):
     """_build_env runs the shared proxy_env() normalization (parity with
     code_executor): one resolved URL in all four HTTP(S) spellings, a stale

@@ -306,6 +306,9 @@ class ToolContext:
         "AWS_ACCESS_KEY_ID",
         "SQLALCHEMY_DATABASE_URI",
         "DATABASE_URL",
+        # Legacy full connection string (documented fallback in .env) — carries
+        # user:password@host. Its suffix STRING matches no deny rule.
+        "MSSQL_CONNECTION_STRING",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "MYSQL_PWD",
         "PGPASSWORD",

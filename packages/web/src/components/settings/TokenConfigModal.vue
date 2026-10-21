@@ -1324,12 +1324,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   width: 100%;
 }
 .btn-sm.danger {
-  color: var(--danger);
-  border-color: var(--danger);
+  background: transparent;
+  color: var(--color-error);
+  border: 1px solid rgba(248, 113, 113, 0.35);
 }
 .btn-sm.danger:hover {
-  background: var(--danger);
-  color: #fff;
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--color-error);
+  box-shadow: none;
 }
 .token-url-mode-select {
   width: 120px;

@@ -2186,7 +2186,7 @@
 
 .user-info {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
   font-size: 12px;
 }
@@ -2195,14 +2195,15 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
   min-width: 0;
 }
 
 .user-info-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .user-avatar {
@@ -2224,14 +2225,11 @@
   min-width: 0;
   color: var(--text-secondary);
   font-size: 12px;
-  /* wrap up to two lines so long names show as fully as possible; the
-     native title tooltip covers anything still clipped */
-  white-space: normal;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  /* single-line ellipsis keeps the footer one row high; the native title
+     tooltip shows the full name on hover */
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .logout-btn {
@@ -4316,6 +4314,10 @@ textarea:focus-visible {
   border-radius: var(--radius-xl);
   position: relative;
   overflow: hidden;
+  /* overflow:hidden zeroes the flex automatic minimum height; without this
+     the row collapses inside the scrollable .token-section and clips its
+     trailing action buttons. Keep content height and let the section scroll. */
+  flex-shrink: 0;
   transition: border-color var(--dur-base), transform var(--dur-base), box-shadow var(--dur-base);
 }
 .token-service-row::before {

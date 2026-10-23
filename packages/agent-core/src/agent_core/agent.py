@@ -1599,6 +1599,11 @@ class Agent:
                     pause_count += 1
                     if pause_count > max_pause_continuations:
                         if await _maybe_inject():
+                            # The budget exhaustion belongs to the
+                            # pre-injection conversation; a fresh user
+                            # message starts a new one, or the next
+                            # legitimate pause ends the turn on the spot.
+                            pause_count = 0
                             continue
                         await session.emit("warning", message="Too many pause_turn continuations, stopping")
                         await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="pause_turn_exhausted")
@@ -1607,6 +1612,7 @@ class Agent:
                     # Continue without tool processing — the model paused mid-generation
                     if not tool_calls:
                         if await _maybe_inject():
+                            pause_count = 0
                             continue
                         continue
 

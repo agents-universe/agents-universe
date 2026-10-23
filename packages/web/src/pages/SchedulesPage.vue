@@ -401,7 +401,12 @@ const historyLoading = ref(false)
 const timers: ReturnType<typeof setTimeout>[] = []
 
 function later(fn: () => void, ms: number) {
-  timers.push(setTimeout(fn, ms))
+  const handle = setTimeout(() => {
+    const i = timers.indexOf(handle)
+    if (i !== -1) timers.splice(i, 1)
+    fn()
+  }, ms)
+  timers.push(handle)
 }
 
 function setMessage(text: string, ok = true) {
@@ -623,10 +628,12 @@ function resetForm() {
 
 async function openCreate() {
   resetForm()
-  // Default the delivery target to the newest conversation of the project.
-  form.conversation_id = conversations.value[0]?.conversation_id ?? ''
   showForm.value = true
   await loadReferenceData()
+  // Default the delivery target to the newest conversation of the project.
+  // Assigned AFTER the refresh — the in-memory list can lag behind deletes
+  // and would preselect a conversation that no longer exists.
+  form.conversation_id = conversations.value[0]?.conversation_id ?? ''
 }
 
 async function openEdit(task: ScheduledTask) {

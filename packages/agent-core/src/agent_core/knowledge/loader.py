@@ -476,10 +476,17 @@ async def rehydrate_dynamic_entries(
             fw_candidate = Path(framework_knowledge_dir) / f"{slug}.md"
             if fw_candidate.exists():
                 candidate = fw_candidate
+
+        # Disk reads run off the event loop: this is called per conversation
+        # (up to the dynamic budget) and must not stall other live sockets.
+        def _read_if_small() -> str | None:
+            if not (candidate.exists() and candidate.stat().st_size <= MAX_FILE_SIZE):
+                return None
+            return candidate.read_text("utf-8").lstrip("﻿")
+
         content: str | None = None
         try:
-            if candidate.exists() and candidate.stat().st_size <= MAX_FILE_SIZE:
-                content = candidate.read_text("utf-8").lstrip("﻿")
+            content = await asyncio.to_thread(_read_if_small)
         except (OSError, UnicodeDecodeError):
             content = None
         if content is None:

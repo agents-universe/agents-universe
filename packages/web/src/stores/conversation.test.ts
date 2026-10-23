@@ -869,6 +869,57 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.messages.map((m) => m.id)).toEqual(['h1'])
   })
 
+  it('loadHistory streaming branch drops compression-removed messages too', () => {
+    // Mid-turn history reload (conversation switch / reconnect race) after
+    // server-side compression: the compressed-away rows are gone from the DB
+    // but still live in the local runtime — without the age guard they would
+    // be re-appended after the summary row.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.startThinking('conv-a') // turn is live → streaming branch
+    store.addMessage({
+      id: 'compressed-away',
+      role: 'assistant',
+      content: 'old answer',
+      timestamp: 1000,
+    })
+    store.appendDelta('in-flight partial', undefined, 'conv-a')
+
+    store.loadHistory([makeDbMessage({
+      message_id: 'summary-1',
+      role: 'assistant',
+      content: 'summary of old rows',
+      created_at: '2026-08-14T12:00:00Z',
+    })], 'conv-a')
+
+    expect(store.messages.map((m) => m.id)).toEqual(['summary-1'])
+    expect(store.streamingContent).toBe('in-flight partial')
+  })
+
+  it('loadHistory streaming branch keeps an unconsumed injection older than the tail', () => {
+    // The pending injection has no DB row; even if its local timestamp is
+    // older than the newest history row (clock skew), it must survive.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.startThinking('conv-a')
+    store.addMessage({
+      id: 'opt-pending',
+      role: 'user',
+      content: 'queued instruction',
+      timestamp: 1000,
+    })
+    store.registerInjectedMessage('opt-pending', 'queued instruction', 'conv-a')
+
+    store.loadHistory([makeDbMessage({
+      message_id: 'h1',
+      role: 'user',
+      content: 'original question',
+      created_at: '2026-08-14T12:00:00Z',
+    })], 'conv-a')
+
+    expect(store.messages.map((m) => m.id)).toEqual(['h1', 'opt-pending'])
+  })
+
   it('loadHistory resurrects a draft newer than the last persisted message', () => {
     localStorage.setItem('agents-universe:draft:conv-a', JSON.stringify({
       activeToolCalls: [{ callId: 'c1', tool: 'shell', input: {}, status: 'running' }],

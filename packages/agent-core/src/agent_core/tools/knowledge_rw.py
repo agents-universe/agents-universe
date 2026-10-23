@@ -274,10 +274,14 @@ class KnowledgeRWTool(Tool):
             kdir_exists = await asyncio.to_thread(knowledge_dir.exists)
             suggestions = []
             if kdir_exists:
-                for md in knowledge_dir.rglob("*.md"):
-                    rel = str(md.relative_to(knowledge_dir).with_suffix("")).replace("\\", "/")
-                    if rel == slug or rel.endswith(f"/{slug}"):
-                        suggestions.append(rel)
+                def _suggest() -> list[str]:
+                    found = []
+                    for md in knowledge_dir.rglob("*.md"):
+                        rel = str(md.relative_to(knowledge_dir).with_suffix("")).replace("\\", "/")
+                        if rel == slug or rel.endswith(f"/{slug}"):
+                            found.append(rel)
+                    return found
+                suggestions = await asyncio.to_thread(_suggest)
             err: dict = {
                 "error": f"Knowledge file not found: {slug}",
                 "knowledge_dir_exists": kdir_exists,

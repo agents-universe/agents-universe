@@ -503,12 +503,16 @@ export const useConversationStore = defineStore('conversation', () => {
       // semantics as appendDelta/startThinking).
       rt.abortSnapshotted = false
       const persisted = new Set(history.map((message) => message.id))
+      // Unconsumed injections have no DB row yet — the age filter below must
+      // not drop their optimistic copies while the turn is still live.
+      const pendingIds = new Set(rt.pendingInjected.map((p) => p.optimisticId))
       // the server may have persisted the optimistic user
       // message under a server-generated id, so an id-only filter would keep
       // the local copy next to the persisted one — same role + same content
       // counts as the same message, but only when the persisted copy is not
       // older than the local one (an earlier identical question from history
       // must not swallow the in-flight injection).
+      const lastTs = history.length ? history[history.length - 1].timestamp : 0
       rt.messages = [...history, ...rt.messages.filter((message) => {
         if (persisted.has(message.id)) return false
         if (message.id.startsWith('recovered-')) return false
@@ -521,6 +525,11 @@ export const useConversationStore = defineStore('conversation', () => {
           unregisterInjectedMessage(message.id, id)
           return false
         }
+        // Server-side compression hard-deletes the rows it replaces, so their
+        // ids vanish from a mid-turn history fetch while the local copies
+        // remain — keeping them would re-append the whole conversation after
+        // the summary row. Same age rule as the non-streaming branch.
+        if (!pendingIds.has(message.id) && message.timestamp < lastTs) return false
         return true
       })]
       return

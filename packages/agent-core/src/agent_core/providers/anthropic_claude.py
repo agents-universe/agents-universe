@@ -478,7 +478,14 @@ class AnthropicClaudeProvider(LLMProvider):
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             # Gateway rejected the thinking field — retry once without it.
-            if thinking and "thinking" in payload and _thinking_rejected(exc):
+            # Only a 400 can mean "parameter invalid"; retrying a 429/5xx
+            # body that merely mentions thinking doubles the pressure and
+            # silently disables thinking for the rest of the turn.
+            if (
+                thinking and "thinking" in payload
+                and exc.response.status_code == 400
+                and _thinking_rejected(exc)
+            ):
                 self._disable_thinking(f"gateway rejected thinking param: {exc}")
                 return await self._gateway_complete(
                     messages, tools, max_tokens, temperature, thinking=False,
@@ -567,8 +574,13 @@ class AnthropicClaudeProvider(LLMProvider):
                     for chunk in self._completion_to_chunks(result):
                         yield chunk
 
-        except httpx.HTTPStatusError:
-            # Streaming endpoint failed — fall back to non-streaming
+        except httpx.HTTPStatusError as exc:
+            # Fall back only when the gateway rejects the streaming ENDPOINT
+            # (missing or unsupported). Re-issuing the same payload
+            # non-streaming on a 429/401/400 doubles rate-limit pressure and
+            # swaps the original status for the fallback's failure.
+            if exc.response.status_code not in (404, 405, 501):
+                raise
             result = await self._gateway_complete(messages, tools, max_tokens, temperature, thinking=thinking)
             for chunk in self._completion_to_chunks(result):
                 yield chunk

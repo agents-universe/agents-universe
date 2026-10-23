@@ -136,6 +136,10 @@ class GoogleGeminiProvider(LLMProvider):
         self._ssl_verify = ssl_verify
         # Per-config override from Settings -> AI Models; None = name-matched default.
         self._context_window_override = context_window
+        # Cached client, built lazily on first request and released in
+        # close(). The SDK Client owns an httpx connection pool that must be
+        # closed, so it cannot be rebuilt per call.
+        self._client_cache: genai.Client | None = None
         # include_thoughts switch: explicit per-config override wins, else
         # AGENT_EXTENDED_THINKING (default on); also flipped off when the
         # model/gateway rejects ThinkingConfig with 400. reasoning_effort is
@@ -144,17 +148,29 @@ class GoogleGeminiProvider(LLMProvider):
         self._thinking_enabled = thinking_enabled if thinking_enabled is not None else thinking_enabled_by_env()
 
     def _client(self) -> genai.Client:
-        """Instance-scoped client; a fresh one per call keeps key/endpoint
-        state off the process globals (google-genai has none anyway)."""
+        """Instance-scoped client, built once — google-genai has no process
+        globals, and the connection pool inside the Client is meant to be
+        reused across requests."""
+        if self._client_cache is not None:
+            return self._client_cache
         http_options = genai_types.HttpOptions(
             **({"base_url": self._base_url.rstrip("/")} if self._base_url else {}),
             client_args={"verify": self._ssl_verify},
         )
         saved = {k: os.environ.pop(k) for k in _PROXY_KEYS if k in os.environ}
         try:
-            return genai.Client(api_key=self._api_key, http_options=http_options)
+            self._client_cache = genai.Client(api_key=self._api_key, http_options=http_options)
         finally:
             os.environ.update(saved)
+        return self._client_cache
+
+    async def close(self) -> None:
+        """Release the cached client's httpx connection pool (Agent.close()
+        awaits this after every run)."""
+        client = self._client_cache
+        self._client_cache = None
+        if client is not None:
+            await client.aio.aclose()
 
     @property
     def model_name(self) -> str:

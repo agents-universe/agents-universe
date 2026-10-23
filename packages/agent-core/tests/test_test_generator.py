@@ -88,6 +88,39 @@ async def test_stringified_test_cases_rejected(tmp_path):
     assert "array" in result["error"].lower()
 
 
+async def test_invalid_base_url_env_rejected(tmp_path):
+    """base_url_env is interpolated verbatim into the generated
+    `process.env.<name>` — a value that is not a plain identifier would
+    break (or inject into) the executable spec."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    result = await TestGeneratorTool().execute(
+        _params(base_url_env="FOO; require('child_process').execSync('x')//"),
+        _context(proj),
+    )
+    assert "error" in result
+    assert "base_url_env" in result["error"]
+    assert not (proj / "tests" / "generated" / "proj-1.spec.ts").exists()
+
+
+async def test_valid_custom_base_url_env_lands_in_spec(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    # A session-relevant case forces the generated `login()` helper, the only
+    # place base_url_env is interpolated — the default scaffold hands every
+    # other case a shared storageState instead.
+    result = await TestGeneratorTool().execute(
+        _params(
+            base_url_env="MY_APP_URL",
+            test_cases=[{"title": "user can login", "steps": ["wait"]}],
+        ),
+        _context(proj),
+    )
+    assert result.get("success") is True, result
+    spec = (proj / "tests" / "generated" / "proj-1.spec.ts").read_text(encoding="utf-8")
+    assert "process.env.MY_APP_URL" in spec
+
+
 # ---------------------------------------------------------------------------
 # Step/expected conversion (pure helpers)
 # ---------------------------------------------------------------------------

@@ -209,6 +209,19 @@ class TestGeneratorTool(Tool):
 
         include_login = params.get("include_login", True)
         base_url_env = params.get("base_url_env", "APP_BASE_URL")
+        # Interpolated verbatim into the generated `process.env.<name>`
+        # expression — anything but a plain identifier breaks the spec at
+        # parse time (and would otherwise inject arbitrary TS into a file
+        # the test run executes).
+        if not isinstance(base_url_env, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", base_url_env
+        ):
+            return {
+                "error": (
+                    f"Invalid base_url_env: {base_url_env!r} — must be a plain "
+                    "environment variable name like APP_BASE_URL"
+                )
+            }
 
         case_uploads: list[list[_Upload]] = []
         for i, tc in enumerate(test_cases):

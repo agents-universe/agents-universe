@@ -543,6 +543,7 @@ export default {
     embeddedTitle: 'Agent Service',
     untitled: 'Untitled publish',
     publisherModelBadge: 'Publisher model',
+    publisherModelBadgeHint: 'Model bound by the publisher',
     placeholder: 'Type a message and press Enter to send…',
     send: 'Send',
     sending: 'Sending…',

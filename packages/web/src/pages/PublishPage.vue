@@ -30,7 +30,7 @@
             <h1 class="publish-title">{{ session.title || session.agent?.display_name || session.agent?.slug || t('publishPage.untitled') }}</h1>
             <p v-if="session.description" class="publish-desc">{{ session.description }}</p>
           </div>
-          <span class="publish-badge" title="模型由发布者绑定">
+          <span class="publish-badge" :title="t('publishPage.publisherModelBadgeHint')">
             <Zap :size="11" />
             {{ t('publishPage.publisherModelBadge') }}
           </span>

@@ -542,6 +542,7 @@ export default {
     embeddedTitle: '智能体服务',
     untitled: '未命名发布',
     publisherModelBadge: '发布者模型',
+    publisherModelBadgeHint: '模型由发布者绑定',
     placeholder: '输入消息，按回车发送…',
     send: '发送',
     sending: '发送中…',

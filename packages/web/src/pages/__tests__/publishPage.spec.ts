@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import PublishPage from '@/pages/PublishPage.vue'
 import { ApiError } from '@/api/client'
+import { i18n } from '@/i18n'
 
 const route = vi.hoisted(() => ({ params: { publishId: 'pub-1' } }))
 const router = vi.hoisted(() => ({
@@ -43,6 +44,17 @@ describe('PublishPage composer', () => {
     await flushPromises()
     return wrapper
   }
+
+  it('the publisher-model badge tooltip comes from the locale', async () => {
+    // The public embed page serves anonymous visitors of any locale; the
+    // tooltip must not stay hard-coded Chinese next to the localized badge.
+    const wrapper = await mountLoaded()
+
+    expect(wrapper.find('.publish-badge').attributes('title'))
+      .toBe(i18n.global.t('publishPage.publisherModelBadgeHint'))
+
+    wrapper.unmount()
+  })
 
   it('ignores the Enter that commits an IME candidate', async () => {
     const wrapper = await mountLoaded()

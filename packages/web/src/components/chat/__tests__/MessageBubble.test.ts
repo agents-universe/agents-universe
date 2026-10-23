@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAgentStore } from '@/stores/agent'
+import { i18n } from '@/i18n'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import type { AgentInfo, Message } from '@/types'
 
@@ -81,5 +82,29 @@ describe('MessageBubble — per-turn token badge', () => {
   it('never badges a user message', () => {
     const wrapper = bubble({ role: 'user', tokenCount: 55 })
     expect(wrapper.find('.badge--muted').exists()).toBe(false)
+  })
+})
+
+describe('MessageBubble — image lightbox', () => {
+  beforeEach(() => { setActivePinia(createPinia()) })
+
+  it('the lightbox control tooltips come from the locale', async () => {
+    // Icon-only buttons are labelled solely by their tooltip; hardcoded
+    // English there showed the wrong language on a zh-CN UI. The lightbox is
+    // teleported to body, so query there instead of inside the wrapper.
+    const wrapper = bubble({
+      role: 'assistant',
+      images: [{ id: 'i1', url: '/api/media/p/c/shot.png', alt: 'shot' }],
+    })
+    await wrapper.find('.message-image-wrap').trigger('click')
+
+    const controls = document.body.querySelectorAll('.mermaid-modal-controls button')
+    expect([...controls].map((b) => b.getAttribute('title'))).toEqual([
+      i18n.global.t('messageBubble.zoomIn'),
+      null, // the "1:1" reset button is text-labelled
+      i18n.global.t('messageBubble.zoomOut'),
+      i18n.global.t('common.close'),
+    ])
+    wrapper.unmount()
   })
 })

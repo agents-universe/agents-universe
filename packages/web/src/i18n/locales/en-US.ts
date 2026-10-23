@@ -292,6 +292,8 @@ export default {
     roleUser: 'User',
     roleAssistant: 'Assistant',
     roleTool: 'Tool',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
   },
   taskPlan: {
     title: 'Task plan',

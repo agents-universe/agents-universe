@@ -291,6 +291,8 @@ export default {
     roleUser: '用户',
     roleAssistant: '智能体',
     roleTool: '工具',
+    zoomIn: '放大',
+    zoomOut: '缩小',
   },
   taskPlan: {
     title: '任务计划',

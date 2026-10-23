@@ -135,10 +135,10 @@
           :href="withApi(lightboxImg.url)"
           :download="lightboxImg.alt || 'image'"
         >{{ t('messageBubble.download') }}</a>
-        <button title="Zoom in" @click="zoomIn"><ZoomIn :size="16" /></button>
+        <button :title="t('messageBubble.zoomIn')" @click="zoomIn"><ZoomIn :size="16" /></button>
         <button @click="resetZoom">1:1</button>
-        <button title="Zoom out" @click="zoomOut"><ZoomOut :size="16" /></button>
-        <button title="Close" @click="closeLightbox"><X :size="16" /></button>
+        <button :title="t('messageBubble.zoomOut')" @click="zoomOut"><ZoomOut :size="16" /></button>
+        <button :title="t('common.close')" @click="closeLightbox"><X :size="16" /></button>
       </div>
     </div>
   </Teleport>

@@ -41,6 +41,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
 import { withApi } from '@/utils/basePath'
 import { setLocale, type AppLocale } from '@/i18n'
+import { patchPreferences } from '@/api/preferences'
 
 const authStore = useAuthStore()
 const tourStore = useTourStore()
@@ -56,6 +57,11 @@ const initials = computed(() => {
 function toggleLocale() {
   const next: AppLocale = locale.value === 'zh-CN' ? 'en-US' : 'zh-CN'
   setLocale(next)
+  // Keep the server copy in step so the choice follows the account; a failed
+  // write only loses cross-device sync, the local toggle already applied.
+  patchPreferences({ locale: next }).catch((err) => {
+    console.warn('sidebar: failed to persist locale', err)
+  })
 }
 
 function goSettings() {

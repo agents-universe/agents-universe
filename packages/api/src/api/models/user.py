@@ -54,6 +54,9 @@ class UserPreference(Base):
     user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # UI locale ('zh-CN' | 'en-US'); None = never chosen (frontend falls back
+    # to localStorage / zh-CN default).
+    locale: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

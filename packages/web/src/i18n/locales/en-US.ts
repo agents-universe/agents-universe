@@ -675,6 +675,10 @@ export default {
     doneBtn: 'Done',
     stepOf: '{current} / {total}',
     waiting: 'Waiting for you…',
+    language: {
+      title: 'Choose your language',
+      body: 'Pick the language you prefer — the rest of the tour and the whole app will use it. You can switch anytime from the sidebar.',
+    },
     welcome: {
       title: 'Welcome to Agents Universe',
       body: 'Let me walk you through the main features step by step. You can skip at any time with the Skip button or the Esc key.',

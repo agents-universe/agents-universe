@@ -40,7 +40,7 @@ beforeEach(() => {
 describe('tour store', () => {
   it('setServerState seeds completed from the server', () => {
     const store = useTourStore()
-    store.setServerState({ onboarding_completed: true, onboarding_completed_at: 'x' })
+    store.setServerState({ onboarding_completed: true, onboarding_completed_at: 'x', locale: null })
     expect(store.completed).toBe(true)
   })
 
@@ -48,7 +48,7 @@ describe('tour store', () => {
     const store = useTourStore()
     const done = store.start(0, fakeRouter())
     expect(store.isActive).toBe(true)
-    expect(store.stepIndex).toBe(0) // welcome step shows synchronously
+    expect(store.stepIndex).toBe(0) // language step shows synchronously
 
     await store.skip()
     await flush()
@@ -101,11 +101,12 @@ describe('tour store', () => {
   it('walks a no-project tour through to done and completes', async () => {
     const store = useTourStore()
     const done = store.start(0, fakeRouter())
+    await store.next() // language → welcome
     await store.next() // welcome → project-cta (no project yet)
 
-    // advanceTo(2): opens (missing) dialog → waitFor times out → skip
-    // advanceTo(3): project-created waits for .message-user → times out → skip
-    // steps 4+ require a project → all skipped → the tour lands on 'done'
+    // advanceTo(create-project-form): opens (missing) dialog → waitFor times out → skip
+    // advanceTo(project-created): waits for .agent-capabilities-card → times out → skip
+    // the rest require a project → all skipped → the tour lands on 'done'
     const walking = store.next()
     await vi.advanceTimersByTimeAsync(8500)
     await vi.advanceTimersByTimeAsync(8500)
@@ -129,11 +130,12 @@ describe('tour store', () => {
 
     const store = useTourStore()
     store.start(0, fakeRouter('/projects/p-1/chat'))
+    await store.next() // language → welcome
     await store.next()
 
     // project-cta / create-project-form / project-created all skipped (user
     // already has a project) → the tour lands on chat-composer.
-    expect(store.stepIndex).toBe(4)
+    expect(store.stepIndex).toBe(TOUR_STEPS.findIndex((s) => s.id === 'chat-composer'))
     await store.skip()
     await flush()
   })
@@ -141,13 +143,14 @@ describe('tour store', () => {
   it('stop cancels the in-flight advance so an immediate restart shows its first step', async () => {
     const store = useTourStore()
     store.start(0, fakeRouter())
+    await store.next() // language → welcome
     await store.next() // welcome → project-cta (no project yet)
     const walking = store.next() // advanceTo(create-project-form): waitFor pending
     store.stop()
     expect(store.isActive).toBe(false)
 
     // Restart must claim the advance slot — pre-fix the dead transition's
-    // `advancing` flag swallowed it and welcome never came back.
+    // `advancing` flag swallowed it and the first step never came back.
     store.start(0, fakeRouter())
     expect(store.stepIndex).toBe(0)
 
@@ -169,15 +172,17 @@ describe('tour store', () => {
 
     const store = useTourStore()
     store.start(0, fakeRouter('/projects/p-1/chat'))
+    await store.next() // language → welcome
     await store.next()
-    expect(store.stepIndex).toBe(4) // chat-composer
+    const chatComposer = TOUR_STEPS.findIndex((s) => s.id === 'chat-composer')
+    expect(store.stepIndex).toBe(chatComposer)
 
-    // Steps 1–3 are condition-gated on having NO project (and
+    // The create-project steps are condition-gated on having NO project (and
     // project-created additionally on coming from the create form) — a bare
-    // stepIndex-- landed on 3, whose overlay anchors/conditions don't hold.
-    // The only eligible step before 4 is welcome (0).
+    // stepIndex-- lands on one whose overlay anchors/conditions don't hold.
+    // The only eligible step before chat-composer is welcome.
     store.prev()
-    expect(store.stepIndex).toBe(0)
+    expect(store.stepIndex).toBe(TOUR_STEPS.findIndex((s) => s.id === 'welcome'))
 
     await store.skip()
     await flush()
@@ -190,14 +195,15 @@ describe('tour store', () => {
 
     const router = routingRouter('/projects/p-1/workspace')
     const store = useTourStore()
-    store.start(16, router) // workspace
+    const workspace = TOUR_STEPS.findIndex((s) => s.id === 'workspace')
+    store.start(workspace, router)
     await flush()
-    expect(store.stepIndex).toBe(16)
+    expect(store.stepIndex).toBe(workspace)
 
-    // top-nav (15) anchors on the chat page: walking back must push its
+    // top-nav anchors on the chat page: walking back must push its
     // route, not render its overlay over the workspace page.
     await store.prev()
-    expect(store.stepIndex).toBe(15)
+    expect(store.stepIndex).toBe(TOUR_STEPS.findIndex((s) => s.id === 'top-nav'))
     expect(router.push).toHaveBeenCalledWith('/projects/p-1/chat')
 
     await store.skip()

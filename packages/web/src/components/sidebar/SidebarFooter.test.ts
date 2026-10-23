@@ -14,6 +14,9 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => authStore }))
 
 vi.mock('@/stores/tour', () => ({ useTourStore: () => ({ start: vi.fn() }) }))
 
+const mockPatch = vi.hoisted(() => vi.fn(() => Promise.resolve({})))
+vi.mock('@/api/preferences', () => ({ patchPreferences: mockPatch }))
+
 describe('SidebarFooter', () => {
   it('no longer offers the publish-settings entry', () => {
     const wrapper = mount(SidebarFooter)
@@ -52,5 +55,16 @@ describe('SidebarFooter', () => {
   it('keeps all four action buttons in the actions row', () => {
     const wrapper = mount(SidebarFooter)
     expect(wrapper.findAll('.user-info-actions button').length).toBe(4)
+  })
+
+  it('toggling the language persists the new locale to the server', async () => {
+    mockPatch.mockClear()
+    const wrapper = mount(SidebarFooter)
+    const langBtn = wrapper.findAll('button').find(b =>
+      b.attributes('title') === '切换语言' || b.attributes('title') === 'Switch language',
+    )
+    expect(langBtn).toBeDefined()
+    await langBtn!.trigger('click')
+    expect(mockPatch).toHaveBeenCalledWith({ locale: 'en-US' })
   })
 })

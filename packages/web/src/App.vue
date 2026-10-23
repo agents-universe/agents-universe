@@ -9,6 +9,7 @@ import { onMounted } from 'vue'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
+import { isAppLocale, setLocale } from '@/i18n'
 import { withApi } from '@/utils/basePath'
 import TourSpotlight from '@/components/tour/TourSpotlight.vue'
 import type { UserPreferences } from '@/api/preferences'
@@ -32,6 +33,10 @@ onMounted(async () => {
       }
       const prefs = data.preferences
       if (prefs) {
+        // The server-stored choice (from the tour or the sidebar toggle)
+        // outranks the local value so the UI language follows the account
+        // across devices; setLocale refreshes localStorage to match.
+        if (isAppLocale(prefs.locale)) setLocale(prefs.locale)
         tourStore.setServerState(prefs)
         // A brand-new user gets the tour first; returning users who already
         // completed it see nothing on login.

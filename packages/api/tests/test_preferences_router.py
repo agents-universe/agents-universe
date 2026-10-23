@@ -19,6 +19,7 @@ async def test_me_returns_default_preferences(client, as_user):
         assert data["preferences"] == {
             "onboarding_completed": False,
             "onboarding_completed_at": None,
+            "locale": None,
         }
 
 
@@ -63,7 +64,35 @@ async def test_preferences_scoped_per_user(client, as_user):
         assert data["preferences"] == {
             "onboarding_completed": False,
             "onboarding_completed_at": None,
+            "locale": None,
         }
+
+
+async def test_patch_locale(client, as_user):
+    async with as_user("u-pre-locale"):
+        resp = await _patch(client, locale="en-US")
+        assert resp.status_code == 200
+        assert resp.json()["locale"] == "en-US"
+        # Survives a later patch of another field and shows up in /api/me.
+        await _patch(client, onboarding_completed=True)
+        data = await _me(client)
+        assert data["preferences"]["locale"] == "en-US"
+        assert data["preferences"]["onboarding_completed"] is True
+
+
+async def test_patch_locale_invalid_value(client, as_user):
+    async with as_user("u-pre-locale-bad"):
+        resp = await _patch(client, locale="fr-FR")
+        assert resp.status_code == 422
+        assert (await _me(client))["preferences"]["locale"] is None
+
+
+async def test_patch_locale_omitted_keeps_existing(client, as_user):
+    async with as_user("u-pre-locale-keep"):
+        await _patch(client, locale="en-US")
+        resp = await _patch(client, onboarding_completed=True)
+        assert resp.status_code == 200
+        assert resp.json()["locale"] == "en-US"
 
 
 async def test_patch_reset_onboarding_completed(client, as_user):

@@ -1,7 +1,8 @@
-"""Per-user preferences — onboarding tour state."""
+"""Per-user preferences — onboarding tour state and UI locale."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -16,6 +17,7 @@ router = APIRouter()
 
 class PreferencesUpdate(BaseModel):
     onboarding_completed: bool | None = None
+    locale: Literal["zh-CN", "en-US"] | None = None
 
 
 @router.patch("")
@@ -36,6 +38,10 @@ async def update_preferences(
         else:
             # Reset clears the stamp so a later re-tour re-stamps fresh.
             row.onboarding_completed_at = None
+    # The column is nullable (None = never chosen); an omitted field must not
+    # wipe an existing choice, so only a present value is written.
+    if body.locale is not None:
+        row.locale = body.locale
     row.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return serialize_preferences(row)

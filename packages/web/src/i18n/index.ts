@@ -35,4 +35,8 @@ export function setLocale(locale: AppLocale) {
   document.documentElement.lang = locale
 }
 
+export function isAppLocale(value: unknown): value is AppLocale {
+  return typeof value === 'string' && (LOCALES as string[]).includes(value)
+}
+
 document.documentElement.lang = i18n.global.locale.value

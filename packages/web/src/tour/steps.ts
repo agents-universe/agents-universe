@@ -8,6 +8,7 @@
  */
 import type { Router } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import type { AppLocale } from '@/i18n'
 
 const MOBILE_BREAKPOINT = 1024 // must match AppLayout.vue
 
@@ -21,6 +22,12 @@ export interface TourActionContext {
 export interface TourConditionContext {
   /** Id of the step the tour was showing before this one (null at tour start). */
   prevStepId: string | null
+}
+
+export interface TourStepChoice {
+  /** Rendered as-is (native language names — deliberately not translated). */
+  label: string
+  value: AppLocale
 }
 
 export interface TourStep {
@@ -42,6 +49,8 @@ export interface TourStep {
   skipOnMobile?: boolean
   /** No target — dimmed backdrop + centered card (welcome/done). */
   center?: boolean
+  /** Interactive choice buttons rendered between body and footer actions. */
+  choices?: TourStepChoice[]
 }
 
 export function isMobile(): boolean {
@@ -78,6 +87,19 @@ const noProjects = () => useProjectStore().projects.length === 0
 const hasProject = () => currentProjectId() != null
 
 export const TOUR_STEPS: TourStep[] = [
+  // First, an explicit language pick — the rest of the tour (and the app)
+  // renders in the chosen language immediately after the click.
+  {
+    id: 'language',
+    titleKey: 'tour.language.title',
+    bodyKey: 'tour.language.body',
+    center: true,
+    choices: [
+      { label: '中文', value: 'zh-CN' },
+      { label: 'English', value: 'en-US' },
+    ],
+  },
+
   { id: 'welcome', titleKey: 'tour.welcome.title', bodyKey: 'tour.welcome.body', center: true },
 
   // Create-first-project branch (only when the user has no projects yet)

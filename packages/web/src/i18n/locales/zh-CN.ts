@@ -674,6 +674,10 @@ export default {
     doneBtn: '完成',
     stepOf: '{current} / {total}',
     waiting: '等待你的操作…',
+    language: {
+      title: '选择界面语言',
+      body: '先选择你偏好的语言，接下来的引导和整个应用都会以该语言显示。之后可随时在侧边栏切换。',
+    },
     welcome: {
       title: '欢迎使用 Agents Universe',
       body: '接下来我会一步步带你熟悉全部核心功能。随时可以点「跳过」或按 Esc 退出引导。',

@@ -81,6 +81,34 @@
   white-space: pre-line;
 }
 
+.tour-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.tour-choice-btn {
+  padding: 12px 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tour-choice-btn:hover {
+  border-color: var(--accent);
+}
+
+.tour-choice-btn--active {
+  border-color: var(--accent);
+  box-shadow: var(--accent-glow-strong);
+}
+
 .tour-tooltip-actions {
   display: flex;
   align-items: center;

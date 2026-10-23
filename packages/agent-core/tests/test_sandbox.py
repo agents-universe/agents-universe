@@ -473,6 +473,41 @@ def test_validate_command_rejects_git_config_env_injection(tmp_path):
     assert reason is not None and "GIT_CONFIG_COUNT" in reason
 
 
+def test_validate_command_rejects_shell_names_for_executable_git_keys(tmp_path):
+    """A bare shell/interpreter name is not an inert value for an executable
+    git config key: git EXECUTES these values with git-controlled input —
+    `core.editor=sh commit --amend` runs the previous `-m` message as a
+    script file, `filter.pwn.clean=sh` runs the staged file contents off
+    stdin, and a shell pager would run planted log lines. Only the closed
+    inert set (less/cat/vim/...) passes; non-`!` aliases keep working
+    because they expand to `git <value>`, never a shell. include.path is
+    refused outright: the included config file's contents are never
+    re-validated, so it would revive every refused escape."""
+    for command in (
+        "git -c core.pager=sh log",
+        "git -c core.pager=bash status",
+        "git -c core.editor=sh commit --amend",
+        "git -c core.fsmonitor=python3 status",
+        "git -c filter.pwn.clean=sh add f.txt",
+        "git -c credential.helper=node fetch",
+        # An extensionless in-project config file used to pass the
+        # bare-name value check, then set core.pager=sh via include.
+        "git -c include.path=pwnconfig log",
+    ):
+        assert validate_command(
+            command, cwd=tmp_path, project_root=tmp_path,
+        ) is not None, command
+    for command in (
+        "git -c core.pager=less log",
+        "git -c core.pager=cat diff",
+        "git -c core.editor=vim commit --amend",
+        "git -c alias.st=status status",
+    ):
+        assert validate_command(
+            command, cwd=tmp_path, project_root=tmp_path,
+        ) is None, command
+
+
 def test_validate_command_rejects_run_time_command_words_in_bash_mode(tmp_path):
     """Bash mode has no command allowlist; the blocklist scans literal text,
     so a command name assembled at run time expanded to any program."""

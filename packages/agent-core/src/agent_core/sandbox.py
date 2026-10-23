@@ -663,6 +663,21 @@ _GIT_C_SPACE_OK_KEYS = frozenset({
 # space-containing -c value dangerous (word-splitting, substitution, aliases).
 _GIT_C_DANGEROUS_VALUE_RE = re.compile(r"[;|&><`$!\\'\"]")
 
+# Bare command names an executable config key may hold: pagers, viewers and
+# editors that load their input as DATA, plus inert yes/no helpers. A bare
+# name is not automatically inert — git EXECUTES these values with
+# git-controlled input: a shell pager receives the commit log on stdin
+# (``core.pager=sh`` runs a planted commit-message line), a shell editor the
+# message file as argv (``core.editor=sh commit --amend`` runs the previous
+# ``-m`` message), a filter driver the file contents on stdin
+# (``filter.pwn.clean=sh`` runs the staged file). A denylist of interpreter
+# names cannot stay complete, so the acceptable set is closed.
+_GIT_C_INERT_COMMANDS = frozenset({
+    "cat", "less", "more", "most", "bat",
+    "vi", "vim", "nvim", "nano", "pico", "emacs", "micro",
+    "true", "false",
+})
+
 
 def _is_safe_git_c_value(value: str) -> bool:
     # The config VALUE (after the first '=') must not smuggle an executable
@@ -686,13 +701,27 @@ def _is_safe_git_c_value(value: str) -> bool:
     ):
         return False
     # Executable keys (filters, pagers, fsmonitor, aliases...) run the value
-    # as a COMMAND via the shell — a bare command name (cat) is the only
-    # acceptable value. A path separator or leading '.' would resolve to a
-    # project script whose content was never validated: `git -c
-    # core.fsmonitor=./evil.sh status` executes it on every status, the
-    # ./script escape via a git trigger.
+    # as a COMMAND. Only the closed set of inert bare names above qualifies:
+    # a path separator or leading '.' would resolve to a project script whose
+    # content was never validated (`git -c core.fsmonitor=./evil.sh status`
+    # executes it on every status, the ./script escape via a git trigger),
+    # and a bare shell/interpreter name executes git-controlled input (see
+    # _GIT_C_INERT_COMMANDS).
     if _GIT_CONFIG_EXECUTABLE_KEY_RE.match(_name):
-        return bool(re.fullmatch(r"[A-Za-z0-9_-]+", val)) and _check_simple(val) is None
+        lowered = _name.lower()
+        if lowered.startswith("alias."):
+            # Non-`!` aliases always expand to `git <value>` — git never
+            # hands them to a shell — so any bare name is inert there
+            # (`!`-prefixed shell aliases are excluded by the bare-name
+            # regex, same as before).
+            return bool(re.fullmatch(r"[A-Za-z0-9_-]+", val)) and _check_simple(val) is None
+        if lowered.startswith("include"):
+            # include.path / includeIf.* load a CONFIG FILE whose contents
+            # are never re-validated — an included `core.pager = sh` revives
+            # every escape refused here. The write path already rejects the
+            # key outright; the invocation-scoped form must too.
+            return False
+        return val in _GIT_C_INERT_COMMANDS
     if _SAFE_GIT_C_RE.match(value):
         return _check_simple(val) is None
     # Whitespace values (user.name="First Last"): only for keys git never

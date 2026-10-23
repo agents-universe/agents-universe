@@ -61,6 +61,54 @@ def test_anthropic_gateway_payload_omits_temperature_with_thinking():
     assert "temperature" not in payload
 
 
+@pytest.mark.asyncio
+async def test_anthropic_stream_retry_restores_temperature():
+    """The thinking-reject retry pops `thinking` from kwargs; the temperature
+    omitted alongside it must come back — the complete() fallback restores it
+    (with a comment saying so), and without it the retried stream request runs
+    at the API default 1.0 instead of the configured 0.0."""
+    p = AnthropicClaudeProvider(
+        api_key="x", model="claude-sonnet-4-6", thinking_enabled=True,
+    )
+    captured: list[dict] = []
+
+    class _EmptyEvents:
+        def __aiter__(self):
+            async def gen():
+                return
+                yield  # pragma: no cover
+            return gen()
+
+    class _StreamCtx:
+        def __init__(self, kwargs: dict):
+            self._kwargs = kwargs
+
+        async def __aenter__(self):
+            if "thinking" in self._kwargs:
+                # The SDK surfaces the 400 when the stream context opens,
+                # before any event — emitted stays False, retry fires.
+                raise RuntimeError("400 thinking: unsupported parameter")
+            return _EmptyEvents()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Messages:
+        def stream(self, **kwargs):
+            captured.append(kwargs)
+            return _StreamCtx(kwargs)
+
+    p._client = SimpleNamespace(messages=_Messages())
+
+    _ = [c async for c in p.stream([Message(role="user", content="hi")], temperature=0.0)]
+
+    assert len(captured) == 2
+    assert "thinking" in captured[0]
+    assert "temperature" not in captured[0]
+    assert "thinking" not in captured[1]
+    assert captured[1].get("temperature") == 0.0
+
+
 # ─── Anthropic gateway: mid-stream error event ───────────────────────────
 
 

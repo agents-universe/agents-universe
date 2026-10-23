@@ -809,5 +809,10 @@ class AnthropicClaudeProvider(LLMProvider):
                 if not emitted and "thinking" in kwargs and _thinking_rejected(exc):
                     self._disable_thinking(f"stream rejected thinking param: {exc}")
                     kwargs.pop("thinking", None)
+                    # The retry dropped the thinking param, so the temperature
+                    # that was omitted for it can go back in — mirrors the
+                    # complete() fallback; without it the retried request runs
+                    # at the API default 1.0 instead of the configured value.
+                    kwargs.setdefault("temperature", temperature)
                     continue
                 raise

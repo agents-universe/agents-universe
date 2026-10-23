@@ -12,6 +12,7 @@ exception - see serve_report.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -130,10 +131,12 @@ async def get_run(
 
     artifacts = await _run_artifacts_dir(db, script, run_id)
     # A live run has no manifest yet; scanning on demand keeps the gallery
-    # filling in while the tests are still going.
-    manifest = read_manifest(artifacts)
+    # filling in while the tests are still going. Off the event loop: this
+    # endpoint is re-hit during a run, and the fallback walk + JSON parse of
+    # a multi-MB report would stall every other request on the loop.
+    manifest = await asyncio.to_thread(read_manifest, artifacts)
     if manifest is None and artifacts.is_dir():
-        manifest = build_manifest(artifacts)
+        manifest = await asyncio.to_thread(build_manifest, artifacts)
 
     report_url = None
     if report_index(artifacts) is not None:

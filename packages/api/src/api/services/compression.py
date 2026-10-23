@@ -78,6 +78,11 @@ async def compress_once(
         # lock across an entire summarization would serialize every other
         # conversation's compression behind this one — the guard only
         # guards the inflight map, not the work.
+        # The dependency chain's SELECTs left this session's transaction open;
+        # release the pool connection before awaiting a leader that can run
+        # for minutes and does no DB work of its own.
+        if db is not None:
+            await db.commit()
         return await asyncio.shield(future)
     try:
         result = await compress_conversation(db, conversation_id, user_id)
@@ -472,6 +477,14 @@ async def compress_conversation(
         # with a clean ValueError — surface it as an actionable 400 instead of
         # an unhandled 500. The message never contains the key itself.
         raise CompressionError(400, str(e)) from e
+
+    # Everything above was read-only; release the pool connection before the
+    # up-to-300-second summarization below. An open read transaction across
+    # the LLM call pins one pool connection per compression — enough concurrent
+    # compressions (plus followers holding their own dependency transactions)
+    # to exhaust the pool and time out unrelated requests. Commit (not
+    # rollback): expire_on_commit=False keeps the loaded rows readable.
+    await db.commit()
 
     # Fail-safe: a manual compression is destructive — never delete the early
     # rows if the summary could not be produced. Summarization runs

@@ -565,6 +565,14 @@ async def run_turn(
                 db, conversation_id, project_id, fs_path
             )
 
+            # Everything above is read-only; release the pool connection now.
+            # The turn's next use of this session is the token ledger write at
+            # the very end, and a nested turn never persists the user message
+            # that would otherwise commit mid-setup — without this, one pool
+            # connection stays checked out for the whole agent run. Commit (not
+            # rollback): expire_on_commit=False keeps the loaded rows readable.
+            await db.commit()
+
             # Emit context usage
             history_tokens = estimate_history_tokens(history)
             pending_tokens = int(len(pending_files_content.split()) * 1.3) if pending_files_content else 0
@@ -1550,6 +1558,49 @@ async def run_turn(
                 })
 
     except BaseException as e:
+        # An exception — cancellation included — can land while agent_task is
+        # still unwinding, forward_task is still persisting queued events on
+        # event_db, or a shielded persist is mid-commit on it. Closing those
+        # sessions under a live writer interleaves commits/rollbacks on the
+        # same greenlet and silently drops the in-flight write (the hazard the
+        # forward-drain above documents; only its timeout path ran it). Drain
+        # first — best-effort and bounded: a re-cancellation of this task just
+        # shortens the waits, the closes below still run.
+        _drain_agent = locals().get("agent_task")
+        if _drain_agent is not None and not _drain_agent.done():
+            _drain_agent.cancel()
+            try:
+                await asyncio.wait_for(_drain_agent, timeout=5.0)
+            except (asyncio.CancelledError, Exception):
+                pass
+        _drain_forward = locals().get("forward_task")
+        if _drain_forward is not None and not _drain_forward.done():
+            # The agent's finally closes the session, which queues the None
+            # sentinel that ends forward_events naturally; only force it when
+            # that did not happen in time.
+            try:
+                await asyncio.wait_for(_drain_forward, timeout=5.0)
+            except asyncio.TimeoutError:
+                _drain_forward.cancel()
+                try:
+                    await asyncio.wait_for(_drain_forward, timeout=5.0)
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except (asyncio.CancelledError, Exception):
+                pass
+        for _guard_name in ("_persist_guard", "_inj_guard"):
+            _drain_guard = locals().get(_guard_name)
+            if _drain_guard is not None and not _drain_guard.done():
+                try:
+                    await asyncio.wait_for(_drain_guard, timeout=60.0)
+                except asyncio.TimeoutError:
+                    _drain_guard.cancel()
+                    _log.warning(
+                        "%s did not complete during teardown for %s — message may be lost",
+                        _guard_name, conversation_id,
+                    )
+                except (asyncio.CancelledError, Exception):
+                    pass
         # Error path: DB sessions opened mid-turn (tool_db / event_db) were not
         # closed by the normal drain path — close them here to avoid leaking
         # connection pool slots. close() is idempotent, so double-close is safe.

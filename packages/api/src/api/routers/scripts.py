@@ -618,7 +618,11 @@ async def _execute_playwright(
         async def fail(message: str, result_status: str = "failed") -> None:
             log_acc.append(f"[executor] {message}\n")
             _persist_run_log(run, log_acc)
-            _store_run_result(run, artifacts, tail_acc, status_override=result_status)
+            # Off the event loop: the result parse reads and walks the
+            # artifacts directory (possibly multi-MB reports).
+            await asyncio.to_thread(
+                _store_run_result, run, artifacts, tail_acc, status_override=result_status
+            )
             run.status = "failed"
             run.exit_code = -1
             run.completed_at = datetime.now(timezone.utc)
@@ -717,7 +721,7 @@ async def _execute_playwright(
             _persist_run_log(run, log_acc)
             run.exit_code = code
             run.status = "completed" if code == 0 else "failed"
-            _store_run_result(run, artifacts, tail_acc)
+            await asyncio.to_thread(_store_run_result, run, artifacts, tail_acc)
         except asyncio.CancelledError:
             # Persist a terminal state before propagating - a run left at
             # "running" blocks project deletion with a phantom job.
@@ -743,7 +747,9 @@ async def _execute_playwright(
             # Whatever the tail holds is still more informative than an empty
             # card; the success path already stored the real verdict, and
             # nothing below it can raise, so this never overwrites one.
-            _store_run_result(run, artifacts, tail_acc, status_override="failed")
+            await asyncio.to_thread(
+                _store_run_result, run, artifacts, tail_acc, status_override="failed"
+            )
 
         run.completed_at = datetime.now(timezone.utc)
         await db.commit()

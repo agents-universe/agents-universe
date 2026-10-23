@@ -13,7 +13,7 @@ import pytest
 @pytest.fixture
 async def memory(client, make_project):
     project = await make_project()
-    tags = ["中文", 'a"b', "100%", "plain"]
+    tags = ["中文", 'a"b', "100%", "phase[1]", "plain"]
     resp = await client.post(
         f"/api/projects/{project.project_id}/memories/personal",
         json={"content": "tag filter target", "tags": tags},
@@ -22,7 +22,7 @@ async def memory(client, make_project):
     return project, resp.json(), tags
 
 
-@pytest.mark.parametrize("tag", ["中文", 'a"b', "100%", "plain"])
+@pytest.mark.parametrize("tag", ["中文", 'a"b', "100%", "phase[1]", "plain"])
 async def test_tag_filter_matches_every_saved_tag(client, memory, tag):
     project, created, _ = memory
 
@@ -44,6 +44,17 @@ async def test_tag_filter_still_rejects_a_non_matching_tag(client, memory):
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_tag_needle_escapes_bracket_on_mssql_only():
+    """T-SQL reads [abc] as a character class; only MSSQL needs the escape."""
+    from api.routers.memories import _tag_needle
+
+    assert _tag_needle("phase[1]", "mssql") == '"phase[[]1]"'
+    assert _tag_needle("100%", "mssql") == '"100\\%"'
+    assert _tag_needle("phase[1]", "postgresql") == '"phase[1]"'
+    assert _tag_needle("phase[1]", "sqlite") == '"phase[1]"'
+    assert _tag_needle("phase[1]", "mysql") == '"phase[1]"'
 
 
 # 20 six-character CJK tags: 200 characters as text (under the 500 limit an

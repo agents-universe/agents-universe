@@ -59,6 +59,26 @@ class PersonalMemoryUpdate(BaseModel):
         return v
 
 
+def _tag_needle(tag: str, dialect_name: str) -> str:
+    """Exact JSON encoding of *tag*, escaped for a LIKE ``contains()``.
+
+    The needle must be the tag's exact JSON encoding, not the raw text:
+    json.dumps escapes non-ASCII as \\uXXXX and backslash-escapes quotes
+    inside a value, so a Chinese tag or one containing '"' would otherwise
+    never match the row it was just saved on. LIKE wildcards are escaped so
+    a tag like "100%" or "a_b" matches literally instead of as a pattern.
+    T-SQL additionally reads ``[abc]`` as a character class with no ESCAPE
+    equivalent, so a literal ``[`` must become ``[[]`` on MSSQL only — the
+    same reason conversations._like_needle escapes it. Other dialects treat
+    ``[`` literally.
+    """
+    needle = json.dumps(tag)
+    escaped = needle.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    if dialect_name == "mssql":
+        escaped = escaped.replace("[", "[[]")
+    return escaped
+
+
 # ---------------------------------------------------------------------------
 # Personal Memory endpoints
 # ---------------------------------------------------------------------------
@@ -87,15 +107,13 @@ async def list_personal_memories(
     )
     if tag:
         # The tags column stores a JSON array string; contains() compiles to
-        # LIKE '%needle%'. The needle must be the tag's exact JSON encoding,
-        # not the raw text: json.dumps escapes non-ASCII as \uXXXX and
-        # backslash-escapes quotes inside a value, so a Chinese tag or one
-        # containing '"' would otherwise never match. Escape LIKE wildcards
-        # afterwards so a tag like "100%" or "a_b" matches literally instead
-        # of as a pattern.
-        needle = json.dumps(tag)
-        escaped = needle.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-        query = query.where(PersonalMemory.tags.contains(escaped, escape="\\"))
+        # LIKE '%needle%' — build the needle as the tag's exact JSON encoding
+        # with LIKE wildcards escaped (see _tag_needle).
+        query = query.where(
+            PersonalMemory.tags.contains(
+                _tag_needle(tag, db.get_bind().dialect.name), escape="\\"
+            )
+        )
     query = query.offset(offset).limit(limit)
 
     result = await db.execute(query)

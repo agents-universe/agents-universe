@@ -107,7 +107,11 @@ async def create_secret(
 
     if secret:
         secret.environment = env  # migrate a lone legacy NULL row to "" in place
-        secret.display_name = body.display_name
+        # Omitted display_name means "keep the existing label" — the frontend
+        # sends it optionally when rotating a value, and the sibling PUT
+        # endpoint guards the same way.
+        if body.display_name is not None:
+            secret.display_name = body.display_name
         secret.encrypted_value = encrypted
         secret.key_hint = hint
         secret.updated_by = current_user.user_id

@@ -78,6 +78,46 @@ async def test_api_key_test_closes_the_sdk_client_on_failure(
     assert closed == [True]
 
 
+@pytest.mark.parametrize(
+    ("provider", "client_attr"),
+    [("openai", "AsyncOpenAI"), ("anthropic", "AsyncAnthropic")],
+)
+async def test_api_key_test_bounds_the_sdk_timeout(
+    client, monkeypatch, provider, client_attr
+):
+    """The SDK default is a 600s read timeout while this handler holds a
+    pooled DB connection for the whole request — a blackholed provider would
+    pin a pool slot for ten minutes and, under concurrent tests, exhaust the
+    pool app-wide."""
+    resp = await client.put(
+        f"/api/api-keys/{provider}", json={"value": "test-key-1234567890"}
+    )
+    assert resp.status_code == 200
+
+    module = importlib.import_module(provider)
+    captured: dict = {}
+
+    class _Models:
+        async def list(self):
+            return []
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.models = _Models()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(module, client_attr, _FakeClient)
+
+    resp = await client.post(f"/api/api-keys/{provider}/test")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+    assert captured.get("timeout") is not None
+    assert captured["timeout"] <= 60
+
+
 async def test_api_key_test_does_not_leak_key_in_error(client):
     """OpenAI's 401 body echoes the key ('Incorrect API key provided: sk-...')
     — the endpoint must return a sanitized error, not the SDK exception text."""

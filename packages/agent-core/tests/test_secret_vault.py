@@ -148,3 +148,74 @@ async def test_delete_cancelled_by_user():
 
     assert result == {"status": "cancelled", "service_key": "svc:token"}
     assert db.executed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_url", [
+    "http://127.0.0.1:8000/admin",   # loopback literal — always blocked
+    "http://169.254.169.254/meta",   # cloud metadata — always blocked
+    "http://2130706433/",            # inet_aton form of 127.0.0.1
+    "file:///etc/passwd",            # non-http scheme
+    "not-a-url",                     # no scheme/hostname
+    12345,                           # non-string param from the LLM
+])
+async def test_save_never_writes_unvalidated_base_url(bad_url):
+    """base_url is agent-supplied but lands in user_tokens.base_url, which the
+    turn kernel feeds to git/Jira/LLM callers as the destination of the user's
+    DECRYPTED token — an attacker-chosen URL there exfiltrates the key the
+    user just typed. Only URLs passing the REST-path gate may be written."""
+    session = FakeSession(result="secret_saved")
+    db = FakeDb()
+    ctx = make_context(session=session, db=db)
+
+    result = await SecretVaultTool().execute(
+        {"operation": "save", "service_key": "git", "base_url": bad_url},
+        ctx,
+    )
+
+    assert result["status"] == "saved"  # the secret the user typed is kept
+    assert result.get("base_url_rejected") is True
+    assert not any("base_url = :base_url" in s for s, _ in db.executed)
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_base_url_when_dns_check_fails(monkeypatch):
+    """The SSRF_ENABLED DNS stage must also gate the write — a hostname that
+    resolves private is dropped exactly like a literal private IP."""
+    from agent_core.tools import _http, _ssrf
+    from agent_core.tools._ssrf import SSRFError
+
+    monkeypatch.setattr(_http, "_is_ssrf_enabled", lambda: True)
+    monkeypatch.setattr(
+        _ssrf, "resolve_and_validate",
+        lambda host, port: (_ for _ in ()).throw(SSRFError("Blocked resolved IP")),
+    )
+
+    session = FakeSession(result="secret_saved")
+    db = FakeDb()
+    result = await SecretVaultTool().execute(
+        {"operation": "save", "service_key": "git", "base_url": "https://gw.example.com"},
+        make_context(session=session, db=db),
+    )
+
+    assert result["status"] == "saved"
+    assert result.get("base_url_rejected") is True
+    assert not any("base_url = :base_url" in s for s, _ in db.executed)
+
+
+@pytest.mark.asyncio
+async def test_save_writes_normalized_safe_base_url():
+    session = FakeSession(result="secret_saved")
+    db = FakeDb()
+    ctx = make_context(session=session, db=db)
+
+    result = await SecretVaultTool().execute(
+        {"operation": "save", "service_key": "git", "base_url": "https://gw.example.com/"},
+        ctx,
+    )
+
+    assert result == {"status": "saved", "service_key": "git"}
+    updates = [(s, p) for s, p in db.executed if "UPDATE user_tokens" in s]
+    assert updates and updates[0][1]["base_url"] == "https://gw.example.com"
+    assert db.commits == 1

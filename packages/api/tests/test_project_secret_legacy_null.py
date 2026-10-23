@@ -80,6 +80,37 @@ async def test_create_collapses_null_and_empty_duplicates(client, db, make_proje
     assert decrypt_project_secret_or_none(rows[0].encrypted_value, pid) == "fresh"
 
 
+async def test_create_keeps_display_name_when_omitted_on_rotate(
+    client, db, make_project
+):
+    """Rotating a value via POST without display_name keeps the existing label —
+    the frontend omits it on rotate, and the sibling PUT endpoint guards the
+    same way; treating omission as clear would blank every rotated secret."""
+    project = await make_project()
+    pid = str(project.project_id)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/secrets",
+        json={
+            "service_key": "git",
+            "value": "v1",
+            "display_name": "Prod Git",
+        },
+    )
+    assert resp.status_code == 201
+
+    resp = await client.post(
+        f"/api/projects/{pid}/secrets",
+        json={"service_key": "git", "value": "v2"},
+    )
+    assert resp.status_code == 201
+
+    rows = await _rows(db, pid, "git")
+    assert len(rows) == 1
+    assert rows[0].display_name == "Prod Git"
+    assert decrypt_project_secret_or_none(rows[0].encrypted_value, pid) == "v2"
+
+
 async def test_save_from_response_collapses_legacy_null(db, make_project):
     """_save_secret_from_response (agent interactive save) matches NULL too."""
     from api.websocket.handlers import _save_secret_from_response

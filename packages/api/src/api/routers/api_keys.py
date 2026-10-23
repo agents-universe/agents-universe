@@ -180,7 +180,11 @@ async def test_api_key(
     try:
         if provider == "anthropic":
             import anthropic
-            client = anthropic.AsyncAnthropic(api_key=plain)
+            # Explicit 30s timeout (SDK default is 600s): this handler holds a
+            # pooled DB connection for the whole request, so a blackholed
+            # provider would pin a pool slot ten minutes and, at ~30 concurrent
+            # tests, exhaust pool_size+max_overflow app-wide.
+            client = anthropic.AsyncAnthropic(api_key=plain, timeout=30.0)
             # The SDK client owns a pooled httpx client; without an explicit
             # close every connectivity test leaks a connection pool.
             try:
@@ -190,7 +194,7 @@ async def test_api_key(
             return {"ok": True, "provider": provider}
         elif provider == "openai":
             from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=plain)
+            client = AsyncOpenAI(api_key=plain, timeout=30.0)
             try:
                 await client.models.list()
             finally:

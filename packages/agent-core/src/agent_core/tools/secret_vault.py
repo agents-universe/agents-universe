@@ -18,6 +18,43 @@ from .base import Tool, ToolContext
 _log = logging.getLogger(__name__)
 
 
+def _validated_base_url(value) -> str | None:
+    """Normalize and SSRF-check an agent-supplied base_url; None rejects it.
+
+    The value lands in user_tokens.base_url, which the turn kernel feeds to
+    git/Jira/LLM callers as the destination of the user's DECRYPTED token
+    (agent_turn's integration_settings override, model_credentials' legacy
+    fallback) — an attacker-chosen URL there would exfiltrate the key the
+    user just typed into the prompt. Same gate the REST token path applies
+    (shape check always; literal-IP/metadata checks always; DNS-resolved
+    checks per SSRF_ENABLED).
+    """
+    if not isinstance(value, str):
+        return None
+    from urllib.parse import urlsplit
+
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return None
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if len(normalized) > 500:  # user_tokens.base_url is String(500)
+        return None
+    from ._http import _is_ssrf_enabled
+    from ._ssrf import SSRFError, resolve_and_validate, validate_url
+    try:
+        validate_url(normalized, allow_any_port=True)
+        if _is_ssrf_enabled():
+            resolve_and_validate(
+                parsed.hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+            )
+    except SSRFError:
+        return None
+    return normalized
+
+
 class SecretVaultTool(Tool):
 
     prompt_hint = (
@@ -127,12 +164,27 @@ class SecretVaultTool(Tool):
             # Update display_name / base_url if provided
             display_name = params.get("display_name")
             base_url = params.get("base_url")
+            base_url_rejected = False
+            if base_url:
+                checked = _validated_base_url(base_url)
+                if checked is None:
+                    # Drop the URL but keep the secret the user just typed —
+                    # failing the whole save here would report an error for
+                    # a vault row that already exists.
+                    _log.warning(
+                        "secret_vault: rejected unsafe base_url for service_key=%s",
+                        service_key,
+                    )
+                    base_url = None
+                    base_url_rejected = True
+                else:
+                    base_url = checked
             if (display_name or base_url) and context.db_session:
                 updates: list[str] = []
                 sql_params: dict[str, Any] = {"uid": context.user_id, "skey": service_key}
                 if display_name:
                     updates.append("display_name = :display_name")
-                    sql_params["display_name"] = display_name
+                    sql_params["display_name"] = str(display_name)[:255]
                 if base_url:
                     updates.append("base_url = :base_url")
                     sql_params["base_url"] = base_url
@@ -149,7 +201,10 @@ class SecretVaultTool(Tool):
                     )
                     await context.db_session.commit()
 
-            return {"status": "saved", "service_key": service_key}
+            saved: dict[str, Any] = {"status": "saved", "service_key": service_key}
+            if base_url_rejected:
+                saved["base_url_rejected"] = True
+            return saved
         return {"error": f"Secret save failed: {result}", "service_key": service_key}
 
     async def _op_delete(self, params: dict, context: ToolContext) -> dict:

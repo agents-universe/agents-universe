@@ -192,6 +192,48 @@ async def test_clone_rejects_repository_path(tmp_path):
     assert "error" in result
 
 
+@pytest.mark.asyncio
+async def test_clone_failure_rollback_removes_readonly_leftovers(tmp_path, monkeypatch):
+    """A clone killed mid-transport (timeout → process.kill) leaves read-only
+    loose objects behind on Windows; the rollback must still clear the
+    destination. With plain ignore_errors rmtree the WinError 5 is masked,
+    the partial tree survives, and every retry reports "already exists"."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tool = GitRepoTool()
+    ctx = _make_context(str(workspace))
+    ctx.cfg.side_effect = lambda key, default="": (
+        "https://git.example.com" if key == "GIT_BASE_URL" else default
+    )
+    monkeypatch.setattr(
+        _git_repo_mod, "get_token_optional", AsyncMock(return_value="tok")
+    )
+
+    async def _killed_clone(args, cwd, timeout=30, token=None):
+        if args and args[0] == "clone":
+            dest = Path(args[-1])
+            (dest / ".git" / "objects").mkdir(parents=True)
+            obj = dest / ".git" / "objects" / "deadbeef"
+            obj.write_bytes(b"partial")
+            obj.chmod(0o444)  # git loose objects carry the read-only attribute
+            return {
+                "error": "Git command timed out",
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+            }
+        return {"error": "unexpected git call", "exit_code": 1}
+
+    monkeypatch.setattr(tool, "_run_git", _killed_clone)
+
+    result = await tool.execute(
+        {"operation": "clone", "repository": "owner/repo"},
+        ctx,
+    )
+    assert "error" in result
+    assert not (workspace / "repos" / "repo").exists()
+
+
 # ---------------------------------------------------------------------------
 # status — clean / dirty / staged / untracked
 # ---------------------------------------------------------------------------

@@ -316,7 +316,16 @@ class GitRepoTool(Tool):
         )
         if "error" in result:
             if destination.exists():
-                shutil.rmtree(destination, ignore_errors=True)
+                # Force-remove: a clone killed mid-transport leaves read-only
+                # loose objects on Windows that plain rmtree skips (masked by
+                # ignore_errors), wedging every later clone as "already
+                # exists". A genuine failure of the cleanup itself still
+                # falls back to silent best-effort — the git error is what
+                # the caller needs to see.
+                try:
+                    _rmtree_force(destination)
+                except OSError:
+                    shutil.rmtree(destination, ignore_errors=True)
             return result
         result = {
             "status": "cloned",

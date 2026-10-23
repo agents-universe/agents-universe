@@ -2617,7 +2617,11 @@ class Agent:
                     name=tool_name,
                 ))
 
-        # Loop exhausted (max_iterations)
-        await session.emit("warning", message=f"Task {task_id} reached maximum tool iterations - reply to continue")
+        # Loop exit: either max_iterations genuinely ran out, or the abort
+        # check above broke out mid-run. An abort is not an iteration limit
+        # and must not claim one; stream_end closes the frontend stream in
+        # both cases.
+        if not session.is_aborted():
+            await session.emit("warning", message=f"Task {task_id} reached maximum tool iterations - reply to continue")
         await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, task_id=task_id)
         return "".join(full_text_total)

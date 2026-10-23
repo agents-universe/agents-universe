@@ -1135,6 +1135,40 @@ def test_guard_chains_shadowed_sitecustomize(sandbox_dirs):
     assert "SHIM-LOADED" in r.stdout and "main-ok" in r.stdout
 
 
+def test_guard_chained_copies_do_not_recurse(sandbox_dirs, tmp_path):
+    """The container ships this guard in BOTH the PYTHONPATH dir and
+    site-packages (Dockerfile). Copy-to-copy chaining must terminate: without
+    the visited set the two copies chain each other to the interpreter
+    recursion limit, the best-effort except swallows the RecursionError, and
+    hundreds of duplicate module-body runs arm hundreds of duplicate audit
+    hooks — every audited operation in the sandboxed interpreter then runs
+    the check hundreds of times, with no visible startup failure."""
+    proj_a, _, fake_temp = sandbox_dirs
+    src = (GUARD_DIR / "sitecustomize.py").read_text(encoding="utf-8")
+    copy_a = fake_temp / "guard-a"
+    copy_b = fake_temp / "guard-b"
+    copy_a.mkdir()
+    copy_b.mkdir()
+    (copy_a / "sitecustomize.py").write_text(src, encoding="utf-8")
+    # Second copy is the same guard plus a marker, so it is not skipped by
+    # the byte-identical check and each of its module-body executions prints.
+    # Pre-fix the marker printed once per recursion level (~250x).
+    marker = 'print("COPY-B-BODY")\n'
+    (copy_b / "sitecustomize.py").write_text(
+        src.replace("from __future__ import annotations\n",
+                    "from __future__ import annotations\n" + marker, 1),
+        encoding="utf-8",
+    )
+    env = guarded_env(proj_a, fake_temp)
+    env["PYTHONPATH"] = str(copy_a) + os.pathsep + str(copy_b)
+    r = run_python("print('main-ok')", cwd=proj_a, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "Error in sitecustomize" not in r.stderr
+    # Chained exactly once — the visited set stops the A↔B ping-pong.
+    assert r.stdout.count("COPY-B-BODY") == 1
+    assert "main-ok" in r.stdout
+
+
 def test_guard_stays_armed_when_command_overrides_pythonpath(sandbox_dirs, tmp_path):
     """A command that assigns PYTHONPATH itself (e.g. `PYTHONPATH=packages/src
     python -m pytest`) replaces the tool-injected guard dir. The container

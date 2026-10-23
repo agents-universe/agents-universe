@@ -75,18 +75,46 @@ def _load_chained_sitecustomize() -> None:
     chaining, a pre-existing sitecustomize (e.g. a corporate SSL/cert shim in
     site-packages) would silently stop loading for every tool-spawned Python.
     Best-effort: a broken shim must never break interpreter startup.
+
+    Two guards keep the chain finite. The container image ships a second
+    copy of THIS guard in site-packages (Dockerfile), so without a
+    process-wide visited set the two copies chain each other until the
+    interpreter recursion limit — the best-effort except then swallows the
+    RecursionError, but only after hundreds of duplicate module-body runs
+    have armed hundreds of duplicate audit hooks, slowing every audited
+    operation in the sandboxed interpreter. A byte-identical skip drops the
+    pointless re-exec of an exact copy on top of that.
     """
-    own = _canon(os.path.abspath(__file__))
+    own_path = os.path.abspath(__file__)
+    own = _canon(own_path)
+    visited = getattr(sys, "_agent_sitecustomize_visited", None)
+    if not isinstance(visited, set):
+        visited = set()
+        sys._agent_sitecustomize_visited = visited
+    visited.add(own)
+    try:
+        with open(own_path, "rb") as fh:
+            own_blob = fh.read()
+    except Exception:
+        own_blob = None
     for entry in sys.path:
         if not entry:
             continue
         try:
             cand = os.path.join(entry, "sitecustomize.py")
-            if not os.path.isfile(cand) or _canon(cand) == own:
+            if not os.path.isfile(cand):
+                continue
+            cand_canon = _canon(cand)
+            if cand_canon == own or cand_canon in visited:
                 continue
             with open(cand, "rb") as fh:
-                code = compile(fh.read(), cand, "exec")
-            exec(code, {"__name__": "sitecustomize_chained", "__file__": cand})
+                blob = fh.read()
+            if own_blob is not None and blob == own_blob:
+                continue  # exact copy of this guard — already armed
+            visited.add(cand_canon)  # mark BEFORE exec: the exec'd copy
+            # chains further from this same process-wide set
+            exec(compile(blob, cand, "exec"),
+                 {"__name__": "sitecustomize_chained", "__file__": cand})
             return
         except Exception:
             continue

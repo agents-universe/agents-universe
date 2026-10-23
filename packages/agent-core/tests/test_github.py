@@ -717,6 +717,28 @@ async def test_list_prs_all_repos_keeps_explicit_open_and_closed(state):
 
 
 @pytest.mark.asyncio
+async def test_list_prs_single_repo_author_filter_is_server_side():
+    """Author/reviewer on a single repo must filter server-side.
+
+    The list-PRs endpoint has no author/reviewer parameters; the old
+    client-side filter only inspected the first `limit` PRs, so matches on
+    later pages came back as count 0. Search applies the filter like the
+    all_repos path does.
+    """
+    http = AsyncMock()
+    http.get.return_value = FakeResponse(200, {"items": []})
+
+    await GitHubTool()._op_list_prs(
+        {"repository": "team/svc", "author": "ann", "reviewer": "bob"},
+        "https://ghe.example/api/v3", {}, http,
+    )
+
+    assert http.get.await_args.kwargs["params"]["q"] == (
+        "repo:team/svc is:pr is:open review-requested:bob author:ann"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "base_url", ["https://www.github.com/", "https://WWW.GitHub.com", "github.com"]
 )

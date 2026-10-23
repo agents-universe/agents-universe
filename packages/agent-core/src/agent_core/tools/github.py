@@ -258,6 +258,37 @@ class GitHubTool(Tool):
         repo = params.get("repository", "")
         if not repo:
             return {"error": "repository is required (or set all_repos=true)"}
+        author = params.get("author")
+        reviewer = params.get("reviewer")
+        if author or reviewer:
+            # The list-PRs endpoint has no author/reviewer parameters, so the
+            # old client-side filter only ever inspected the first `limit` PRs
+            # and reported count 0 for matches sitting on later pages. Search
+            # applies the filter server-side, like the all_repos path above.
+            state = str(params.get("state") or "open").lower()
+            q_parts = [f"repo:{repo}", "is:pr"]
+            # Same rule as all_repos: GitHub search has no `is:all` —
+            # omitting the state term is what selects every state.
+            if state in ("open", "closed"):
+                q_parts.append(f"is:{state}")
+            if reviewer:
+                q_parts.append(f"review-requested:{reviewer}")
+            if author:
+                q_parts.append(f"author:{author}")
+            if params.get("base"):
+                q_parts.append(f"base:{params['base']}")
+            if params.get("head"):
+                q_parts.append(f"head:{params['head']}")
+            resp = await http.get(
+                f"{api_url}/search/issues", headers=headers,
+                params={"q": " ".join(q_parts), "per_page": params.get("limit", 30)},
+            )
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            return {"prs": [{"number": i["number"], "title": i["title"], "state": i["state"],
+                             "author": i.get("user", {}).get("login", ""),
+                             "url": i.get("html_url", "")} for i in items],
+                    "count": len(items)}
         query_params: dict[str, Any] = {"state": params.get("state", "open"), "per_page": params.get("limit", 30)}
         if params.get("base"):
             query_params["base"] = params["base"]
@@ -266,11 +297,6 @@ class GitHubTool(Tool):
         resp = await http.get(f"{api_url}/repos/{repo}/pulls", headers=headers, params=query_params)
         resp.raise_for_status()
         prs = resp.json()
-        if params.get("author"):
-            prs = [p for p in prs if p.get("user", {}).get("login", "").lower() == params["author"].lower()]
-        if params.get("reviewer"):
-            rev = params["reviewer"].lower()
-            prs = [p for p in prs if any(r.get("login", "").lower() == rev for r in p.get("requested_reviewers", []))]
         return {"prs": [{"number": p["number"], "title": p["title"], "state": p["state"],
                          "author": p.get("user", {}).get("login", ""),
                          "url": p.get("html_url", "")} for p in prs], "count": len(prs)}

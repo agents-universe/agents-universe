@@ -31,6 +31,9 @@ function redirectToLogin(): void {
   window.location.href = withApi('/auth/login')
 }
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+
 export async function apiFetch<T>(url: string, options?: RequestInit, expectedStatus?: number): Promise<T> {
   const headers: Record<string, string> = { ...options?.headers as Record<string, string> }
   if (options?.body && !(options.body instanceof FormData)
@@ -48,13 +51,17 @@ export async function apiFetch<T>(url: string, options?: RequestInit, expectedSt
     try { payload = await res.json() } catch { /* empty or non-JSON error */ }
     const body = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
     const detail = body?.detail
-    const detailObject = detail && typeof detail === 'object' ? detail as Record<string, unknown> : undefined
-    const source = detailObject ?? body
+    const detailObject = isPlainObject(detail) ? detail : undefined
+    // FastAPI RequestValidationError: detail is an array of {loc, msg, type}
+    const validationItem = Array.isArray(detail) && isPlainObject(detail[0]) ? detail[0] : undefined
+    const source = detailObject ?? validationItem ?? body
     const message = typeof detail === 'string'
       ? detail
-      : typeof source?.message === 'string'
-        ? source.message
-        : `${res.status} ${res.statusText}`
+      : typeof source?.msg === 'string'
+        ? source.msg
+        : typeof source?.message === 'string'
+          ? source.message
+          : `${res.status} ${res.statusText}`
     if (res.status === 401 && url !== '/api/me') {
       redirectToLogin()
     }

@@ -39,4 +39,11 @@ describe('locale messages', () => {
     expect(bad).toEqual([])
   })
 
+  it('zh-CN and en-US expose the same key set', () => {
+    const zhKeys = new Set(flatten(zhCN as Record<string, unknown>).map(([k]) => k))
+    const enKeys = new Set(flatten(enUS as Record<string, unknown>).map(([k]) => k))
+    const onlyZh = [...zhKeys].filter(k => !enKeys.has(k))
+    const onlyEn = [...enKeys].filter(k => !zhKeys.has(k))
+    expect({ onlyZh, onlyEn }).toEqual({ onlyZh: [], onlyEn: [] })
+  })
 })

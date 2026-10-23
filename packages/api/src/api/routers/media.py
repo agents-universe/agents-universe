@@ -75,6 +75,11 @@ class _UploadEntry:
 _uploads: dict[tuple[str, str], _UploadEntry] = {}  # (conversation_id, filename) -> entry
 
 
+def _upload_error(status_code: int, code: str, message: str) -> HTTPException:
+    """Structured upload error — `code` drives the frontend i18n mapping."""
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
 def _sweep_expired() -> None:
     now = time.time()
     expired = [k for k, e in _uploads.items() if e.expires_at <= now]
@@ -87,17 +92,19 @@ def store_upload(conversation_id: str, filename: str, data: bytes) -> None:
     _sweep_expired()
     total = sum(len(e.data) for e in _uploads.values())
     if total + len(data) > _MAX_TOTAL_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="Upload store is full — send the current message or wait for it to expire, then retry",
+        raise _upload_error(
+            413,
+            "UPLOAD_STORE_FULL",
+            "Upload store is full — send the current message or wait for it to expire, then retry",
         )
     conv_total = sum(
         len(e.data) for (cid, _fname), e in _uploads.items() if cid == conversation_id
     )
     if conv_total + len(data) > _MAX_CONVERSATION_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="Too many uploads for this conversation — send the message or wait for them to expire, then retry",
+        raise _upload_error(
+            413,
+            "CONVERSATION_UPLOAD_QUOTA",
+            "Too many uploads for this conversation — send the message or wait for them to expire, then retry",
         )
     _uploads[(conversation_id, filename)] = _UploadEntry(data, time.time() + _UPLOAD_TTL_SECONDS, time.time())
 
@@ -174,9 +181,9 @@ async def upload_media(
     uuid; the client filename is display-only.
     """
     if str(conversation.project_id) != project_id:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise _upload_error(404, "CONVERSATION_NOT_FOUND", "Conversation not found")
     if ".." in conversation_id or "/" in conversation_id or "\\" in conversation_id or "\x00" in conversation_id:
-        raise HTTPException(status_code=400, detail="Invalid conversation ID")
+        raise _upload_error(400, "INVALID_CONVERSATION_ID", "Invalid conversation ID")
 
     settings = get_settings()
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
@@ -188,9 +195,10 @@ async def upload_media(
     # never exceed the full body; 64KB slack covers multipart framing).
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > max_bytes + 64 * 1024:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds the {settings.max_upload_size_mb}MB limit",
+        raise _upload_error(
+            413,
+            "FILE_TOO_LARGE",
+            f"File exceeds the {settings.max_upload_size_mb}MB limit",
         )
 
     # Sanitize suffix: ASCII alphanumeric only, short (e.g. ".png", ".xlsx") —
@@ -205,9 +213,10 @@ async def upload_media(
     # Read with a size cap: no partial file to clean up, no disk involved.
     data = await file.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds the {settings.max_upload_size_mb}MB limit",
+        raise _upload_error(
+            413,
+            "FILE_TOO_LARGE",
+            f"File exceeds the {settings.max_upload_size_mb}MB limit",
         )
     store_upload(conversation_id, storage_name, data)
 

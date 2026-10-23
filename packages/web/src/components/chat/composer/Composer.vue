@@ -23,7 +23,7 @@
         <img v-else-if="att.objectUrl" :src="att.objectUrl" class="attachment-thumb" :alt="att.file.name" />
         <FileText v-else :size="14" class="attachment-file-icon" />
         <span class="attachment-name" :title="att.file.name">{{ att.file.name }}</span>
-        <span v-if="att.error" class="attachment-error" :title="att.error">{{ t('composer.uploadFailed') }}</span>
+        <span v-if="att.error" class="attachment-error" :title="att.error">{{ att.error }}</span>
         <button class="attachment-remove" type="button" :title="t('composer.remove')" @click="removeAttachment(att.key)">
           <X :size="12" />
         </button>
@@ -99,7 +99,19 @@ import MentionPopup from './MentionPopup.vue'
 import SlashPopup from './SlashPopup.vue'
 import { resolveMentionAgent } from './mention'
 
+// Advisory pre-check only; the server enforces its own limit
+// (Settings.max_upload_size_mb). Keep the two in sync.
 const MAX_UPLOAD_MB = 10
+
+// Server-side upload error codes → localized copy. Codes without an entry
+// fall back to the server message on the attachment chip.
+const UPLOAD_ERROR_KEYS: Record<string, string> = {
+  FILE_TOO_LARGE: 'composer.uploadFileTooLarge',
+  UPLOAD_STORE_FULL: 'composer.uploadStoreFull',
+  CONVERSATION_UPLOAD_QUOTA: 'composer.uploadQuotaExceeded',
+  CONVERSATION_NOT_FOUND: 'composer.uploadConversationNotFound',
+  INVALID_CONVERSATION_ID: 'composer.uploadInvalidId',
+}
 
 interface PendingAttachment {
   key: string
@@ -219,11 +231,14 @@ async function upload(entry: PendingAttachment) {
     entry.status = 'ready'
   } catch (e) {
     entry.status = 'error'
-    entry.error = e instanceof ApiError
-      ? e.message
-      : e instanceof DOMException && e.name === 'TimeoutError'
+    if (e instanceof ApiError) {
+      const key = e.code ? UPLOAD_ERROR_KEYS[e.code] : undefined
+      entry.error = key ? t(key) : e.message
+    } else {
+      entry.error = e instanceof DOMException && e.name === 'TimeoutError'
         ? t('composer.uploadTimeout')
         : t('composer.uploadFailed')
+    }
   }
 }
 

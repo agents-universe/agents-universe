@@ -82,11 +82,55 @@ async def test_upload_too_large_rejected(client, make_project, monkeypatch):
         files={"file": ("big.bin", b"x" * (1024 * 1024 + 100), "application/octet-stream")},
     )
     assert resp.status_code == 413
+    detail = resp.json()["detail"]
+    assert detail["code"] == "FILE_TOO_LARGE"
+    assert detail["message"]
 
     # Nothing was written to disk (uploads are in-memory only)
     from api.paths import PROJECTS_ROOT
     media_dir = PROJECTS_ROOT / project.slug / ".tmp" / "media" / cid
     assert not media_dir.exists() or not any(media_dir.iterdir())
+
+
+async def test_upload_store_full_rejected(client, make_project, monkeypatch):
+    from api.routers.media import drop_uploads, store_upload
+
+    # Seed past the (patched) global ceiling
+    store_upload("store-full-cv", "seed.bin", b"x" * 1024)
+    monkeypatch.setattr("api.routers.media._MAX_TOTAL_UPLOAD_BYTES", 1024)
+    try:
+        project = await make_project()
+        cid = await _make_conversation(client, str(project.project_id))
+        resp = await client.post(
+            f"/api/media/{project.project_id}/{cid}",
+            files={"file": ("more.bin", b"y" * 16, "application/octet-stream")},
+        )
+        assert resp.status_code == 413
+        detail = resp.json()["detail"]
+        assert detail["code"] == "UPLOAD_STORE_FULL"
+        assert detail["message"]
+    finally:
+        drop_uploads("store-full-cv")
+
+
+async def test_upload_conversation_quota_rejected(client, make_project, monkeypatch):
+    from api.routers.media import drop_uploads, store_upload
+
+    project = await make_project()
+    cid = await _make_conversation(client, str(project.project_id))
+    store_upload(cid, "seed.bin", b"x" * 1024)
+    monkeypatch.setattr("api.routers.media._MAX_CONVERSATION_UPLOAD_BYTES", 1024)
+    try:
+        resp = await client.post(
+            f"/api/media/{project.project_id}/{cid}",
+            files={"file": ("more.bin", b"y" * 16, "application/octet-stream")},
+        )
+        assert resp.status_code == 413
+        detail = resp.json()["detail"]
+        assert detail["code"] == "CONVERSATION_UPLOAD_QUOTA"
+        assert detail["message"]
+    finally:
+        drop_uploads(cid)
 
 
 async def test_upload_never_written_to_disk(client, make_project):

@@ -3229,6 +3229,7 @@
 .composer-attachment {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 3px 6px 3px 4px;
   border: 1px solid var(--border);
@@ -3261,9 +3262,13 @@
   white-space: nowrap;
 }
 
+/* Full-width second row: the failure reason must stay readable on touch
+   devices, where the hover title is unreachable. */
 .composer-attachment .attachment-error {
   color: var(--color-error);
-  flex-shrink: 0;
+  flex-basis: 100%;
+  order: 1;
+  min-width: 0;
 }
 
 .composer-attachment .attachment-remove {

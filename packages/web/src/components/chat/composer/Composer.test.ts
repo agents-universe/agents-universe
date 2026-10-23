@@ -64,15 +64,48 @@ describe('Composer attachments', () => {
     expect(btn.attributes('disabled')).toBeDefined()
   })
 
-  it('re-enables the send button after an upload fails', async () => {
-    mediaMock.upload.mockRejectedValue(new ApiError(413, 'File exceeds the 10MB limit'))
+  it('re-enables the send button and shows the localized reason after a coded failure', async () => {
+    mediaMock.upload.mockRejectedValue(new ApiError(413, 'File exceeds the 10MB limit', 'FILE_TOO_LARGE'))
     const wrapper = mount(Composer, { props: makeProps() })
     await selectFile(wrapper, 'big.bin', 'application/octet-stream')
     await flushPromises()
 
     // Failed attachment must not keep the button in the "uploading" state.
     expect(wrapper.find('.submit-btn').attributes('title')).toBe('发送 (Enter)')
-    expect(wrapper.find('.attachment-error').text()).toContain('上传失败')
+    expect(wrapper.find('.attachment-error').text()).toContain('文件超出服务器大小限制')
+  })
+
+  it('falls back to the server message when the error carries no code', async () => {
+    mediaMock.upload.mockRejectedValue(new ApiError(500, 'boom'))
+    const wrapper = mount(Composer, { props: makeProps() })
+    await selectFile(wrapper)
+    await flushPromises()
+
+    expect(wrapper.find('.attachment-error').text()).toContain('boom')
+  })
+
+  it('shows the size reason for a locally rejected oversized file', async () => {
+    mediaMock.upload.mockClear()
+    const wrapper = mount(Composer, { props: makeProps() })
+    const input = wrapper.find('input[type="file"]')
+    const file = new File([new Uint8Array(1)], 'huge.bin', { type: 'application/octet-stream' })
+    // Fake the size instead of allocating 11MB
+    Object.defineProperty(file, 'size', { value: 11 * 1024 * 1024 })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.find('.attachment-error').text()).toContain('文件超过 10MB，无法上传')
+    expect(mediaMock.upload).not.toHaveBeenCalled()
+  })
+
+  it('shows the timeout reason when the upload times out', async () => {
+    mediaMock.upload.mockRejectedValue(new DOMException('t', 'TimeoutError'))
+    const wrapper = mount(Composer, { props: makeProps() })
+    await selectFile(wrapper)
+    await flushPromises()
+
+    expect(wrapper.find('.attachment-error').text()).toContain('上传超时，请重试')
   })
 
   it('excludes failed attachments from the submit payload', async () => {

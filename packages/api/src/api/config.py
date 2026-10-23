@@ -68,7 +68,9 @@ class Settings(BaseSettings):
     # Project workspaces — required outside tests. Each project lives under this root.
     projects_root: str = ""
 
-    # Uploads
+    # Uploads. This is the enforced ceiling; the web composer keeps a matching
+    # advisory constant (Composer.vue MAX_UPLOAD_MB) for the pre-upload check —
+    # keep the two in sync when changing the limit.
     max_upload_size_mb: int = 10
 
     # Scheduled tasks. The scheduler is an in-process asyncio loop — one

@@ -666,6 +666,7 @@ export default {
   conversationStore: {
     interruptedOnRefresh: '页面刷新时执行中断，以下为中断前记录',
     toolCallAborted: '工具调用未正常结束',
+    abortStopped: '工具调用已停止',
   },
   tour: {
     skip: '跳过',

@@ -667,6 +667,7 @@ export default {
   conversationStore: {
     interruptedOnRefresh: 'Interrupted by page refresh; showing the last recorded state',
     toolCallAborted: 'Tool call did not finish normally',
+    abortStopped: 'Tool call stopped',
   },
   tour: {
     skip: 'Skip',

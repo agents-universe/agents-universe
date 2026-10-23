@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mapDbTasks, useConversationStore } from './conversation'
 import { useMemoryStore } from './memory'
+import { i18n } from '@/i18n'
 import type { ToolCallRecord, DbMessage, DbTask } from '@/types'
 
 function makeDbMessage(over: Partial<DbMessage> = {}): DbMessage {
@@ -490,6 +491,23 @@ describe('conversation store - per-conversation runtime', () => {
 
     expect(store.messages).toHaveLength(1)
     expect(store.messages[0].toolCalls?.[0].status).toBe('error')
+  })
+
+  it('abort bubble uses the localized stop reason when the caller passes none', () => {
+    // ChatPanel's Stop handler calls abortStreaming() with no reason; the
+    // bubble content must come from the locale, not a hard-coded string.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addToolCall({
+      callId: 'tc-1',
+      tool: 'code_executor',
+      input: {},
+      status: 'running',
+    }, 'conv-a')
+
+    store.abortStreaming(undefined, 'conv-a')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].content).toBe(i18n.global.t('conversationStore.abortStopped'))
   })
 
   it('abort snapshot marks the turn so the final stream_end is skipped', () => {

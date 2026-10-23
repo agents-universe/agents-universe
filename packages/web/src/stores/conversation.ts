@@ -940,7 +940,7 @@ export const useConversationStore = defineStore('conversation', () => {
     pushStreamingMessage(messageId, undefined, false, id, opts)
   }
 
-  function abortStreaming(reason = '工具调用已停止', targetId?: string) {
+  function abortStreaming(reason = i18n.global.t('conversationStore.abortStopped'), targetId?: string) {
     const id = targetId ?? activeId.value!
     const rt = ensureRuntime(id)
     for (const tc of rt.activeToolCalls) {

@@ -25,6 +25,7 @@ from ..sandbox import (
     _check_assignment,
     _dollar_vars,
     _find_heredoc_start,
+    _skip_subst_parens,
     ends_with_continuation,
     has_unclosed_quote,
     python_guard_env,
@@ -100,6 +101,51 @@ def redact_proxy_credentials(text: str, proxy_url: str) -> str:
     truncation; exact substring replacement, like shell.redact_secrets.
     """
     return redact_secrets(text, _proxy_credential_variants(proxy_url))
+
+
+def _live_payloads(text: str, *, quotes_literal: bool) -> list[str]:
+    r"""Substitution payloads bash will execute inside *text*.
+
+    ``quotes_literal=False`` is heredoc-body context: quotes are plain
+    characters there, so `$(...)` inside them still executes.``quotes_literal=True`` is shell-parsed context (a payload's own
+    content): single-quoted regions never execute and are skipped, while
+    double quotes do execute. Recursion into each payload matters because
+    an outer shlex pass keeps backslash escapes inside quotes —
+    `"$(c\url x)"` would otherwise hide `curl` from a single-level scan.
+    """
+    payloads: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if quotes_literal and c == "'":
+            end = text.find("'", i + 1)
+            if end == -1:
+                break  # unterminated — bash syntax error, nothing executes
+            i = end + 1
+            continue
+        if c == "`":
+            end = text.find("`", i + 1)
+            if end == -1:
+                break  # unterminated — _validate_substitutions fails closed first
+            payload = text[i + 1 : end]
+            payloads.append(payload)
+            payloads.extend(_live_payloads(payload, quotes_literal=True))
+            i = end + 1
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            close = _skip_subst_parens(text, i + 2)
+            if close is None:
+                break  # unclosed — refused by _validate_substitutions
+            payload = text[i + 2 : close]
+            payloads.append(payload)
+            payloads.extend(_live_payloads(payload, quotes_literal=True))
+            i = close + 1
+            continue
+        i += 1
+    return payloads
 
 
 class CodeExecutorTool(Tool):
@@ -185,6 +231,53 @@ class CodeExecutorTool(Tool):
         r"(?:^|[\s;|&])\.(?=\s|$)"
     )
 
+    @classmethod
+    def _payload_blocked_word(cls, text: str, *, quotes_literal: bool) -> str | None:
+        r"""Blocked word inside a live substitution payload of *text*, else None.
+
+        The line-level shlex keeps backslash escapes inside quotes, so
+        `"$(c\url x)"` hides `curl` from a whole-line search even though the
+        substitution executes it — walking the payloads separately sees the
+        unquoted inner text. Raises ValueError when a payload cannot be
+        tokenized (fail closed).
+        """
+        for payload in _live_payloads(text, quotes_literal=quotes_literal):
+            lexer = shlex.shlex(payload, posix=True)
+            lexer.whitespace_split = True
+            unescaped = " ".join(list(lexer))
+            match = cls._BLOCKED_BASH.search(unescaped)
+            if match:
+                return match.group(0)
+        return None
+
+    @classmethod
+    def _find_blocked_bash(cls, code: str) -> str | None:
+        r"""The blocked word a bash script contains, else None.
+
+        Scan PER LOGICAL LINE and skip heredoc bodies: whole-code shlex
+        raised on an apostrophe in a heredoc body and the raw-text
+        fallback then missed a backslash-obfuscated command on a later
+        line (`c\url http://...`), which bash unescapes back to `curl`
+        and executes for real. Body lines are stdin data — their live
+        substitution payloads are checked by _validate_bash instead,
+        which knows whether the delimiter was quoted. Raises ValueError
+        when a line cannot be tokenized (fail closed). Shared with the
+        script runner.
+        """
+        for logical, is_heredoc_body in split_logical_lines(code):
+            if is_heredoc_body:
+                continue
+            lexer = shlex.shlex(logical, posix=True)
+            lexer.whitespace_split = True
+            unescaped = " ".join(list(lexer))
+            match = cls._BLOCKED_BASH.search(unescaped)
+            if match:
+                return match.group(0)
+            match = cls._payload_blocked_word(logical, quotes_literal=True)
+            if match:
+                return match
+        return None
+
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         code = params["code"]
         language = params.get("language", "python")
@@ -213,22 +306,14 @@ class CodeExecutorTool(Tool):
             # \b-word 正则跑在原始代码上可被反斜杠混淆绕过（`c\url ...` 中
             # "curl" 不是连续子串，但 bash 执行时反斜杠转义还原出真正的
             # `curl`）。先按 shlex 还原转义再匹配，堵住该旁路。
-            # Scan PER LOGICAL LINE and skip heredoc bodies: whole-code shlex
-            # raised on an apostrophe in a heredoc body and the raw-text
-            # fallback then missed a backslash-obfuscated command on a later
-            # line (`c\url http://...`), which _validate_bash unescapes and
-            # executes for real. A line that cannot be tokenized is refused.
+            # A line that cannot be tokenized is refused (see
+            # _find_blocked_bash for the per-line / heredoc-body rationale).
             try:
-                for logical, is_heredoc_body in split_logical_lines(code):
-                    if is_heredoc_body:
-                        continue
-                    lexer = shlex.shlex(logical, posix=True)
-                    lexer.whitespace_split = True
-                    unescaped = " ".join(list(lexer))
-                    if self._BLOCKED_BASH.search(unescaped):
-                        return {"error": "Bash code_executor is for data processing only. Use the shell tool for external commands."}
+                blocked = self._find_blocked_bash(code)
             except ValueError:
                 return {"error": "Bash code could not be parsed safely; refusing to run."}
+            if blocked:
+                return {"error": "Bash code_executor is for data processing only. Use the shell tool for external commands."}
 
         project_cwd = Path(context.project_fs_path)
 
@@ -474,6 +559,16 @@ class CodeExecutorTool(Tool):
                     )
                     if reason:
                         return reason
+                    # Body lines are skipped by _find_blocked_bash (they are
+                    # stdin data), but an unquoted body's $(...) / backticks
+                    # execute for real — and bash mode has no socket audit
+                    # hook, so `$(curl ...)` or `$(python ...)` planted here
+                    # would reach the network / an unguarded interpreter past
+                    # the blocklist. Scan the payloads only: the surrounding
+                    # data words are still not commands.
+                    reason = CodeExecutorTool._blocked_substitutions(body)
+                    if reason:
+                        return reason
                 continue
             candidate = f"{buffer}\n{line}" if buffer else line
             if not buffer:
@@ -636,4 +731,25 @@ class CodeExecutorTool(Tool):
         )
         if reason:
             return f"Line {line_num}: command substitution blocked: {reason}"
+        return None
+
+    @staticmethod
+    def _blocked_substitutions(text: str) -> str | None:
+        """Refuse blocked commands inside live substitution payloads.
+
+        Complements _find_blocked_bash, which skips heredoc bodies: only an
+        unquoted body's payloads execute (quoted bodies are literal and
+        never reach here), so only they need the command-word check. Body
+        context keeps quotes literal — `$(...)` inside a plain `'` in an
+        unquoted body still runs.
+        """
+        try:
+            match = CodeExecutorTool._payload_blocked_word(text, quotes_literal=False)
+        except ValueError:
+            return "Bash code could not be parsed safely; refusing to run."
+        if match:
+            return (
+                "Bash code_executor is for data processing only. "
+                "Use the shell tool for external commands."
+            )
         return None

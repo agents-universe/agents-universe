@@ -287,8 +287,6 @@ async def execute_script(
         script_path = None
         log_acc: list[str] = []
         try:
-            import shlex
-
             from agent_core.sandbox import python_guard_env
             from agent_core.tools.code_executor import CodeExecutorTool
 
@@ -315,14 +313,18 @@ async def execute_script(
                         "Script uses ANSI-C quoting ($'...'), which is not "
                         "allowed: it decodes characters after validation."
                     )
-                unescaped = content
+                # Per-line tokenizing, like code_executor: whole-content
+                # shlex raised on an apostrophe anywhere (e.g. a heredoc
+                # body) and the raw fallback then missed a backslash-
+                # obfuscated command (`c\url ...`), which bash unescapes
+                # back to curl and executes.
                 try:
-                    lexer = shlex.shlex(content, posix=True)
-                    lexer.whitespace_split = True
-                    unescaped = " ".join(list(lexer))
-                except ValueError:
-                    pass
-                if CodeExecutorTool._BLOCKED_BASH.search(unescaped):
+                    blocked = CodeExecutorTool._find_blocked_bash(content)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"Script could not be tokenized safely ({exc}); refusing to run."
+                    ) from exc
+                if blocked:
                     raise RuntimeError(
                         "Script uses a blocked command (curl/wget/node/python3/ssh/...). "
                         "Server-side scripts are confined to in-project automation."

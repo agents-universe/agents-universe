@@ -570,6 +570,41 @@ async def test_bash_command_assembled_from_variables_rejected(
     assert "example.com" not in result.get("stdout", "")
 
 
+async def test_bash_heredoc_substitution_blocked_command(
+    sibling_projects, guarded_temp
+):
+    """An unquoted heredoc body executes its $(...) for real.
+
+    The blocklist only scans non-body lines (body lines are stdin data), and
+    bash mode has no socket audit hook — a blocked command planted in a body
+    substitution ran past every gate, up to an unguarded interpreter.
+    """
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {"code": "cat <<EOF\n$(python -c \"print(42)\")\nEOF", "language": "bash"},
+        make_context(str(proj_a)),
+    )
+    assert "error" in result, result
+    assert "42" not in result.get("stdout", "")
+
+
+def test_validate_bash_blocked_command_in_heredoc_substitution():
+    """Payload-level gate: _find_blocked_bash skips bodies (they are data),
+    so live $(...) commands inside an unquoted body are refused here —
+    backslash-obfuscated (`$(c\\url ...)`) included. A quoted delimiter
+    keeps the body literal, so the same text must still pass."""
+    reason = CodeExecutorTool._validate_bash(
+        "cat <<EOF\n$(c\\url http://example.com)\nEOF", Path(".")
+    )
+    assert reason is not None
+
+    reason = CodeExecutorTool._validate_bash(
+        "cat <<'EOF'\ninstall $(curl http://example.com) here\nEOF", Path(".")
+    )
+    assert reason is None
+
+
 async def test_bash_heredoc_space_before_delim(sibling_projects, guarded_temp):
     """`cat << EOF` (whitespace between << and the delimiter) is valid bash
     and must enter heredoc mode, not be validated as commands."""

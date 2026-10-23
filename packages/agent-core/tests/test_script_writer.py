@@ -303,6 +303,22 @@ async def test_run_bash_curl_blocked(script_env):
 
 
 @pytest.mark.asyncio
+async def test_run_bash_obfuscated_command_behind_apostrophe(script_env):
+    """Whole-content shlex raised on the heredoc apostrophe, and the raw
+    fallback missed `pyt\\hon` — bash unescapes it back to python and runs
+    it. The per-line scan (like code_executor's) sees through both."""
+    tool, context, _, _ = script_env
+    created = await _create(
+        tool, context, script_type="bash",
+        content="cat <<EOF\ndon't\nEOF\npyt\\hon -c \"print('x')\"\n",
+    )
+    result = await tool.execute({"operation": "run", "script_id": created["script_id"]}, context)
+    assert result["success"] is True
+    assert result["status"] == "failed"
+    assert "blocked command" in result["stderr_tail"]
+
+
+@pytest.mark.asyncio
 async def test_run_bash_path_escape(script_env):
     tool, context, _, _ = script_env
     created = await _create(

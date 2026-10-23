@@ -92,6 +92,26 @@ async def test_upload_too_large_rejected(client, make_project, monkeypatch):
     assert not media_dir.exists() or not any(media_dir.iterdir())
 
 
+async def test_oversized_content_length_rejected_at_asgi_edge(client, make_project):
+    """The middleware guard fires on the Content-Length header alone.
+
+    The endpoint's own Content-Length check runs only after FastAPI has
+    parsed the multipart form — by then an unauthenticated oversized body
+    has already been spooled to temp disk. Header forgery with a tiny body
+    pins that the reject happens before any of that."""
+    project = await make_project()
+    cid = await _make_conversation(client, str(project.project_id))
+
+    resp = await client.post(
+        f"/api/media/{project.project_id}/{cid}",
+        content=b"x",
+        headers={"content-length": str(64 * 1024 * 1024)},
+    )
+    assert resp.status_code == 413
+    detail = resp.json()["detail"]
+    assert detail["code"] == "FILE_TOO_LARGE"
+
+
 async def test_upload_store_full_rejected(client, make_project, monkeypatch):
     from api.routers.media import drop_uploads, store_upload
 

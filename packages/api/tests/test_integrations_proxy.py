@@ -135,6 +135,42 @@ async def test_kong_proxy_refuses_header_unsafe_token(client, monkeypatch):
     assert "kong-key-bad" not in detail
 
 
+async def test_kong_proxy_rejects_authority_injection_paths(client, monkeypatch):
+    """path is concatenated onto the base URL — "@evil.example/x" turns the
+    netloc into user@host so the request (and the x-api-key header) goes to an
+    attacker-chosen host; "//evil" does the same. Only path-absolute
+    single-slash values are legal."""
+    key = "kong-key-pathcheck"
+    resp = await client.put("/api/tokens/kong:dev", json={"value": key})
+    assert resp.status_code == 200
+
+    fake = _FakeAsyncClient(_json_response(200, {"data": "ok"}))
+    outbound: list[str] = []
+    real_get = fake.get
+
+    async def _counting_get(url, *a, **k):
+        outbound.append(str(url))
+        return await real_get(url, *a, **k)
+
+    fake.get = _counting_get
+    monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: fake)
+
+    for bad_path in ("@evil.example/x", "//evil.example/x", "/\\evil.example", "relative/x"):
+        resp = await client.post(
+            "/api/integrations/kong/request",
+            json={"method": "GET", "path": bad_path, "env": "dev"},
+        )
+        assert resp.status_code == 400, bad_path
+    assert outbound == []  # no outbound request was made for any rejected path
+
+    # A normal path still proxies.
+    resp = await client.post(
+        "/api/integrations/kong/request",
+        json={"method": "GET", "path": "/some/api", "env": "dev"},
+    )
+    assert resp.status_code == 200
+
+
 # ── client header construction ───────────────────────────────────────────
 
 

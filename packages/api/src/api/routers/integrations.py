@@ -405,6 +405,13 @@ async def kong_request(
 ):
     import httpx
 
+    # The path is concatenated onto the base URL, so a value that forms a new
+    # authority ("@evil.example/x" → https://user@evil.example/x, or "//evil")
+    # would send the x-api-key token to an attacker-chosen host. Path-absolute
+    # single-slash only — the SSRF gate below validates the (unchanged) host.
+    if not req.path.startswith("/") or req.path.startswith(("//", "/\\")):
+        raise HTTPException(status_code=400, detail="path must start with a single '/'")
+
     service_key = f"kong:{req.env}" if req.env in ("dev", "uat", "int") else "kong:dev"
     token = await _get_user_token(db, current_user.user_id, service_key)
 

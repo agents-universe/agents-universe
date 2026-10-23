@@ -638,6 +638,14 @@ async def update_knowledge(
     except OSError:
         raise HTTPException(status_code=507, detail="Failed to write knowledge file")
 
+    # Same eviction funnel as the DB branch / delete / copy: invalidate also
+    # clears the loader's scan caches, whose mtime/size fingerprint can miss
+    # a same-length save — a disk-only file edited here would otherwise keep
+    # serving stale content to the next conversation.
+    cache = getattr(request.app.state, "knowledge_cache", None)
+    if cache is not None:
+        cache.invalidate(project_id)
+
     return {"slug": slug, "updated": True}
 
 

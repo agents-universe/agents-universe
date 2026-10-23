@@ -106,15 +106,26 @@ _MAX_TOOL_OUTPUT_CHARS = 100_000
 
 
 def _clip_tool_output(result):
-    """Return result unchanged when it fits the WS cap, else a preview dict."""
-    if not isinstance(result, dict):
+    """Return a JSON-safe copy of a tool result, size-clipped when oversized.
+
+    Foreign cell/object types (Decimal from SQL rows, bytes, Path, set …)
+    must be coerced here, at the single choke point every tool_call_end
+    emission passes through: the raw dict would otherwise reach the API's
+    json.dumps on both the WS forward and the tool_calls persistence, where
+    a TypeError evicts the live socket and drops the whole assistant
+    message. The LLM-bound tool message keeps the original object — this
+    only shapes what is emitted as an event.
+    """
+    if not isinstance(result, (dict, list)):
         return result
     try:
-        text = json.dumps(result, ensure_ascii=False, default=str)
+        text = json.dumps(result, ensure_ascii=False, default=_json_default)
     except (TypeError, ValueError):
         return result
     if len(text) <= _MAX_TOOL_OUTPUT_CHARS:
-        return result
+        # json round-trip: coercions above become plain JSON types, so every
+        # downstream dumps (strict or date-only default) succeeds.
+        return json.loads(text)
     return {
         "truncated": True,
         "bytes": len(text),

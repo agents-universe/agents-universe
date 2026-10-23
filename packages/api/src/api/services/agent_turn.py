@@ -235,6 +235,14 @@ async def run_turn(
     # leaves the claim-window buffer belonging to a dead turn (see finally).
     session_registered = False
 
+    # True once this turn's user message row landed. The finally's
+    # drop_uploads is gated on it: a turn that failed BEFORE consuming the
+    # message's uploads ("No model configured", attachment validation error)
+    # must leave those bytes for the composer's retry — the client keeps
+    # failed-send attachments and re-sending found nothing ("Attachment
+    # expired") once the teardown wiped them.
+    _user_msg_persisted = False
+
     # Declared before the try so the finally safety net can read them on ANY
     # exit path, including early returns that never reached their assignments.
     # _terminal_status records the classification of a terminal stream_end as
@@ -618,6 +626,7 @@ async def run_turn(
                     )
                     return
                 attachment_records = persist_result.attachment_records
+                _user_msg_persisted = True
 
             # Durable run record for background-turn feedback (a reopened
             # session sees status + partial text). Best-effort: tracking must
@@ -1750,13 +1759,16 @@ async def run_turn(
         # G14: `turn_started` is the CHILD's start, so its cutoff would delete
         # files the user attached while the parent was already running — the
         # very race the comment below warns about, widened to the parent turn.
-        if not nested:
+        if not nested and _user_msg_persisted:
             # In-memory uploads and correlation context first: a reconnecting
             # client can grab the turn claim the moment release_turn() runs, and
             # drop_uploads() would then wipe the uploads the new turn is
             # validating mid-flight ("Attachment expired"). Drop only uploads from
             # BEFORE this turn — a file attached while the agent was running
             # belongs to the user's next send, not to this turn's cleanup.
+            # Gated on the message having persisted: a turn that died before
+            # consuming its attachments leaves them for the composer's retry
+            # (the client re-sends the same uploads on failure).
             from api.routers.media import drop_uploads
             drop_uploads(conversation_id, older_than=turn_started)
         request_id_var.reset(req_token)
@@ -2134,6 +2146,7 @@ async def _prepare_and_persist_user_message(
     set_title: bool = True,
     message_id: str | None = None,
     agent_slug: str | None = None,
+    skip_expired_attachments: bool = False,
 ) -> tuple[_PersistUserMessageResult | None, str | None]:
     """Validate + persist a user message, returning (result, None) on success
     or (None, error_message) on validation failure.
@@ -2146,6 +2159,12 @@ async def _prepare_and_persist_user_message(
     *message_id* is the caller-pre-generated primary key for the row. On
     insert conflicts (watchdog racing forward_events on the same injection)
     the existing row is treated as success — idempotent by construction.
+
+    *skip_expired_attachments*: the orphan-injection watchdog's own
+    pre-filter is not atomic with the re-validation below (its awaits
+    interleave with the turn's teardown drop_uploads) — one attachment
+    vanishing in that window must not fail the whole persist and take the
+    user's words with it; that caller drops the dead attachment instead.
     """
     # Split type/length: a non-string would otherwise be reported as
     # "exceeds the 200,000 character limit", blaming size for a type error.
@@ -2195,6 +2214,8 @@ async def _prepare_and_persist_user_message(
             return None, f"Invalid attachment: {att.get('url', '')}"
         data = get_upload(conversation_id, path.name)
         if data is None and not path.is_file():
+            if skip_expired_attachments:
+                continue
             return None, f"Attachment expired: {att.get('name', '')}"
         prepared = await _prepare_attachment(att, path, conversation_id, data=data)
         # .get() — attachment fields are client-supplied; a missing key
@@ -2951,6 +2972,10 @@ async def _persist_orphan_injection(conversation_id: str, entry) -> None:
             entry.content, survivors,
             set_title=False, message_id=entry.message_id,
             agent_slug=entry.agent_id,
+            # The filter above races the turn's teardown drop_uploads (this
+            # persist awaits between the two) — an upload vanishing in that
+            # window must not fail the persist and drop the user's words.
+            skip_expired_attachments=True,
         )
     await manager.send(conversation_id, {
         "type": "input_not_processed",

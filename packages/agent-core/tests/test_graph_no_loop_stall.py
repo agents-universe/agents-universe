@@ -440,7 +440,7 @@ def test_clip_tool_output_bounds_ws_frames():
     from agent_core.agent import _MAX_TOOL_OUTPUT_CHARS, _clip_tool_output
 
     small = {"ok": True}
-    assert _clip_tool_output(small) is small  # under cap -> identity
+    assert _clip_tool_output(small) == small  # under cap -> same content
     assert _clip_tool_output("not a dict") == "not a dict"
 
     big = {"data": "x" * (_MAX_TOOL_OUTPUT_CHARS + 10)}
@@ -448,3 +448,33 @@ def test_clip_tool_output_bounds_ws_frames():
     assert clipped["truncated"] is True
     assert clipped["bytes"] > _MAX_TOOL_OUTPUT_CHARS
     assert len(clipped["preview"]) <= 50_000
+
+
+def test_clip_tool_output_coerces_foreign_types_to_json_safe():
+    """sql_query rows carry Decimal/bytes cells; Path/set leak from filesystem
+    tools. The emitted event is the single source for BOTH the WS frame and
+    the tool_calls persistence — a raw foreign type raised TypeError in the
+    API's strict dumps, evicting the live socket and dropping the assistant
+    message."""
+    import json
+    from datetime import date
+    from decimal import Decimal
+    from pathlib import Path
+
+    from agent_core.agent import _clip_tool_output
+
+    result = _clip_tool_output({
+        "money": Decimal("12.50"),
+        "blob": b"\xff\xfebad",
+        "when": date(2026, 1, 2),
+        "p": Path("a/b.txt"),
+        "tags": {"b", "a"},
+    })
+    # Strict stdlib dumps must now succeed — this is what the API runs.
+    text = json.dumps(result)
+    loaded = json.loads(text)
+    assert loaded["money"] == "12.50"
+    assert "bytes length=" in loaded["blob"]
+    assert loaded["when"] == "2026-01-02"
+    assert loaded["p"] == str(Path("a/b.txt"))
+    assert loaded["tags"] == ["a", "b"]

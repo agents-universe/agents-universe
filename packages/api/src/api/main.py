@@ -256,6 +256,33 @@ def create_app() -> FastAPI:
 
     app.add_middleware(StructuredLoggingMiddleware)
 
+    # Reject oversized uploads at the ASGI edge: FastAPI parses the multipart
+    # form (spooling parts >1MB to temp disk) BEFORE the route's own
+    # Content-Length/read caps run, so unauthenticated oversized bodies would
+    # fill the temp volume first and 401/413 later. Header-only check, no
+    # body consumed; chunked uploads without Content-Length still fall
+    # through to the endpoint's read cap. Registered BEFORE CORS so the CORS
+    # middleware (added next, wrapping this one) still headers the 413.
+    _max_upload_bytes = settings.max_upload_size_mb * 1024 * 1024
+
+    @app.middleware("http")
+    async def _upload_size_guard(request: Request, call_next):
+        if request.method == "POST" and request.url.path.startswith("/api/media/"):
+            cl = request.headers.get("content-length", "")
+            if cl.isdigit() and int(cl) > _max_upload_bytes + 64 * 1024:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": {
+                            "code": "FILE_TOO_LARGE",
+                            "message": (
+                                f"File exceeds the {settings.max_upload_size_mb}MB limit"
+                            ),
+                        }
+                    },
+                )
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,

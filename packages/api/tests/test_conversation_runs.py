@@ -304,6 +304,41 @@ async def test_run_failed_on_agent_exception(agent_spy, db, make_project):
     assert run.ended_at is not None
 
 
+async def test_turn_failing_before_persist_keeps_uploads_for_retry(
+    agent_spy, db, make_project
+):
+    """A turn whose user-message persist fails (here: one invalid attachment)
+    never consumed the message's uploads — the teardown must leave them in
+    the store, because the composer re-sends the same attachments on retry
+    and would find them expired."""
+    from api.routers.media import get_upload, store_upload
+
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    store_upload(conv.conversation_id, "att.png", b"png-bytes")
+
+    await _send(conv.conversation_id, {
+        "type": "message",
+        "content": "hello",
+        "attachments": [
+            {
+                "id": "att.png",
+                "url": f"/api/media/{conv.project_id}/{conv.conversation_id}/att.png",
+                "name": "att.png",
+                "media_type": "image/png",
+                "size": 9,
+            },
+            # Fails _validate_attachment_url → the whole persist errors out
+            # BEFORE create_run; the valid attachment's bytes must survive.
+            {"id": "bad", "url": "https://evil.example.com/x.png", "name": "x.png"},
+        ],
+    })
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run is None  # returned before create_run
+    assert get_upload(conv.conversation_id, "att.png") == b"png-bytes"
+
+
 async def _assistant_messages(db, conversation_id: str) -> list[Message]:
     result = await db.execute(
         select(Message)
@@ -599,6 +634,81 @@ async def test_sweep_skips_materialization_when_reply_persisted(db, make_project
     assert n == 0
     await db.refresh(run)
     assert run.streaming_snapshot is None
+    assert len(await _assistant_messages(db, conv.conversation_id)) == 1
+
+
+async def test_sweep_materializes_continuation_after_injection_boundary(
+    db, make_project
+):
+    """An injection boundary freezes only the first half as an
+    interrupted-flagged row while the throttled snapshot keeps the still-
+    streaming second half. A restart between the two must recover the second
+    half, not mistake the frozen row for "already persisted" and drop it."""
+    import json as _json
+
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    frozen = Message(
+        conversation_id=conv.conversation_id, role="assistant",
+        content="first half ", sequence_num=2,
+        knowledge_refs=_json.dumps({"interrupted": True}),
+    )
+    db.add_all([user, frozen])
+    await db.commit()
+    run = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        streaming_snapshot="second half",
+    )
+    db.add(run)
+    await db.commit()
+
+    n = await materialize_interrupted_snapshots(db)
+
+    assert n == 1
+    await db.refresh(run)
+    assert run.streaming_snapshot is None
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert [m.content for m in msgs] == ["first half ", "second half"]
+
+
+async def test_sweep_skips_when_interrupted_row_already_carries_snapshot(
+    db, make_project
+):
+    """The abort-path partial row (interrupted-flagged, content = the text the
+    snapshot last held) IS this run's landed persist - materializing again
+    would duplicate it. Containment, not the flag alone, is the test."""
+    import json as _json
+
+    conv = await _make_conversation(db, make_project)
+    user = Message(
+        conversation_id=conv.conversation_id, role="user",
+        content="do the task", sequence_num=1,
+    )
+    partial = Message(
+        conversation_id=conv.conversation_id, role="assistant",
+        content="the partial output so far", sequence_num=2,
+        knowledge_refs=_json.dumps({"interrupted": True}),
+    )
+    db.add_all([user, partial])
+    await db.commit()
+    run = ConversationRun(
+        conversation_id=conv.conversation_id,
+        user_message_id=user.message_id,
+        status="interrupted",
+        # Throttled prefix of what the partial row already holds.
+        streaming_snapshot="the partial output",
+    )
+    db.add(run)
+    await db.commit()
+
+    n = await materialize_interrupted_snapshots(db)
+
+    assert n == 0
     assert len(await _assistant_messages(db, conv.conversation_id)) == 1
 
 

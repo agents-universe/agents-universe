@@ -182,6 +182,29 @@ async def test_send_evicts_dead_ws(mgr):
     assert "c1" not in mgr._connections  # dead WS evicted
 
 
+async def test_send_unserializable_payload_keeps_socket(mgr, caplog):
+    """A frame that fails to encode is a local payload bug, not a dead peer —
+    dropping it must NOT evict a healthy connection. The live-turn killer: a
+    tool_call_end carrying a Decimal cell tore down the socket mid-stream,
+    silently severing every subsequent frame of the turn."""
+    import logging
+    from decimal import Decimal
+
+    ws = _make_ws()
+    await mgr.connect("c1", ws)
+
+    with caplog.at_level(logging.WARNING, logger="agents_universe.ws"):
+        result = await mgr.send(
+            "c1", {"type": "tool_call_end", "output": {"money": Decimal("1.50")}}
+        )
+
+    assert result is False
+    assert "c1" in mgr._connections  # healthy WS kept
+    ws.send_text.assert_not_called()
+    ws.close.assert_not_awaited()
+    assert "unserializable" in caplog.text
+
+
 async def test_send_timeout_evicts_half_open_ws(mgr, monkeypatch, caplog):
     """A half-open TCP connection (client vanished, no RST) blocks send
     forever — the timeout must evict it like a dead socket instead of

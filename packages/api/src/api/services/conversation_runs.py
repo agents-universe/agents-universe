@@ -208,44 +208,64 @@ async def materialize_interrupted_snapshots(db: AsyncSession) -> int:
                         )
                     )
                 ).scalar_one_or_none()
+            do_materialize = True
             if user_seq is not None:
-                # Dedup: an assistant row after the run's user message means
-                # the interrupted turn already persisted its output (stream_end
-                # path, or a later turn's reply) - the snapshot is a duplicate.
-                has_reply = (
+                # Dedup: the snapshot is a duplicate when this run's output
+                # already landed in a message row. A row counts as landed
+                # when it is NOT flagged interrupted (the stream_end persist,
+                # or a later turn's reply/error row) OR when its content
+                # CONTAINS the snapshot (an interrupted-flagged row that
+                # already carries this text — the abort-path partial replay).
+                # The exception matters: an injection boundary freezes only
+                # the first half as an interrupted row while the throttled
+                # snapshot keeps the still-streaming second half — treating
+                # that frozen row as "already persisted" lost the second half
+                # forever on the next restart.
+                rows = (
                     await db.execute(
-                        select(func.count())
-                        .select_from(DbMessage)
+                        select(DbMessage.content, DbMessage.knowledge_refs)
                         .where(
                             DbMessage.conversation_id == conversation_id,
                             DbMessage.role == "assistant",
                             DbMessage.sequence_num > user_seq,
                         )
+                        .order_by(DbMessage.sequence_num.desc())
+                    )
+                ).all()
+                for content, refs in rows:
+                    try:
+                        ref_flags = _json.loads(refs) if refs else {}
+                    except Exception:
+                        ref_flags = {}
+                    interrupted_row = bool(
+                        isinstance(ref_flags, dict) and ref_flags.get("interrupted")
+                    )
+                    if not interrupted_row or (content and snapshot in content):
+                        do_materialize = False
+                        break
+            if do_materialize:
+                # Serialize sequence assignment like _persist_assistant_message
+                # (lock is a no-op on SQLite, real on the other dialects).
+                await db.execute(
+                    select(Conversation.conversation_id)
+                    .where(Conversation.conversation_id == conversation_id)
+                    .with_for_update()
+                )
+                max_seq = (
+                    await db.execute(
+                        select(func.coalesce(func.max(DbMessage.sequence_num), 0))
+                        .where(DbMessage.conversation_id == conversation_id)
                     )
                 ).scalar_one()
-                if not has_reply:
-                    # Serialize sequence assignment like _persist_assistant_message
-                    # (lock is a no-op on SQLite, real on the other dialects).
-                    await db.execute(
-                        select(Conversation.conversation_id)
-                        .where(Conversation.conversation_id == conversation_id)
-                        .with_for_update()
-                    )
-                    max_seq = (
-                        await db.execute(
-                            select(func.coalesce(func.max(DbMessage.sequence_num), 0))
-                            .where(DbMessage.conversation_id == conversation_id)
-                        )
-                    ).scalar_one()
-                    db.add(DbMessage(
-                        message_id=str(uuid.uuid4()),
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=snapshot,
-                        knowledge_refs=_json.dumps({"interrupted": True}),
-                        sequence_num=max_seq + 1,
-                    ))
-                    will_materialize = True
+                db.add(DbMessage(
+                    message_id=str(uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=snapshot,
+                    knowledge_refs=_json.dumps({"interrupted": True}),
+                    sequence_num=max_seq + 1,
+                ))
+                will_materialize = True
             await db.execute(
                 update(ConversationRun)
                 .where(ConversationRun.run_id == run_id)

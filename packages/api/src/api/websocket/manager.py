@@ -137,13 +137,20 @@ class ConnectionManager:
         if not ws:
             return False
         try:
+            payload = json.dumps(data, default=_json_default)
+        except (TypeError, ValueError) as e:
+            # A payload that fails to encode is a local bug, not a dead
+            # peer — dropping the frame must not evict a healthy socket
+            # (eviction tore down live turns over a single Decimal cell in
+            # a tool_call_end payload).
+            _log.warning("Dropping unserializable WS frame for %s: %s", conversation_id, e)
+            return False
+        try:
             # Task-own the coroutine from creation: a bare coroutine handed
             # to wait_for can be created and dropped un-awaited when the
             # send races socket teardown; a Task is always driven or
             # cancelled, never orphaned.
-            send_task = asyncio.create_task(
-                ws.send_text(json.dumps(data, default=_json_default))
-            )
+            send_task = asyncio.create_task(ws.send_text(payload))
             try:
                 await asyncio.wait_for(send_task, timeout=_SEND_TIMEOUT_S)
             finally:

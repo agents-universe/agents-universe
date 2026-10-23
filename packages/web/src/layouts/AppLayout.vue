@@ -24,7 +24,7 @@
     <aside class="sidebar-left" :class="{ collapsed: leftCollapsed }">
       <div class="sidebar-header">
         <span v-if="!leftCollapsed" class="sidebar-title"><Bot :size="16" class="sidebar-title-icon" /> Agents Universe</span>
-        <button class="sidebar-toggle" @click="toggleLeft" title="Toggle sidebar">
+        <button class="sidebar-toggle" @click="toggleLeft" :title="t('layout.toggleSidebar')">
           <ChevronLeft v-if="!leftCollapsed" :size="16" />
           <ChevronRight v-else :size="16" />
         </button>
@@ -87,7 +87,7 @@
             @click="activeTab = tab.id"
           ><component :is="tab.icon" :size="13" /> {{ tab.label }}</button>
         </div>
-        <button class="sidebar-toggle" @click="toggleRight" title="Toggle panel">
+        <button class="sidebar-toggle" @click="toggleRight" :title="t('layout.togglePanel')">
           <ChevronRight v-if="!rightCollapsed" :size="16" />
           <ChevronLeft v-else :size="16" />
         </button>

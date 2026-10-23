@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { i18n } from '@/i18n'
 import MermaidBlock from '@/components/chat/MermaidBlock.vue'
 
 // The component lazy-loads mermaid via `await import('mermaid')`. Mock the
@@ -51,6 +52,24 @@ describe('MermaidBlock', () => {
     expect(wrapper.find('.mermaid-error').exists()).toBe(false)
     expect(wrapper.find('.mermaid-source-code').exists()).toBe(false)
     expect(wrapper.find('.mermaid-diagram svg').exists()).toBe(true)
+  })
+
+  it('localizes the fullscreen control tooltips', async () => {
+    // The fullscreen modal is teleported to body; its icon-only buttons were
+    // labelled with hardcoded English titles, wrong on a zh-CN UI.
+    mockMermaid.render.mockResolvedValue({ svg: '<svg id="ok-svg"><g /></svg>' })
+    const wrapper = mount(MermaidBlock, { props: { code: SAMPLE_CODE } })
+    await flushPromises()
+    await wrapper.find('.mermaid-diagram').trigger('click')
+
+    const controls = document.body.querySelectorAll('.mermaid-modal-controls button')
+    expect([...controls].map((b) => b.getAttribute('title'))).toEqual([
+      i18n.global.t('common.zoomIn'),
+      null, // the percentage reset button is text-labelled
+      i18n.global.t('common.zoomOut'),
+      i18n.global.t('common.close'),
+    ])
+    wrapper.unmount()
   })
 
   it('shows empty-code error for a blank code block', async () => {

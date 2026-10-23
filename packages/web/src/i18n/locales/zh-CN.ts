@@ -30,6 +30,8 @@ export default {
     connectionOk: '连接成功',
     connectionFailed: '连接失败',
     createFailed: '创建失败',
+    zoomIn: '放大',
+    zoomOut: '缩小',
   },
   sidebar: {
     common: {
@@ -291,8 +293,6 @@ export default {
     roleUser: '用户',
     roleAssistant: '智能体',
     roleTool: '工具',
-    zoomIn: '放大',
-    zoomOut: '缩小',
   },
   taskPlan: {
     title: '任务计划',
@@ -453,6 +453,8 @@ export default {
   layout: {
     menu: '菜单',
     panel: '面板',
+    toggleSidebar: '折叠/展开侧边栏',
+    togglePanel: '折叠/展开面板',
     sessionTokens: '会话消耗 {count} tokens',
     tabConversations: '会话',
     tabKnowledge: '知识',

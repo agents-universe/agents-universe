@@ -19,10 +19,10 @@
         <div ref="fsEl" class="mermaid-modal-svg" v-html="svgHtml" />
       </div>
       <div class="mermaid-modal-controls">
-        <button title="Zoom in" @click="zoomIn"><ZoomIn :size="16" /></button>
+        <button :title="t('common.zoomIn')" @click="zoomIn"><ZoomIn :size="16" /></button>
         <button @click="resetZoom">{{ scaleLabel }}</button>
-        <button title="Zoom out" @click="zoomOut"><ZoomOut :size="16" /></button>
-        <button title="Close" @click="fullscreen = false"><X :size="16" /></button>
+        <button :title="t('common.zoomOut')" @click="zoomOut"><ZoomOut :size="16" /></button>
+        <button :title="t('common.close')" @click="fullscreen = false"><X :size="16" /></button>
       </div>
     </div>
   </Teleport>

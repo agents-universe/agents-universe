@@ -30,6 +30,8 @@ export default {
     connectionOk: 'Connected',
     connectionFailed: 'Connection failed',
     createFailed: 'Create failed',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
   },
   sidebar: {
     common: {
@@ -292,8 +294,6 @@ export default {
     roleUser: 'User',
     roleAssistant: 'Assistant',
     roleTool: 'Tool',
-    zoomIn: 'Zoom in',
-    zoomOut: 'Zoom out',
   },
   taskPlan: {
     title: 'Task plan',
@@ -454,6 +454,8 @@ export default {
   layout: {
     menu: 'Menu',
     panel: 'Panel',
+    toggleSidebar: 'Toggle sidebar',
+    togglePanel: 'Toggle panel',
     sessionTokens: 'Session: {count} tokens',
     tabConversations: 'Conversations',
     tabKnowledge: 'Knowledge',

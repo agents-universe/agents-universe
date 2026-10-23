@@ -100,9 +100,9 @@ describe('MessageBubble — image lightbox', () => {
 
     const controls = document.body.querySelectorAll('.mermaid-modal-controls button')
     expect([...controls].map((b) => b.getAttribute('title'))).toEqual([
-      i18n.global.t('messageBubble.zoomIn'),
+      i18n.global.t('common.zoomIn'),
       null, // the "1:1" reset button is text-labelled
-      i18n.global.t('messageBubble.zoomOut'),
+      i18n.global.t('common.zoomOut'),
       i18n.global.t('common.close'),
     ])
     wrapper.unmount()

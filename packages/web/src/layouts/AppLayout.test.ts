@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { i18n } from '@/i18n'
 import AppLayout from './AppLayout.vue'
 
 const routerPush = vi.hoisted(() => vi.fn())
@@ -121,6 +122,17 @@ describe('AppLayout session token counter', () => {
     conversationStore.tokensUsed = 0
     const wrapper = mount(AppLayout)
     expect(wrapper.find('.nav-tokens').exists()).toBe(false)
+  })
+
+  it('localizes the sidebar/panel toggle tooltips', () => {
+    // Icon-only toggles are labelled solely by their tooltip; hardcoded
+    // English there showed the wrong language on a zh-CN UI.
+    routeState.path = '/projects/p-1/chat'
+    const wrapper = mount(AppLayout)
+    expect(wrapper.find('.sidebar-left .sidebar-toggle').attributes('title'))
+      .toBe(i18n.global.t('layout.toggleSidebar'))
+    expect(wrapper.find('.panel-right .sidebar-toggle').attributes('title'))
+      .toBe(i18n.global.t('layout.togglePanel'))
   })
 
   it('hides the counter without an active conversation', () => {

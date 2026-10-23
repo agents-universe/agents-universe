@@ -286,6 +286,20 @@ def test_blank_tool_arguments_mean_empty_object():
         Agent._parse_tool_arguments({"function": {"arguments": "{"}})
 
 
+def test_non_object_json_arguments_rejected():
+    """A well-formed array/null/string payload must not reach args.get(...).
+
+    The knowledge_rw/memory_rw post-execution hooks call args.get outside
+    the tool try/except — a non-dict argument crashes the turn with
+    AttributeError instead of the malformed-arguments tool error both loops
+    already handle for JSONDecodeError/TypeError.
+    """
+    for payload in ("[1, 2]", "null", '"just a string"', "42"):
+        tc = {"function": {"name": "knowledge_rw", "arguments": payload}}
+        with pytest.raises(TypeError):
+            Agent._parse_tool_arguments(tc)
+
+
 # ─── Compressor: whitespace-free payloads ───────────────────────────────
 
 

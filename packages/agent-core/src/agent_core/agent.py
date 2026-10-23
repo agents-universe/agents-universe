@@ -436,13 +436,24 @@ class Agent:
         arguments string — there is no JSON fragment to delimit — so a blank
         value must mean ``{}`` rather than malformed JSON. The stored call is
         normalized so the next provider request carries valid JSON too.
-        Raises ``JSONDecodeError``/``TypeError`` for genuinely bad values.
+        Raises ``JSONDecodeError``/``TypeError`` for genuinely bad values:
+        the parsed payload must be a JSON object. A well-formed array/null/
+        string would otherwise reach ``args.get(...)`` in the
+        knowledge_rw/memory_rw post-execution hooks, which sit outside the
+        tool try/except — a non-dict there crashes the whole turn with
+        AttributeError instead of surfacing as a tool error the model can
+        correct.
         """
         raw = tc["function"].get("arguments")
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             tc["function"]["arguments"] = "{}"
             return {}
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise TypeError(
+                f"tool arguments must be a JSON object, got {type(parsed).__name__}"
+            )
+        return parsed
 
     @staticmethod
     def _accumulate_tool_delta(buffer: dict, delta: dict) -> None:

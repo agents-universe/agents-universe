@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import fnmatch
+import json
 import logging
 import os
 import re
@@ -35,6 +36,14 @@ _MAX_IMAGE_BYTES = 7_000_000
 # could dump tens of MB straight into the LLM context. Mirrors the byte caps
 # on images and on api_request/web_fetch responses.
 _MAX_TEXT_CHARS = 1_000_000
+# Aggregate image budget for ONE tool result. The per-block caps above only
+# bound a single block — without a result-level total a hostile MCP server
+# stacks N blocks and fills the workspace media dir (N × 7MB), the same
+# disk-exhaustion class the per-block comment warns about. The byte budget
+# is enforced strictly (a block larger than the remaining budget is skipped),
+# the block cap additionally bounds descriptor count for small-image floods.
+_MAX_IMAGE_BLOCKS = 16
+_MAX_IMAGE_TOTAL_BYTES = 20_000_000
 
 # MIME type → media-filename extension. Splitting "image/svg+xml" on "/"
 # would yield "svg+xml", whose '+' fails the media filename whitelist and
@@ -59,6 +68,12 @@ from .api_request import _is_sensitive_header, _is_private_ip, _redact_sensitive
 
 _MAX_TOOL_NAME_LEN = 64
 _MAX_DESCRIPTION_LEN = 1024
+# The schema ships with EVERY provider request (and is re-serialized for
+# token estimates); a bloated one — hostile, or a generated multi-MB enum —
+# defeats the response byte caps. Descriptions are truncated to
+# _MAX_DESCRIPTION_LEN for the same reason; oversized schemas fall back to a
+# permissive object schema and the server keeps validating arguments.
+_MAX_SCHEMA_BYTES = 32_768
 
 
 def _detect_mcp_major() -> int:
@@ -725,6 +740,9 @@ class McpProxyTool(Tool):
         self._mcp_tool = mcp_tool
         self._server_cfg = server_cfg
         self._manager = manager
+        # Size-checking serializes the schema; cache the bounded result —
+        # token estimators and providers all read .parameters per turn.
+        self._bounded_parameters: dict | None = None
 
     @property
     def name(self) -> str:
@@ -738,9 +756,26 @@ class McpProxyTool(Tool):
 
     @property
     def parameters(self) -> dict:
+        if self._bounded_parameters is not None:
+            return self._bounded_parameters
         schema = getattr(self._mcp_tool, "input_schema", None)
         if not isinstance(schema, dict):
-            return {"type": "object", "properties": {}}
+            self._bounded_parameters = {"type": "object", "properties": {}}
+            return self._bounded_parameters
+        try:
+            size = len(json.dumps(schema, ensure_ascii=True, default=str))
+        except (TypeError, ValueError):
+            self._bounded_parameters = {"type": "object", "properties": {}}
+            return self._bounded_parameters
+        if size > _MAX_SCHEMA_BYTES:
+            _log.warning(
+                "MCP tool %s: input_schema of %d bytes exceeds the %d-byte cap, "
+                "using an empty object schema",
+                self._name, size, _MAX_SCHEMA_BYTES,
+            )
+            self._bounded_parameters = {"type": "object", "properties": {}}
+            return self._bounded_parameters
+        self._bounded_parameters = schema
         return schema
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -828,6 +863,7 @@ class McpProxyTool(Tool):
         text_parts: list[str] = []
         images: list[dict] = []
         text_chars = 0
+        image_bytes = 0
 
         for block in content_blocks:
             block_type = getattr(block, "type", None)
@@ -844,9 +880,26 @@ class McpProxyTool(Tool):
                     text_parts.append(part)
                     text_chars += len(part)
             elif block_type == "image":
-                img = self._save_image(block, context)
-                if img:
+                # Result-level budget: per-block caps alone let N blocks fill
+                # the media dir (see _MAX_IMAGE_TOTAL_BYTES).
+                if len(images) >= _MAX_IMAGE_BLOCKS:
+                    _log.warning(
+                        "MCP tool %s: image block cap (%d) reached, skipping",
+                        self._name, _MAX_IMAGE_BLOCKS,
+                    )
+                    continue
+                remaining_bytes = _MAX_IMAGE_TOTAL_BYTES - image_bytes
+                if remaining_bytes <= 0:
+                    _log.warning(
+                        "MCP tool %s: image byte budget exhausted, skipping",
+                        self._name,
+                    )
+                    continue
+                saved = self._save_image(block, context, max_bytes=remaining_bytes)
+                if saved is not None:
+                    img, size = saved
                     images.append(img)
+                    image_bytes += size
 
         output: dict[str, Any] = {"content": "\n".join(text_parts) if text_parts else ""}
 
@@ -862,8 +915,15 @@ class McpProxyTool(Tool):
 
         return output
 
-    def _save_image(self, block: Any, context: ToolContext) -> dict | None:
-        """Save an MCP ImageContent block to the media dir and return the image descriptor."""
+    def _save_image(self, block: Any, context: ToolContext, *, max_bytes: int) -> tuple[dict, int] | None:
+        """Save an MCP ImageContent block; return (descriptor, decoded size).
+
+        ``max_bytes`` is the caller's remaining result-level budget — the
+        effective per-image limit is min(_MAX_IMAGE_BYTES, max_bytes), so a
+        result never writes more than _MAX_IMAGE_TOTAL_BYTES in total.
+        """
+        if max_bytes <= 0:
+            return None
         try:
             data = getattr(block, "data", "")
             mime_type = getattr(block, "mime_type", "image/png")
@@ -888,10 +948,11 @@ class McpProxyTool(Tool):
             output_path = media_dir / filename
 
             raw = base64.b64decode(data, validate=True)
-            if len(raw) > _MAX_IMAGE_BYTES:
+            limit = min(_MAX_IMAGE_BYTES, max_bytes)
+            if len(raw) > limit:
                 _log.warning(
-                    "MCP image from %s too large: %d bytes, skipping",
-                    self._server_name, len(raw),
+                    "MCP image from %s too large: %d bytes (budget %d), skipping",
+                    self._server_name, len(raw), limit,
                 )
                 return None
             output_path.write_bytes(raw)
@@ -903,7 +964,7 @@ class McpProxyTool(Tool):
                 "alt": f"MCP image from {self._server_name}",
                 "path": str(output_path),
                 "annotations": [],
-            }
+            }, len(raw)
         except Exception as exc:
             _log.warning("MCP image save failed: %s", exc)
             return None

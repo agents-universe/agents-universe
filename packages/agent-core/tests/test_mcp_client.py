@@ -6,6 +6,7 @@ test starts a real MCP streamable-http server via ``mcp.server.lowlevel.Server``
 from __future__ import annotations
 
 import asyncio
+import base64
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -279,6 +280,20 @@ async def test_proxy_tool_parameters_normalization():
     assert proxy2.parameters == schema
 
 
+def test_parameters_replaces_oversized_input_schema():
+    """The schema ships with EVERY provider request; a bloated one defeats
+    the response byte caps. Oversized schemas fall back to a permissive
+    object schema (the server still validates arguments) — same reasoning
+    as the _MAX_DESCRIPTION_LEN truncation on description."""
+    huge = {
+        "type": "object",
+        "properties": {"x": {"type": "string", "description": "d" * 50_000}},
+    }
+    tool = _make_mcp_tool(input_schema=huge)
+    proxy = McpProxyTool("mcp__t__x", "t", "T", "x", tool, {}, MagicMock())
+    assert proxy.parameters == {"type": "object", "properties": {}}
+
+
 @pytest.mark.asyncio
 async def test_proxy_tool_execute_text():
     tool = _make_mcp_tool()
@@ -369,6 +384,53 @@ async def test_proxy_tool_execute_no_session():
     ctx = _make_context()
     result = await proxy.execute({}, ctx)
     assert "not connected" in result["error"]
+
+
+def _image_result(count: int, size: int):
+    """CallToolResult mock with `count` image blocks of `size` raw bytes each."""
+    result = MagicMock()
+    result.is_error = False
+    block = MagicMock()
+    block.type = "image"
+    block.mime_type = "image/png"
+    block.data = base64.b64encode(b"x" * size).decode()
+    result.content = [block] * count
+    return result
+
+
+def test_convert_result_caps_aggregate_image_bytes(tmp_path, monkeypatch):
+    """Per-block caps alone let a hostile MCP server write N × 7MB into the
+    workspace media dir — the result-level byte budget must stop the flood.
+    raising=False: pre-fix the constant does not exist, the budget is never
+    consulted, and the assertion below fails on the file count."""
+    import agent_core.tools.mcp_client as mod
+
+    monkeypatch.setattr(mod, "_MAX_IMAGE_TOTAL_BYTES", 1_000, raising=False)
+
+    tool = _make_mcp_tool()
+    proxy = McpProxyTool("mcp__t__x", "t", "T", "x", tool, {}, MagicMock())
+    ctx = _make_context(str(tmp_path))
+
+    # 600-byte images against a 1000-byte budget: only the first fits, every
+    # later block exceeds the remaining 400 bytes.
+    out = proxy._convert_result(_image_result(count=5, size=600), ctx)
+    assert len(out["images"]) == 1
+
+
+def test_convert_result_caps_image_block_count(tmp_path, monkeypatch):
+    """A flood of tiny images must also stop at the block cap — the byte
+    budget alone would let thousands of minimal blocks through.
+    raising=False: pre-fix the constant does not exist and all blocks save."""
+    import agent_core.tools.mcp_client as mod
+
+    monkeypatch.setattr(mod, "_MAX_IMAGE_BLOCKS", 2, raising=False)
+
+    tool = _make_mcp_tool()
+    proxy = McpProxyTool("mcp__t__x", "t", "T", "x", tool, {}, MagicMock())
+    ctx = _make_context(str(tmp_path))
+
+    out = proxy._convert_result(_image_result(count=5, size=10), ctx)
+    assert len(out["images"]) == 2
 
 
 @pytest.mark.asyncio

@@ -534,18 +534,27 @@ class SchedulerTool(Tool):
         row = await self._find(context, schedule_id, ScheduledTask)
         if row is None:
             return {"error": "Scheduled task not found in this project"}
-        # Compute BEFORE mutating: on CronError this returns with the row
-        # untouched — assigning row.enabled first and returning would leave
-        # the change dirty in the shared session, and the next op's commit
-        # (e.g. create) would flush an enabled task with a stale next_run_at.
-        try:
-            next_run = (
-                next_run_at(row.cron_expr, row.timezone, _now()) if enabled else None
-            )
-        except CronError as exc:
-            return {"error": f"Stored cron expression is invalid: {exc}"}
+        # Recompute only on a real state change (or to heal an enabled row
+        # with no anchor): enable-on-enabled with a DUE next_run_at (<= now,
+        # tick not yet claimed) would push the occurrence into the future and
+        # silently skip it — the same rule _op_update and the REST PATCH
+        # follow. Compute BEFORE mutating: on CronError this returns with the
+        # row untouched — assigning row.enabled first and returning would
+        # leave the change dirty in the shared session, and the next op's
+        # commit (e.g. create) would flush an enabled task with a stale
+        # next_run_at.
+        recompute = enabled != bool(row.enabled) or (enabled and row.next_run_at is None)
+        next_run = None
+        if recompute:
+            try:
+                next_run = (
+                    next_run_at(row.cron_expr, row.timezone, _now()) if enabled else None
+                )
+            except CronError as exc:
+                return {"error": f"Stored cron expression is invalid: {exc}"}
         row.enabled = enabled
-        row.next_run_at = next_run
+        if recompute:
+            row.next_run_at = next_run
         row.updated_at = _now()
         await context.db_session.commit()
         return {"success": True, **self._serialize(row)}

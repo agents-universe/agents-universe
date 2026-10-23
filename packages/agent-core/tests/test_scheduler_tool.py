@@ -393,6 +393,32 @@ class TestListGetUpdate:
         assert enabled["enabled"] is True
         assert enabled["next_run_at"] is not None
 
+    async def test_enable_on_enabled_keeps_due_next_run(self, sched_env):
+        """Re-enabling an already-enabled task must not push a due occurrence
+        into the future — same rule as update/PATCH: the scheduler tick has
+        not claimed the due next_run_at yet, and an unconditional recompute
+        on enable silently skipped it."""
+        tool, context, session, _ = sched_env
+        script = await _add_script(session)
+        created = await _create(tool, context, script_id=str(script.script_id))
+
+        due = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        row = (
+            await session.execute(
+                select(ScheduledTask).where(
+                    ScheduledTask.schedule_id == created["schedule_id"]
+                )
+            )
+        ).scalar_one()
+        row.next_run_at = due
+        await session.commit()
+
+        result = await tool.execute(
+            {"operation": "enable", "schedule_id": created["schedule_id"]}, context
+        )
+        assert result["success"] is True, result
+        assert datetime.fromisoformat(result["next_run_at"]) == due
+
     async def test_toggle_cron_error_leaves_row_untouched(self, sched_env):
         """April 31 never exists: validate_cron accepts both fields (in range)
         but next_run_at finds no occurrence and raises CronError. The toggle

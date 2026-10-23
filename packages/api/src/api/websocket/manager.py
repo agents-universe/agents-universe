@@ -137,10 +137,21 @@ class ConnectionManager:
         if not ws:
             return False
         try:
-            await asyncio.wait_for(
-                ws.send_text(json.dumps(data, default=_json_default)),
-                timeout=_SEND_TIMEOUT_S,
+            # Task-own the coroutine from creation: a bare coroutine handed
+            # to wait_for can be created and dropped un-awaited when the
+            # send races socket teardown; a Task is always driven or
+            # cancelled, never orphaned.
+            send_task = asyncio.create_task(
+                ws.send_text(json.dumps(data, default=_json_default))
             )
+            try:
+                await asyncio.wait_for(send_task, timeout=_SEND_TIMEOUT_S)
+            finally:
+                # An outer cancellation does not cancel the inner task in
+                # the pre-first-suspend window — take it down so no frame
+                # is written after the caller gave up.
+                if not send_task.done():
+                    send_task.cancel()
             return True
         except asyncio.TimeoutError:
             _log.warning(

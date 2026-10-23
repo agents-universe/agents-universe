@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from ..logging_setup import correlation_ctx_var, request_id_var
+from ..websocket import manager as _manager_mod  # module — for _SEND_TIMEOUT_S
 from ..websocket.manager import manager
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
@@ -127,10 +128,33 @@ class _ManagerTransport(Transport):
         if not delivered:
             if self._fallback_dead:
                 return False
+            # A socket that already completed its close handshake cannot be
+            # written to — skip the doomed send entirely and latch the
+            # fallback so the rest of the turn stops probing it.
+            state = getattr(self._ws, "application_state", None)
+            if getattr(state, "name", None) == "DISCONNECTED":
+                self._fallback_dead = True
+                return False
             try:
-                await asyncio.wait_for(
-                    self._ws.send_json(data), timeout=manager._SEND_TIMEOUT_S
-                )
+                # Task-own the coroutine from creation: a bare coroutine
+                # handed to wait_for can be created and dropped un-awaited
+                # when anything between creation and the await raises; a
+                # Task is always driven or cancelled, never orphaned. The
+                # timeout constant is read off the MODULE — it is not an
+                # attribute of the manager instance (that lookup used to
+                # raise AttributeError here, orphaning the coroutine above
+                # and silently dropping every fallback event).
+                send_task = asyncio.create_task(self._ws.send_json(data))
+                try:
+                    await asyncio.wait_for(
+                        send_task, timeout=_manager_mod._SEND_TIMEOUT_S
+                    )
+                finally:
+                    # An outer cancellation (turn teardown) does not cancel
+                    # the inner task in the pre-first-suspend window — take
+                    # it down so the frame isn't sent after the turn died.
+                    if not send_task.done():
+                        send_task.cancel()
                 return True
             except asyncio.TimeoutError:
                 self._fallback_dead = True

@@ -100,27 +100,78 @@ function _promptFromEvent(data: Record<string, unknown>): SelectionPrompt {
 }
 
 /** Close the oldest idle (non-streaming) connection to stay under the limit.
- * Returns true if a connection was evicted. */
-function _closeOldestIdle(excludeId: string): boolean {
+ * The victim is downgraded to a parked waiter (keeps its map entry and polls
+ * for a slot) instead of being deleted: nothing re-arms an id that left the
+ * map (the lifecycle kick iterates only known ids and the conversationId
+ * watch only fires on switch), so a hard-deleted entry stranded that
+ * conversation on "Connecting…" forever. The currently displayed
+ * conversation is never a victim. Returns true if a socket was freed. */
+function _closeOldestIdle(
+  excludeId: string,
+  open: (id: string, entry: ConnectionEntry) => void,
+): boolean {
   const conv = useConversationStore()
   for (const [id, entry] of _connections) {
     if (id === excludeId) continue
+    if (id === conv.conversationId) continue
     if (conv.streamingIds[id]) continue
-    // Only an ESTABLISHED socket frees real capacity when closed. Evicting a
-    // parked waiter (no socket yet) or a mid-handshake entry strands that
-    // conversation for good: _cleanupConnection clears its retry timer and
-    // deletes the entry, and nothing re-arms a connection for an id no
-    // longer in the map (the lifecycle kick iterates only known ids).
+    // Only an ESTABLISHED socket frees real capacity when closed; a parked
+    // waiter or a mid-handshake entry holds no socket to give back.
     if (!entry.ws || entry.ws.readyState !== WebSocket.OPEN) continue
-    _cleanupConnection(id)
+    _parkWaiter(id, entry, open)
     return true
   }
   return false
 }
 
-function _cleanupConnection(id: string) {
-  const entry = _connections.get(id)
-  if (!entry) return
+/** Entries currently holding a socket. The cap is on live sockets — parked
+ *  waiters (ws === null) sit in a queue outside it and must not inflate the
+ *  count, or a backlog of parked ids would block every future connection. */
+function _socketCount(): number {
+  let n = 0
+  for (const entry of _connections.values()) {
+    if (entry.ws !== null) n++
+  }
+  return n
+}
+
+/** Downgrade an entry to a parked waiter: no socket, status 'connecting', and
+ *  a 5 s poll that opens a socket as soon as a slot frees. Shared by the cap
+ *  park path and by _closeOldestIdle's soft eviction. ``open`` is the
+ *  composable-scoped socket opener (it closes over the dispatch pipeline). */
+function _parkWaiter(
+  id: string,
+  entry: ConnectionEntry,
+  open: (id: string, entry: ConnectionEntry) => void,
+) {
+  _closeSocket(entry)
+  entry.status.value = 'connecting'
+  entry.retries = 0
+  // Re-arms the same entry instead of re-entering connect(): connect()
+  // rebuilds the entry with retries: 0, so a give-up check living there was
+  // dead code and a saturated server retried forever with the UI stuck on
+  // 'connecting' (no degraded state ever surfaced).
+  const retryWhenFull = () => {
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null
+      // No slot freed up for a while: surface the degraded state in the
+      // UI, but keep waiting. A live turn always ends eventually, and
+      // dropping the entry here would strand the conversation for good.
+      if (entry.retries >= MAX_RETRIES) _failedConversations.add(id)
+      entry.retries++
+      // A stream may have ended since the last attempt, freeing a slot —
+      // evict an idle connection if possible, otherwise keep waiting.
+      if (_socketCount() >= MAX_CONNECTIONS && !_closeOldestIdle(id, open)) {
+        retryWhenFull()
+        return
+      }
+      open(id, entry)
+    }, 5000)
+  }
+  retryWhenFull()
+}
+
+function _closeSocket(entry: ConnectionEntry) {
   if (entry.pingTimer) {
     clearInterval(entry.pingTimer)
     entry.pingTimer = null
@@ -137,6 +188,12 @@ function _cleanupConnection(id: string) {
     entry.ws.close()
     entry.ws = null
   }
+}
+
+function _cleanupConnection(id: string) {
+  const entry = _connections.get(id)
+  if (!entry) return
+  _closeSocket(entry)
   _connections.delete(id)
   _connRevision.value++
 }
@@ -179,8 +236,6 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       const ids = Array.from(new Set([..._connections.keys(), ..._failedConversations]))
       for (const cid of ids) connect(cid)
     })
-    // A fresh attempt clears the failed marker; retries start over.
-    _failedConversations.delete(id)
     // If already connected and open, just ensure status is correct
     const existing = _connections.get(id)
     if (existing?.ws && existing.ws.readyState === WebSocket.OPEN) {
@@ -196,7 +251,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     // treating it like an active entry let the lifecycle kick open a socket
     // for every parked conversation on top of the limit.
     const parked = existing !== undefined && existing.ws === null
-    if ((!existing || parked) && _connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
+    if ((!existing || parked) && _socketCount() >= MAX_CONNECTIONS && !_closeOldestIdle(id, _open)) {
       // Already parked: its retry chain keeps polling for a freed slot.
       // Replacing the entry would orphan that timer, which could later fire
       // and open a socket outside the cap.
@@ -221,28 +276,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       }
       _connections.set(id, entry)
       _connRevision.value++
-      // Re-arms the same entry instead of re-entering connect(): connect()
-      // rebuilds the entry with retries: 0, so the give-up check below was
-      // dead code and a saturated server retried forever with the UI stuck
-      // on 'connecting' (no degraded state ever surfaced).
-      const retryWhenFull = () => {
-        entry.retryTimer = setTimeout(() => {
-          entry.retryTimer = null
-          // No slot freed up for a while: surface the degraded state in the
-          // UI, but keep waiting. A live turn always ends eventually, and
-          // dropping the entry here would strand the conversation for good.
-          if (entry.retries >= MAX_RETRIES) _failedConversations.add(id)
-          entry.retries++
-          // A stream may have ended since the last attempt, freeing a slot —
-          // evict an idle connection if possible, otherwise keep waiting.
-          if (_connections.size >= MAX_CONNECTIONS && !_closeOldestIdle(id)) {
-            retryWhenFull()
-            return
-          }
-          _open(id, entry)
-        }, 5000)
-      }
-      retryWhenFull()
+      _parkWaiter(id, entry, _open)
       return
     }
 
@@ -250,6 +284,12 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     if (existing) {
       _cleanupConnection(id)
     }
+
+    // A fresh attempt clears the failed marker; retries start over. Only on
+    // the real-attempt path — the parked early-return above must keep the
+    // degraded state honest (focus/visibility churn would otherwise flip a
+    // parked waiter back to 'connecting' on every tab focus).
+    _failedConversations.delete(id)
 
     const statusRef = ref<WsStatus>('connecting')
     const entry: ConnectionEntry = {

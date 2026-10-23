@@ -150,6 +150,109 @@ async def test_send_turn_error_marks_the_frame_terminal(frames):
     assert "terminal" not in payload
 
 
+# ── _ManagerTransport dead-socket fallback ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fallback_delivers_when_no_live_socket(monkeypatch):
+    """With nobody connected the adapter still reaches the raw socket.
+
+    The timeout constant used to be read off the manager INSTANCE
+    (``manager._SEND_TIMEOUT_S``) — it is a module-level constant, so the
+    lookup raised AttributeError AFTER the send_json coroutine had been
+    created: the coroutine was orphaned ("coroutine ... was never awaited")
+    and every fallback event was silently dropped.
+    """
+    from api.services.agent_turn import _ManagerTransport
+
+    async def _no_live(_conversation_id, _data):
+        return False
+
+    monkeypatch.setattr(manager, "send", _no_live)
+
+    class _Ws:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        async def send_json(self, data):
+            self.sent.append(data)
+
+    ws = _Ws()
+    transport = _ManagerTransport(ws)
+    payload = {"type": "error", "message": "boom"}
+    assert await transport.send("c1", payload) is True
+    assert ws.sent == [payload]
+
+
+@pytest.mark.asyncio
+async def test_fallback_skips_and_latches_disconnected_sockets(monkeypatch):
+    """A socket that already finished its close handshake is never poked."""
+    from api.services.agent_turn import _ManagerTransport
+    from starlette.websockets import WebSocketState
+
+    async def _no_live(_conversation_id, _data):
+        return False
+
+    monkeypatch.setattr(manager, "send", _no_live)
+
+    class _Ws:
+        def __init__(self):
+            self.application_state = WebSocketState.DISCONNECTED
+            self.calls = 0
+
+        async def send_json(self, _data):
+            self.calls += 1
+
+    ws = _Ws()
+    transport = _ManagerTransport(ws)
+    assert await transport.send("c1", {"type": "stream_end"}) is False
+    assert ws.calls == 0
+    # Latched: no further probes for the rest of the turn.
+    assert await transport.send("c1", {"type": "error"}) is False
+    assert ws.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fallback_timeout_latches_and_never_orphans_the_coroutine(monkeypatch):
+    """A half-open fallback socket costs one bounded probe, no warning."""
+    import warnings as warnings_mod
+
+    from api.services.agent_turn import _ManagerTransport
+    from api.websocket import manager as mgr_mod
+
+    monkeypatch.setattr(mgr_mod, "_SEND_TIMEOUT_S", 0.05)
+
+    async def _no_live(_conversation_id, _data):
+        return False
+
+    monkeypatch.setattr(manager, "send", _no_live)
+
+    class _HalfOpenWs:
+        def __init__(self):
+            self.calls = 0
+
+        async def send_json(self, _data):
+            self.calls += 1
+            await asyncio.sleep(60)
+
+    ws = _HalfOpenWs()
+    transport = _ManagerTransport(ws)
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always")
+        assert await transport.send("c1", {"type": "error"}) is False
+        assert ws.calls == 1
+        # Latched after the timeout: no second probe per event.
+        assert await transport.send("c1", {"type": "stream_end"}) is False
+        assert ws.calls == 1
+        await asyncio.sleep(0)  # let any orphaned-coroutine __del__ run
+    never_awaited = [
+        w for w in caught
+        if issubclass(w.category, RuntimeWarning)
+        and "never awaited" in str(w.message)
+    ]
+    assert never_awaited == []
+
+
 # ── persistence + REST serialization ─────────────────────────────────────
 
 

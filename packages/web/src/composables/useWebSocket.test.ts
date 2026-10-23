@@ -607,4 +607,74 @@ describe('useWebSocket connection-cap eviction', () => {
     expect(a.status.value).toBe('connecting')
     expect(b.status.value).toBe('connecting')
   })
+
+  it('soft-evicts a background idle socket, never the foreground, and the victim self-heals', () => {
+    // With the foreground conversation idle in the oldest slot, connecting a
+    // 6th conversation must evict a BACKGROUND idle socket — downgraded to a
+    // parked waiter that keeps its map entry (the old code hard-deleted the
+    // entry, stranding that conversation on "Connecting…" forever, since
+    // nothing re-arms an id that left the map) — and must never touch the
+    // on-screen conversation.
+    const store = useConversationStore()
+    const slots: Array<ReturnType<typeof mount>> = []
+    for (let i = 0; i < MAX_CONNECTIONS; i++) {
+      const id = `conv-${i}`
+      store.startConversation(id)
+      const s = mount(id)
+      s.ws.readyState = WebSocket.OPEN
+      s.ws.onopen!(new Event('open'))
+      slots.push(s)
+    }
+    store.startConversation('conv-0') // user is looking at the oldest entry
+
+    // No startConversation for the 6th: the foreground must stay conv-0.
+    slots.push(mount('conv-6'))
+
+    // A background idle socket (conv-1, second in map order) was parked:
+    // its socket closed but its entry — and status ref — survived.
+    expect(slots[0].status.value).toBe('connected') // foreground untouched
+    expect(slots[0].ws.readyState).toBe(WebSocket.OPEN)
+    expect(slots[1].status.value).toBe('connecting') // victim parked
+    expect(slots[1].ws.readyState).toBe(3) // _closeSocket ran; entry kept
+    expect(slots[MAX_CONNECTIONS].status.value).toBe('connecting') // conv-6 socket opened
+
+    // A slot frees up (conv-4 leaves): the parked victim's poll reopens it.
+    closeConnection('conv-4')
+    vi.advanceTimersByTime(5_000)
+    const healed = instances[instances.length - 1]
+    expect(healed.readyState).toBe(0) // fresh socket, still CONNECTING
+    healed.readyState = WebSocket.OPEN
+    healed.onopen!(new Event('open'))
+    expect(slots[1].status.value).toBe('connected')
+  })
+
+  it("focus churn does not reset a parked waiter's failed tombstone", () => {
+    // 5 streaming sockets → a 6th mount parks. Drive its slot-free poll past
+    // MAX_RETRIES so the degraded tombstone surfaces, then fire a focus
+    // lifecycle kick: connect() for a still-parked entry must NOT clear the
+    // tombstone — the old unconditional clear flipped the banner back to
+    // "Connecting…" on every tab focus.
+    const store = useConversationStore()
+    for (let i = 0; i < MAX_CONNECTIONS; i++) {
+      const id = `conv-busy-${i}`
+      store.startConversation(id)
+      const { ws } = mount(id)
+      ws.readyState = WebSocket.OPEN
+      ws.onopen!(new Event('open'))
+      store.startThinking(id) // streaming → not evictable
+    }
+
+    const parked = mount('conv-parked')
+    expect(parked.status.value).toBe('connecting')
+
+    // 4 polls at 5s: the 4th tombstones (retries >= MAX_RETRIES).
+    vi.advanceTimersByTime(20_000)
+    expect(_failedConversations.has('conv-parked')).toBe(true)
+    expect(parked.status.value).toBe('failed')
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(_failedConversations.has('conv-parked')).toBe(true)
+    expect(parked.status.value).toBe('failed')
+  })
 })

@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from agent_core.session import ConversationSession
+from agent_core.session import ConversationSession, SessionEvent
 
 
 async def _collect_events(s):
@@ -141,3 +141,34 @@ async def test_normal_response_emits_no_cancel():
     events = await asyncio.wait_for(collector, timeout=2)
 
     assert not [e for e in events if e.type == "user_selection_cancelled"]
+
+
+async def test_cancel_during_prompt_emit_unregisters_from_sink():
+    """A cancellation landing inside the prompt-event emit must still
+    unregister the prompt from its store.
+
+    The emit is the only await before the cleanup finally — with a full event
+    queue it parks there for up to the put timeout. For a delegated child the
+    store is the parent's session, which outlives the child: a leaked payload
+    would replay an unanswerable dialog on every client reconnect, because
+    resolve_user_selection never pops it (only the requester's finally does).
+    """
+    parent = ConversationSession("c1", "p1", "u1")
+    child = ConversationSession("c2", "p1", "u1", prompt_sink=parent)
+    # Fill the child's queue so the prompt emit blocks in put().
+    for _ in range(child._event_queue.maxsize):
+        child._event_queue.put_nowait(SessionEvent(type="stream_delta", data={}))
+
+    task = asyncio.create_task(
+        child.request_user_selection("p9", "field", "Approve?", timeout=300)
+    )
+    await asyncio.sleep(0.05)  # registered on the sink, parked in emit
+    assert [p["prompt_id"] for p in parent.pending_prompt_events()] == ["p9"]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert parent.pending_prompt_events() == []
+    assert "p9" not in parent._pending_prompts
+    assert "p9" not in parent._prompt_owners

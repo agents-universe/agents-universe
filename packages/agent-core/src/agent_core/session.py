@@ -454,7 +454,19 @@ class ConversationSession:
         # window between the emit and this line would get a sync event that
         # replays nothing, and the dialog would be lost until the next prompt.
         store._pending_prompt_events[prompt_id] = event_data
-        await self.emit("user_selection_required", **event_data)
+        try:
+            await self.emit("user_selection_required", **event_data)
+        except BaseException:
+            # This emit is the only await before the finally below; a
+            # cancellation landing here would otherwise leave the prompt
+            # registered on the store. For a delegated child the store is the
+            # parent's session, which outlives the child — resolve_user_selection
+            # does not pop the payload (the requester's finally does), so the
+            # leak would replay an unanswerable dialog on every client reconnect.
+            store._pending_prompts.pop(prompt_id, None)
+            store._pending_prompt_events.pop(prompt_id, None)
+            store._prompt_owners.pop(prompt_id, None)
+            raise
         # Also wake on abort: once the session is aborted the UI has closed
         # this prompt's path (emit can even fail with a full queue) and the
         # tool would otherwise block the full 300 s timeout on a prompt

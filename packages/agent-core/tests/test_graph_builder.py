@@ -1540,6 +1540,18 @@ async def test_grammar_unavailable_warning(repo: Path, tmp_path: Path):
     assert reasons["syntax"] == 1  # broken.py still parses for real
 
 
+def test_deeply_nested_file_degrades_instead_of_raising(grammars):
+    """The AST walker is recursive Python: a deeply-nested/minified file
+    (expression depth past the interpreter recursion limit) raises
+    RecursionError mid-walk. The per-file contract is degrade-to-error —
+    without the guard the exception escapes parse_file and aborts the
+    whole repo build."""
+    depth = 5000
+    code = ("const x = " + "[" * depth + "]" * depth + ";\n").encode()
+    result = parse_bytes(code, "deep.ts", "typescript")
+    assert result.stats.get("error") is not None
+
+
 # ---------------------------------------------------------------------------
 # Queries
 # ---------------------------------------------------------------------------

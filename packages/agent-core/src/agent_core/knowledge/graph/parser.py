@@ -1089,7 +1089,19 @@ def _parse_lang(data: bytes, lang: str, result: FileParseResult) -> None:
         return
 
     ctx = _Ctx(spec=language_spec(lang), lang=lang, result=result)
-    _walk(tree.root_node, ctx)
+    try:
+        _walk(tree.root_node, ctx)
+    except Exception as exc:  # degrade, never raise — one file must not kill the build
+        # The walker is recursive Python over the AST: a deeply-nested or
+        # minified file (expression depth past the interpreter recursion
+        # limit) raises RecursionError here. Without this guard it would
+        # propagate out of parse_file and abort the whole repo build,
+        # breaking the per-file "never fatal" contract every other failure
+        # mode in this module honors. Symbols recorded before the crash are
+        # kept (they are genuine); the error flag stops the entry from being
+        # reused so the next build retries.
+        result.stats["error"] = str(exc) or type(exc).__name__
+        return
 
     # A file that yields nothing AND has syntax errors is genuinely broken —
     # tree-sitter recovers symbols from partially-broken files, so this only

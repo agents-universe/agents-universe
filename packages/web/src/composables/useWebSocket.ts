@@ -5,6 +5,7 @@ import { useKnowledgeStore } from '@/stores/knowledge'
 import { useMemoryStore } from '@/stores/memory'
 import { conversationsApi } from '@/api/conversations'
 import { apiBase } from '@/utils/basePath'
+import { i18n } from '@/i18n'
 import type { WsStatus, WsMessage, ToolCallRecord, ImageRecord, AttachmentRecord, SelectionPrompt, PersonalMemory, EpisodicMemory, TurnPhase } from '@/types'
 
 // Fast phase: the common blip (dropped frame, one-second reverse-proxy
@@ -784,7 +785,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           // Injections still pending were never consumed — surface the
           // failure on each optimistic message instead of leaving the entry
           // stuck in pendingInjected forever.
-          conv.rejectAllPendingInjected('服务器错误，消息未处理', convId)
+          conv.rejectAllPendingInjected(i18n.global.t('conversationStore.injectNotProcessed'), convId)
           conv.clearStreamingState(convId)
           // Any prompt awaiting user input can never be answered (the
           // session is gone) — clear them so a zombie dialog doesn't linger.

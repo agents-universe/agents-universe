@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
+import { i18n } from '@/i18n'
 import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES, MAX_CONNECTIONS } from './useWebSocket'
 
 const conversationsApi = vi.hoisted(() => ({
@@ -474,6 +475,21 @@ describe('useWebSocket error frame settlement', () => {
     expect(store.streamingContent).toBe('')
     expect(store.messages).toHaveLength(1)
     expect(store.messages[0].isError).toBe(true)
+  })
+
+  it('terminal errors settle pending injections with a localized notice', () => {
+    // The settle reason must come from the locale: en-US users saw the
+    // hard-coded Chinese notice on every terminal turn-death error.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({ id: 'opt-1', role: 'user', content: 'queued while running', timestamp: Date.now() })
+    store.registerInjectedMessage('opt-1', 'queued while running', 'conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'error', message: 'No model configured.', terminal: true })
+
+    const injected = store.messages.find((m) => m.id === 'opt-1')
+    expect(injected?.content).toContain(i18n.global.t('conversationStore.injectNotProcessed'))
   })
 
   it('errors carrying stream_message_id settle and dedupe the paired stream_end', () => {

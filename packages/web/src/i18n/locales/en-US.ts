@@ -668,6 +668,7 @@ export default {
     interruptedOnRefresh: 'Interrupted by page refresh; showing the last recorded state',
     toolCallAborted: 'Tool call did not finish normally',
     abortStopped: 'Tool call stopped',
+    injectNotProcessed: 'Server error; the message was not processed.',
   },
   tour: {
     skip: 'Skip',

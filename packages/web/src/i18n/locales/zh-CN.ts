@@ -667,6 +667,7 @@ export default {
     interruptedOnRefresh: '页面刷新时执行中断，以下为中断前记录',
     toolCallAborted: '工具调用未正常结束',
     abortStopped: '工具调用已停止',
+    injectNotProcessed: '服务器错误，消息未处理',
   },
   tour: {
     skip: '跳过',

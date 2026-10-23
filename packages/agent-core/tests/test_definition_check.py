@@ -149,6 +149,31 @@ def test_misplaced_agent_paths_are_errors():
     assert "子目录" in _errors(nested)
 
 
+def test_dot_slash_paths_are_not_misplaced():
+    """Models write shell-style `./agents/...` paths; pathlib resolves them
+    to the right file, so the string checks must too — a retained `./`
+    prefix made every correctly-placed definition look misplaced (agent:
+    false placement error, skill: false skills/ error, workflow: mangled
+    expected slug)."""
+    agent = check_definition(
+        "./agents/proj-a--helper.agent.md",
+        _fm('slug: "proj-a--helper"\ndisplay_name: "x"'),
+        scope="project",
+        project_slug="proj-a",
+    )
+    assert agent["ok"] is True, _errors(agent)
+    assert agent["expected"]["slug"] == "proj-a--helper"
+
+    skill = check_definition("./skills/foo.md", _fm('slug: "foo"'), scope="project")
+    assert skill["ok"] is True, _errors(skill)
+
+    workflow = check_definition(
+        "./workflows/x.workflow.md", _fm('slug: "x"'), scope="project"
+    )
+    assert workflow["expected"]["slug"] == "x"
+    assert workflow["warnings"] == []
+
+
 def test_unknown_tool_is_warning_not_error():
     result = check_definition(
         "agents/proj-a--helper.agent.md",

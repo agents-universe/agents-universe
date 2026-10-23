@@ -54,7 +54,15 @@ def project_slug_from_workspace(project_fs_path: str | None) -> str | None:
 
 
 def _norm(rel_path: str) -> str:
-    return rel_path.replace("\\", "/").lstrip("/")
+    """Workspace-relative path with normalized separators.
+
+    ``.`` segments are dropped: models write shell-style paths like
+    ``./agents/foo.agent.md``, pathlib resolves those to the right file, but
+    the placement/slug checks below compare strings — a retained ``./``
+    prefix made every correctly-placed definition look misplaced.
+    """
+    parts = rel_path.replace("\\", "/").lstrip("/").split("/")
+    return "/".join(p for p in parts if p not in ("", "."))
 
 
 def _classify(rel_path: str, scope: str) -> str | None:

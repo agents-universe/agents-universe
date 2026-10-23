@@ -156,6 +156,12 @@ class GoogleGeminiProvider(LLMProvider):
         http_options = genai_types.HttpOptions(
             **({"base_url": self._base_url.rstrip("/")} if self._base_url else {}),
             client_args={"verify": self._ssl_verify},
+            # 300s total (HttpOptions.timeout is milliseconds; the SDK maps it
+            # to httpx/aiohttp per-request timeouts). The SDK default is None,
+            # which the transport layers read as INFINITE — a blackholed
+            # endpoint would hang the turn until process-level cancellation.
+            # Matches the phased 300s ceilings in the openai/anthropic providers.
+            timeout=300_000,
         )
         saved = {k: os.environ.pop(k) for k in _PROXY_KEYS if k in os.environ}
         try:

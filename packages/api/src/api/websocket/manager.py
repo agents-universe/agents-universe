@@ -93,11 +93,24 @@ class ConnectionManager:
     async def connect(self, conversation_id: str, ws: WebSocket) -> None:
         await ws.accept()
         async with self._lock:
+            old = self._connections.get(conversation_id)
             self._connections[conversation_id] = ws
             # Preserve existing abort event — a background agent's
             # _watch_abort coroutine is waiting on it.
             if conversation_id not in self._abort_events:
                 self._abort_events[conversation_id] = asyncio.Event()
+        # Close the replaced socket OUTSIDE the lock: only the send target
+        # was ever replaced before — the old receive loop stayed alive, so a
+        # message from the old tab still started turns whose events were all
+        # delivered to the new socket (split brain), and the old handler
+        # leaked until the client closed it. Closing it raises
+        # WebSocketDisconnect in the old handler, which unwinds through its
+        # existing cleanup (identity-guarded disconnect no-ops here).
+        if old is not None and old is not ws:
+            try:
+                await old.close(code=4409)
+            except Exception:
+                pass
 
     async def disconnect(self, conversation_id: str, ws: WebSocket | None = None) -> None:
         """Remove the WS connection for *conversation_id*.

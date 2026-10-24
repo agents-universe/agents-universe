@@ -631,6 +631,20 @@ async def test_bash_heredoc_quoted_delim_literal_substitution(sibling_projects, 
     assert "literal $(cat ../proj-b/secret.txt) text" in result["stdout"]
 
 
+async def test_bash_heredoc_nested_in_quote_merged_substitution_rejected(sibling_projects, guarded_temp):
+    """An unquoted heredoc inside a quote-merged $(...) is invisible to the
+    line-level heredoc tracking, but its body still executes substitutions —
+    quotes are plain characters there, so the inner read must be rejected."""
+    proj_a, _, _ = sibling_projects
+    tool = CodeExecutorTool()
+    result = await tool.execute(
+        {"code": 'echo "$(cat <<E\n\'$(cat ../proj-b/secret.txt)\'\nE\n)"', "language": "bash"},
+        make_context(str(proj_a)),
+    )
+    assert "error" in result, result
+    assert "secret-data" not in json.dumps(result)
+
+
 async def test_bash_heredoc_backslash_quoted_delim_literal_substitution(sibling_projects, guarded_temp):
     """`<<\\EOF` is bash's backslash form of a quoted delimiter — the body is
     literal. A $(...) inside is text, so it must NOT be rejected as a live

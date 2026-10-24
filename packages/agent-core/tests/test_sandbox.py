@@ -435,6 +435,37 @@ def test_split_logical_lines_flags_heredoc_body():
     ]
 
 
+def test_validate_command_scans_unquoted_heredoc_body_inside_substitution(tmp_path):
+    """An unquoted heredoc hidden inside a quote-merged $(...) body still runs
+    its substitutions — quotes inside the body are plain characters to bash,
+    so '$(cat /etc/passwd)' there executes and its output reaches stdout. The
+    whole-command scan skips '...' regions and never surfaces the heredoc, so
+    each unquoted body line must be scanned with quotes treated as literal."""
+    command = 'echo "$(cat <<E\n\'$(cat /etc/passwd)\'\nE\n)"'
+    assert validate_command(
+        command, cwd=tmp_path, project_root=tmp_path, allow_substitution=True
+    ) is not None
+
+
+def test_validate_command_scans_direct_unquoted_heredoc_body(tmp_path):
+    """Same hole one level up: a substitution payload is re-validated as its
+    own command, and its unquoted body line must not be skipped wholesale
+    there either."""
+    command = "cat <<E\n'$(cat /etc/passwd)'\nE"
+    assert validate_command(
+        command, cwd=tmp_path, project_root=tmp_path, allow_substitution=True
+    ) is not None
+
+
+def test_validate_command_allows_quoted_heredoc_body_inside_substitution(tmp_path):
+    """A quoted delimiter (<<'E') makes the body literal — $(...) inside is
+    data, not an executable substitution, so it must not be rejected."""
+    command = 'echo "$(cat <<\'E\'\ntext $(date) more\nE\n)"'
+    assert validate_command(
+        command, cwd=tmp_path, project_root=tmp_path, allow_substitution=True
+    ) is None
+
+
 def test_validate_command_denies_absolute_path_to_sibling(tmp_path):
     proj_a = tmp_path / "proj-a"
     proj_b = tmp_path / "proj-b"

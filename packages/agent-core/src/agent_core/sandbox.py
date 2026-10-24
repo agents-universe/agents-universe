@@ -953,10 +953,32 @@ def validate_command(
     # once let a later line's command word be read as an argument of the first
     # line's command (echo ok\ncat /etc/passwd passed every check because `cat`
     # and `/etc/passwd` were echo's data args). Heredoc bodies are stdin data,
-    # not commands — their substitution payloads were checked above.
+    # not commands — but an UNQUOTED delimiter still runs command substitution
+    # inside the body (quotes there are plain characters), so unquoted body
+    # lines get their own substitution scan below; a quoted delimiter
+    # (<<'EOF') is literal and stays skipped.
+    body_quoted: bool | None = None
     for line, is_heredoc_body in split_logical_lines(command):
         if is_heredoc_body:
+            if body_quoted is False:
+                # The whole-command scan above skips '...' regions and never
+                # surfaces a heredoc hidden inside a quote-merged line
+                # (`echo "$(cat <<E ...)` — the open quote swallows the
+                # rest), so a '$(cat /etc/passwd)' in the body executed with
+                # its output reaching stdout. Scan each unquoted body line
+                # with quotes treated as literal characters.
+                reason = _check_all_substitutions(
+                    line, cwd=cwd, root=root, single_quotes_literal=False
+                )
+                if reason:
+                    return reason
             continue
+        # Re-derive the current body run's quotedness the same way
+        # split_logical_lines did (same function, same line text): the flag
+        # holds until the next non-body logical line opens (or clears) a
+        # heredoc.
+        heredoc = _find_heredoc_start(line)
+        body_quoted = heredoc[1] if heredoc is not None else None
         # Brace expansion and process substitution rewrite the command after
         # tokenization, so their results never reach the path checks below.
         reason = _check_unquoted_expansions(line)

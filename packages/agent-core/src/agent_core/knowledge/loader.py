@@ -495,8 +495,14 @@ async def rehydrate_dynamic_entries(
             continue
         size = len(content.encode("utf-8"))
         if used_bytes + size > DYNAMIC_LOAD_MAX_BYTES:
-            _log.info("rehydrate: byte budget reached, leaving %s deferred", slug)
-            break
+            # Skip only THIS file: a load that outgrew the budget after it was
+            # recorded (refresh op, external edit) must not starve the later
+            # active loads — each load event persists until unloaded.
+            _log.info(
+                "rehydrate: %s exceeds the remaining byte budget, leaving it deferred",
+                slug,
+            )
+            continue
         load_dynamic_entry(result, slug, content, current_turn=0, task_id=None)
         used_bytes += size
         reloaded.append(slug)

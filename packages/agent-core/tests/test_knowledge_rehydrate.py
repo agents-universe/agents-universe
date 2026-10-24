@@ -166,6 +166,28 @@ async def test_rehydrate_respects_byte_budget(tmp_path):
     assert len(ctx.dynamically_loaded) == 2
 
 
+async def test_rehydrate_keeps_later_loads_when_one_file_exceeds_budget(tmp_path):
+    """A file that outgrew the byte budget (refresh op or an external edit)
+    must not stop the loop — later active loads still survive the turn
+    boundary, per the load-event persistence contract."""
+    kdir = tmp_path / "knowledge"
+    _write(kdir, "domain/big", "x" * (DYNAMIC_LOAD_MAX_BYTES + 1))
+    _write(kdir, "domain/small", "small body")
+    rows = [
+        {"event_type": "load", "knowledge_id": "k1", "slug": "domain/big"},
+        {"event_type": "load", "knowledge_id": "k2", "slug": "domain/small"},
+    ]
+    ctx = KnowledgeContextResult()
+
+    reloaded = await rehydrate_dynamic_entries(
+        ctx, conversation_id="c1", db_session=FakeEventDb(rows), knowledge_dir=kdir,
+    )
+
+    assert "domain/big" not in ctx.dynamically_loaded
+    assert "domain/small" in ctx.dynamically_loaded
+    assert reloaded == ["domain/small"]
+
+
 async def test_rehydrate_skips_slugs_already_static(tmp_path):
     kdir = tmp_path / "knowledge"
     _write(kdir, "domain/context", "STATIC BODY")

@@ -153,6 +153,14 @@ class _SSRFPinningTransport(httpx.AsyncBaseTransport):
         request.url = url.copy_with(host=ip)
         request.headers["Host"] = host if (port == 80 or port == 443) else f"{host}:{port}"
         request.extensions["sni_hostname"] = host
+        # Never reuse the pinned connection: httpcore pools by the REWRITTEN
+        # origin (scheme, IP, port), so a later request to a different
+        # hostname that resolves to the same IP would ride this connection —
+        # its TLS session was only ever validated for the first hostname, and
+        # its headers (Authorization!) would reach whoever controls the IP.
+        # Closing after each response forces a fresh handshake whose
+        # certificate is validated for the current hostname.
+        request.headers["Connection"] = "close"
 
 
 def _ssrf_transport_kwargs(ssl_verify: bool, proxy: str | None) -> dict:

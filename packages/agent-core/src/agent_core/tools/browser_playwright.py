@@ -209,7 +209,11 @@ async def _close_context(context: ToolContext, owner: Any, ctx: Any) -> None:
     if ctx is None:
         return
     page = getattr(context, "_browser_page", None)
-    if page is not None:
+    # Only close the tracked page when it lives in THIS context: after a crash
+    # rebuilds the live page under a new context, record_stop still passes the
+    # stale recording context — closing its page blindly destroyed the
+    # recovered browsing state.
+    if page is not None and page in ctx.pages:
         try:
             await page.close()
         except Exception:

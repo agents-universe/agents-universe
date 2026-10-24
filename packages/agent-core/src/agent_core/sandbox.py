@@ -1626,6 +1626,12 @@ _EXECUTION_ENV_VARS = frozenset({
     "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_ASKPASS",
     "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_DIR", "GIT_WORK_TREE",
     "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    # Interpreter/VM control vars: node/java/python are allowlisted commands,
+    # and these make the interpreter load attacker-chosen code on every run
+    # (--require / -javaagent / fake stdlib) with no further flag. The
+    # command-prefix channel and shell env_refs both consult this set.
+    "NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+    "PYTHONHOME", "PYTHONSTARTUP",
 })
 
 # GIT_CONFIG_COUNT + the paired GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n inject

@@ -15,6 +15,7 @@ from typing import Any
 from ..paths import is_within
 from ..sandbox import (
     _EXECUTION_ENV_VARS,
+    _GIT_CONFIG_ENV_RE,
     python_guard_env,
     spawn_in_new_session,
     split_logical_lines,
@@ -196,6 +197,9 @@ def _build_env(
 # entry would silently disarm sitecustomize for every `python` the command
 # spawns, and a BASH_ENV/GIT_PAGER entry would run the vault value as code
 # on every run — the exact invariant the command prefix validation holds.
+# The GIT_CONFIG_COUNT/KEY_n/VALUE_n family cannot be enumerated (the names
+# are indexed), so _resolve_env_refs matches them with the sandbox regex —
+# exactly like the command-prefix channel does.
 _ENV_REF_DENYLIST: frozenset[str] = _EXECUTION_ENV_VARS | frozenset(python_guard_env(""))
 
 
@@ -225,6 +229,7 @@ async def _resolve_env_refs(
             or "=" in env_name
             or "\0" in env_name
             or env_name in _ENV_REF_DENYLIST
+            or _GIT_CONFIG_ENV_RE.match(env_name)
         ):
             return None, [], (
                 f"env_refs[{env_name!r}] is not an allowed environment "

@@ -311,11 +311,17 @@ class GitRepoTool(Tool):
             if not isinstance(branch, str) or not self._valid_branch(branch):
                 return {"error": f"Invalid branch name: {branch!r}"}
             command += ["--branch", branch]
+        # Clone into a unique staging dir, then rename into place: parallel
+        # plan tasks can clone the same repo concurrently, and a checkout that
+        # failed only because the destination was claimed meanwhile must not
+        # have its error-path cleanup delete the winner's healthy tree.
+        staging = Path(context.project_fs_path).resolve() / ".tmp" / "work" / f"clone-{uuid.uuid4().hex[:12]}"
+        staging.parent.mkdir(parents=True, exist_ok=True)
         result = await self._run_git(
-            command + [url, str(destination)], self._repos_dir(context), _TIMEOUT_CLONE, token
+            command + [url, str(staging)], self._repos_dir(context), _TIMEOUT_CLONE, token
         )
         if "error" in result:
-            if destination.exists():
+            if staging.exists():
                 # Force-remove: a clone killed mid-transport leaves read-only
                 # loose objects on Windows that plain rmtree skips (masked by
                 # ignore_errors), wedging every later clone as "already
@@ -323,10 +329,22 @@ class GitRepoTool(Tool):
                 # falls back to silent best-effort — the git error is what
                 # the caller needs to see.
                 try:
-                    _rmtree_force(destination)
+                    _rmtree_force(staging)
                 except OSError:
-                    shutil.rmtree(destination, ignore_errors=True)
+                    shutil.rmtree(staging, ignore_errors=True)
             return result
+        try:
+            staging.rename(destination)
+        except OSError:
+            # Lost the race after our own precheck: a concurrent clone claimed
+            # the final path first. Keep theirs; drop ours.
+            try:
+                _rmtree_force(staging)
+            except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
+            if destination.exists():
+                return {"status": "already_exists", "path": self._display(destination, context)}
+            return {"error": f"Failed to finalize clone of {name}"}
         result = {
             "status": "cloned",
             "repository": repository,

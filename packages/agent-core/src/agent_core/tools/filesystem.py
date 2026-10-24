@@ -1,6 +1,7 @@
 """Filesystem tool — read/write/list files within the project scope."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -316,9 +317,20 @@ class FilesystemTool(Tool):
             return hint
 
         elif operation == "write_file":
-            # `or ""` covers the LLM emitting `"content": null` — the key is
-            # present so the default never fires and encode() would raise.
-            content = params.get("content") or ""
+            # `null` becomes "" (the key is present so the default never fires
+            # and encode() would raise); other non-strings are JSON-serialized.
+            # `or ""` would have silently truncated the file to empty for
+            # falsy non-strings (0, {}, [], False) — reported as success.
+            raw_content = params.get("content")
+            if raw_content is None:
+                content = ""
+            elif isinstance(raw_content, str):
+                content = raw_content
+            else:
+                try:
+                    content = json.dumps(raw_content, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    return {"error": f"Cannot write {rel_path}: content must be a string or JSON-serializable value"}
             if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
                 return {"error": f"Cannot write {rel_path}: content too large ({len(content)} chars > {_MAX_WRITE_BYTES} bytes)"}
             target.parent.mkdir(parents=True, exist_ok=True)

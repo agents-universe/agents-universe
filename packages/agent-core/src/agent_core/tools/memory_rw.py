@@ -196,16 +196,19 @@ class MemoryRWTool(Tool):
 
         project_id = None if scope == "global" else context.project_id
 
-        from agent_core.tools._compat import new_uuid, now_iso
+        from agent_core.tools._compat import new_uuid
 
         memory_id = new_uuid()
-        now = now_iso()
+        # Real datetime, not an ISO string: these are raw text() statements,
+        # so the UTCDateTime TypeDecorator never runs and strict drivers
+        # (asyncpg) reject a str bound to a timestamp parameter.
+        now = datetime.now(timezone.utc)
 
         await context.db_session.execute(
             text(
                 "INSERT INTO personal_memories "
                 "(memory_id, user_id, project_id, content, tags, created_by, created_at, is_archived) "
-                "VALUES (:mid, :uid, :pid, :content, :tags, :created_by, :created_at, 0)"
+                "VALUES (:mid, :uid, :pid, :content, :tags, :created_by, :created_at, :archived)"
             ),
             {
                 "mid": memory_id,
@@ -215,6 +218,9 @@ class MemoryRWTool(Tool):
                 "tags": json.dumps(tags) if tags else None,
                 "created_by": f"agent",
                 "created_at": now,
+                # Bound, not the literal 0: the column is Boolean — PostgreSQL
+                # has no implicit integer→boolean cast.
+                "archived": False,
             },
         )
         await context.db_session.commit()
@@ -412,7 +418,9 @@ class MemoryRWTool(Tool):
             return {"error": "Nothing to update — provide content or tags"}
 
         updates.append("updated_at = :now")
-        sql_params["now"] = datetime.now(timezone.utc).isoformat()
+        # Real datetime, not an ISO string (raw text() bypasses UTCDateTime;
+        # asyncpg rejects a str bound to a timestamp parameter).
+        sql_params["now"] = datetime.now(timezone.utc)
 
         # UPDATE must repeat the ownership predicate from the SELECT
         # above — between the check and the write, another session could have

@@ -295,9 +295,14 @@ if _project_root:
             return
         # The Windows null device (any spelling) is not a real file; tools like
         # pytest open it for write. Realpath would map it outside every root.
-        base = path.rstrip("\\/").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        if path == os.devnull or base.lower() == "nul":
+        # The basename exemption is Windows-only: on POSIX "nul" is an ordinary
+        # filename, and accepting it let "/nul" bypass the roots check entirely.
+        if path == os.devnull:
             return
+        if sys.platform == "win32":
+            base = path.rstrip("\\/").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+            if base.lower() == "nul":
+                return
         try:
             if not os.path.isabs(path):
                 path = os.path.join(os.getcwd(), path)

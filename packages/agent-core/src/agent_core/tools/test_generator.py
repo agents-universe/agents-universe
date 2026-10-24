@@ -166,12 +166,12 @@ class TestGeneratorTool(Tool):
         test_cases = params.get("test_cases", [])
         if not issue_key or not test_cases:
             return {"error": "issue_key and test_cases are required"}
-        # The schema declares an array of objects but LLMs sometimes stringify
-        # it — a bare string would iterate character-by-character in
-        # _generate_spec and crash on .get(). Reject instead of writing a
-        # garbage spec.
-        if isinstance(test_cases, str) or (
-            isinstance(test_cases, list) and any(not isinstance(tc, dict) for tc in test_cases)
+        # The schema declares an array of objects but LLMs sometimes send a
+        # bare string (iterates character-by-character then crashes on .get()),
+        # a single object, or a number. Reject anything that is not a list of
+        # dicts instead of writing a garbage spec or crashing on .get().
+        if not isinstance(test_cases, list) or any(
+            not isinstance(tc, dict) for tc in test_cases
         ):
             return {
                 "error": (
@@ -181,6 +181,18 @@ class TestGeneratorTool(Tool):
             }
 
         output_dir = params.get("output_dir", "tests/generated")
+        # The path also lands unquoted in an npm script ("playwright test
+        # <spec_rel>"): shell metacharacters or spaces in it would inject into
+        # (or silently misparse) the command anyone later runs via npm run.
+        if not isinstance(output_dir, str) or not re.fullmatch(
+            r"[A-Za-z0-9._/-]*", output_dir
+        ):
+            return {
+                "error": (
+                    f"Invalid output_dir: {output_dir!r} — only letters, "
+                    "digits, dots, underscores, slashes and dashes are allowed"
+                )
+            }
         try:
             out_path = resolve_within(context.project_fs_path, output_dir)
         except PathEscapeError:

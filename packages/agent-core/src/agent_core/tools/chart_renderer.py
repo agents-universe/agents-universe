@@ -10,6 +10,7 @@ from typing import Any
 
 from ._media import media_url
 from .base import Tool, ToolContext
+from .browser_playwright import _new_guarded_context
 
 _log = logging.getLogger(__name__)
 
@@ -104,9 +105,16 @@ class ChartRendererTool(Tool):
         if bundle is None:
             return _error("mermaid_bundle_missing", "Local Mermaid bundle is unavailable; contact an administrator.")
         page = None
+        ctx = None
         try:
             browser = await context.ensure_browser()
-            page = await browser.new_page(viewport={"width": width, "height": 900})
+            # Guarded context, not browser.new_page()'s implicit one: Mermaid
+            # source is LLM-controlled and diagram image references make the
+            # renderer issue real HTTP requests — every request must pass the
+            # SSRF route the browser tool installs.
+            ctx = await _new_guarded_context(browser, context)
+            page = await ctx.new_page()
+            await page.set_viewport_size({"width": width, "height": 900})
             await page.set_content(
                 "<!doctype html><html><body style='margin:0;padding:16px;background:#1e1e1e'>"
                 f"<div id='chart' style='width:{width}px'></div></body></html>"
@@ -153,7 +161,12 @@ class ChartRendererTool(Tool):
             _log.warning("chart_renderer failed: %s (code length=%d, theme=%s)", msg, len(code), theme)
             return _error("render_failed", f"Mermaid rendering failed: {msg}")
         finally:
-            if page is not None:
+            if ctx is not None:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+            elif page is not None:
                 try:
                     await page.close()
                 except Exception:

@@ -514,7 +514,15 @@ class AnthropicClaudeProvider(LLMProvider):
                     "index": i, "id": tc["id"],
                     "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]},
                 }))
-        chunks.append(StreamChunk(finish_reason=result.finish_reason, usage=result.usage))
+        # stop_reason must ride along: the agent loop keys off the normalized
+        # field, so dropping it here made refusal / context-exceeded /
+        # max-tokens endings degrade to a silent normal completion on the
+        # non-streaming gateway fallback.
+        chunks.append(StreamChunk(
+            finish_reason=result.finish_reason,
+            stop_reason=result.stop_reason,
+            usage=result.usage,
+        ))
         return chunks
 
     async def _gateway_stream(

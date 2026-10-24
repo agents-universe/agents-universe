@@ -109,8 +109,19 @@ def _content_as_str(content: str | list | None) -> str:
 
 
 def estimate_history_tokens(messages: list[Message]) -> int:
-    """Estimate total tokens in a message list."""
-    return sum(_estimate_tokens_safe(_content_as_str(m.content)) for m in messages)
+    """Estimate total tokens in a message list.
+
+    Assistant tool_calls arguments count too: file/knowledge-write turns carry
+    ~100k-char argument payloads while their content is a sentence — counting
+    only content made compress_history never trigger for such conversations
+    until the provider rejected the oversized request outright.
+    """
+    total = 0
+    for m in messages:
+        total += _estimate_tokens_safe(_content_as_str(m.content))
+        if m.tool_calls:
+            total += _tool_calls_wire_bytes(m.tool_calls) // 4
+    return total
 
 
 def compression_budget(context_window: int, reserved_input_tokens: int, max_tokens: int) -> int:

@@ -150,6 +150,13 @@ const composerEl = ref<HTMLTextAreaElement | null>(null)
 // Guard against double-submits while a run is in flight (the 409 race guard
 // also covers it server-side).
 let inflight = false
+// AbortController for the in-flight SSE run; unmount aborts it so the browser
+// stops consuming the stream. The server's drain generator treats a client
+// disconnect as an abort and cancels the turn, so a viewer who navigates away
+// mid-answer doesn't leave the turn (and the publisher's model quota) running
+// unattended.
+let runController: AbortController | null = null
+let disposed = false
 
 const token = computed(() => session.value?.token ?? '')
 
@@ -240,12 +247,14 @@ async function submit() {
   running.value = true
   streamingText.value = ''
   scrollToBottom()
+  runController = new AbortController()
   try {
     const text = await publishApi.runSession(
       publishId.value,
       token.value,
       body,
       (delta) => { streamingText.value += delta },
+      runController.signal,
     )
     if (text) {
       messages.value.push({
@@ -264,6 +273,9 @@ async function submit() {
       })
     }
   } catch (e) {
+    // Unmounted mid-stream: the abort tore the fetch down on purpose — no
+    // bubble/draft bookkeeping is needed on a detached component.
+    if (disposed) return
     // No partialText means the turn was rejected before the stream started
     // (409 already running, 404 publish gone, network failure) — the server
     // never persisted the message, so leaving the optimistic bubble makes a
@@ -342,7 +354,12 @@ watch(streamingText, scrollToBottom)
 watch(messages, scrollToBottom, { deep: true })
 
 onMounted(load)
-onUnmounted(() => { inflight = false })
+onUnmounted(() => {
+  disposed = true
+  inflight = false
+  runController?.abort()
+  runController = null
+})
 </script>
 
 <style scoped>

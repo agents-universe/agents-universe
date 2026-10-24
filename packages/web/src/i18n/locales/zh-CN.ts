@@ -496,6 +496,8 @@ export default {
     runFailed: '启动运行失败',
     runFinished: '运行结束：{status}',
     connectionLost: '连接中断，脚本最终状态未知（运行可能仍在后台执行）',
+    runPollingFallback: '实时日志已断开，正在等待运行结束…',
+    runPollGaveUp: '多次重试后仍无法连接，请重新打开日志重试。',
     baseUrlPlaceholder: '被测系统地址（可选，如 http://demo.example.com）',
     baseUrlHint: '作为 APP_BASE_URL 注入测试运行；留空时使用测试脚本内的默认值',
     scriptsGroup: '脚本',

@@ -1,10 +1,18 @@
 import { ref, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiBase } from '@/utils/basePath'
+import { scriptsApi } from '@/api/scripts'
 
 export interface LogLine { text: string; level: string }
 
 export interface ScriptRunDone { runId: string; status: string; exitCode: number | null }
+
+// Same-run reconnect ladder, then a slow poll of the run-detail endpoint so
+// onDone still fires when the socket cannot be recovered. The server replays
+// the full run log to every new subscriber, so reconnecting is lossless.
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000]
+const POLL_INTERVAL_MS = 5000
+const POLL_MAX_ATTEMPTS = 120
 
 /**
  * Live log of a script/Playwright run over `/ws/script-runs/{run_id}`.
@@ -31,6 +39,10 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
   // "connection lost" warning on the close that follows it (the server closes
   // the socket right after sending done).
   let wsFinished = false
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let reconnectAttempt = 0
+  let pollAttempts = 0
 
   function pushLog(line: LogLine) {
     const el = logPanel.value
@@ -43,11 +55,74 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
     }
   }
 
-  function connectToRun(runId: string) {
+  function clearTimers() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null }
+  }
+
+  /** Terminal state shared by the WS "done" frame and the poll fallback. */
+  function markDone(runId: string, status: string, exitCode: number | null) {
+    // wsFinished also suppresses the "connection lost" warning on the socket
+    // close that follows the done frame.
+    wsFinished = true
+    finished.value = true
+    const ok = status === 'completed'
+    const statusText = ok
+      ? status
+      : `${status} (exit ${exitCode ?? '?'})`
+    pushLog({ text: t('workspace.runFinished', { status: statusText }), level: ok ? 'info' : 'error' })
+    // runId travels with the callback so the consumer can fetch the
+    // authoritative result without re-deriving which run it was watching.
+    opts.onDone?.({ runId, status, exitCode })
+  }
+
+  function startPolling(runId: string) {
+    pollAttempts = 0
+    pushLog({ text: t('workspace.runPollingFallback'), level: 'info' })
+    const scheduleNext = () => {
+      if (!alive || wsFinished || activeRunId.value !== runId) return
+      pollTimer = setTimeout(tick, POLL_INTERVAL_MS)
+    }
+    const tick = () => {
+      if (!alive || wsFinished || activeRunId.value !== runId) return
+      pollAttempts += 1
+      if (pollAttempts > POLL_MAX_ATTEMPTS) {
+        pushLog({ text: t('workspace.runPollGaveUp'), level: 'error' })
+        return
+      }
+      void scriptsApi.getRun(runId).then(
+        (run) => {
+          if (!alive || wsFinished || activeRunId.value !== runId) return
+          if (run.status === 'completed' || run.status === 'failed') {
+            markDone(runId, run.status, run.exit_code)
+            return
+          }
+          scheduleNext()
+        },
+        // Transient fetch failure — keep polling until the attempt cap.
+        scheduleNext,
+      )
+    }
+    scheduleNext()
+  }
+
+  function scheduleReconnect(runId: string) {
+    const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)]
+    reconnectAttempt += 1
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (!alive || activeRunId.value !== runId) return
+      openSocket(runId)
+    }, delay)
+  }
+
+  function openSocket(runId: string) {
     if (ws) { ws.close(); ws = null }
     wsFinished = false
     finished.value = false
     activeRunId.value = runId
+    // A reconnect clears the buffer because the server replays the FULL log
+    // to each new subscriber — appending the replay would duplicate every line.
     logs.value = []
     runError.value = null
 
@@ -67,18 +142,8 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
       }
       if (msg.type === 'done') {
         // Authoritative final state — the server closes the socket right after
-        // this frame, so mark the run as finished to suppress the spurious
-        // "connection lost" warning on close.
-        wsFinished = true
-        finished.value = true
-        const ok = msg.status === 'completed'
-        const statusText = ok
-          ? (msg.status ?? 'completed')
-          : `${msg.status ?? 'failed'} (exit ${msg.exit_code ?? '?'})`
-        pushLog({ text: t('workspace.runFinished', { status: statusText }), level: ok ? 'info' : 'error' })
-        // runId travels with the callback so the consumer can fetch the
-        // authoritative result without re-deriving which run it was watching.
-        opts.onDone?.({ runId, status: msg.status ?? 'failed', exitCode: msg.exit_code ?? null })
+        // this frame.
+        markDone(runId, msg.status ?? 'failed', msg.exit_code ?? null)
         return
       }
       pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })
@@ -92,14 +157,32 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
       // Close after the done frame is the normal end of a run. Only a close
       // WITHOUT done means the connection dropped before the server reported
       // the outcome — the run may still be executing server-side.
-      if (!wsFinished) {
-        pushLog({ text: t('workspace.connectionLost'), level: 'error' })
+      if (wsFinished) return
+      pushLog({ text: t('workspace.connectionLost'), level: 'error' })
+      // A dropped socket used to be terminal for the live view: the done frame
+      // and remaining output were lost and consumers' onDone never fired, so
+      // the result card / history refresh was permanently skipped. Retry with
+      // backoff, then fall back to polling the run-detail endpoint.
+      if (reconnectAttempt < RECONNECT_DELAYS_MS.length) {
+        scheduleReconnect(runId)
+      } else {
+        startPolling(runId)
       }
     }
   }
 
+  function connectToRun(runId: string) {
+    clearTimers()
+    reconnectAttempt = 0
+    pollAttempts = 0
+    openSocket(runId)
+  }
+
   /** Drop the current run's socket and log buffer (project switch, close). */
   function closeLog() {
+    clearTimers()
+    reconnectAttempt = 0
+    pollAttempts = 0
     if (ws) { ws.close(); ws = null }
     wsFinished = false
     activeRunId.value = null
@@ -110,6 +193,7 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
 
   onBeforeUnmount(() => {
     alive = false
+    clearTimers()
     ws?.close()
     ws = null
   })

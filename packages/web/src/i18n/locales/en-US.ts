@@ -497,6 +497,8 @@ export default {
     runFailed: 'Failed to start run',
     runFinished: 'Run finished: {status}',
     connectionLost: 'Connection lost, final script status unknown (it may still be running in the background)',
+    runPollingFallback: 'Live log unavailable; watching for the run to finish…',
+    runPollGaveUp: 'Still no connection after repeated retries; reopen the log to try again.',
     baseUrlPlaceholder: 'System under test (optional, e.g. http://demo.example.com)',
     baseUrlHint: 'Injected as APP_BASE_URL into the test run; the spec default applies when empty',
     scriptsGroup: 'Scripts',

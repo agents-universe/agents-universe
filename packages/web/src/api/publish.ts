@@ -153,11 +153,13 @@ export const publishApi = {
     token: string,
     message: string,
     onDelta?: (delta: string) => void,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const res = await apiFetchRaw(`/api/p/${publishId}/session/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, message }),
+      signal,
     })
     if (!res.ok || !res.body) {
       let detail = `${res.status} ${res.statusText}`

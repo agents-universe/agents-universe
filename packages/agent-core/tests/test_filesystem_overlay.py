@@ -428,6 +428,36 @@ async def test_write_workflow_stem_trap_is_flagged(tmp_path):
     assert any("x.workflow" in w for w in result["definition_check"]["warnings"])
 
 
+async def test_write_file_null_content_treated_as_empty(tmp_path):
+    """A model emitting `"content": null` (key present, value None) must not
+    crash on `None.encode` — treat it as empty content like a missing key."""
+    proj = tmp_path / "proj"
+    fw = tmp_path / "fw"
+    _mkdir(proj, fw)
+    tool = FilesystemTool()
+
+    result = await tool.execute(
+        {"operation": "write_file", "path": "notes.md", "content": None},
+        _ctx(proj, fw),
+    )
+    assert result.get("success") is True
+    assert (proj / "notes.md").read_text(encoding="utf-8") == ""
+
+
+async def test_create_dir_over_existing_file_returns_clean_error(tmp_path):
+    proj = tmp_path / "proj"
+    fw = tmp_path / "fw"
+    _mkdir(proj, fw)
+    (proj / "existing.txt").write_text("x", encoding="utf-8")
+    tool = FilesystemTool()
+
+    result = await tool.execute(
+        {"operation": "create_dir", "path": "existing.txt"},
+        _ctx(proj, fw),
+    )
+    assert "error" in result and "already exists" in result["error"]
+
+
 async def test_non_definition_write_has_no_check_key(tmp_path):
     tool = FilesystemTool()
     ctx = _ctx_for_slug(tmp_path, tmp_path / "fw", "proj-a")

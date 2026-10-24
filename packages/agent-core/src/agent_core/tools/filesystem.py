@@ -316,7 +316,9 @@ class FilesystemTool(Tool):
             return hint
 
         elif operation == "write_file":
-            content = params.get("content", "")
+            # `or ""` covers the LLM emitting `"content": null` — the key is
+            # present so the default never fires and encode() would raise.
+            content = params.get("content") or ""
             if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
                 return {"error": f"Cannot write {rel_path}: content too large ({len(content)} chars > {_MAX_WRITE_BYTES} bytes)"}
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -380,7 +382,14 @@ class FilesystemTool(Tool):
             return {"success": True, "deleted": rel_path}
 
         elif operation == "create_dir":
-            target.mkdir(parents=True, exist_ok=True)
+            # mkdir(exist_ok=True) is a no-op for a directory but raises
+            # FileExistsError when the path is an existing regular file.
+            if target.is_file():
+                return {"error": f"Cannot create directory {rel_path}: a file with that name already exists"}
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return {"error": f"Cannot create directory {rel_path}: {e}"}
             return {"success": True, "path": rel_path}
 
         return {"error": f"Unknown operation: {operation}"}

@@ -23,7 +23,7 @@ from typing import Any
 import frontmatter
 
 from .loader import derive_summary, normalize_children
-from .scorer import compute_completeness
+from .scorer import CompletenessComponents, compute_completeness
 
 _log = logging.getLogger("agent_core.knowledge.index")
 
@@ -467,11 +467,20 @@ async def _recalculate_inbound_links(
         if km.updated_at:  # UTC-aware via api.models UTCDateTime
             days = (datetime.now(timezone.utc) - km.updated_at).total_seconds() / 86400
         cached_content = content_cache.get(km.fs_path) if content_cache else None
-        result = compute_completeness(km.fs_path, days, inbound.get(km.slug, 0), content=cached_content)
-        km.completeness_score = result.final_score
-        km.coverage_breadth = result.coverage_breadth
-        km.recency_score = result.recency_score
-        km.agent_gap_score = result.agent_gap_score
+        try:
+            recomputed = compute_completeness(km.fs_path, days, inbound.get(km.slug, 0), content=cached_content)
+        except (OSError, ValueError, TypeError):
+            # Pass 1 tolerates per-file parse errors; pass 2 must too. This
+            # loop re-reads exactly the rows pass 1 could not parse (plus
+            # legacy rows whose fs_path is "", which pathlib resolves to the
+            # current directory) — a read failure here would raise out of the
+            # whole indexer before its commit, discarding every pending row
+            # update. Fall back to the scorer's missing-file components.
+            recomputed = CompletenessComponents(0, 0, 0, 0, 100, 0)
+        km.completeness_score = recomputed.final_score
+        km.coverage_breadth = recomputed.coverage_breadth
+        km.recency_score = recomputed.recency_score
+        km.agent_gap_score = recomputed.agent_gap_score
 
 
 async def sync_parent_children(

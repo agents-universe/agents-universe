@@ -888,7 +888,7 @@ async def _load_primary_from_disk(
                     category=category,
                     cross_references=_CROSS_REF_RE.findall(body) if body else [],
                     word_count=0,
-                    summary=str(meta.get("summary") or ""),
+                    summary=str(meta.get("summary") or derive_summary(body)),
                     project_id=project_id,
                     **_hierarchy_fields(slug, meta),
                 ))

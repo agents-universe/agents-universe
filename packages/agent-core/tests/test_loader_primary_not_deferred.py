@@ -122,6 +122,32 @@ async def test_oversized_primary_row_is_not_listed_as_deferred(tmp_path, monkeyp
     assert "domain/primary" not in result.deferred_entries
 
 
+async def test_oversized_deferred_entry_derives_summary(tmp_path, monkeypatch):
+    """An oversized detail file is held in the deferred set with metadata only
+    — without a frontmatter summary it must derive one from the file head like
+    every other deferred path, or the summary table shows an empty cell."""
+    import agent_core.knowledge.loader as loader
+
+    monkeypatch.setattr(loader, "MAX_FILE_SIZE", 60)
+    kdir = tmp_path / "proj" / "knowledge"
+    (kdir / "domain").mkdir(parents=True)
+    (kdir / "domain" / "huge.md").write_text(
+        "---\ntitle: Huge\nknowledge_level: detail\n---\n"
+        "Order creation requires the company and the buyer.\n" + "x" * 200,
+        encoding="utf-8",
+    )
+
+    result = await load_project_context(
+        project_id="p1",
+        db_session=None,
+        cache=_FakeCache([]),
+        knowledge_dir=kdir,
+    )
+
+    entry = result.deferred_entries["domain/huge"]
+    assert entry.summary
+
+
 async def test_primary_scan_reuses_parsed_file_until_stat_changes(tmp_path, monkeypatch):
     import agent_core.knowledge.loader as loader
 

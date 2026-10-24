@@ -201,6 +201,13 @@ if _project_root:
     # reaching Redis/MSSQL/API on the compose network.
     _NETWORK_MODE = os.environ.get("_AGENT_NETWORK_MODE", "all")
     _LOCALHOST_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
+    # Resolver-only events: they take a host name/address rather than a live
+    # socket, and CPython resolves through C-internal sockets that emit no
+    # socket.* events at all — only these audit events can gate name lookups.
+    _RESOLVER_EVENTS = frozenset({
+        "socket.getaddrinfo", "socket.gethostbyname",
+        "socket.gethostbyaddr", "socket.getnameinfo",
+    })
     # Directories whose binaries a guarded Python may os.exec into (see
     # sandbox.py _EXEC_ALLOW_DIRS - the semgrep console script execvp's the
     # native osemgrep binary out of its venv to replace its own process).
@@ -442,6 +449,8 @@ if _project_root:
 
         if event in (
             "socket.socket", "socket.__new__", "socket.connect", "socket.getaddrinfo",
+            "socket.sendto", "socket.gethostbyname", "socket.gethostbyaddr",
+            "socket.getnameinfo",
         ):
             # Network policy follows _AGENT_NETWORK_MODE ("all" by default):
             # "all" intercepts nothing; "localhost" allows loopback only
@@ -451,25 +460,35 @@ if _project_root:
             # socket constructor event is named socket.__new__ on Python 3.12
             # and was renamed to socket.socket in 3.13 - both are listed so
             # every supported interpreter is covered (covers http.client,
-            # urllib, requests, raw ssl); connect/getaddrinfo close the
-            # direct-call gaps. socketpair's own internal socket()/connect
-            # calls are exempted (see _from_socketpair) so asyncio's self-pipe
-            # keeps working in every mode; getaddrinfo is never used by
-            # socketpair and stays gated by the mode below.
-            if event != "socket.getaddrinfo" and _from_socketpair(sys._getframe(2)):
+            # urllib, requests, raw ssl); connect/sendto close the
+            # direct-send gaps (sendto never connects, so a UDP datagram
+            # would otherwise leave unchecked), and the resolver events gate
+            # name lookups, which run through C-internal sockets that emit no
+            # socket.* events at all. socketpair's own internal
+            # socket()/bind()/connect calls are exempted (see
+            # _from_socketpair) so asyncio's self-pipe keeps working in every
+            # mode; resolver events are never used by socketpair and stay
+            # gated by the mode below.
+            if event not in _RESOLVER_EVENTS and _from_socketpair(sys._getframe(2)):
                 return
             if _NETWORK_MODE == "all":
                 return
             if _NETWORK_MODE == "localhost":
                 if event in ("socket.socket", "socket.__new__"):
                     return
-                if event == "socket.connect" and len(args) >= 2:
+                if event in ("socket.connect", "socket.sendto") and len(args) >= 2:
                     addr = args[1]
                     if isinstance(addr, (tuple, list)) and addr:
                         host = addr[0]
                         if isinstance(host, str) and host in _LOCALHOST_HOSTS:
                             return
-                if event == "socket.getaddrinfo" and args:
+                if event == "socket.getnameinfo" and args:
+                    addr = args[0]
+                    if isinstance(addr, (tuple, list)) and addr:
+                        host = addr[0]
+                        if isinstance(host, str) and host in _LOCALHOST_HOSTS:
+                            return
+                if event in _RESOLVER_EVENTS and args:
                     host = args[0]
                     if isinstance(host, str) and host in _LOCALHOST_HOSTS:
                         return

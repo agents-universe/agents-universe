@@ -1119,6 +1119,59 @@ def test_guard_localhost_mode_blocks_nonloopback(sandbox_dirs):
     assert r.returncode != 0 and "agent-guard" in r.stderr
 
 
+def test_guard_localhost_mode_blocks_udp_sendto(sandbox_dirs):
+    """SANDBOX_NETWORK=localhost is loopback-only on every egress path:
+    sendto fires its own audit event (no connect involved), so UDP
+    datagrams must obey the same loopback rule."""
+    proj_a, _, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    env["_AGENT_NETWORK_MODE"] = "localhost"
+    r = run_python(
+        "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); "
+        "s.sendto(b'x', ('192.0.2.1', 53))",
+        cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
+def test_guard_localhost_mode_allows_loopback_sendto(sandbox_dirs):
+    proj_a, _, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    env["_AGENT_NETWORK_MODE"] = "localhost"
+    r = run_python(
+        "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); "
+        "s.sendto(b'x', ('127.0.0.1', 9)); s.close(); print('udp-ok')",
+        cwd=proj_a, env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "udp-ok" in r.stdout
+
+
+def test_guard_localhost_mode_blocks_remote_hostname_resolution(sandbox_dirs):
+    proj_a, _, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    env["_AGENT_NETWORK_MODE"] = "localhost"
+    r = run_python(
+        "import socket; socket.gethostbyname('example.com')",
+        cwd=proj_a, env=env,
+    )
+    assert r.returncode != 0 and "agent-guard" in r.stderr
+
+
+def test_guard_none_mode_blocks_hostname_resolution(sandbox_dirs):
+    """"none" claims all sockets are blocked, but gethostbyname/getnameinfo
+    resolve through C-internal sockets that emit no socket.* events — their
+    dedicated audit events are the only gate."""
+    proj_a, _, fake_temp = sandbox_dirs
+    env = guarded_env(proj_a, fake_temp)
+    for probe in (
+        "socket.gethostbyname('localhost')",
+        "socket.getnameinfo(('127.0.0.1', 80), 0)",
+    ):
+        r = run_python(f"import socket; {probe}", cwd=proj_a, env=env)
+        assert r.returncode != 0 and "agent-guard" in r.stderr, probe
+
+
 def test_guard_sets_dont_write_bytecode(sandbox_dirs):
     proj_a, _, fake_temp = sandbox_dirs
     r = run_python("import sys; print(sys.dont_write_bytecode)", cwd=proj_a, env=guarded_env(proj_a, fake_temp))

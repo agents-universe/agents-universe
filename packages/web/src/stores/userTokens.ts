@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { UserTokenEntry } from '@/types'
 import { userTokensApi } from '@/api/userTokens'
+import { i18n } from '@/i18n'
+import { translateApiErrorWith } from '@/utils/apiError'
 
 export const useUserTokensStore = defineStore('userTokens', () => {
   const tokens = ref<UserTokenEntry[]>([])
@@ -20,7 +22,7 @@ export const useUserTokensStore = defineStore('userTokens', () => {
       const list = await userTokensApi.list()
       if (seq === loadSeq) tokens.value = list
     } catch (e: unknown) {
-      if (seq === loadSeq) error.value = e instanceof Error ? e.message : 'Failed to load user tokens'
+      if (seq === loadSeq) error.value = translateApiErrorWith(e, i18n.global.t('common.loadFailed'))
     } finally {
       if (seq === loadSeq) loading.value = false
     }

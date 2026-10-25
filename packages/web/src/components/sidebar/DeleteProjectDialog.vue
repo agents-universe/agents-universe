@@ -64,6 +64,7 @@ import { Trash2, X } from 'lucide-vue-next'
 import type { Project } from '@/types'
 import { projectsApi } from '@/api/projects'
 import { ApiError } from '@/api/client'
+import { translateApiError } from '@/utils/apiError'
 import { useClickOutside } from '@/composables/useClickOutside'
 
 const { t } = useI18n()
@@ -96,14 +97,7 @@ async function handleDelete() {
         emit('deleted', props.project.project_id)
         return
       }
-      const codeMap: Record<string, string> = {
-        PROJECT_HAS_CHILDREN: t('deleteProjectDialog.codeHasChildren'),
-        PROJECT_HAS_RUNNING_WORK: t('deleteProjectDialog.codeRunningWork'),
-        SLUG_CONFIRMATION_MISMATCH: t('deleteProjectDialog.codeSlugMismatch'),
-        PROJECT_NOT_OWNER: t('deleteProjectDialog.codeNotOwner'),
-        UNSAFE_PATH: t('deleteProjectDialog.codeUnsafePath'),
-      }
-      errorMsg.value = codeMap[e.code ?? ''] ?? e.message
+      errorMsg.value = translateApiError(e)
     } else {
       errorMsg.value = e instanceof Error ? e.message : t('deleteProjectDialog.deleteFailed')
     }

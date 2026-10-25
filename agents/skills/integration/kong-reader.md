@@ -1,6 +1,8 @@
 ---
 slug: "integration/kong-reader"
-description: "Call Kong / OpenAPI endpoints based on the project base and kong-map knowledge, automatically resolve the Kong key from user tokens by environment, and send it in the x-api-key header"
+description:
+  zh-CN: "基于项目 base 与 kong-map 知识调用 Kong / OpenAPI 接口，按环境自动从用户密钥库解析 Kong key 并经 x-api-key 头发送"
+  en-US: "Call Kong / OpenAPI endpoints based on the project base and kong-map knowledge, automatically resolve the Kong key from user tokens by environment, and send it in the x-api-key header"
 triggers:
   - "kong"
   - "openapi"

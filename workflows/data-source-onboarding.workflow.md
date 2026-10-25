@@ -1,6 +1,8 @@
 ---
 slug: "data-source-onboarding"
-description: "Register a new data source end-to-end — metadata, secure credential collection, connectivity test, schema discovery, and knowledge updates"
+description:
+  zh-CN: "端到端接入新数据源——元数据、安全凭据收集、连通性测试、Schema 发现与知识库更新"
+  en-US: "Register a new data source end-to-end — metadata, secure credential collection, connectivity test, schema discovery, and knowledge updates"
 triggers:
   - "onboard a data source"
   - "connect a database"

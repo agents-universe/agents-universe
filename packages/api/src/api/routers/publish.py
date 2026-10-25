@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models._compat import now_utc as _now_utc
 from api.models.agent import Agent
 from api.models.project import Project
@@ -104,7 +105,7 @@ async def _load_owned_publish(db, publish_id: str, user_id: str) -> AgentPublish
     )
     publish = result.scalar_one_or_none()
     if not publish:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     return publish
 
 
@@ -120,21 +121,21 @@ async def _authorize_publish_key(request: Request, db: AsyncSession, publish_id:
         # X-API-Key header fallback (some HTTP clients set no Authorization).
         api_key = (request.headers.get("x-api-key") or "").strip()
     if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
+        raise api_error(401, "PUBLISH_API_KEY_REQUIRED", "API key required")
     found = await authenticate_publish_key(db, api_key)
     if found is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+        raise api_error(401, "PUBLISH_API_KEY_INVALID", "Invalid API key")
     found_pubid, _ = found
     if found_pubid != publish_id:
-        raise HTTPException(status_code=401, detail="API key does not match this publish")
+        raise api_error(401, "PUBLISH_API_KEY_MISMATCH", "API key does not match this publish")
     result = await db.execute(
         select(AgentPublish).where(AgentPublish.publish_id == publish_id)
     )
     publish = result.scalar_one_or_none()
     if not publish:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     if not publish.api_enabled:
-        raise HTTPException(status_code=403, detail="Publish API is disabled")
+        raise api_error(403, "PUBLISH_API_DISABLED", "Publish API is disabled")
     # A key has no identity to check against a whitelist: a private project
     # cuts off every API caller.
     await require_publish_project_open(db, publish, None)
@@ -188,10 +189,10 @@ async def create_publish(
     )
     project = proj_result.scalar_one_or_none()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise api_error(404, "PROJECT_NOT_FOUND", "Project not found")
     from api.dependencies.auth import is_project_manager
     if not await is_project_manager(db, project, current_user.user_id):
-        raise HTTPException(status_code=403, detail="无权发布该项目")
+        raise api_error(403, "PUBLISH_FORBIDDEN", "You are not allowed to publish this project")
 
     # Agent must resolve to a global or this-project agent.
     agent_result = await db.execute(
@@ -199,7 +200,7 @@ async def create_publish(
     )
     agent = agent_result.scalar_one_or_none()
     if agent is None or (agent.project_id is not None and agent.project_id != body.project_id):
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise api_error(404, "AGENT_NOT_FOUND", "Agent not found")
 
     # Model config must be the publisher's own.
     cfg_result = await db.execute(
@@ -209,7 +210,7 @@ async def create_publish(
         )
     )
     if cfg_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=400, detail="模型配置不存在或不属于你")
+        raise api_error(400, "PUBLISH_MODEL_CONFIG_INVALID", "Model config does not exist or does not belong to you")
 
     # One publish per (publisher, agent) — the DB enforces it too, but a
     # pre-check turns the duplicate into a clear 409 instead of a 500.
@@ -222,7 +223,7 @@ async def create_publish(
         )
     ).first()
     if existing is not None:
-        raise HTTPException(status_code=409, detail="该智能体已发布，请勿重复创建")
+        raise api_error(409, "PUBLISH_ALREADY_EXISTS", "This agent is already published; do not create it again")
 
     publish = AgentPublish(
         owner_id=current_user.user_id,
@@ -239,7 +240,7 @@ async def create_publish(
         # Lost the race against a concurrent create: same outcome as the
         # pre-check, not a 500.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="该智能体已发布，请勿重复创建") from None
+        raise api_error(409, "PUBLISH_ALREADY_EXISTS", "This agent is already published; do not create it again") from None
     return {
         "publish_id": str(publish.publish_id),
         "agent_slug": publish.agent_slug,
@@ -301,7 +302,7 @@ async def update_publish(
             )
         )
         if cfg_result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=400, detail="模型配置不存在或不属于你")
+            raise api_error(400, "PUBLISH_MODEL_CONFIG_INVALID", "Model config does not exist or does not belong to you")
         publish.model_config_id = body.model_config_id
     publish.updated_at = _now_utc()
     await db.commit()
@@ -396,7 +397,7 @@ async def revoke_publish_key(
     )
     key = result.scalar_one_or_none()
     if not key:
-        raise HTTPException(status_code=404, detail="Key not found")
+        raise api_error(404, "PUBLISH_KEY_NOT_FOUND", "Key not found")
     key.is_active = False
     key.revoked_at = _now_utc()
     await db.commit()
@@ -456,7 +457,7 @@ async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversat
         # also marks it retrieved; the done callback logs it either way.)
         if not saw_terminal and task.done() and not task.cancelled():
             if task.exception() is not None:
-                yield sse_format({"type": "error", "message": "Agent execution failed. Check server logs for details."})
+                yield sse_format({"type": "error", "code": "PUBLISH_RUN_FAILED", "message": "Agent execution failed. Check server logs for details."})
     except BaseException:
         # The client disconnect reaches the generator two ways: CancelledError
         # at an await (the ASGI layer cancelling the response task while the
@@ -491,7 +492,7 @@ async def publish_stream(
     try:
         await asyncio.wait_for(_publish_semaphore.acquire(), timeout=10.0)
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=429, detail="Too many concurrent runs")
+        raise api_error(429, "PUBLISH_TOO_MANY_RUNS", "Too many concurrent runs")
 
     # Pin the caller's thread to a dedicated conversation so multi-turn
     # agents keep their history across calls — one conversation per
@@ -512,7 +513,7 @@ async def publish_stream(
         # fails fast instead of interleaving two runs.
         from api.websocket.manager import manager
         if not await manager.claim_turn(conversation):
-            raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+            raise api_error(409, "CONVERSATION_ALREADY_RUNNING", "This conversation already has a running turn")
     except BaseException:
         _publish_semaphore.release()
         raise
@@ -655,7 +656,7 @@ async def get_publish_page(
     )
     publish = result.scalar_one_or_none()
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     await require_publish_project_open(db, publish, current_user.user_id)
     conversation_id = await get_or_create_publish_conversation(
         db, publish, viewer_id=current_user.user_id
@@ -689,7 +690,7 @@ async def get_publish_session(
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     conversation_id = await get_or_create_publish_conversation(
         db, publish, viewer_id=current_user.user_id
     )
@@ -715,7 +716,7 @@ async def get_publish_session_messages(
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     conversation_id = await get_or_create_publish_conversation(
         db, publish, viewer_id=current_user.user_id
     )
@@ -737,7 +738,7 @@ async def get_publish_session_latest_run(
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, token)
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     conversation_id = await get_or_create_publish_conversation(
         db, publish, viewer_id=current_user.user_id
     )
@@ -777,7 +778,7 @@ async def post_publish_session_abort(
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, body.token)
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
     conversation_id = await _find_publish_conversation_id(
         db, publish, viewer_id=current_user.user_id, thread_id=None
     )
@@ -812,14 +813,14 @@ async def post_publish_session_run(
 
     publish = await authorize_publish_viewer(db, publish_id, current_user.user_id, body.token)
     if publish is None:
-        raise HTTPException(status_code=404, detail="Publish not found")
+        raise api_error(404, "PUBLISH_NOT_FOUND", "Publish not found")
 
     # A duplicate of the publish_stream semaphore guard: the embedded page is
     # rate-limited like any other caller.
     try:
         await asyncio.wait_for(_publish_semaphore.acquire(), timeout=10.0)
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=429, detail="Too many concurrent runs")
+        raise api_error(429, "PUBLISH_TOO_MANY_RUNS", "Too many concurrent runs")
 
     # Same slot-ownership rule as publish_stream: release on any failure or
     # cancellation before the run task takes over the permit.
@@ -830,7 +831,7 @@ async def post_publish_session_run(
         from api.websocket.manager import manager
 
         if not await manager.claim_turn(conversation):
-            raise HTTPException(status_code=409, detail="该会话已有一轮运行")
+            raise api_error(409, "CONVERSATION_ALREADY_RUNNING", "This conversation already has a running turn")
     except BaseException:
         _publish_semaphore.release()
         raise

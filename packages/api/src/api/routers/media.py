@@ -16,13 +16,14 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_conversation, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.conversation import Conversation
 from api.models.project import Project
 
@@ -75,9 +76,9 @@ class _UploadEntry:
 _uploads: dict[tuple[str, str], _UploadEntry] = {}  # (conversation_id, filename) -> entry
 
 
-def _upload_error(status_code: int, code: str, message: str) -> HTTPException:
+def _upload_error(status_code: int, code: str, message: str):
     """Structured upload error — `code` drives the frontend i18n mapping."""
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+    return api_error(status_code, code, message)
 
 
 def _sweep_expired() -> None:
@@ -245,11 +246,11 @@ async def serve_media(
     conversation: Conversation = Depends(authorize_conversation),
 ):
     if str(conversation.project_id) != project_id:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "CONVERSATION_NOT_FOUND", "Conversation not found")
     if ".." in filename or not _FILENAME_RE.match(filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+        raise api_error(400, "UPLOAD_FILENAME_INVALID", "Invalid filename")
     if ".." in conversation_id or "/" in conversation_id or "\\" in conversation_id or "\x00" in conversation_id:
-        raise HTTPException(status_code=400, detail="Invalid conversation ID")
+        raise api_error(400, "CONVERSATION_ID_INVALID", "Invalid conversation ID")
 
     # User uploads live in memory until consumed — serve from the store first.
     data = get_upload(conversation_id, filename)
@@ -266,18 +267,18 @@ async def serve_media(
     try:
         project_path = Path(await resolve_project_fs_path(project_id, db))
     except ValueError:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise api_error(404, "PROJECT_NOT_FOUND", "Project not found")
 
     media_dir = (project_path / ".tmp" / "media" / conversation_id).resolve()
     expected_base = (project_path / ".tmp" / "media").resolve()
     if not media_dir.is_relative_to(expected_base):
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise api_error(400, "UPLOAD_PATH_INVALID", "Invalid path")
 
     media_path = (media_dir / filename).resolve()
     if not media_path.is_relative_to(media_dir):
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise api_error(400, "UPLOAD_PATH_INVALID", "Invalid path")
     if not media_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise api_error(404, "UPLOAD_FILE_NOT_FOUND", "File not found")
 
     suffix = media_path.suffix.lower()
     media_types = {

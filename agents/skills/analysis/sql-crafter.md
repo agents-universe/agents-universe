@@ -1,6 +1,8 @@
 ---
 slug: "analysis/sql-crafter"
-description: "Author and execute metric-aligned, read-only SQL against project business databases via shell env_refs (python + sqlalchemy), or api_request for HTTP-exposed data"
+description:
+  zh-CN: "编写并执行与指标口径对齐的只读 SQL：经 shell env_refs（python + sqlalchemy）访问业务库，或经 api_request 访问以 HTTP 暴露的数据"
+  en-US: "Author and execute metric-aligned, read-only SQL against project business databases via shell env_refs (python + sqlalchemy), or api_request for HTTP-exposed data"
 type: "guidance"
 triggers:
   - "query the database"

@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { ProjectMember } from '@/types'
 import { listProjectMembers, addProjectMember, removeProjectMember } from '@/api/projectMembers'
+import { i18n } from '@/i18n'
+import { translateApiErrorWith } from '@/utils/apiError'
 
 export const useProjectMembersStore = defineStore('projectMembers', () => {
   const members = ref<ProjectMember[]>([])
@@ -24,7 +26,7 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
       const list = await listProjectMembers(projectId)
       if (seq === loadSeq) members.value = list
     } catch (e: unknown) {
-      if (seq === loadSeq) error.value = e instanceof Error ? e.message : 'Failed to load members'
+      if (seq === loadSeq) error.value = translateApiErrorWith(e, i18n.global.t('common.loadFailed'))
     } finally {
       if (seq === loadSeq) loading.value = false
     }

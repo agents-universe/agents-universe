@@ -1,6 +1,8 @@
 ---
 slug: "generation/demo-maker"
-description: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), styled after the project's own business system style — reuses an existing demo's style or delegates a QA style investigation; implementation goes to tech-lead, runtime verification to quality-assurance"
+description:
+  zh-CN: "生成单页产品演示：单个自包含 HTML 文件（CSS/JS 全内联、图片 base64/内联 SVG、系统字体、零外部请求、无运行时错误），风格仿照项目自身业务系统——复用既有演示的样式或委派 QA 调研样式；实现交 Tech Lead，运行时验证交 Quality Assurance"
+  en-US: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), styled after the project's own business system style — reuses an existing demo's style or delegates a QA style investigation; implementation goes to tech-lead, runtime verification to quality-assurance"
 type: "guidance"
 triggers:
   - "demo"

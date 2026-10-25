@@ -1,6 +1,8 @@
 ---
 slug: "integration/git-pr-manager"
-description: "Discover, inspect, approve, and merge GitHub Enterprise pull requests via the github tool. Use when the task asks to list PRs, inspect a PR diff, find PRs for a person or reviewer, check open PR queues, approve or merge a PR, or gather PR evidence before review, approve, or merge."
+description:
+  zh-CN: "经 github 工具发现、检视、批准并合并 GitHub Enterprise 拉取请求。适用于列出 PR、查看 PR 差异、按人员或审查者查找 PR、检查待处理 PR 队列、批准或合并 PR，或在审查/批准/合并前收集 PR 证据。"
+  en-US: "Discover, inspect, approve, and merge GitHub Enterprise pull requests via the github tool. Use when the task asks to list PRs, inspect a PR diff, find PRs for a person or reviewer, check open PR queues, approve or merge a PR, or gather PR evidence before review, approve, or merge."
 ---
 
 # Skill: Git PR Manager

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.project import Project
 from api.models.project_secret import ProjectSecret
 from api.services.token_vault import encrypt_project_secret, key_hint
@@ -136,7 +137,7 @@ async def create_secret(
         # secret_name) — with_for_update() locks only existing rows, so two
         # parallel POSTs can both pass the None branch above.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Secret already exists (concurrent creation)")
+        raise api_error(409, "SECRET_EXISTS", "Secret already exists (concurrent creation)")
     await db.refresh(secret)
     return {
         "secret_id": secret.secret_id,
@@ -164,7 +165,7 @@ async def update_secret(
     )
     secret = result.scalar_one_or_none()
     if not secret:
-        raise HTTPException(status_code=404, detail="Secret not found")
+        raise api_error(404, "SECRET_NOT_FOUND", "Secret not found")
 
     if body.value is not None:
         secret.encrypted_value = encrypt_project_secret(body.value, project.project_id)
@@ -197,7 +198,7 @@ async def delete_secret(
     )
     secret = result.scalar_one_or_none()
     if not secret:
-        raise HTTPException(status_code=404, detail="Secret not found")
+        raise api_error(404, "SECRET_NOT_FOUND", "Secret not found")
 
     await db.delete(secret)
     await db.commit()
@@ -225,11 +226,11 @@ async def test_secret(
     )
     secret = result.scalar_one_or_none()
     if not secret:
-        raise HTTPException(status_code=404, detail="Secret not found")
+        raise api_error(404, "SECRET_NOT_FOUND", "Secret not found")
 
     plain = decrypt_project_secret_or_none(secret.encrypted_value, project.project_id)
     if plain is None:
-        raise HTTPException(status_code=400, detail="Stored secret is corrupted — delete and re-save it")
+        raise api_error(400, "SECRET_CORRUPTED", "Stored secret is corrupted — delete and re-save it")
     return await test_service_token(
         secret.service_key,
         plain,

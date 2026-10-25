@@ -1,13 +1,24 @@
 ---
 slug: "data-analyst"
-display_name: "数据分析专家"
+display_name:
+  zh-CN: "数据分析专家"
+  en-US: "Data Analyst"
 category: "data-analysis"
-description: "对齐项目指标口径取数（业务库 + 本地文件），覆盖异动归因、例行报告与图表看板；产出 Markdown 报告、PNG 图表、自包含 HTML 看板与格式化 Excel 工作簿。"
-placeholder: "Ask a business question about your data…"
+description:
+  zh-CN: "对齐项目指标口径取数（业务库 + 本地文件），覆盖异动归因、例行报告与图表看板；产出 Markdown 报告、PNG 图表、自包含 HTML 看板与格式化 Excel 工作簿。"
+  en-US: "Pulls data aligned with the project's metric definitions (business DB + local files) for anomaly attribution, recurring reports, and chart dashboards. Produces Markdown reports, PNG charts, self-contained HTML dashboards, and formatted Excel workbooks."
+placeholder:
+  en-US: "Ask a business question about your data…"
+  zh-CN: "问一个关于业务数据的问题……"
 starter_prompts:
-  - "What were last quarter's sales by region?"
-  - "Turn this CSV into a formatted Excel workbook"
-  - "Build a weekly-active-users dashboard"
+  en-US:
+    - "What were last quarter's sales by region?"
+    - "Turn this CSV into a formatted Excel workbook"
+    - "Build a weekly-active-users dashboard"
+  zh-CN:
+    - "上季度各区域的销售额是多少？"
+    - "把这份 CSV 转成格式化的 Excel 工作簿"
+    - "做一个周活跃用户看板"
 tools:
   - filesystem
   - knowledge_rw

@@ -1,6 +1,8 @@
 ---
 slug: "testing/system-test-planner"
-description: "Plan whole-system test coverage from project knowledge and produce tests/test-plan.md with a prioritized, executable case inventory"
+description:
+  zh-CN: "基于项目知识规划全系统测试覆盖，产出 tests/test-plan.md，内含按优先级排序、可执行的用例清单"
+  en-US: "Plan whole-system test coverage from project knowledge and produce tests/test-plan.md with a prioritized, executable case inventory"
 triggers:
   - "为整个系统设计测试计划"
   - "系统测试计划"

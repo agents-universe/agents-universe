@@ -40,11 +40,11 @@
               @click="favoritesStore.toggleAgentFavorite(agent.slug)"
             >
             <div class="picker-agent-avatar" :style="{ background: avatarColor(agent.slug) }">
-              {{ initials(agent.label) }}
+              {{ initials(agentName(agent)) }}
             </div>
             <div class="picker-item-info">
-              <span class="picker-item-name">{{ agent.label }}</span>
-              <span v-if="agent.description" class="picker-item-desc">{{ agent.description }}</span>
+              <span class="picker-item-name">{{ agentName(agent) }}</span>
+              <span v-if="agent.description" class="picker-item-desc">{{ agentDesc(agent) }}</span>
             </div>
             <span
               v-if="favoritesStore.isDefaultFavorite(agent.slug) && favoritesStore.isAgentFavorited(agent.slug)"
@@ -90,6 +90,7 @@ import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
 import { useClickOutside } from '@/composables/useClickOutside'
+import { localizedText, searchBlob } from '@/utils/localize'
 import type { AgentInfo } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
@@ -103,6 +104,9 @@ const projectStore = useProjectStore()
 
 const search = ref('')
 
+const agentName = (a: AgentInfo) => localizedText(a.label, a.i18n?.display_name)
+const agentDesc = (a: AgentInfo) => localizedText(a.description, a.i18n?.description)
+
 // 每次打开都重新拉取智能体列表(含项目专属智能体);store 内为会话级缓存
 onMounted(async () => {
   await agentStore.reloadAgents(projectStore.currentProject?.project_id ?? null)
@@ -111,10 +115,12 @@ onMounted(async () => {
 const filteredAgents = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return agentStore.agents
+  // Cross-language match: an en-US user typing "Tech Lead" must find the
+  // agent whose zh canonical name is 技术负责人 — the blob spans every locale.
   return agentStore.agents.filter(a =>
-    a.label.toLowerCase().includes(q) ||
+    searchBlob(a.label, a.i18n?.display_name).includes(q) ||
     a.slug.toLowerCase().includes(q) ||
-    a.description.toLowerCase().includes(q)
+    searchBlob(a.description, a.i18n?.description).includes(q)
   )
 })
 

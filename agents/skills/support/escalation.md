@@ -1,6 +1,8 @@
 ---
 slug: "support/escalation"
-description: "转人工判断：明确触发条件、情绪恶化检测、交接信息模板与流程，以及与智能体委派（delegate_agent）的边界"
+description:
+  en-US: "Escalation-to-human judgment: explicit trigger conditions, sentiment-deterioration detection, handover info template and process, and the boundary with agent delegation (delegate_agent)"
+  zh-CN: "转人工判断：明确触发条件、情绪恶化检测、交接信息模板与流程，以及与智能体委派（delegate_agent）的边界"
 type: "guidance"
 triggers:
   - "转人工"

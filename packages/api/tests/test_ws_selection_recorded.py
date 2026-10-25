@@ -244,14 +244,14 @@ async def test_secret_saved_without_session_reports_success(db, make_project, ws
     await conversation_ws(conv.conversation_id, ws)
 
     infos = ws.frames_of("info")
-    assert any("密钥已保存" in f.get("message", "") for f in infos)
+    assert any(f.get("code") == "SECRET_SAVED" for f in infos)
     assert "sk-must-not-leak" not in str(ws.sent)
 
 
 async def test_failed_secret_save_without_session_reports_error(db, make_project, ws_manager):
-    """saved=False (here: empty value) with no live session must NOT claim
-    密钥已保存 — the user would believe the credential was stored while the
-    next tool call still failed for lack of it."""
+    """saved=False (here: empty value) with no live session must NOT report a
+    successful save — the user would believe the credential was stored while
+    the next tool call still failed for lack of it."""
     conv = await _make_conversation(db, make_project)
 
     ws = _FakeWS([{
@@ -265,7 +265,7 @@ async def test_failed_secret_save_without_session_reports_error(db, make_project
     await conversation_ws(conv.conversation_id, ws)
 
     assert ws.frames_of("error")
-    assert not any("密钥已保存" in f.get("message", "") for f in ws.frames_of("info"))
+    assert not any(f.get("code") == "SECRET_SAVED" for f in ws.frames_of("info"))
 
 
 async def test_non_string_prompt_id_does_not_kill_the_socket(db, make_project, ws_manager):

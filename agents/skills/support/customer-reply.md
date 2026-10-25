@@ -1,6 +1,8 @@
 ---
 slug: "support/customer-reply"
-description: "客服应答规范：只依据项目知识作答、共情开场、编号步骤、槽位个性化、三种收尾变体与不承诺红线"
+description:
+  en-US: "Customer reply standards: answer only from project knowledge, empathetic opening, numbered steps, slot personalization, three closing variants, and no-promise red lines"
+  zh-CN: "客服应答规范：只依据项目知识作答、共情开场、编号步骤、槽位个性化、三种收尾变体与不承诺红线"
 type: "guidance"
 triggers:
   - "客服"

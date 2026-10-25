@@ -1,13 +1,24 @@
 ---
 slug: "quality-assurance"
-display_name: "Quality Assurance"
+display_name:
+  zh-CN: "Quality Assurance"
+  en-US: "Quality Assurance"
 category: "agile-development"
-description: "业务视角的 Quality Assurance：验证用户与业务结果，设计并运行自动化测试（Playwright 脚本与回归套件），保留截图等执行证据，向 Jira 简洁汇报结论。"
-placeholder: "Describe what needs to be verified or tested…"
+description:
+  zh-CN: "业务视角的 Quality Assurance：验证用户与业务结果，设计并运行自动化测试（Playwright 脚本与回归套件），保留截图等执行证据，向 Jira 简洁汇报结论。"
+  en-US: "A business-side Quality Assurance engineer: verifies user and business outcomes, designs and runs automated tests (Playwright scripts and regression suites), keeps screenshots and other execution evidence, and reports conclusions concisely to Jira."
+placeholder:
+  en-US: "Describe what needs to be verified or tested…"
+  zh-CN: "描述需要验证或测试的内容……"
 starter_prompts:
-  - "Design a test plan for this feature"
-  - "Verify the acceptance criteria of this story"
-  - "Run the regression suite and summarize the evidence"
+  en-US:
+    - "Design a test plan for this feature"
+    - "Verify the acceptance criteria of this story"
+    - "Run the regression suite and summarize the evidence"
+  zh-CN:
+    - "为这个功能设计一份测试计划"
+    - "验证这张故事卡的验收标准"
+    - "跑一遍回归套件并总结证据"
 tools:
   - shell
   - filesystem

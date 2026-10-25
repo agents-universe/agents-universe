@@ -31,7 +31,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 
-from fastapi import HTTPException
+from api.errors import api_error
 from sqlalchemy import case, select
 
 from api.json_utils import dumps as json_dumps
@@ -244,11 +244,20 @@ async def _get_publish_agent(db, publish) -> dict | None:
     agent = result.scalars().first()
     if agent is None:
         return None
+    # Locale map for the embedded page; the top-level fields stay canonical.
+    i18n: dict | None = None
+    if agent.i18n:
+        try:
+            data = json.loads(agent.i18n)
+            i18n = data if isinstance(data, dict) and data else None
+        except (json.JSONDecodeError, TypeError):
+            i18n = None
     return {
         "slug": agent.slug,
         "display_name": agent.display_name,
         "description": agent.description,
         "project_id": agent.project_id,
+        "i18n": i18n,
     }
 
 
@@ -317,7 +326,7 @@ async def require_publish_project_open(db, publish, viewer_id: str | None) -> No
     from api.dependencies.auth import PROJECT_PRIVATE_DENIED, has_project_access
 
     if viewer_id is None or not await has_project_access(db, project, viewer_id):
-        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
+        raise api_error(403, "PROJECT_PRIVATE", PROJECT_PRIVATE_DENIED["message"])
 
 
 async def authorize_publish_viewer(

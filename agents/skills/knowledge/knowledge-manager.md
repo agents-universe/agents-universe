@@ -1,7 +1,9 @@
 ---
 slug: "knowledge/knowledge-manager"
 public: true
-description: "Manage the acquisition, accumulation, update, and retirement of project knowledge"
+description:
+  zh-CN: "管理项目知识的获取、积累、更新与退役"
+  en-US: "Manage the acquisition, accumulation, update, and retirement of project knowledge"
 triggers:
   - "知识沉淀"
   - "写回知识"

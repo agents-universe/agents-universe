@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchRaw, ApiError } from './client'
+import type { LocaleOverrides } from '@/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,11 @@ export interface PublishAgentInfo {
   display_name: string
   description: string | null
   project_id: string | null
+  /** Per-locale overrides of display_name/description (canonical stays zh). */
+  i18n?: {
+    display_name?: LocaleOverrides<string>
+    description?: LocaleOverrides<string>
+  } | null
 }
 
 /** Payload of the embedded page (SSO) session endpoint. */
@@ -182,6 +188,7 @@ export const publishApi = {
     let buffer = ''
     let jsonText = ''
     let errorMessage: string | null = null
+    let errorCode: string | undefined
 
     // One "data: {json}" SSE frame. Malformed frames are skipped, not fatal.
     // Error frames are recorded, not thrown: the text streamed before the
@@ -190,12 +197,13 @@ export const publishApi = {
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue
         try {
-          const evt = JSON.parse(line.slice(6)) as { type?: string; delta?: string; message?: string }
+          const evt = JSON.parse(line.slice(6)) as { type?: string; delta?: string; message?: string; code?: string }
           if (evt.type === 'stream_delta' && typeof evt.delta === 'string') {
             jsonText += evt.delta
             onDelta?.(evt.delta)
           } else if (evt.type === 'error' && evt.message && errorMessage === null) {
             errorMessage = evt.message
+            errorCode = evt.code
           }
         } catch {
           // ignore malformed frames
@@ -227,7 +235,7 @@ export const publishApi = {
     // Flush a trailing frame with no blank-line terminator.
     if (buffer.trim()) consumeFrame(buffer)
     if (errorMessage !== null) {
-      const err = new ApiError(500, errorMessage)
+      const err = new ApiError(500, errorMessage, errorCode)
       err.partialText = jsonText
       throw err
     }
@@ -237,6 +245,7 @@ export const publishApi = {
         readError instanceof Error && readError.message
           ? readError.message
           : 'Stream interrupted',
+        'PUBLISH_STREAM_INTERRUPTED',
       )
       err.partialText = jsonText
       throw err

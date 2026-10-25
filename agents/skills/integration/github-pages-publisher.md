@@ -1,6 +1,8 @@
 ---
 slug: "integration/github-pages-publisher"
-description: "Create, maintain, and validate workflow-based GitHub Pages publishing configuration, with support for a self-hosted runner"
+description:
+  zh-CN: "创建、维护并校验基于 workflow 的 GitHub Pages 发布配置，支持自托管 runner"
+  en-US: "Create, maintain, and validate workflow-based GitHub Pages publishing configuration, with support for a self-hosted runner"
 ---
 
 # Skill: GitHub Pages Publisher

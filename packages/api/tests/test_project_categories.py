@@ -170,7 +170,7 @@ async def test_create_unknown_category_400(client):
     resp = await _create(client, "unknown-cat", "foo")
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert detail["code"] == "unknown_category"
+    assert detail["code"] == "PROJECT_CATEGORY_UNKNOWN"
     assert detail["valid_categories"] == ["software", "legacy-modernization", "data-analysis", "customer-service", "docs", "other"]
     # 校验先于任何写盘:没有遗留目录
     assert not (PROJECTS_ROOT / "unknown-cat").exists()
@@ -191,6 +191,26 @@ async def test_categories_endpoint(client):
         EXPECTED_COUNTS["other"],
     ]
     assert all(c["description"] for c in cats)
+
+
+async def test_categories_endpoint_exposes_locale_maps(client):
+    """label/description stay zh canonical; every registry entry carries its
+    en-US variants under i18n for the creation-dialog picker."""
+    resp = await client.get("/api/projects/categories")
+    cats = {c["slug"]: c for c in resp.json()}
+    software = cats["software"]
+    assert software["i18n"]["label"]["en-US"] == "Software Project"
+    assert "Software engineering projects" in software["i18n"]["description"]["en-US"]
+    # The canonical strings are NOT duplicated inside the map entry sets —
+    # the full map is stored, so zh-CN is present too.
+    assert software["i18n"]["label"]["zh-CN"] == "软件项目"
+
+
+def test_registry_normalizes_yaml_locale_maps():
+    """The registry loader collapses YAML locale maps to zh canonicals."""
+    software = next(c for c in get_categories() if c["slug"] == "software")
+    assert software["label"] == "软件项目"
+    assert software["i18n"]["label"]["en-US"] == "Software Project"
 
 
 async def test_category_persisted_and_serialized(client):

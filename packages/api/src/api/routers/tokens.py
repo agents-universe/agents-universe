@@ -5,7 +5,7 @@ import logging
 import traceback
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, Path
 
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field, field_validator
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.user import UserToken
 from api.services.token_vault import decrypt_or_none, encrypt, key_hint
 
@@ -113,7 +114,7 @@ async def upsert_token(
     keep_existing_key = body.value in (None, "__keep__")
     if keep_existing_key:
         if token is None:
-            raise HTTPException(status_code=400, detail="No existing token to keep")
+            raise api_error(400, "TOKEN_NONE_TO_KEEP", "No existing token to keep")
         encrypted = token.encrypted_value
         hint = token.key_hint
     else:
@@ -148,7 +149,7 @@ async def upsert_token(
         # (with_for_update() locks only existing rows) — the loser violates
         # uq_user_token_service on commit. Mirrors api_keys/tier_models.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Token already exists (concurrent creation)")
+        raise api_error(409, "TOKEN_EXISTS", "Token already exists (concurrent creation)")
     return {"service_key": service_key, "key_hint": hint}
 @router.delete("/{service_key}")
 async def delete_token(
@@ -164,7 +165,7 @@ async def delete_token(
     )
     token = result.scalar_one_or_none()
     if not token:
-        raise HTTPException(status_code=404, detail="Token not found")
+        raise api_error(404, "TOKEN_NOT_FOUND", "Token not found")
     from sqlalchemy import delete
     await db.execute(
         delete(UserToken).where(
@@ -190,11 +191,11 @@ async def test_token(
     )
     token = result.scalar_one_or_none()
     if not token:
-        raise HTTPException(status_code=404, detail="Token not configured")
+        raise api_error(404, "TOKEN_NOT_CONFIGURED", "Token not configured")
 
     plain = decrypt_or_none(token.encrypted_value, current_user.user_id)
     if plain is None:
-        raise HTTPException(status_code=400, detail="Stored token is corrupted — delete and re-save it")
+        raise api_error(400, "TOKEN_CORRUPTED", "Stored token is corrupted — delete and re-save it")
     # service_key may or may not contain ":" (e.g. "git", "jira", "jira:email", "kong:dev", "kong:uat")
     provider = service_key.split(":", 1)[0]
 

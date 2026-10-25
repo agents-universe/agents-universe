@@ -1,6 +1,8 @@
 ---
 slug: "office/docx"
-description: "Generate and edit Word documents (.docx) with python-docx — built-in heading hierarchy, styled paragraphs, tables, headers/footers, CJK-safe fonts; tracked changes not supported (v1)"
+description:
+  zh-CN: "用 python-docx 生成与编辑 Word 文档（.docx）——内置标题层级、样式段落、表格、页眉页脚、CJK 安全字体；暂不支持修订（v1）"
+  en-US: "Generate and edit Word documents (.docx) with python-docx — built-in heading hierarchy, styled paragraphs, tables, headers/footers, CJK-safe fonts; tracked changes not supported (v1)"
 type: "guidance"
 triggers:
   - "生成word"

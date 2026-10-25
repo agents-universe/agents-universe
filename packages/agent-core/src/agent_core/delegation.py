@@ -11,7 +11,7 @@ resolves a slug as ``{project_fs_path}/agents/{slug}.agent.md`` first and the
 global ``agents/`` dir second, and the delegated turn re-resolves it the same
 way. A DB row can outlive its definition file (or predate the lazy project
 sync), which would advertise an agent whose turn then fails with
-``agent_config_not_found``.
+``AGENT_CONFIG_NOT_FOUND``.
 
 Scoping is the project's own ``agents/`` dir plus the framework-wide one —
 never a sibling project. Project agents must carry the ``{project_slug}--``
@@ -29,6 +29,7 @@ from typing import Any, Collection, Iterable
 import frontmatter
 
 from .definition_check import project_slug_from_workspace, validate_agent_slug
+from .localization import normalize_i18n_field
 
 log = logging.getLogger("agents_universe.agent_core.delegation")
 
@@ -105,10 +106,20 @@ def _load_candidate(path: Path, *, require_prefix: str | None) -> DelegationCand
         )
         return None
 
+    # zh-first canonical for both: the roster feeds an LLM-facing tool
+    # result — a locale map must collapse to the same Chinese text the DB
+    # projection (and the pre-i18n str()) would show, never str(dict).
+    display_name, _ = normalize_i18n_field(
+        post.get("display_name"), canonical_order=("zh-CN", "en-US")
+    )
+    description, _ = normalize_i18n_field(
+        post.get("description"), canonical_order=("zh-CN", "en-US")
+    )
+
     return DelegationCandidate(
         slug=slug,
-        display_name=str(post.get("display_name") or slug),
-        description=str(post.get("description") or ""),
+        display_name=display_name or slug,
+        description=description or "",
         category=str(post.get("category") or "agile-development"),
         skills=tuple(_as_list(post.get("skills"))),
         workflows=tuple(_as_list(post.get("workflows"))),

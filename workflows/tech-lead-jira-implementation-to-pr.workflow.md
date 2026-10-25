@@ -1,6 +1,8 @@
 ---
 slug: "tech-lead-jira-implementation-to-pr"
-description: "Tech Lead workflow for implementing a Jira issue through a clean Git baseline, tested feature branch, and pull request"
+description:
+  zh-CN: "Tech Lead 工作流：基于干净的 Git 基线实现 Jira 工单，经测试的功能分支并提 PR"
+  en-US: "Tech Lead workflow for implementing a Jira issue through a clean Git baseline, tested feature branch, and pull request"
 agent: "tech-lead"
 triggers:
   - "implement Jira issue"

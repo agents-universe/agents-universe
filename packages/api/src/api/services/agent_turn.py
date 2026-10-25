@@ -285,7 +285,7 @@ async def run_turn(
             )
             row = result.first()
             if not row:
-                await _send_turn_error(transport, conversation_id, {"type": "error", "message": "Conversation not found"})
+                await _send_turn_error(transport, conversation_id, {"type": "error", "code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found"})
                 return
             conv, project = row
             # Snapshot the ledger the turn started from. mcp_sync may commit
@@ -304,7 +304,7 @@ async def run_turn(
                 await _send_turn_error(
                     transport,
                     conversation_id,
-                    {"type": "error", "message": "Project access denied"},
+                    {"type": "error", "code": "PROJECT_PRIVATE", "message": "Project access denied"},
                 )
                 return
 
@@ -341,6 +341,7 @@ async def run_turn(
             if not tier_models:
                 await _send_turn_error(transport, conversation_id, {
                     "type": "error",
+                    "code": "MODEL_NOT_CONFIGURED",
                     "message": "No model configured. Go to Settings → AI Models to add a provider and model.",
                 })
                 return
@@ -355,7 +356,7 @@ async def run_turn(
             is_auto = config_id_override == _AUTO_CONFIG_ID
             auto_classification: str | None = None
             target_config: str | None = None
-            if pinned_config in ("azure_endpoint_required", "model_config_unavailable"):
+            if pinned_config in ("MODEL_AZURE_BASE_URL_REQUIRED", "MODEL_CONFIG_UNAVAILABLE"):
                 # A published run's pinned model config is unusable — fail
                 # with the concrete reason instead of silently running a
                 # different model than the publisher bound.
@@ -364,7 +365,7 @@ async def run_turn(
                     "code": pinned_config,
                     "message": (
                         "The selected Azure OpenAI model requires an endpoint. Configure its Base URL in Settings → AI Models."
-                        if pinned_config == "azure_endpoint_required"
+                        if pinned_config == "MODEL_AZURE_BASE_URL_REQUIRED"
                         else "The selected model has no usable API key. Configure its API key in Settings → AI Models."
                     ),
                 })
@@ -401,7 +402,7 @@ async def run_turn(
                 else:
                     await _send_turn_error(transport, conversation_id, {
                         "type": "error",
-                        "code": "model_config_unavailable",
+                        "code": "MODEL_CONFIG_UNAVAILABLE",
                         "message": "The selected model has no usable API key. Configure its API key in Settings → AI Models.",
                     })
                     return
@@ -411,6 +412,7 @@ async def run_turn(
             if not target_config:
                 await _send_turn_error(transport, conversation_id, {
                     "type": "error",
+                    "code": "MODEL_API_KEY_MISSING",
                     "message": "No API key configured. Go to Settings → AI Models and configure an API key first.",
                 })
                 return
@@ -421,7 +423,7 @@ async def run_turn(
             try:
                 fs_path = await resolve_project_fs_path(project_id, db)
             except ValueError as e:
-                await _send_turn_error(transport, conversation_id, {"type": "error", "message": str(e)})
+                await _send_turn_error(transport, conversation_id, {"type": "error", "code": "PROJECT_NOT_FOUND", "message": str(e)})
                 return
 
             # Load agent config — project workspace shadows the global dir.
@@ -437,7 +439,7 @@ async def run_turn(
                 if not agent_config_path:
                     await _send_turn_error(transport, conversation_id, {
                         "type": "error",
-                        "code": "agent_config_not_found",
+                        "code": "AGENT_CONFIG_NOT_FOUND",
                         "message": "The selected agent configuration is not available.",
                     })
                     return
@@ -450,14 +452,14 @@ async def run_turn(
             if not agent_config_path:
                 await _send_turn_error(transport, conversation_id, {
                     "type": "error",
-                    "code": "agent_config_not_found",
+                    "code": "AGENT_CONFIG_NOT_FOUND",
                     "message": "No agent configuration is available for the requested agent.",
                 })
                 return
             if not Path(agent_config_path).exists():
                 await _send_turn_error(transport, conversation_id, {
                     "type": "error",
-                    "code": "agent_config_not_found",
+                    "code": "AGENT_CONFIG_NOT_FOUND",
                     "message": "Agent configuration file not found.",
                 })
                 return
@@ -622,7 +624,7 @@ async def run_turn(
                 )
                 if persist_err:
                     await _send_turn_error(
-                        transport, conversation_id, {"type": "error", "message": persist_err}
+                        transport, conversation_id, {"type": "error", "code": "CONVERSATION_MESSAGE_INVALID", "message": persist_err}
                     )
                     return
                 attachment_records = persist_result.attachment_records
@@ -1364,7 +1366,7 @@ async def run_turn(
                 )
                 error_message = "Agent execution failed. Check server logs for details."
                 err_msg_id = str(_uuid_mod.uuid4())
-                await _transport_send(transport, conversation_id, {"type": "error", "message": error_message, "stream_message_id": err_msg_id})
+                await _transport_send(transport, conversation_id, {"type": "error", "code": "AGENT_RUN_FAILED", "message": error_message, "stream_message_id": err_msg_id})
                 await _transport_send(transport, conversation_id, {"type": "stream_end", "message_id": err_msg_id, "total_tokens": 0})
                 if run_id:
                     try:
@@ -1646,7 +1648,7 @@ async def run_turn(
         error_message = "Agent execution failed. Check server logs for details."
         err_msg_id = str(_uuid_mod.uuid4())
         try:
-            await _transport_send(transport, conversation_id, {"type": "error", "message": error_message, "stream_message_id": err_msg_id})
+            await _transport_send(transport, conversation_id, {"type": "error", "code": "AGENT_RUN_FAILED", "message": error_message, "stream_message_id": err_msg_id})
             await _transport_send(transport, conversation_id, {"type": "stream_end", "message_id": err_msg_id, "total_tokens": 0})
         except Exception:
             _log.debug("Failed to send outer error to client for %s", conversation_id)

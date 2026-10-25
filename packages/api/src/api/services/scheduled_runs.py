@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 
 from agent_core.scripts.runner import execute_script, script_slot_guard
 from api.database import AsyncSessionLocal
+from api.errors import error_message
 from api.models._compat import now_utc
 from api.models.schedule import ScheduledTask, ScheduledTaskRun
 from api.services.agent_turn import Transport
@@ -455,7 +456,7 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
     except (ValueError, TypeError):
         return _Outcome("failed", None, "env_json is not valid JSON")
     except Exception as exc:  # noqa: BLE001 - HTTPException from validation
-        return _Outcome("failed", None, str(exc))
+        return _Outcome("failed", None, error_message(exc))
 
     sem = script_slot_guard()
     await sem.acquire()
@@ -477,7 +478,7 @@ async def _run_playwright_target(target: _Target) -> _Outcome:
                 project_fs = await resolve_project_fs_path(target.project_id, db)
                 _resolve_playwright_spec(project_fs, target.spec_slug)
             except Exception as exc:  # noqa: BLE001 - 404 HTTPException when missing
-                return _Outcome("failed", None, str(exc))
+                return _Outcome("failed", None, error_message(exc))
 
             run = ScriptRun(
                 script_id=anchor_id,

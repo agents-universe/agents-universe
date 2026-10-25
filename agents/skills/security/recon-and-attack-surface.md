@@ -1,6 +1,8 @@
 ---
 slug: "security/recon-and-attack-surface"
-description: "Map the project attack surface - knowledge-first inventory, toolchain capability detection, and per-channel target reachability - producing the engagement attack surface map"
+description:
+  zh-CN: "测绘项目攻击面——知识优先的资产盘点、工具链能力探测、逐通道目标可达性，产出本次任务的攻击面地图"
+  en-US: "Map the project attack surface - knowledge-first inventory, toolchain capability detection, and per-channel target reachability - producing the engagement attack surface map"
 type: "guidance"
 triggers:
   - "attack surface mapping"

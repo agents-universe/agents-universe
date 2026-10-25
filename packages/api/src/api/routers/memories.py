@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_conversation, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.conversation import Conversation
 from api.models.memory import EpisodicMemory, PersonalMemory
 from api.models.project import Project
@@ -182,7 +183,7 @@ async def update_personal_memory(
     )
     mem = result.scalar_one_or_none()
     if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise api_error(404, "MEMORY_NOT_FOUND", "Memory not found")
 
     if body.content is not None:
         mem.content = body.content
@@ -210,7 +211,7 @@ async def archive_personal_memory(
     )
     mem = result.scalar_one_or_none()
     if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise api_error(404, "MEMORY_NOT_FOUND", "Memory not found")
 
     mem.is_archived = True
     await db.flush()
@@ -285,7 +286,7 @@ async def get_episodic_memory(
     )
     ep = result.scalar_one_or_none()
     if not ep:
-        raise HTTPException(status_code=404, detail="Episode not found")
+        raise api_error(404, "MEMORY_EPISODE_NOT_FOUND", "Episode not found")
 
     try:
         key_findings = json.loads(ep.key_findings) if ep.key_findings else []
@@ -320,7 +321,7 @@ async def get_session_memories(
     conversation: Conversation = Depends(authorize_conversation),
 ):
     if str(conversation.project_id) != project_id:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "CONVERSATION_NOT_FOUND", "Conversation not found")
 
     from api.websocket.manager import manager
     return manager.get_session_memories(conversation_id)

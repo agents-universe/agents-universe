@@ -1,6 +1,8 @@
 ---
 slug: "interaction/user-confirm"
-description: "Framework guidance for presenting the user with a selection dialog, text prompt, or secure secret input"
+description:
+  zh-CN: "向用户呈现选择对话框、文本输入或安全密钥输入的框架指引"
+  en-US: "Framework guidance for presenting the user with a selection dialog, text prompt, or secure secret input"
 type: "guidance"
 triggers: []
 tools:

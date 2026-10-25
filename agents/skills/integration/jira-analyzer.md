@@ -1,6 +1,8 @@
 ---
 slug: "integration/jira-analyzer"
-description: "Parse Jira card content and extract acceptance criteria and testable points"
+description:
+  zh-CN: "解析 Jira 卡片内容，提取验收标准与可测点"
+  en-US: "Parse Jira card content and extract acceptance criteria and testable points"
 ---
 
 # Skill: Jira Analyzer

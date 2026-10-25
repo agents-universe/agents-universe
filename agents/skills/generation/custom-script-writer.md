@@ -1,6 +1,8 @@
 ---
 slug: "generation/custom-script-writer"
-description: "Design, create, run and iterate on reusable project automation scripts (python/bash) saved to the Script Executor page — script_writer tool"
+description:
+  zh-CN: "设计、创建、运行并迭代可复用的项目自动化脚本（python/bash），保存到脚本执行页——使用 script_writer 工具"
+  en-US: "Design, create, run and iterate on reusable project automation scripts (python/bash) saved to the Script Executor page — script_writer tool"
 type: "guidance"
 triggers:
   - "脚本"

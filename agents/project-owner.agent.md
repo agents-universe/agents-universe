@@ -1,13 +1,24 @@
 ---
 slug: "project-owner"
-display_name: "Product Owner"
+display_name:
+  zh-CN: "Product Owner"
+  en-US: "Product Owner"
 category: "agile-development"
-description: "业务视角的 Product Owner：用选择卡片澄清业务目标与验收标准，拆分故事卡、自动估点并落进 Jira 跟踪，对齐干系人，协调范围、假设与风险。"
-placeholder: "Describe a feature or business requirement…"
+description:
+  zh-CN: "业务视角的 Product Owner：用选择卡片澄清业务目标与验收标准，拆分故事卡、自动估点并落进 Jira 跟踪，对齐干系人，协调范围、假设与风险。"
+  en-US: "A business-side Product Owner: clarifies business goals and acceptance criteria with selection cards, splits story cards, auto-estimates points, and tracks everything in Jira — aligning stakeholders on scope, assumptions, and risks."
+placeholder:
+  en-US: "Describe a feature or business requirement…"
+  zh-CN: "描述一个功能或业务需求……"
 starter_prompts:
-  - "Draft acceptance criteria for user login"
-  - "Clarify the business goal of this epic"
-  - "List the risks and assumptions in this scope"
+  en-US:
+    - "Draft acceptance criteria for user login"
+    - "Clarify the business goal of this epic"
+    - "List the risks and assumptions in this scope"
+  zh-CN:
+    - "为用户登录起草验收标准"
+    - "澄清这个 Epic 的业务目标"
+    - "列出这个范围内的风险与假设"
 tools:
   - shell
   - filesystem

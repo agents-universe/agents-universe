@@ -1,6 +1,8 @@
 ---
 slug: "generation/scheduled-task-writer"
-description: "Create and manage 定时任务 (cron-scheduled tasks) that run a project script, a Playwright spec, or an agent prompt on a schedule — scheduler tool"
+description:
+  zh-CN: "创建与管理定时任务（cron 调度任务），按计划运行项目脚本、Playwright 用例或智能体提示词——使用 scheduler 工具"
+  en-US: "Create and manage 定时任务 (cron-scheduled tasks) that run a project script, a Playwright spec, or an agent prompt on a schedule — scheduler tool"
 type: "guidance"
 triggers:
   - "定时任务"

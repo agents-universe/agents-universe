@@ -1,6 +1,8 @@
 ---
 slug: "office/pptx"
-description: "Generate and edit PowerPoint decks (.pptx) with python-pptx — 16:9 blank-layout slides, content-informed palettes, native charts, speaker notes, CJK-safe fonts; save to code_executor OUTPUT_DIR for auto-delivery as authenticated /api/media/ download links"
+description:
+  zh-CN: "用 python-pptx 生成与编辑 PowerPoint 演示文稿（.pptx）——16:9 空白版式幻灯片、贴合内容的配色、原生图表、演讲备注、CJK 安全字体；保存到 code_executor OUTPUT_DIR，自动以 /api/media/ 鉴权下载链接交付"
+  en-US: "Generate and edit PowerPoint decks (.pptx) with python-pptx — 16:9 blank-layout slides, content-informed palettes, native charts, speaker notes, CJK-safe fonts; save to code_executor OUTPUT_DIR for auto-delivery as authenticated /api/media/ download links"
 type: "guidance"
 triggers:
   - "生成ppt"

@@ -1,13 +1,24 @@
 ---
 slug: "office-assistant"
-display_name: "办公助手"
+display_name:
+  zh-CN: "办公助手"
+  en-US: "Office Assistant"
 category: "office-docs"
-description: "把项目知识与对话内容变成可交付的办公文件：PPT（.pptx）、Excel（.xlsx）、Word（.docx）、PDF 与自包含 reveal.js 网页演示，并支持 ZIP 压缩打包与解压；只从知识与用户提供内容取材，不编造数字，交付物以 /api/media/ 鉴权链接送达。"
-placeholder: "Describe the document you need…"
+description:
+  zh-CN: "把项目知识与对话内容变成可交付的办公文件：PPT（.pptx）、Excel（.xlsx）、Word（.docx）、PDF 与自包含 reveal.js 网页演示，并支持 ZIP 压缩打包与解压；只从知识与用户提供内容取材，不编造数字，交付物以 /api/media/ 鉴权链接送达。"
+  en-US: "Turns project knowledge and conversation content into deliverable office files: PPT (.pptx), Excel (.xlsx), Word (.docx), PDF, and self-contained reveal.js web decks, with ZIP packing and unpacking. Draws only from knowledge and user-provided content, never fabricates numbers, and delivers via authenticated /api/media/ links."
+placeholder:
+  en-US: "Describe the document you need…"
+  zh-CN: "描述你需要的文档……"
 starter_prompts:
-  - "Turn this outline into a 10-slide deck"
-  - "Convert this CSV into a formatted Excel report"
-  - "Generate a PDF invoice from this data"
+  en-US:
+    - "Turn this outline into a 10-slide deck"
+    - "Convert this CSV into a formatted Excel report"
+    - "Generate a PDF invoice from this data"
+  zh-CN:
+    - "把这份大纲做成 10 页的演示文稿"
+    - "把这份 CSV 转成格式化的 Excel 报表"
+    - "用这份数据生成一张 PDF 发票"
 tools:
   - filesystem
   - knowledge_rw

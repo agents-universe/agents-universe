@@ -37,6 +37,7 @@ def _dumps(obj: Any) -> str:
 
 import frontmatter
 
+from .localization import normalize_i18n_field
 from .compressor import (
     MAX_OUTPUT_RESERVE,
     MAX_REQUEST_BYTES,
@@ -261,9 +262,15 @@ class AgentConfig:
     def from_file(cls, path: str) -> "AgentConfig":
         post = frontmatter.load(path)
         meta = post.metadata
+        # zh-first canonical: agent descriptions are Chinese in every current
+        # definition; a locale map must collapse to that same text so the
+        # delegation roster / history prefix see no change.
+        description, _ = normalize_i18n_field(
+            meta.get("description", ""), canonical_order=("zh-CN", "en-US")
+        )
         return cls(
             slug=meta["slug"],
-            description=meta.get("description", ""),
+            description=description or "",
             system_prompt=post.content,
             tools=cls._list_field(meta.get("tools")),
             skills=cls._list_field(meta.get("skills")),

@@ -1,13 +1,24 @@
 ---
 slug: "customer-service"
-display_name: "智能客服"
+display_name:
+  zh-CN: "智能客服"
+  en-US: "Customer Service"
 category: "customer-service"
-description: "严格依据项目知识库（FAQ、服务政策、话术）回答客户问题；没有答案时不编造，明确告知并转人工；可经已配置的自定义 API 与 MCP 工具只读查询业务系统，验证过的新问答沉淀回知识库。"
-placeholder: "输入客户问题，我会依据项目知识库回答"
+description:
+  zh-CN: "严格依据项目知识库（FAQ、服务政策、话术）回答客户问题；没有答案时不编造，明确告知并转人工；可经已配置的自定义 API 与 MCP 工具只读查询业务系统，验证过的新问答沉淀回知识库。"
+  en-US: "Answers customer questions strictly from the project knowledge base (FAQs, service policies, approved scripts); never fabricates an answer — says so clearly and escalates to a human. Can read-only query business systems via configured custom APIs and MCP tools; verified new Q&A pairs are written back to the knowledge base."
+placeholder:
+  zh-CN: "输入客户问题，我会依据项目知识库回答"
+  en-US: "Type a customer question; I'll answer from the project knowledge base"
 starter_prompts:
-  - "客户问退款政策，怎么回答？"
-  - "根据 FAQ 检查这段话术"
-  - "知识库没有答案时如何回复并转人工？"
+  zh-CN:
+    - "客户问退款政策，怎么回答？"
+    - "根据 FAQ 检查这段话术"
+    - "知识库没有答案时如何回复并转人工？"
+  en-US:
+    - "A customer asks about the refund policy — how should I reply?"
+    - "Review this script against the FAQ"
+    - "How do I reply and escalate when the knowledge base has no answer?"
 tools:
   - filesystem
   - knowledge_rw

@@ -17,13 +17,14 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.script import AutomationScript, ScriptRun
 from api.paths import resolve_project_fs_path
 from api.services.script_artifacts import (
@@ -64,7 +65,7 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,255}$")
 
 def _check_run_id(run_id: str) -> None:
     if not _RUN_ID_RE.match(run_id):
-        raise HTTPException(status_code=400, detail="Invalid run id")
+        raise api_error(400, "SCRIPT_RUN_ID_INVALID", "Invalid run id")
 
 
 async def _load_run(db: AsyncSession, run_id: str) -> tuple[ScriptRun, AutomationScript]:
@@ -76,7 +77,7 @@ async def _load_run(db: AsyncSession, run_id: str) -> tuple[ScriptRun, Automatio
         .where(ScriptRun.run_id == run_id)
     )).first()
     if row is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise api_error(404, "SCRIPT_RUN_NOT_FOUND", "Run not found")
     return row[0], row[1]
 
 
@@ -102,14 +103,14 @@ def _contained_file(base: Path, relative: str) -> Path:
     traversal or an absolute path lands outside and is refused.
     """
     if not relative or "\x00" in relative:
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise api_error(400, "WORKSPACE_PATH_INVALID", "Invalid path")
     try:
         base_resolved = base.resolve()
         target = (base_resolved / relative).resolve()
     except (OSError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise api_error(400, "WORKSPACE_PATH_INVALID", "Invalid path")
     if not target.is_relative_to(base_resolved) or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise api_error(404, "WORKSPACE_FILE_NOT_FOUND", "File not found")
     return target
 
 
@@ -178,7 +179,7 @@ async def serve_artifact(
     if artifact_path.lstrip("/").startswith(f"{_REPORT_SUBDIR}/"):
         # Report internals belong to the sandboxed report endpoint; serving
         # them here would hand out the same HTML without the CSP.
-        raise HTTPException(status_code=404, detail="File not found")
+        raise api_error(404, "WORKSPACE_FILE_NOT_FOUND", "File not found")
     target = _contained_file(artifacts, artifact_path)
 
     media_type = mime_for_path(target)
@@ -246,7 +247,7 @@ async def serve_report(
     if not verify_report_token(run_id, token):
         # Same answer for a forged signature and an expired one - there is
         # nothing here worth telling an attacker apart.
-        raise HTTPException(status_code=403, detail="Report link expired or invalid")
+        raise api_error(403, "SCRIPT_REPORT_LINK_INVALID", "Report link expired or invalid")
 
     run, script = await _load_run(db, run_id)
     artifacts = await _run_artifacts_dir(db, script, run_id)

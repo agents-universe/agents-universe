@@ -511,7 +511,9 @@ class TestRunNow:
         assert resp.status_code == 409
         # The 409 detail must carry the actual cause — a fixed "run in
         # progress" would mislabel the queue-full rejection on an idle task.
-        assert resp.json()["detail"] == "Background execution queue is full"
+        detail = resp.json()["detail"]
+        assert detail["code"] == "SCHEDULE_BUSY"
+        assert detail["message"] == "Background execution queue is full"
 
     async def test_run_now_returns_404_when_task_vanished(
         self, client, db, make_project, monkeypatch
@@ -535,7 +537,9 @@ class TestRunNow:
         monkeypatch.setattr("api.services.scheduled_runs.spawn_run", fake_spawn)
         resp = await client.post(f"/api/schedules/{created['schedule_id']}/run")
         assert resp.status_code == 404
-        assert resp.json()["detail"] == "Scheduled task not found"
+        detail = resp.json()["detail"]
+        assert detail["code"] == "SCHEDULE_NOT_FOUND"
+        assert detail["message"] == "Scheduled task not found"
 
     async def test_run_now_skips_author_time_conversation_recheck(
         self, client, db, make_project, monkeypatch

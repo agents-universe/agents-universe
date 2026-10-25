@@ -11,8 +11,8 @@
         :aria-pressed="modelValue === cat.slug"
         @click="emit('update:modelValue', cat.slug)"
       >
-        <span class="category-card-name">{{ cat.label }}</span>
-        <span class="category-card-desc">{{ cat.description }}</span>
+        <span class="category-card-name">{{ localizedText(cat.label, cat.i18n?.label) }}</span>
+        <span class="category-card-desc">{{ localizedText(cat.description, cat.i18n?.description) }}</span>
         <span class="category-card-count">{{ t('categoryPicker.entriesCount', { count: cat.template_count }) }}</span>
       </button>
     </div>
@@ -23,7 +23,7 @@
       @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
     >
       <option v-for="cat in categories" :key="cat.slug" :value="cat.slug">
-        {{ cat.label }}{{ t('categoryPicker.entriesCountWrapped', { count: cat.template_count }) }}
+        {{ localizedText(cat.label, cat.i18n?.label) }}{{ t('categoryPicker.entriesCountWrapped', { count: cat.template_count }) }}
       </option>
     </select>
   </div>
@@ -31,6 +31,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localizedText } from '@/utils/localize'
 import type { ProjectCategory } from '@/types'
 
 const { t } = useI18n()

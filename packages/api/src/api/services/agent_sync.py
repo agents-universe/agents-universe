@@ -29,11 +29,17 @@ from agent_core.definition_check import (
     PROJECT_SLUG_SEPARATOR as PROJECT_SLUG_SEPARATOR,  # re-exported for routers
     validate_agent_slug,
 )
+from agent_core.localization import normalize_i18n_field, normalize_i18n_prompts
 
 from api.models.agent import Agent
 from api.models.conversation import Conversation
 
 log = logging.getLogger("agents_universe.agent_sync")
+
+#: Canonical language order for agent UI fields — zh first, matching the
+#: pre-i18n content (Chinese descriptions drive the display_name sort key and
+#: the ``[display_name]:`` history prefix).
+_ZH_FIRST = ("zh-CN", "en-US")
 
 
 def _truncate(value: object, limit: int) -> str | None:
@@ -147,27 +153,46 @@ async def sync_agents_dir(
                 )
                 continue
 
-            # New-conversation guidance: single-line composer placeholder
-            # (truncated to the column length — an over-length value would
-            # fail the whole-sync commit above) and a list of example prompts.
-            # A bare string is ONE prompt, never comma-split: prompts contain
-            # commas. Empty list → None, matching the tools/skills/workflows
-            # NULL convention.
-            raw_placeholder = post.get("placeholder")
-            placeholder = str(raw_placeholder)[:500] if raw_placeholder is not None else None
-            raw_prompts = post.get("starter_prompts")
-            if isinstance(raw_prompts, str):
-                prompts = [raw_prompts.strip()] if raw_prompts.strip() else []
-            elif isinstance(raw_prompts, (list, tuple)):
-                prompts = [
-                    p.strip() for p in raw_prompts if isinstance(p, str) and p.strip()
-                ][:10]
-            else:
-                prompts = []
+            # UI-facing fields accept a shared scalar or a {locale: value}
+            # map — normalize BOTH shapes before the column-width truncation
+            # below (a raw dict would str() into the canonical columns).
+            # zh-first canonical keeps the pre-i18n Chinese text as the sort
+            # key / history-prefix value; the full maps ride in the i18n JSON
+            # column, each locale value bounded by the SAME widths so a map
+            # cannot bypass the truncation guards.
+            display_name, display_i18n = normalize_i18n_field(
+                post.get("display_name"), canonical_order=_ZH_FIRST
+            )
+            description, description_i18n = normalize_i18n_field(
+                post.get("description"), canonical_order=_ZH_FIRST
+            )
+            placeholder, placeholder_i18n = normalize_i18n_field(
+                post.get("placeholder"), canonical_order=_ZH_FIRST
+            )
+            # New-conversation guidance: single-line composer placeholder and
+            # a list of example prompts. A bare string is ONE prompt, never
+            # comma-split (prompts contain commas); a locale map carries one
+            # list per language. Empty list → None, matching the
+            # tools/skills/workflows NULL convention.
+            prompts, prompts_i18n = normalize_i18n_prompts(
+                post.get("starter_prompts"), canonical_order=_ZH_FIRST
+            )
+
+            i18n_payload: dict[str, object] = {}
+            if display_i18n:
+                i18n_payload["display_name"] = {loc: v[:255] for loc, v in display_i18n.items()}
+            if description_i18n:
+                i18n_payload["description"] = {loc: v[:2000] for loc, v in description_i18n.items()}
+            if placeholder_i18n:
+                i18n_payload["placeholder"] = {loc: v[:500] for loc, v in placeholder_i18n.items()}
+            if prompts_i18n:
+                i18n_payload["starter_prompts"] = {
+                    loc: items[:10] for loc, items in prompts_i18n.items()
+                }
 
             attrs = dict(
-                display_name=_truncate(post.get("display_name") or slug, 255),
-                description=_truncate(post.get("description"), 2000),
+                display_name=_truncate(display_name or slug, 255),
+                description=_truncate(description, 2000),
                 category=_truncate(
                     post.get("category") or "agile-development", 100
                 ),
@@ -175,8 +200,9 @@ async def sync_agents_dir(
                 tools=_bounded_json(post.get("tools", []), 1000),
                 skills=_bounded_json(post.get("skills", []), 2000),
                 workflows=_bounded_json(post.get("workflows", []), 2000),
-                placeholder=placeholder,
-                starter_prompts=json.dumps(prompts, ensure_ascii=False) if prompts else None,
+                placeholder=_truncate(placeholder, 500) if placeholder is not None else None,
+                starter_prompts=json.dumps(prompts[:10], ensure_ascii=False) if prompts else None,
+                i18n=json.dumps(i18n_payload, ensure_ascii=False) if i18n_payload else None,
             )
 
             try:

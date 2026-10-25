@@ -1,6 +1,8 @@
 ---
 slug: "analysis/data-profiler"
-description: "Profile any dataset before analysis — schema, distributions, nulls, duplicates, outliers — with sample-then-scale discipline and data-quality rule cross-checks"
+description:
+  zh-CN: "分析前先剖析数据集——结构、分布、空值、重复、异常值——遵循先抽样后放大的纪律并交叉核对数据质量规则"
+  en-US: "Profile any dataset before analysis — schema, distributions, nulls, duplicates, outliers — with sample-then-scale discipline and data-quality rule cross-checks"
 type: "guidance"
 triggers:
   - "profile this data"

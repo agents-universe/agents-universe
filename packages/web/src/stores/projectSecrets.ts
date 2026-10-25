@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { ProjectSecret } from '@/types'
 import { listProjectSecrets, createProjectSecret, updateProjectSecret, deleteProjectSecret } from '@/api/projectSecrets'
+import { i18n } from '@/i18n'
+import { translateApiErrorWith } from '@/utils/apiError'
 
 export const useProjectSecretsStore = defineStore('projectSecrets', () => {
   const secrets = ref<ProjectSecret[]>([])
@@ -29,7 +31,7 @@ export const useProjectSecretsStore = defineStore('projectSecrets', () => {
       const list = await listProjectSecrets(projectId)
       if (seq === loadSeq) secrets.value = list
     } catch (e: unknown) {
-      if (seq === loadSeq) error.value = e instanceof Error ? e.message : 'Failed to load secrets'
+      if (seq === loadSeq) error.value = translateApiErrorWith(e, i18n.global.t('common.loadFailed'))
     } finally {
       if (seq === loadSeq) loading.value = false
     }

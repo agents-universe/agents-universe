@@ -28,11 +28,20 @@ export interface ProjectMember {
   created_at: string | null
 }
 
+/** Per-locale overrides of a canonical value; resolve with utils/localize. */
+export type LocaleKey = 'zh-CN' | 'en-US'
+export type LocaleOverrides<T> = Partial<Record<LocaleKey, T>>
+
 export interface ProjectCategory {
   slug: string
   label: string
   description: string
   template_count: number
+  /** Non-canonical locale variants of label/description (label/description stay zh). */
+  i18n?: {
+    label?: LocaleOverrides<string>
+    description?: LocaleOverrides<string>
+  } | null
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
@@ -42,6 +51,8 @@ export interface EquippedItem {
   description: string
   /** Public skills are on every agent by default and cannot be removed. */
   public?: boolean
+  /** Non-canonical locale variants of description (description stays canonical). */
+  i18n?: LocaleOverrides<string> | null
 }
 
 /** OpenAI reasoning_effort members; no "max" in the OpenAI API. */
@@ -83,6 +94,13 @@ export interface AgentInfo {
   placeholder?: string | null
   /** Example prompts shown as clickable chips on the fresh-conversation card. */
   starter_prompts?: string[]
+  /** Non-canonical locale variants of the UI fields above (they stay zh canonical). */
+  i18n?: {
+    display_name?: LocaleOverrides<string>
+    description?: LocaleOverrides<string>
+    placeholder?: LocaleOverrides<string>
+    starter_prompts?: LocaleOverrides<string[]>
+  } | null
 }
 
 // ── Conversation ──────────────────────────────────────────────────────────────

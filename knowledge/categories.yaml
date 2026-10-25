@@ -4,8 +4,12 @@
 # 客服等分类专用条目只进入各自分类,不进 software 与其他分类。
 categories:
   - slug: software
-    label: 软件项目
-    description: 软件开发、测试、部署与运维等工程类项目
+    label:
+      zh-CN: 软件项目
+      en-US: "Software Project"
+    description:
+      zh-CN: 软件开发、测试、部署与运维等工程类项目
+      en-US: "Software engineering projects — development, testing, deployment, and operations"
     templates:
       - domain/context
       - domain/glossary
@@ -26,8 +30,12 @@ categories:
       - integrations/mcp-servers
       - integrations/skill-sources
   - slug: legacy-modernization
-    label: 旧系统改造项目
-    description: 遗留系统现代化改造：盘点旧系统架构、数据、业务流程、接口与资源接入，设计新系统架构、接口与目标流程，记录新旧差异对照与迁移改造计划
+    label:
+      zh-CN: 旧系统改造项目
+      en-US: "Legacy Modernization"
+    description:
+      zh-CN: 遗留系统现代化改造：盘点旧系统架构、数据、业务流程、接口与资源接入，设计新系统架构、接口与目标流程，记录新旧差异对照与迁移改造计划
+      en-US: "Legacy system modernization: inventory the old architecture, data, processes, APIs and resources; design the new architecture, APIs and target flows; record the old-vs-new mapping and the migration plan"
     templates:
       - domain/context
       - domain/glossary
@@ -47,8 +55,12 @@ categories:
       - technical/evolution-mapping
       - domain/migration-plan
   - slug: data-analysis
-    label: 数据分析
-    description: 指标分析、报表看板、取数与数据治理等数据类项目
+    label:
+      zh-CN: 数据分析
+      en-US: "Data Analysis"
+    description:
+      zh-CN: 指标分析、报表看板、取数与数据治理等数据类项目
+      en-US: "Data projects: metric analysis, reports and dashboards, data extraction, and data governance"
     templates:
       - domain/context
       - domain/glossary
@@ -64,8 +76,12 @@ categories:
       - skills/sql-patterns
       - skills/analysis-patterns
   - slug: customer-service
-    label: 智能客服
-    description: 知识问答型客服项目：FAQ、服务政策、转人工规则与话术库；智能体严格依据项目知识作答，经自定义 API 与 MCP 接入业务系统查询
+    label:
+      zh-CN: 智能客服
+      en-US: "Customer Service"
+    description:
+      zh-CN: 知识问答型客服项目：FAQ、服务政策、转人工规则与话术库；智能体严格依据项目知识作答，经自定义 API 与 MCP 接入业务系统查询
+      en-US: "Knowledge-driven customer service: FAQ, service policies, escalation rules, and reply scripts; the agent answers strictly from project knowledge and queries business systems through custom APIs and MCP"
     templates:
       - domain/context
       - system/history
@@ -77,8 +93,12 @@ categories:
       - integrations/mcp-servers
       - integrations/skill-sources
   - slug: docs
-    label: 文档知识库
-    description: 以文档沉淀、规范、知识整理为主的非工程类项目
+    label:
+      zh-CN: 文档知识库
+      en-US: "Documentation & Knowledge Base"
+    description:
+      zh-CN: 以文档沉淀、规范、知识整理为主的非工程类项目
+      en-US: "Non-engineering projects focused on documents, standards, and knowledge organization"
     templates:
       - domain/context
       - domain/glossary
@@ -86,8 +106,12 @@ categories:
       - environment/environment
       - technical/system-architecture
   - slug: other
-    label: 自定义项目
-    description: 无法归入以上分类的项目，知识由项目定制专家访谈后逐步填充
+    label:
+      zh-CN: 自定义项目
+      en-US: "Custom Project"
+    description:
+      zh-CN: 无法归入以上分类的项目，知识由项目定制专家访谈后逐步填充
+      en-US: "Projects that fit none of the above; knowledge is filled in gradually through interviews with the project customization expert"
     templates:
       - domain/context
       - system/history

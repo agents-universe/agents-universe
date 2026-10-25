@@ -89,7 +89,7 @@ import { useI18n } from 'vue-i18n'
 import { Settings, X } from 'lucide-vue-next'
 import type { Project } from '@/types'
 import { projectsApi } from '@/api/projects'
-import { ApiError } from '@/api/client'
+import { translateApiErrorWith } from '@/utils/apiError'
 import { useProjectStore } from '@/stores/project'
 import { useProjectMembersStore } from '@/stores/projectMembers'
 import { useClickOutside } from '@/composables/useClickOutside'
@@ -118,19 +118,8 @@ watch(() => props.project.project_id, (id) => {
   if (id) membersStore.load(id)
 }, { immediate: true })
 
-const CODE_MAP: Record<string, string> = {
-  MEMBER_EXISTS: t('projectSettingsDialog.codeMemberExists'),
-  MEMBER_IS_OWNER: t('projectSettingsDialog.codeMemberIsOwner'),
-  MEMBER_NOT_FOUND: t('projectSettingsDialog.codeMemberNotFound'),
-  INVALID_USER_ID: t('projectSettingsDialog.codeInvalidUserId'),
-  PROJECT_NOT_MEMBER: t('projectSettingsDialog.codeNotMember'),
-  PROJECT_PRIVATE: t('projectSettingsDialog.codePrivateNoAccess'),
-  PROJECT_NOT_OWNER: t('projectSettingsDialog.codeNotOwner'),
-}
-
 function messageOf(e: unknown, fallback: string): string {
-  if (e instanceof ApiError && e.code && CODE_MAP[e.code]) return CODE_MAP[e.code]
-  return e instanceof Error ? e.message : fallback
+  return translateApiErrorWith(e, fallback)
 }
 
 async function handleVisibility(v: 'public' | 'private') {

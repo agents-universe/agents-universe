@@ -1,6 +1,8 @@
 ---
 slug: "demo-generation"
-description: "Product Owner workflow for generating a single-page product demo as one self-contained HTML file, styled after the project's own business system style — delegates style investigation to QA, implementation to Tech Lead, runtime verification to QA"
+description:
+  zh-CN: "Product Owner 工作流：生成单文件自包含 HTML 的产品演示页，风格仿照项目自身业务系统——样式调研委派 QA、实现委派 Tech Lead、运行时验证委派 QA"
+  en-US: "Product Owner workflow for generating a single-page product demo as one self-contained HTML file, styled after the project's own business system style — delegates style investigation to QA, implementation to Tech Lead, runtime verification to QA"
 agent: "project-owner"
 triggers:
   - "demo"

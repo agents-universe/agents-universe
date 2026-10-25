@@ -6,6 +6,7 @@ import { useMemoryStore } from '@/stores/memory'
 import { conversationsApi } from '@/api/conversations'
 import { apiBase } from '@/utils/basePath'
 import { i18n } from '@/i18n'
+import { translateErrorCode } from '@/utils/apiError'
 import type { WsStatus, WsMessage, ToolCallRecord, ImageRecord, AttachmentRecord, SelectionPrompt, PersonalMemory, EpisodicMemory, TurnPhase } from '@/types'
 
 // Fast phase: the common blip (dropped frame, one-second reverse-proxy
@@ -753,6 +754,21 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         conv.clearStreamingState(convId)
         conv.clearPendingPrompts(convId)
         break
+      case 'info': {
+        // Non-error server notices (secret saved...). Shown as a normal
+        // assistant bubble — no streaming state is touched.
+        const infoText = translateErrorCode(msg.code, msg.message)
+        if (infoText) {
+          conv.addMessage({
+            id: `info-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            content: infoText,
+            isError: false,
+            timestamp: Date.now(),
+          }, convId)
+        }
+        break
+      }
       case 'warning': {
         // Non-fatal server-side notices (loop budget exhausted, response
         // truncation, compression timeout...). Surface as a visible
@@ -762,7 +778,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         conv.addMessage({
           id: `warn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'assistant',
-          content: (msg.message as string) ?? 'Warning',
+          content: translateErrorCode(msg.code, msg.message) || 'Warning',
           isError: true,
           timestamp: Date.now(),
         }, convId)
@@ -794,7 +810,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         conv.addMessage({
           id: messageId,
           role: 'assistant',
-          content: (msg.message as string) ?? 'An error occurred.',
+          content: translateErrorCode(msg.code, msg.message) || 'An error occurred.',
           isError: true,
           timestamp: Date.now(),
         }, convId)

@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 
 import frontmatter as _fm
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from api.errors import api_error
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,11 +41,11 @@ _SLUG_RE = KNOWLEDGE_SLUG_RE
 def _resolve_slug_file(knowledge_dir: Path, slug: str) -> Path:
     """Validate a knowledge slug and resolve it to a file inside knowledge_dir."""
     if not _SLUG_RE.match(slug):
-        raise HTTPException(status_code=400, detail=f"Invalid slug: {slug!r}")
+        raise api_error(400, "KNOWLEDGE_SLUG_INVALID", f"Invalid slug: {slug!r}")
     try:
         return resolve_within(knowledge_dir, f"{slug}.md")
     except PathEscapeError:
-        raise HTTPException(status_code=400, detail=f"Invalid slug: {slug!r}")
+        raise api_error(400, "KNOWLEDGE_SLUG_INVALID", f"Invalid slug: {slug!r}")
 
 
 def _rehydrate_frontmatter(old_content: str, new_body: str) -> str:
@@ -89,7 +90,7 @@ def _checked_db_fs_path(km: KnowledgeMetadata, project_knowledge_dir: Path) -> P
             "Refusing knowledge fs_path outside its owning directory: slug=%s project_id=%s",
             km.slug, km.project_id,
         )
-        raise HTTPException(status_code=400, detail="Invalid knowledge file location")
+        raise api_error(400, "KNOWLEDGE_LOCATION_INVALID", "Invalid knowledge file location")
     return Path(km.fs_path)
 
 
@@ -263,7 +264,7 @@ async def get_knowledge_versions(
     )
     km = result.scalar_one_or_none()
     if not km:
-        raise HTTPException(status_code=404, detail=f"Not found: {slug}")
+        raise api_error(404, "KNOWLEDGE_NOT_FOUND", f"Not found: {slug}")
 
     result = await db.execute(
         select(KnowledgeVersion)
@@ -360,13 +361,13 @@ async def copy_knowledge_template(
     project: Project = Depends(authorize_project),
 ):
     if not _SLUG_RE.match(body.slug):
-        raise HTTPException(status_code=400, detail=f"Invalid slug: {body.slug!r}")
+        raise api_error(400, "KNOWLEDGE_SLUG_INVALID", f"Invalid slug: {body.slug!r}")
     templates = await asyncio.to_thread(_scan_templates)
     entry = templates.get(body.slug)
     if entry is None:
         # Lookup is a dict key over scanned template slugs — no path is ever
         # built from the requested value, so traversal is structurally absent.
-        raise HTTPException(status_code=404, detail=f"Template not found: {body.slug!r}")
+        raise api_error(404, "KNOWLEDGE_TEMPLATE_NOT_FOUND", f"Template not found: {body.slug!r}")
 
     project_fs_path = await get_project_fs_path(project_id, db)
     knowledge_dir = Path(project_fs_path) / "knowledge"
@@ -454,7 +455,7 @@ async def get_knowledge(
         if fs_path and await asyncio.to_thread(fs_path.exists):
             stat = await asyncio.to_thread(fs_path.stat)
             if stat.st_size > _MAX_READ_SIZE:
-                raise HTTPException(status_code=413, detail="Knowledge file too large to read")
+                raise api_error(413, "KNOWLEDGE_FILE_TOO_LARGE", "Knowledge file too large to read")
             # Strip the BOM so the `---` block parses — otherwise GET hands
             # the whole file (frontmatter included) to the editor as content.
             raw = (await asyncio.to_thread(fs_path.read_text, "utf-8")).lstrip("﻿")
@@ -489,11 +490,11 @@ async def get_knowledge(
     file_path = _resolve_slug_file(knowledge_dir, slug)
 
     if not await asyncio.to_thread(file_path.exists):
-        raise HTTPException(status_code=404, detail=f"Knowledge file not found: {slug}")
+        raise api_error(404, "KNOWLEDGE_NOT_FOUND", f"Knowledge file not found: {slug}")
 
     stat = await asyncio.to_thread(file_path.stat)
     if stat.st_size > _MAX_READ_SIZE:
-        raise HTTPException(status_code=413, detail="Knowledge file too large to read")
+        raise api_error(413, "KNOWLEDGE_FILE_TOO_LARGE", "Knowledge file too large to read")
 
     # Strip the BOM so the `---` block parses — otherwise GET hands the
     # whole file (frontmatter included) to the editor as content.
@@ -559,7 +560,7 @@ async def update_knowledge(
     project: Project = Depends(authorize_project),
 ):
     if len(body.content.encode("utf-8")) > _MAX_WRITE_SIZE:
-        raise HTTPException(status_code=413, detail="Content too large")
+        raise api_error(413, "KNOWLEDGE_CONTENT_TOO_LARGE", "Content too large")
 
     project_fs_path = await get_project_fs_path(project_id, db)
     knowledge_dir = Path(project_fs_path) / "knowledge"
@@ -589,7 +590,7 @@ async def update_knowledge(
         try:
             await asyncio.to_thread(fs_path.write_text, write_content, "utf-8")
         except OSError:
-            raise HTTPException(status_code=507, detail="Failed to write knowledge file")
+            raise api_error(507, "KNOWLEDGE_WRITE_FAILED", "Failed to write knowledge file")
 
         await write_knowledge_version(
             knowledge_id=str(km.knowledge_id),
@@ -627,7 +628,7 @@ async def update_knowledge(
     file_path = _resolve_slug_file(knowledge_dir, slug)
 
     if not await asyncio.to_thread(file_path.exists):
-        raise HTTPException(status_code=404, detail=f"Knowledge file not found: {slug}")
+        raise api_error(404, "KNOWLEDGE_NOT_FOUND", f"Knowledge file not found: {slug}")
 
     # Same contract as the DB branch: the GET stripped frontmatter, so merge
     # the body-only edit back into the on-disk frontmatter.
@@ -636,7 +637,7 @@ async def update_knowledge(
     try:
         await asyncio.to_thread(file_path.write_text, write_content, "utf-8")
     except OSError:
-        raise HTTPException(status_code=507, detail="Failed to write knowledge file")
+        raise api_error(507, "KNOWLEDGE_WRITE_FAILED", "Failed to write knowledge file")
 
     # Same eviction funnel as the DB branch / delete / copy: invalidate also
     # clears the loader's scan caches, whose mtime/size fingerprint can miss
@@ -691,14 +692,8 @@ async def delete_knowledge(
             ).limit(1)
         )
         if result.first() is not None:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "global_knowledge",
-                    "message": "Framework knowledge is read-only",
-                },
-            )
-        raise HTTPException(status_code=404, detail=f"Knowledge not found: {slug}")
+            raise api_error(403, "KNOWLEDGE_GLOBAL_READONLY", "Framework knowledge is read-only")
+        raise api_error(404, "KNOWLEDGE_NOT_FOUND", f"Knowledge not found: {slug}")
 
     # Read the parent BEFORE unlinking so the parent's children list can be
     # cleaned up symmetrically with the write-side sync.
@@ -713,7 +708,7 @@ async def delete_knowledge(
         try:
             await asyncio.to_thread(file_path.unlink)
         except OSError:
-            raise HTTPException(status_code=507, detail="Failed to delete knowledge file")
+            raise api_error(507, "KNOWLEDGE_DELETE_FAILED", "Failed to delete knowledge file")
 
     # Symmetric hierarchy cleanup: drop this slug from the parent's
     # children list (best-effort, never blocks the delete).

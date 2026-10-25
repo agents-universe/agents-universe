@@ -1,6 +1,8 @@
 ---
 slug: "metric-deep-dive"
-description: "Investigate a metric anomaly end-to-end — lock the definition, exclude data-quality causes, compare periods, drill down dimensions, quantify contributions"
+description:
+  zh-CN: "端到端排查指标异动——锁定口径、排除数据质量问题、周期对比、维度下钻、量化各因素贡献"
+  en-US: "Investigate a metric anomaly end-to-end — lock the definition, exclude data-quality causes, compare periods, drill down dimensions, quantify contributions"
 triggers:
   - "why did the metric change"
   - "metric dropped"

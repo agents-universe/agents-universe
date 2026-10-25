@@ -1,6 +1,8 @@
 ---
 slug: "integration/self-adapt-db-access"
-description: "Use and register the self-adapt DB access service as the last fallback test data source through existing Kong routes, and highlight those Jira steps in red"
+description:
+  zh-CN: "经既有 Kong 路由使用并注册自适应 DB 访问服务作为最后兜底的测试数据源，并将相关 Jira 步骤标红"
+  en-US: "Use and register the self-adapt DB access service as the last fallback test data source through existing Kong routes, and highlight those Jira steps in red"
 ---
 
 # Skill: Self-Adapt DB Access Service

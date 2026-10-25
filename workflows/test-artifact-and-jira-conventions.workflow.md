@@ -1,6 +1,8 @@
 ---
 slug: "test-artifact-and-jira-conventions"
-description: "Cross-project convention set for test evidence naming, Jira card writing, result writeback, and the split between comment and description responsibilities"
+description:
+  zh-CN: "跨项目约定集：测试证据命名、Jira 卡片撰写、结果回写，以及评论与描述的职责划分"
+  en-US: "Cross-project convention set for test evidence naming, Jira card writing, result writeback, and the split between comment and description responsibilities"
 triggers:
   - "write back to Jira"
   - "upload evidence"

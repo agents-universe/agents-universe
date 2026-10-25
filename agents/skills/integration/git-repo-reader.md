@@ -1,6 +1,8 @@
 ---
 slug: "integration/git-repo-reader"
-description: "Clone, update, and query local git repositories. Records repository references in knowledge. Use when the task requires Git history, code search, Jira-keyed change scope, or historically affected modules."
+description:
+  zh-CN: "克隆、更新并查询本地 git 仓库。将仓库引用记录到知识库。适用于需要 Git 历史、代码搜索、按 Jira 键界定变更范围或历史受影响模块的任务。"
+  en-US: "Clone, update, and query local git repositories. Records repository references in knowledge. Use when the task requires Git history, code search, Jira-keyed change scope, or historically affected modules."
 ---
 
 # Skill: Git Repo Reader

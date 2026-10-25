@@ -514,6 +514,15 @@ def _display_name(definition_path: str) -> str:
     try:
         import frontmatter
 
-        return str(frontmatter.load(definition_path).get("display_name") or "")
+        from agent_core.localization import normalize_i18n_field
+
+        # zh-first canonical: this name lands in the delegation tool result
+        # (LLM-facing); a locale map must collapse to its Chinese entry, never
+        # str(dict).
+        canonical, _ = normalize_i18n_field(
+            frontmatter.load(definition_path).get("display_name"),
+            canonical_order=("zh-CN", "en-US"),
+        )
+        return canonical or ""
     except Exception:
         return ""

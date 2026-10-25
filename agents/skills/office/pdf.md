@@ -1,6 +1,8 @@
 ---
 slug: "office/pdf"
-description: "Generate PDF documents with reportlab — heading hierarchy, styled paragraphs, tables, headers/footers, CJK-safe fonts (built-in CID fonts, no font files needed); pypdf verification before delivery"
+description:
+  zh-CN: "用 reportlab 生成 PDF 文档——标题层级、样式段落、表格、页眉页脚、CJK 安全字体（内置 CID 字体，无需字体文件）；交付前经 pypdf 校验"
+  en-US: "Generate PDF documents with reportlab — heading hierarchy, styled paragraphs, tables, headers/footers, CJK-safe fonts (built-in CID fonts, no font files needed); pypdf verification before delivery"
 type: "guidance"
 triggers:
   - "生成pdf"

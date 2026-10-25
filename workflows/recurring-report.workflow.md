@@ -1,6 +1,8 @@
 ---
 slug: "recurring-report"
-description: "Generate a periodic report or dashboard from its definition in the analysis-scenarios knowledge file — metrics, queries, rendering, delivery, and drift detection"
+description:
+  zh-CN: "依据 analysis-scenarios 知识文件中的定义生成周期报告或看板——指标、查询、渲染、投递与漂移检测"
+  en-US: "Generate a periodic report or dashboard from its definition in the analysis-scenarios knowledge file — metrics, queries, rendering, delivery, and drift detection"
 triggers:
   - "weekly report"
   - "monthly report"

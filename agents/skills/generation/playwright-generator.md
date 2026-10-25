@@ -1,6 +1,8 @@
 ---
 slug: "generation/playwright-generator"
-description: "Convert structured test cases into executable Playwright scripts via the test_generator tool"
+description:
+  zh-CN: "经 test_generator 工具将结构化用例转换为可执行的 Playwright 脚本"
+  en-US: "Convert structured test cases into executable Playwright scripts via the test_generator tool"
 ---
 
 # Skill: Playwright Generator

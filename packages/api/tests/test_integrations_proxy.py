@@ -130,9 +130,10 @@ async def test_kong_proxy_refuses_header_unsafe_token(client, monkeypatch):
     )
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert "control character" in detail
-    assert key not in detail
-    assert "kong-key-bad" not in detail
+    assert detail["code"] == "INTEGRATION_TOKEN_HEADER_INVALID"
+    assert "control character" in detail["message"]
+    assert key not in detail["message"]
+    assert "kong-key-bad" not in detail["message"]
 
 
 async def test_kong_proxy_rejects_authority_injection_paths(client, monkeypatch):

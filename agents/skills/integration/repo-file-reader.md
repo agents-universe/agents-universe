@@ -1,6 +1,8 @@
 ---
 slug: "integration/repo-file-reader"
-description: "Read source files from cloned repositories. Use when a task requires reading, browsing, or analyzing file contents from a local git clone."
+description:
+  zh-CN: "读取已克隆仓库中的源文件。适用于需要从本地 git 克隆读取、浏览或分析文件内容的任务。"
+  en-US: "Read source files from cloned repositories. Use when a task requires reading, browsing, or analyzing file contents from a local git clone."
 type: "guidance"
 ---
 

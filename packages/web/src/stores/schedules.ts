@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { SchedulePayload, ScheduledTask } from '@/api/schedules'
 import { schedulesApi } from '@/api/schedules'
+import { i18n } from '@/i18n'
+import { translateApiErrorWith } from '@/utils/apiError'
 
 export const useSchedulesStore = defineStore('schedules', () => {
   const tasks = ref<ScheduledTask[]>([])
@@ -24,7 +26,7 @@ export const useSchedulesStore = defineStore('schedules', () => {
       const list = await schedulesApi.list(projectId)
       if (seq === loadSeq) tasks.value = list
     } catch (e: unknown) {
-      if (seq === loadSeq) error.value = e instanceof Error ? e.message : 'Failed to load scheduled tasks'
+      if (seq === loadSeq) error.value = translateApiErrorWith(e, i18n.global.t('common.loadFailed'))
     } finally {
       if (seq === loadSeq) loading.value = false
     }

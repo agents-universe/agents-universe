@@ -21,9 +21,9 @@
       @mouseleave="scheduleHide()"
     >
       <div class="agent-avatar" :style="{ background: avatarColor(agent.slug) }">
-        {{ initials(agent.label) }}
+        {{ initials(agentName(agent)) }}
       </div>
-      <span class="agent-label">{{ agent.label }}</span>
+      <span class="agent-label">{{ agentName(agent) }}</span>
       <span v-if="agentStore.currentAgent?.agent_id === agent.agent_id" class="agent-active-pip" />
     </div>
 
@@ -36,8 +36,8 @@
         @mouseenter="cancelHide()"
         @mouseleave="scheduleHide()"
       >
-        <div class="agent-tooltip__slug">{{ tooltipAgent.label }}</div>
-        <div class="agent-tooltip__desc">{{ tooltipAgent.description }}</div>
+        <div class="agent-tooltip__slug">{{ agentName(tooltipAgent) }}</div>
+        <div class="agent-tooltip__desc">{{ agentDesc(tooltipAgent) }}</div>
         <div v-if="tooltipAgent.skills.length" class="agent-tooltip__section">
           <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipSkills') }}</span>
           <div class="agent-tooltip__list">
@@ -46,7 +46,7 @@
                 <span v-if="s.public" class="public-badge">{{ t('sidebar.agents.badgePublic') }}</span>
                 <span class="agent-tooltip__slug">{{ s.slug }}</span>
               </div>
-              <span v-if="s.description" class="agent-tooltip__item-desc">{{ s.description }}</span>
+              <span v-if="s.description" class="agent-tooltip__item-desc">{{ localizedText(s.description, s.i18n) }}</span>
             </div>
           </div>
         </div>
@@ -55,7 +55,7 @@
           <div class="agent-tooltip__list">
             <div v-for="w in tooltipAgent.workflows" :key="w.slug" class="agent-tooltip__item">
               <span class="agent-tooltip__slug">{{ w.slug }}</span>
-              <span v-if="w.description" class="agent-tooltip__item-desc">{{ w.description }}</span>
+              <span v-if="w.description" class="agent-tooltip__item-desc">{{ localizedText(w.description, w.i18n) }}</span>
             </div>
           </div>
         </div>
@@ -93,6 +93,7 @@ import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
 import { agentStaticTools, agentMcpServers, initials, avatarColor } from '@/utils/agent'
+import { localizedText } from '@/utils/localize'
 import type { AgentInfo } from '@/types'
 import AgentPickerDialog from './AgentPickerDialog.vue'
 
@@ -103,6 +104,9 @@ const projectStore = useProjectStore()
 const showPicker = ref(false)
 const tooltipAgent = ref<AgentInfo | null>(null)
 let hideTimer: ReturnType<typeof setTimeout> | null = null
+
+const agentName = (a: AgentInfo) => localizedText(a.label, a.i18n?.display_name)
+const agentDesc = (a: AgentInfo) => localizedText(a.description, a.i18n?.description)
 
 function showTooltip(agent: AgentInfo) {
   cancelHide()

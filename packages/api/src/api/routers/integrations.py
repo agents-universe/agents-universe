@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.user import UserToken
 from api.services.token_vault import decrypt
 
@@ -38,7 +39,7 @@ def _external_error(service: str, e: Exception) -> HTTPException:
     hostnames, or auth hints - never send them to the client.
     """
     _log.error("External service call failed (%s)", service, exc_info=e)
-    return HTTPException(status_code=502, detail=f"External service unavailable: {service}")
+    return api_error(502, "INTEGRATION_UNAVAILABLE", f"External service unavailable: {service}")
 
 
 def _scrub_secret(value, secret: str):
@@ -107,7 +108,7 @@ async def _get_user_token_and_base_url(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=400, detail=f"Token not configured: {service_key}")
+        raise api_error(400, "INTEGRATION_TOKEN_NOT_CONFIGURED", f"Token not configured: {service_key}")
     base_url = row.base_url
     if base_url:
         # SSRF guard on user-supplied base URLs (same gate as the Kong proxy
@@ -129,14 +130,11 @@ async def _get_user_token_and_base_url(
                 resolve_and_validate(_p.hostname, _p.port or (443 if _p.scheme == "https" else 80))
         except SSRFError as e:
             _log.warning("integration %s: blocked outbound base_url: %s", service_key, e)
-            raise HTTPException(status_code=400, detail=f"Blocked URL: {e}")
+            raise api_error(400, "INTEGRATION_URL_BLOCKED", f"Blocked URL: {e}")
     try:
         plain = decrypt(row.encrypted_value, user_id)
     except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Stored token is corrupted — delete and re-save it: {service_key}",
-        )
+        raise api_error(400, "INTEGRATION_TOKEN_CORRUPTED", f"Stored token is corrupted — delete and re-save it: {service_key}")
     # Header placements echo an illegal value back via h11 ("Illegal header
     # value b'...'"), and _external_error logs the raw exception (exc_info) —
     # the echo IS the token. Refuse before any outbound call. base64 basic
@@ -154,10 +152,7 @@ async def _get_user_token_and_base_url(
     if in_header:
         problem = _header_value_problem(plain)
         if problem:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{service_key} token {problem} — re-save it without it",
-            )
+            raise api_error(400, "INTEGRATION_TOKEN_HEADER_INVALID", f"{service_key} token {problem} — re-save it without it")
     return plain, base_url
 
 
@@ -410,7 +405,7 @@ async def kong_request(
     # would send the x-api-key token to an attacker-chosen host. Path-absolute
     # single-slash only — the SSRF gate below validates the (unchanged) host.
     if not req.path.startswith("/") or req.path.startswith(("//", "/\\")):
-        raise HTTPException(status_code=400, detail="path must start with a single '/'")
+        raise api_error(400, "INTEGRATION_PATH_INVALID", "path must start with a single '/'")
 
     service_key = f"kong:{req.env}" if req.env in ("dev", "uat", "int") else "kong:dev"
     token = await _get_user_token(db, current_user.user_id, service_key)
@@ -437,7 +432,7 @@ async def kong_request(
             resolve_and_validate(_p.hostname, _p.port or (443 if _p.scheme == "https" else 80))
     except SSRFError as e:
         _log.warning("kong_request: blocked outbound URL: %s", e)
-        raise HTTPException(status_code=400, detail=f"Blocked URL: {e}")
+        raise api_error(400, "INTEGRATION_URL_BLOCKED", f"Blocked URL: {e}")
 
     headers = {"x-api-key": token, "Accept": "application/json"}
 
@@ -452,7 +447,7 @@ async def kong_request(
             elif req.method.upper() == "DELETE":
                 resp = await client.delete(url, headers=headers)
             else:
-                raise HTTPException(status_code=400, detail=f"Unsupported method: {req.method}")
+                raise api_error(400, "INTEGRATION_METHOD_UNSUPPORTED", f"Unsupported method: {req.method}")
 
         if resp.headers.get("content-type", "").startswith("application/json"):
             try:

@@ -1095,7 +1095,7 @@ async def test_stream_cut_off_when_project_private(client, db, make_project):
     assert r.status_code == 403
     detail = r.json()["detail"]
     assert detail["code"] == "PROJECT_PRIVATE"
-    assert "私有" in detail["message"]
+    assert "private" in detail["message"]
 
 
 async def test_page_private_project_blocks_outsiders_not_members(

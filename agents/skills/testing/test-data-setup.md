@@ -1,6 +1,8 @@
 ---
 slug: "testing/test-data-setup"
-description: "Reuse, discover, verify, and write back test-data creation recipes so the next card does not rediscover them"
+description:
+  zh-CN: "复用、发现、验证并回写测试数据构造方法，避免下一张卡重复摸索"
+  en-US: "Reuse, discover, verify, and write back test-data creation recipes so the next card does not rediscover them"
 triggers:
   - "造测试数据"
   - "创建测试数据"

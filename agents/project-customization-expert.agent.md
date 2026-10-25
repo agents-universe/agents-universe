@@ -1,13 +1,24 @@
 ---
 slug: "project-customization-expert"
-display_name: "项目定制专家"
+display_name:
+  zh-CN: "项目定制专家"
+  en-US: "Project Customization Expert"
 category: "platform-assistant"
-description: "负责项目级知识、配置、工作区规则与集成约定的定制：通过结构化访谈建立与裁剪知识条目，建立可维护且隔离的项目运行上下文。适用于任意领域项目。"
-placeholder: "描述要调整的项目知识、配置或工作区规则"
+description:
+  zh-CN: "负责项目级知识、配置、工作区规则与集成约定的定制：通过结构化访谈建立与裁剪知识条目，建立可维护且隔离的项目运行上下文。适用于任意领域项目。"
+  en-US: "Customizes project-level knowledge, configuration, workspace rules, and integration conventions: builds and trims knowledge entries through structured interviews to establish a maintainable, isolated project operating context. Works for projects in any domain."
+placeholder:
+  zh-CN: "描述要调整的项目知识、配置或工作区规则"
+  en-US: "Describe the project knowledge, config, or workspace rules to adjust"
 starter_prompts:
-  - "给这个项目新增一条工作区规则"
-  - "整理知识库里的过期内容"
-  - "为这个项目配置新的集成约定"
+  zh-CN:
+    - "给这个项目新增一条工作区规则"
+    - "整理知识库里的过期内容"
+    - "为这个项目配置新的集成约定"
+  en-US:
+    - "Add a workspace rule to this project"
+    - "Clean up outdated content in the knowledge base"
+    - "Set up a new integration convention for this project"
 tools:
   - knowledge_rw
   - memory_rw

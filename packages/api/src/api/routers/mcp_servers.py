@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.mcp_server import MCPServer
 from api.models.user import UserToken
 
@@ -56,45 +57,36 @@ class MCPServerBody(BaseModel):
 
 
 def validate_mcp_server_body(body: MCPServerBody) -> None:
-    """Raise HTTPException with a user-facing detail on invalid input."""
+    """Raise a structured api_error on invalid input."""
     slug = body.slug.strip()
     if not slug or not sanitize_slug(slug):
-        raise HTTPException(status_code=400, detail="slug 不能为空且须为合法标识符")
+        raise api_error(400, "MCP_SLUG_INVALID", "slug is required and must be a valid identifier")
     if body.transport not in _TRANSPORTS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"transport 仅支持 {', '.join(_TRANSPORTS)}（stdio 为 v2 预留）",
-        )
+        raise api_error(400, "MCP_TRANSPORT_UNSUPPORTED", f"transport only supports {', '.join(_TRANSPORTS)} (stdio is reserved for v2)")
     # v1 transports all need a URL; the column is nullable only for the
     # reserved stdio path.
     if not body.url:
-        raise HTTPException(status_code=400, detail="url 必填（v1 仅支持 HTTP 传输）")
+        raise api_error(400, "MCP_URL_REQUIRED", "url is required (v1 only supports HTTP transport)")
     if not body.url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="url 必须是 http(s) 地址")
+        raise api_error(400, "MCP_URL_INVALID", "url must be an http(s) address")
     if body.auth_type not in _AUTH_TYPES:
-        raise HTTPException(status_code=400, detail=f"auth_type 仅支持 {', '.join(_AUTH_TYPES)}")
+        raise api_error(400, "MCP_AUTH_TYPE_UNSUPPORTED", f"auth_type only supports {', '.join(_AUTH_TYPES)}")
     if body.auth_type != "none" and not body.secret_ref:
-        raise HTTPException(status_code=400, detail="auth_type 非 none 时须配置 secret_ref")
+        raise api_error(400, "MCP_SECRET_REF_REQUIRED", "auth_type other than none requires secret_ref")
     if body.secret_scope not in ("project", "user"):
-        raise HTTPException(status_code=400, detail="secret_scope 仅支持 project / user")
+        raise api_error(400, "MCP_SECRET_SCOPE_INVALID", "secret_scope only supports project / user")
     # Sensitive header names (Authorization, X-API-Key, ...) must go through
     # auth.secret_ref — the runtime rejects them too, reject here at write.
     for name in (body.headers or {}):
         if _is_sensitive_header(name):
-            raise HTTPException(
-                status_code=400,
-                detail=f"header {name!r} 属敏感字段，请用 auth_type/secret_ref 配置认证",
-            )
+            raise api_error(400, "MCP_HEADER_SENSITIVE", f"header {name!r} is a sensitive field, configure auth via auth_type/secret_ref")
     # headers/options are serialized into String(4000) columns — reject an
     # oversize object at write time rather than at commit.
     for field_name, value in (("headers", body.headers), ("options", body.options)):
         if value:
             dumped = json.dumps(value, ensure_ascii=False)
             if len(dumped) > 4000:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{field_name} 序列化后 {len(dumped)} 字符，上限 4000",
-                )
+                raise api_error(400, "MCP_FIELD_TOO_LARGE", f"{field_name} serializes to {len(dumped)} characters, max 4000")
 
 
 def _apply_body(row: MCPServer, body: MCPServerBody) -> None:
@@ -160,7 +152,7 @@ async def _assert_global_slug_unique(
         if row.server_id == exclude_id:
             continue
         if sanitize_slug(row.slug) == key:
-            raise HTTPException(status_code=409, detail=f"MCP server slug 已存在: {row.slug}")
+            raise api_error(409, "MCP_SERVER_SLUG_EXISTS", f"MCP server slug already exists: {row.slug}")
 
 
 async def _configured_refs(
@@ -238,7 +230,7 @@ async def _get_global_server(db: AsyncSession, server_id: str) -> MCPServer:
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="MCP server not found")
+        raise api_error(404, "MCP_SERVER_NOT_FOUND", "MCP server not found")
     return row
 
 

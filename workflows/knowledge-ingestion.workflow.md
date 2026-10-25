@@ -1,6 +1,8 @@
 ---
 slug: "knowledge-ingestion"
-description: "Ingest content from a URL into the current project's knowledge base"
+description:
+  zh-CN: "将 URL 内容摄入当前项目知识库"
+  en-US: "Ingest content from a URL into the current project's knowledge base"
 triggers:
   - "ingest this URL"
   - "add this page to knowledge"

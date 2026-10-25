@@ -19,6 +19,8 @@ from typing import Any
 
 import frontmatter
 
+from .localization import is_locale_map, normalize_i18n_field
+
 #: Separator between project slug and agent name in project agent slugs.
 PROJECT_SLUG_SEPARATOR = "--"
 
@@ -175,8 +177,10 @@ def _tool_warnings(meta: dict[str, Any]) -> list[str]:
 def _suggested_frontmatter(kind: str, slug: str | None, meta: dict[str, Any]) -> str:
     """Minimal valid frontmatter the caller can paste back in and complete."""
     slug_line = _quoted(slug) if slug else _quoted("<必填：小写字母/数字/连字符>")
-    display = meta.get("display_name")
-    description = meta.get("description")
+    # Collapse locale maps to their canonical entry — the suggestion is a
+    # scalar template; a raw dict would render as Python repr in the YAML.
+    display, _ = normalize_i18n_field(meta.get("display_name"))
+    description, _ = normalize_i18n_field(meta.get("description"))
     lines = ["---", f"slug: {slug_line}"]
     if kind == "agent":
         lines.append(f"display_name: {_quoted(display) if isinstance(display, str) and display else _quoted('<显示名>')}")

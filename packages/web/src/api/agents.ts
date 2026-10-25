@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import type { AgentInfo, ModelConfig } from '@/types'
+import type { AgentInfo, LocaleOverrides, ModelConfig } from '@/types'
 
 interface AgentApiResponse {
   agent_id: string
@@ -8,11 +8,17 @@ interface AgentApiResponse {
   description?: string | null
   category?: string | null
   project_id?: string | null
-  skills: Array<{ slug: string; description: string; public?: boolean }>
-  workflows: Array<{ slug: string; description: string }>
+  skills: Array<{ slug: string; description: string; public?: boolean; i18n?: LocaleOverrides<string> | null }>
+  workflows: Array<{ slug: string; description: string; i18n?: LocaleOverrides<string> | null }>
   tools?: string[]
   placeholder?: string | null
   starter_prompts?: string[]
+  i18n?: {
+    display_name?: LocaleOverrides<string>
+    description?: LocaleOverrides<string>
+    placeholder?: LocaleOverrides<string>
+    starter_prompts?: LocaleOverrides<string[]>
+  } | null
 }
 
 export const agentsApi = {
@@ -31,6 +37,7 @@ export const agentsApi = {
       tools: a.tools ?? [],
       placeholder: a.placeholder ?? null,
       starter_prompts: a.starter_prompts ?? [],
+      i18n: a.i18n ?? null,
     }))
   },
 

@@ -23,6 +23,19 @@ class SkillRef(BaseModel):
     slug: str
     description: str = ""
     public: bool = False
+    #: Non-canonical locale variants of ``description`` (tooltip i18n).
+    i18n: dict[str, str] | None = None
+
+
+class AgentI18n(BaseModel):
+    """Per-field locale maps for the non-canonical languages of an agent's
+    UI text. The top-level AgentResponse fields stay the zh-first canonical;
+    the frontend resolves ``overrides[locale] ?? canonical``."""
+
+    display_name: dict[str, str] | None = None
+    description: dict[str, str] | None = None
+    placeholder: dict[str, str] | None = None
+    starter_prompts: dict[str, list[str]] | None = None
 
 
 class AgentResponse(BaseModel):
@@ -37,6 +50,7 @@ class AgentResponse(BaseModel):
     tools: list[str] = []
     placeholder: str | None = None
     starter_prompts: list[str] = []
+    i18n: AgentI18n | None = None
 
 
 class SyncResult(BaseModel):
@@ -75,22 +89,27 @@ def _parse_refs(raw: str | None) -> list[SkillRef]:
     return result
 
 
-def _public_skill_refs(registry) -> list[SkillRef]:
-    """Project every ``public: true`` skill from the startup registry.
+def _registry_refs(registry) -> dict[str, SkillRef]:
+    """Project the startup skill/workflow registry into tooltip refs by slug.
 
     Only the base registry is scanned — the per-turn project overlay lives in
-    ``agent_turn`` and does not apply at list time. The ``public`` flag attaches
-    to the slug, so a project skill shadowing the same slug still shows as
-    public (matching runtime behavior). ``registry`` is ``None`` when the app
-    lifespan never ran (``ASGITransport`` in tests), which yields no injection.
+    ``agent_turn`` and does not apply at list time. The ``public`` flag
+    attaches to the slug, so a project skill shadowing the same slug still
+    shows as public (matching runtime behavior). ``registry`` is ``None`` when
+    the app lifespan never ran (``ASGITransport`` in tests), which yields no
+    injection.
     """
     if registry is None:
-        return []
-    return [
-        SkillRef(slug=s.slug, description=s.description, public=True)
+        return {}
+    return {
+        s.slug: SkillRef(
+            slug=s.slug,
+            description=s.description,
+            public=s.public,
+            i18n=s.description_i18n or None,
+        )
         for s in registry.all()
-        if s.public
-    ]
+    }
 
 
 def _merge_public_skills(skills: list[SkillRef], public_refs: list[SkillRef]) -> list[SkillRef]:
@@ -98,19 +117,58 @@ def _merge_public_skills(skills: list[SkillRef], public_refs: list[SkillRef]) ->
 
     A matching entry may come from a stale DB row or a project agent whose
     frontmatter still lists the slug — keep it and just flag it public instead
-    of appending a duplicate.
+    of appending a duplicate. Appended entries are copies: the registry refs
+    are shared across every agent in the response.
     """
     by_slug = {r.slug: r for r in skills}
     for p in public_refs:
         existing = by_slug.get(p.slug)
         if existing is None:
-            skills.append(p)
-            by_slug[p.slug] = p
+            skills.append(p.model_copy())
+            by_slug[p.slug] = skills[-1]
         else:
             existing.public = True
             if not existing.description:
                 existing.description = p.description
+            if existing.i18n is None:
+                existing.i18n = p.i18n
     return skills
+
+
+def _backfill_refs(
+    refs: list[SkillRef], registry_map: dict[str, SkillRef], *, propagate_public: bool
+) -> None:
+    """Fill tooltip descriptions from the startup registry.
+
+    Agent frontmatter lists skills/workflows by slug, so the stored JSON
+    carries no description — without this backfill the tooltip shows nothing
+    for non-public skills and for every workflow. The stored entry keeps
+    precedence for its own description; only empties are filled.
+    """
+    for ref in refs:
+        source = registry_map.get(ref.slug)
+        if source is None:
+            continue
+        if not ref.description:
+            ref.description = source.description
+        if ref.i18n is None and source.i18n is not None:
+            ref.i18n = source.i18n
+        if propagate_public and source.public:
+            ref.public = True
+
+
+def _parse_agent_i18n(raw: str | None) -> AgentI18n | None:
+    """Deserialize the agents.i18n JSON column; None on absence or garbage."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not data:
+            return None
+        model = AgentI18n.model_validate(data)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return model if model.model_dump(exclude_none=True) else None
 
 
 def _parse_tool_list(raw: str | None) -> list[str]:
@@ -145,7 +203,16 @@ def _parse_str_list(raw: str | None) -> list[str]:
     return []
 
 
-def _to_response(a: Agent, public_refs: list[SkillRef] | None = None) -> AgentResponse:
+def _to_response(
+    a: Agent,
+    public_refs: list[SkillRef] | None = None,
+    skill_map: dict[str, SkillRef] | None = None,
+    workflow_map: dict[str, SkillRef] | None = None,
+) -> AgentResponse:
+    skills = _merge_public_skills(_parse_refs(a.skills), public_refs or [])
+    _backfill_refs(skills, skill_map or {}, propagate_public=True)
+    workflows = _parse_refs(a.workflows)
+    _backfill_refs(workflows, workflow_map or {}, propagate_public=False)
     return AgentResponse(
         agent_id=a.agent_id,
         slug=a.slug,
@@ -153,11 +220,12 @@ def _to_response(a: Agent, public_refs: list[SkillRef] | None = None) -> AgentRe
         description=a.description,
         category=a.category or "agile-development",
         project_id=a.project_id,
-        skills=_merge_public_skills(_parse_refs(a.skills), public_refs or []),
-        workflows=_parse_refs(a.workflows),
+        skills=skills,
+        workflows=workflows,
         tools=_parse_tool_list(a.tools),
         placeholder=a.placeholder,
         starter_prompts=_parse_str_list(a.starter_prompts),
+        i18n=_parse_agent_i18n(a.i18n),
     )
 
 
@@ -188,9 +256,10 @@ async def list_agents(
 ):
     """List global agents, plus project agents when ``project_id`` is given."""
     # getattr guard: tests run under ASGITransport without lifespan, so
-    # app.state.skill_registry is absent there and no public skill injects.
-    registry = getattr(request.app.state, "skill_registry", None)
-    public_refs = _public_skill_refs(registry)
+    # app.state registries are absent there and nothing injects.
+    skill_map = _registry_refs(getattr(request.app.state, "skill_registry", None))
+    workflow_map = _registry_refs(getattr(request.app.state, "workflow_registry", None))
+    public_refs = [r for r in skill_map.values() if r.public]
     if project_id:
         project = await authorize_project(project_id, db, _current_user)
         await _sync_project_agents(db, project)
@@ -203,7 +272,10 @@ async def list_agents(
         result = await db.execute(
             select(Agent).where(Agent.project_id.is_(None)).order_by(Agent.display_name)
         )
-    return [_to_response(a, public_refs) for a in result.scalars().all()]
+    return [
+        _to_response(a, public_refs, skill_map, workflow_map)
+        for a in result.scalars().all()
+    ]
 
 
 @router.post("/sync", response_model=SyncResult)

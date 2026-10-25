@@ -1,6 +1,8 @@
 ---
 slug: "analysis/dataviz"
-description: "Choose the right chart and render it — matplotlib PNGs via code_executor OUTPUT_DIR (auto-served at /api/media/), CJK-safe fonts, Mermaid via chart_renderer for conceptual diagrams"
+description:
+  zh-CN: "选对图表并渲染——经 code_executor OUTPUT_DIR 输出 matplotlib PNG（自动由 /api/media/ 提供访问），使用 CJK 安全字体；概念图用 chart_renderer 生成 Mermaid"
+  en-US: "Choose the right chart and render it — matplotlib PNGs via code_executor OUTPUT_DIR (auto-served at /api/media/), CJK-safe fonts, Mermaid via chart_renderer for conceptual diagrams"
 type: "guidance"
 triggers:
   - "chart"

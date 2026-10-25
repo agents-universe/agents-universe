@@ -1,6 +1,8 @@
 ---
 slug: "analysis/metric-investigator"
-description: "Root-cause metric anomalies — confirm the definition, exclude data-quality causes, compare periods, drill down dimensions, quantify each factor's contribution"
+description:
+  zh-CN: "指标异动根因排查——确认口径、排除数据质量因素、周期对比、维度下钻、量化每个因素的贡献"
+  en-US: "Root-cause metric anomalies — confirm the definition, exclude data-quality causes, compare periods, drill down dimensions, quantify each factor's contribution"
 type: "guidance"
 triggers:
   - "why did the metric drop"

@@ -1,6 +1,8 @@
 ---
 slug: "security/web-and-api-testing"
-description: "OWASP-driven dynamic testing through real UI and API - channel selection by target reachability, browser_playwright UI flows, api_request security matrix, code_executor httpx PoCs, non-destructive proofs"
+description:
+  zh-CN: "基于 OWASP 的真实 UI 与 API 动态测试——按目标可达性选择通道、browser_playwright UI 流、api_request 安全矩阵、code_executor httpx PoC、非破坏性证明"
+  en-US: "OWASP-driven dynamic testing through real UI and API - channel selection by target reachability, browser_playwright UI flows, api_request security matrix, code_executor httpx PoCs, non-destructive proofs"
 type: "guidance"
 triggers:
   - "dynamic testing"

@@ -1,6 +1,8 @@
 ---
 slug: "testing/screenshot-annotator"
-description: "Annotate focus areas on test screenshots and output highlighted evidence images that are easy to read in Jira"
+description:
+  zh-CN: "在测试截图上标注重点区域，输出在 Jira 中易于阅读的高亮证据图"
+  en-US: "Annotate focus areas on test screenshots and output highlighted evidence images that are easy to read in Jira"
 ---
 
 # Skill: Screenshot Annotator

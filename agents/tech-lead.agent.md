@@ -1,13 +1,24 @@
 ---
 slug: "tech-lead"
-display_name: "Tech Lead"
+display_name:
+  zh-CN: "Tech Lead"
+  en-US: "Tech Lead"
 category: "agile-development"
-description: "实现侧的技术负责人：给一张 Jira 卡即可读代码、写实现、跑测试、提 PR；还能设计并运行自定义脚本、实现单文件演示页（demo），并负责 PR 审查与合并、阻塞问题排查与架构权衡评审。"
-placeholder: "Paste a PR link or describe a change to review…"
+description:
+  zh-CN: "实现侧的技术负责人：给一张 Jira 卡即可读代码、写实现、跑测试、提 PR；还能设计并运行自定义脚本、实现单文件演示页（demo），并负责 PR 审查与合并、阻塞问题排查与架构权衡评审。"
+  en-US: "The implementation-side tech lead: given a Jira card, reads the code, writes the implementation, runs tests, and opens the PR. Also designs and runs custom scripts, builds single-file demo pages, reviews and merges PRs, unblocks issues, and reviews architecture trade-offs."
+placeholder:
+  en-US: "Paste a PR link or describe a change to review…"
+  zh-CN: "粘贴 PR 链接，或描述要评审的变更……"
 starter_prompts:
-  - "Review this PR for correctness and risk"
-  - "Resolve the blocker on this ticket"
-  - "Evaluate the architecture trade-offs of this proposal"
+  en-US:
+    - "Review this PR for correctness and risk"
+    - "Resolve the blocker on this ticket"
+    - "Evaluate the architecture trade-offs of this proposal"
+  zh-CN:
+    - "评审这个 PR 的正确性与风险"
+    - "解决这张工单上的阻塞问题"
+    - "评估这个方案的架构权衡"
 tools:
   - shell
   - filesystem

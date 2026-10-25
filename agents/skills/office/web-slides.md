@@ -1,6 +1,8 @@
 ---
 slug: "office/web-slides"
-description: "Generate web-based slide decks - single-file self-contained reveal.js HTML (reveal.js + theme + highlight + notes inlined at generation time, images as base64 data URIs), no build step, zero external requests at view time; renders in-platform via /api/media/ (text/html)"
+description:
+  zh-CN: "生成网页版演示文稿——单文件自包含 reveal.js HTML（reveal.js + 主题 + 高亮 + 备注在生成时内联，图片转 base64 data URI），无需构建、查看时零外部请求；经 /api/media/（text/html）在平台内渲染"
+  en-US: "Generate web-based slide decks - single-file self-contained reveal.js HTML (reveal.js + theme + highlight + notes inlined at generation time, images as base64 data URIs), no build step, zero external requests at view time; renders in-platform via /api/media/ (text/html)"
 type: "guidance"
 triggers:
   - "网页版ppt"

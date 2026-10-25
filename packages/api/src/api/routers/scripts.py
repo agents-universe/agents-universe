@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +28,7 @@ from agent_core.scripts.runner import (
 )
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.project import Project
 from api.models.script import AutomationScript, ScriptRun
 
@@ -248,12 +249,12 @@ async def run_script(
         result = await db.execute(select(AutomationScript).where(AutomationScript.script_id == script_id))
         script = result.scalar_one_or_none()
         if not script:
-            raise HTTPException(status_code=404, detail="Script not found")
+            raise api_error(404, "SCRIPT_NOT_FOUND", "Script not found")
         # The route has no project_id; derive it from the script before authorizing.
         await authorize_project(str(script.project_id), db, current_user)
         if script.script_type == "playwright":
             # The internal Playwright anchor is not a runnable script.
-            raise HTTPException(status_code=404, detail="Playwright specs are run via the specs endpoint")
+            raise api_error(404, "SCRIPT_PLAYWRANCH_ANCHOR", "Playwright specs are run via the specs endpoint")
 
         def build(run_id: str, project_fs: str):
             return _execute_script(run_id, script.content, script.script_type, current_user.user_id, project_fs)
@@ -285,7 +286,7 @@ def _resolve_playwright_spec(project_fs: str, slug: str) -> Path:
     except OSError:
         ok = False
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Spec not found: tests/generated/{slug}.spec.ts")
+        raise api_error(404, "SCRIPT_SPEC_NOT_FOUND", f"Spec not found: tests/generated/{slug}.spec.ts")
     return spec
 
 
@@ -299,9 +300,9 @@ def _validated_playwright_env(request_env: dict[str, str]) -> dict[str, str]:
     validated: dict[str, str] = {}
     for key, value in request_env.items():
         if not _PW_ENV_KEY_RE.match(key):
-            raise HTTPException(status_code=422, detail=f"env key {key!r} must match APP_*")
+            raise api_error(422, "SCRIPT_ENV_KEY_INVALID", f"env key {key!r} must match APP_*")
         if len(value) > 500:
-            raise HTTPException(status_code=422, detail=f"env value for {key!r} must be at most 500 characters")
+            raise api_error(422, "SCRIPT_ENV_VALUE_TOO_LONG", f"env value for {key!r} must be at most 500 characters")
         validated[key] = value
     return validated
 
@@ -406,7 +407,7 @@ async def run_playwright_spec(
     current_user: UserInfo = Depends(get_current_user),
 ):
     if not _PW_SLUG_RE.match(slug) or len(slug) > _PW_SLUG_MAX:
-        raise HTTPException(status_code=422, detail="Invalid spec slug")
+        raise api_error(422, "SCRIPT_SPEC_SLUG_INVALID", "Invalid spec slug")
     request_env = _validated_playwright_env(body.env if body else {})
 
     async def prepare(db: AsyncSession):
@@ -442,7 +443,7 @@ async def list_playwright_spec_runs(
     from api.services.script_artifacts import run_summary_payload
 
     if not _PW_SLUG_RE.match(slug):
-        raise HTTPException(status_code=422, detail="Invalid spec slug")
+        raise api_error(422, "SCRIPT_SPEC_SLUG_INVALID", "Invalid spec slug")
 
     anchor = await _find_playwright_anchor(db, project_id)
     if anchor is None:
@@ -772,7 +773,7 @@ async def list_runs(
     )
     script = script_result.scalar_one_or_none()
     if not script:
-        raise HTTPException(status_code=404, detail="Script not found")
+        raise api_error(404, "SCRIPT_NOT_FOUND", "Script not found")
     await authorize_project(str(script.project_id), db, current_user)
 
     from api.services.script_artifacts import run_summary_payload
@@ -875,7 +876,7 @@ async def script_run_ws(run_id: str, ws: WebSocket):
                     run_exit_code = run.exit_code
 
             if not_found:
-                await ws.send_json({"type": "error", "message": "Run not found"})
+                await ws.send_json({"type": "error", "code": "SCRIPT_RUN_NOT_FOUND", "message": "Run not found"})
                 break
 
             log = run_stdout + run_stderr

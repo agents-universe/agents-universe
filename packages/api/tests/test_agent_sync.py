@@ -206,6 +206,115 @@ async def test_sync_guidance_fields_absent_and_normalized(db, tmp_path, make_pro
     assert junk.starter_prompts is None
 
 
+async def test_sync_locale_map_fields_store_canonical_and_i18n(db, tmp_path, make_project):
+    """Bilingual frontmatter: canonical columns keep the zh entry (sort key,
+    history prefix), the i18n column carries every explicit locale map."""
+    project = await make_project("proj-i18n")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "proj-i18n--bi.agent.md").write_text(
+        "---\n"
+        'slug: "proj-i18n--bi"\n'
+        "display_name:\n  zh-CN: 技术负责人\n  en-US: Tech Lead\n"
+        "description:\n  zh-CN: 实现侧的技术负责人\n  en-US: Implementation lead\n"
+        "placeholder:\n  zh-CN: 粘贴 PR 链接…\n  en-US: Paste a PR link…\n"
+        "starter_prompts:\n"
+        "  zh-CN:\n    - 评审这个 PR\n"
+        "  en-US:\n    - Review this PR\n"
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    synced, _ = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-i18n--",
+    )
+
+    assert synced == ["proj-i18n--bi"]
+    row = (await db.execute(select(Agent).where(Agent.slug == "proj-i18n--bi"))).scalar_one()
+    assert row.display_name == "技术负责人"
+    assert row.description == "实现侧的技术负责人"
+    assert row.placeholder == "粘贴 PR 链接…"
+    assert json.loads(row.starter_prompts) == ["评审这个 PR"]
+    assert json.loads(row.i18n) == {
+        "display_name": {"zh-CN": "技术负责人", "en-US": "Tech Lead"},
+        "description": {"zh-CN": "实现侧的技术负责人", "en-US": "Implementation lead"},
+        "placeholder": {"zh-CN": "粘贴 PR 链接…", "en-US": "Paste a PR link…"},
+        "starter_prompts": {"zh-CN": ["评审这个 PR"], "en-US": ["Review this PR"]},
+    }
+
+
+async def test_sync_scalar_fields_leave_i18n_null(db, tmp_path, make_project):
+    """Pre-i18n definitions (plain scalars) must not grow an i18n payload."""
+    project = await make_project("proj-ni18n")
+    agents_dir = tmp_path / "agents"
+    _write_agent_file(agents_dir, "proj-ni18n--plain", "Plain")
+
+    await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-ni18n--",
+    )
+
+    row = (await db.execute(select(Agent).where(Agent.slug == "proj-ni18n--plain"))).scalar_one()
+    assert row.i18n is None
+
+
+async def test_sync_locale_map_values_bounded_per_locale(db, tmp_path, make_project):
+    """Each locale value obeys the same column widths — a map must not
+    bypass the truncation guards the scalar path enforces."""
+    project = await make_project("proj-cap")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "proj-cap--long.agent.md").write_text(
+        "---\n"
+        'slug: "proj-cap--long"\n'
+        "display_name:\n"
+        f'  zh-CN: "{"名" * 300}"\n'
+        f'  en-US: "{"N" * 300}"\n'
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-cap--",
+    )
+
+    row = (await db.execute(select(Agent).where(Agent.slug == "proj-cap--long"))).scalar_one()
+    assert len(row.display_name) == 255
+    i18n = json.loads(row.i18n)
+    assert {loc: len(v) for loc, v in i18n["display_name"].items()} == {
+        "zh-CN": 255,
+        "en-US": 255,
+    }
+
+
+async def test_sync_non_locale_dict_description_degrades_to_null(db, tmp_path, make_project):
+    """A structured dict with non-locale keys is invalid frontmatter — the
+    canonical column degrades to NULL and the sync still succeeds."""
+    project = await make_project("proj-badd")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "proj-badd--x.agent.md").write_text(
+        "---\n"
+        'slug: "proj-badd--x"\n'
+        'display_name: "X"\n'
+        "description:\n  slug: not-a-locale\n"
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    synced, _ = await sync_agents_dir(
+        db, agents_dir, project_id=str(project.project_id),
+        is_system=False, slug_prefix="proj-badd--",
+    )
+
+    assert synced == ["proj-badd--x"]
+    row = (await db.execute(select(Agent).where(Agent.slug == "proj-badd--x"))).scalar_one()
+    assert row.description is None
+    assert row.i18n is None
+
+
 async def test_definition_check_predicts_registration(db, tmp_path, make_project):
     """The write-time verdict must match what sync actually does.
 

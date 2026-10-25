@@ -1,6 +1,8 @@
 ---
 slug: "integration/confluence-reader"
-description: "Pull page content from Confluence and convert it into knowledge entries; suitable for single-page learning, knowledge-base page tree traversal, extracting flow / permission / architecture documents, and incrementally merging Confluence content back into the project knowledge directory"
+description:
+  zh-CN: "从 Confluence 拉取页面内容并转为知识条目；适用于单页学习、知识库页面树遍历、提取流程/权限/架构文档，以及将 Confluence 内容增量合并回项目知识目录"
+  en-US: "Pull page content from Confluence and convert it into knowledge entries; suitable for single-page learning, knowledge-base page tree traversal, extracting flow / permission / architecture documents, and incrementally merging Confluence content back into the project knowledge directory"
 ---
 
 # Skill: Confluence Reader

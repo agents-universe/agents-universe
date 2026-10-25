@@ -1,6 +1,8 @@
 ---
 slug: "testing/test-designer"
-description: "Design structured, readable test cases by combining project knowledge and Jira cards"
+description:
+  zh-CN: "结合项目知识与 Jira 卡片，设计结构化、可读的测试用例"
+  en-US: "Design structured, readable test cases by combining project knowledge and Jira cards"
 triggers:
   - "设计测试用例"
   - "测试设计"

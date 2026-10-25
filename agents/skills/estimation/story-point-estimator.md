@@ -1,6 +1,8 @@
 ---
 slug: "estimation/story-point-estimator"
-description: "Estimate story points for Jira stories by splitting front-end and back-end effort, using API additions and new pages as the baseline unit"
+description:
+  zh-CN: "为 Jira 故事估算故事点：拆分前端与后端工作量，以 API 新增和新页面为基准单位"
+  en-US: "Estimate story points for Jira stories by splitting front-end and back-end effort, using API additions and new pages as the baseline unit"
 type: "guidance"
 triggers: []
 ---

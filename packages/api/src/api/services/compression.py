@@ -33,11 +33,16 @@ _log = logging.getLogger("agents_universe.compression")
 
 
 class CompressionError(Exception):
-    """User-facing compression failure with an HTTP status code."""
+    """User-facing compression failure with an HTTP status code and stable code.
 
-    def __init__(self, status_code: int, message: str):
+    The `code` drives the frontend's `errors` namespace mapping; `message`
+    stays the English canonical for logs / unknown-code fallback.
+    """
+
+    def __init__(self, status_code: int, code: str, message: str):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
         self.message = message
 
 
@@ -221,10 +226,10 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
     mc = config_result.scalar_one_or_none()
     if mc:
         if mc.provider == "azure_openai" and not (mc.base_url or "").strip():
-            raise CompressionError(400, "Azure OpenAI 模型缺少端点（Base URL），无法用于压缩。")
+            raise CompressionError(400, "COMPRESSION_AZURE_ENDPOINT_MISSING", "The Azure OpenAI model is missing its endpoint (Base URL), which is required for compression.")
         api_key = decrypt_or_none(mc.encrypted_key, mc.user_id)
         if api_key is None:
-            raise CompressionError(400, "存储的 API 密钥已损坏，请删除模型配置后重新保存。")
+            raise CompressionError(400, "COMPRESSION_KEY_CORRUPTED", "The stored API key is corrupted; delete the model configuration and re-save it.")
         cred: dict = {
             "api_key": api_key,
             "ssl_verify": settings.llm_ssl_verify,
@@ -269,10 +274,10 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
     legacy_key_row = legacy_result.scalar_one_or_none()
     if legacy_key_row:
         if legacy_key_row.provider == "azure_openai":
-            raise CompressionError(400, "旧的 Azure OpenAI 凭据缺少端点，无法用于压缩。")
+            raise CompressionError(400, "COMPRESSION_AZURE_ENDPOINT_MISSING", "The legacy Azure OpenAI credential is missing its endpoint, which is required for compression.")
         api_key = decrypt_or_none(legacy_key_row.encrypted_value, user_id)
         if api_key is None:
-            raise CompressionError(400, "存储的 API 密钥已损坏，请删除后重新保存。")
+            raise CompressionError(400, "COMPRESSION_KEY_CORRUPTED", "The stored API key is corrupted; delete it and re-save.")
         tier_result = await db.execute(
             select(UserTierModel)
             .where(
@@ -292,7 +297,7 @@ async def _resolve_provider(db: AsyncSession, user_id: str):
 
         return get_provider(legacy_key_row.provider, cred)
 
-    raise CompressionError(400, "未配置可用模型，无法压缩。请到 Settings → AI Models 添加模型。")
+    raise CompressionError(400, "COMPRESSION_NO_MODEL", "No usable model is configured for compression. Add a model in Settings → AI Models.")
 
 
 def _default_model(provider: str) -> str:
@@ -409,10 +414,10 @@ async def compress_conversation(
         # rows (embedded tool outputs) that the provider gateway rejects as
         # 413 — allow truncation when the content is genuinely fat.
         if _rows_wire_bytes(rows) <= SHORT_CONVERSATION_BYTES:
-            raise CompressionError(409, "会话太短，无需压缩。")
+            raise CompressionError(409, "COMPRESSION_TOO_SHORT", "The conversation is too short to compress.")
         truncated = _truncate_fat_rows(rows)
         if not truncated:
-            raise CompressionError(409, "会话内容过大，但没有可精简的工具输出。建议新建会话或减少单条消息大小。")
+            raise CompressionError(409, "COMPRESSION_NO_TRUNCATABLE_OUTPUT", "The conversation is too large but has no truncatable tool output. Start a new conversation or reduce per-message size.")
         # Truncation only rewrites existing rows (sequence_num untouched), so
         # no conversation row lock is needed; commit under the caller's
         # session and return additive fields the UI ignores.
@@ -462,11 +467,11 @@ async def compress_conversation(
     # kept suffix holds at most RECENT_TURNS_KEEP expanded messages) — kept
     # as pure defense against a future constant change.
     if first_kept_row == 0:
-        raise CompressionError(409, "会话太短，无需压缩。")
+        raise CompressionError(409, "COMPRESSION_TOO_SHORT", "The conversation is too short to compress.")
 
     early_lines = early_history_lines(early_msgs)
     if not early_lines:
-        raise CompressionError(409, "会话没有可压缩的内容。")
+        raise CompressionError(409, "COMPRESSION_NO_CONTENT", "The conversation has nothing to compress.")
 
     try:
         provider = await _resolve_provider(db, user_id)
@@ -476,7 +481,7 @@ async def compress_conversation(
         # get_provider refuses header-unsafe API keys (and unknown providers)
         # with a clean ValueError — surface it as an actionable 400 instead of
         # an unhandled 500. The message never contains the key itself.
-        raise CompressionError(400, str(e)) from e
+        raise CompressionError(400, "COMPRESSION_PROVIDER_INVALID", str(e)) from e
 
     # Everything above was read-only; release the pool connection before the
     # up-to-300-second summarization below. An open read transaction across
@@ -505,7 +510,7 @@ async def compress_conversation(
         # from None: the chained provider exception carries the raw key, and
         # format_exception follows __context__ by default — the scrub above
         # only covers THIS log line, not any downstream formatter.
-        raise CompressionError(502, "压缩失败，请重试。") from None
+        raise CompressionError(502, "COMPRESSION_FAILED", "Compression failed, please retry.") from None
     finally:
         # _resolve_provider builds an SDK-backed provider that owns an HTTP
         # client; without this close every compression leaks a connection
@@ -537,7 +542,7 @@ async def compress_conversation(
     ).scalar_one_or_none()
     if locked_conv is None:
         await db.rollback()
-        raise CompressionError(404, "会话不存在或已删除。")
+        raise CompressionError(404, "COMPRESSION_CONVERSATION_GONE", "The conversation does not exist or was deleted.")
     await db.execute(
         sa_delete(DbMessage).where(
             DbMessage.conversation_id == conversation_id,

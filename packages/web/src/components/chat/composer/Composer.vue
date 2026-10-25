@@ -93,6 +93,8 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { useAgentStore, AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
 import { mediaApi } from '@/api/media'
 import { ApiError } from '@/api/client'
+import { localizedText } from '@/utils/localize'
+import { translateApiError } from '@/utils/apiError'
 import { pendingDraft, takeComposerDraft } from '@/composables/useComposerDraft'
 import type { AttachmentRecord } from '@/types'
 import MentionPopup from './MentionPopup.vue'
@@ -102,16 +104,6 @@ import { resolveMentionAgent } from './mention'
 // Advisory pre-check only; the server enforces its own limit
 // (Settings.max_upload_size_mb). Keep the two in sync.
 const MAX_UPLOAD_MB = 10
-
-// Server-side upload error codes → localized copy. Codes without an entry
-// fall back to the server message on the attachment chip.
-const UPLOAD_ERROR_KEYS: Record<string, string> = {
-  FILE_TOO_LARGE: 'composer.uploadFileTooLarge',
-  UPLOAD_STORE_FULL: 'composer.uploadStoreFull',
-  CONVERSATION_UPLOAD_QUOTA: 'composer.uploadQuotaExceeded',
-  CONVERSATION_NOT_FOUND: 'composer.uploadConversationNotFound',
-  INVALID_CONVERSATION_ID: 'composer.uploadInvalidId',
-}
 
 interface PendingAttachment {
   key: string
@@ -159,7 +151,11 @@ let view: EditorView | null = null
 // so the text lives in a stable element mutated by this watch — otherwise a
 // plain string would go stale on agent/locale switch.
 const placeholderText = computed(() =>
-  agentStore.currentAgent?.placeholder || t('composer.defaultPlaceholder'),
+  localizedText(
+    agentStore.currentAgent?.placeholder,
+    agentStore.currentAgent?.i18n?.placeholder,
+    t('composer.defaultPlaceholder'),
+  ),
 )
 const placeholderEl = document.createElement('span')
 watch(placeholderText, (txt) => { placeholderEl.textContent = txt }, { immediate: true })
@@ -232,8 +228,9 @@ async function upload(entry: PendingAttachment) {
   } catch (e) {
     entry.status = 'error'
     if (e instanceof ApiError) {
-      const key = e.code ? UPLOAD_ERROR_KEYS[e.code] : undefined
-      entry.error = key ? t(key) : e.message
+      // Known codes resolve through the errors namespace; unknown codes
+      // fall back to the server's English message.
+      entry.error = translateApiError(e)
     } else {
       entry.error = e instanceof DOMException && e.name === 'TimeoutError'
         ? t('composer.uploadTimeout')

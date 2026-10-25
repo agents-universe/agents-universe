@@ -80,7 +80,7 @@
                   :placeholder="editForms[cfg.config_id].url_mode === 'full_url' ? t('tokenConfig.fullUrlPlaceholder') : t('tokenConfig.baseUrlOptional')"
                 />
                 <select v-model="editForms[cfg.config_id].url_mode" class="input token-url-mode-select">
-                  <option value="base_url">Base URL</option>
+                  <option value="base_url">{{ t('tokenConfig.baseUrl') }}</option>
                   <option value="full_url">{{ t('tokenConfig.fullUrl') }}</option>
                 </select>
               </div>
@@ -163,7 +163,7 @@
               <div class="token-url-row">
                 <input v-model="newBaseUrl" class="input token-url-input" :placeholder="newUrlMode === 'full_url' ? t('tokenConfig.fullUrlPlaceholder') : t('tokenConfig.baseUrlOptional')" />
                 <select v-model="newUrlMode" class="input token-url-mode-select">
-                  <option value="base_url">Base URL</option>
+                  <option value="base_url">{{ t('tokenConfig.baseUrl') }}</option>
                   <option value="full_url">{{ t('tokenConfig.fullUrl') }}</option>
                 </select>
               </div>
@@ -251,7 +251,7 @@
                 v-model="formValues[svc.key + ':base_url']"
                 class="input"
                 type="text"
-                :placeholder="integrationDefaults[svc.key] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[svc.key] }) : 'Base URL'"
+                :placeholder="integrationDefaults[svc.key] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[svc.key] }) : t('tokenConfig.baseUrl')"
               />
               <input
                 v-model="formValues[svc.key]"
@@ -308,14 +308,14 @@
                 v-model="formValues[newIntegrationKey + ':base_url']"
                 class="input"
                 type="text"
-                :placeholder="integrationDefaults[newIntegrationKey] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[newIntegrationKey] }) : 'Base URL'"
+                :placeholder="integrationDefaults[newIntegrationKey] ? t('tokenConfig.systemDefaultBase', { url: integrationDefaults[newIntegrationKey] }) : t('tokenConfig.baseUrl')"
               />
               <input
                 v-if="newIntegrationKey"
                 v-model="formValues[newIntegrationKey]"
                 class="input"
                 type="password"
-                :placeholder="newIntegrationService?.placeholder || 'Token'"
+                :placeholder="newIntegrationService?.placeholder || t('tokenConfig.apiToken')"
               />
               <template v-if="newIntegrationKey && newIntegrationService?.extraFields">
                 <div v-for="field in newIntegrationService.extraFields" :key="field.key" class="token-url-row">
@@ -735,11 +735,13 @@ async function testNewConfig() {
 interface ExtraField { key: string; label: string; placeholder: string; sensitive?: boolean }
 interface IntegrationService { key: string; label: string; description: string; icon: any; placeholder: string; sensitive?: boolean; extraFields?: ExtraField[] }
 
-const integrationServices: IntegrationService[] = [
-  { key: 'git', label: 'GitHub / Git', description: 'Personal Access Token', icon: GitBranch, placeholder: 'ghp_...' },
-  { key: 'jira', label: 'Jira', description: 'Atlassian Token', icon: BookOpen, placeholder: 'API Token', extraFields: [{ key: 'jira:email', label: 'Email', placeholder: 'you@example.com', sensitive: false }] },
-  { key: 'confluence', label: 'Confluence', description: t('tokenConfig.confluenceDesc'), icon: Globe, placeholder: 'API Token' },
-]
+// Computed so t() re-evaluates on locale switch — a plain init-time array
+// froze the descriptions in whatever language was active at setup.
+const integrationServices = computed<IntegrationService[]>(() => [
+  { key: 'git', label: 'GitHub / Git', description: t('tokenConfig.gitDesc'), icon: GitBranch, placeholder: 'ghp_...' },
+  { key: 'jira', label: 'Jira', description: t('tokenConfig.jiraDesc'), icon: BookOpen, placeholder: t('tokenConfig.apiToken'), extraFields: [{ key: 'jira:email', label: t('tokenConfig.email'), placeholder: 'you@example.com', sensitive: false }] },
+  { key: 'confluence', label: 'Confluence', description: t('tokenConfig.confluenceDesc'), icon: Globe, placeholder: t('tokenConfig.apiToken') },
+])
 
 /** System-configured default base URLs from GET /api/integrations/defaults */
 const integrationDefaults = reactive<Record<string, string>>({})
@@ -881,11 +883,11 @@ async function deleteMcpServer(server: McpServerInfo) {
 const configuredIntegrationKeys = ref<Set<string>>(new Set())
 
 const configuredIntegrations = computed(() =>
-  integrationServices.filter(s => configuredIntegrationKeys.value.has(s.key))
+  integrationServices.value.filter(s => configuredIntegrationKeys.value.has(s.key))
 )
 
 const availableToAdd = computed(() =>
-  integrationServices.filter(s => !configuredIntegrationKeys.value.has(s.key))
+  integrationServices.value.filter(s => !configuredIntegrationKeys.value.has(s.key))
 )
 
 const formValues = reactive<Record<string, string>>({})
@@ -940,13 +942,13 @@ async function loadIntegrationTokens() {
       savedBaseUrls[t.service_key] = t.base_url
       // Map sub-keys (e.g. "jira:email") back to their parent service
       const parentKey = t.service_key.split(':')[0]
-      if (integrationServices.some(s => s.key === parentKey)) {
+      if (integrationServices.value.some(s => s.key === parentKey)) {
         configured.add(parentKey)
         configuredInUser.add(parentKey)
       }
     }
     // Project-scoped integrations: main key + extra fields map back to the service.
-    for (const svc of integrationServices) {
+    for (const svc of integrationServices.value) {
       const main = projectByKey.get(svc.key)
       if (main) {
         configured.add(svc.key)
@@ -969,7 +971,7 @@ async function loadIntegrationTokens() {
     }
     configuredIntegrationKeys.value = configured
     // Pre-fill base_url form values from saved data
-    for (const svc of integrationServices) {
+    for (const svc of integrationServices.value) {
       if (savedBaseUrls[svc.key]) {
         formValues[svc.key + ':base_url'] = savedBaseUrls[svc.key]!
       }
@@ -1087,7 +1089,7 @@ async function testService(key: string) {
   testing.value = key
   delete messages[key]
   try {
-    const svc = integrationServices.find(s => s.key === key)
+    const svc = integrationServices.value.find(s => s.key === key)
     const scope = integrationScopes[key]
     if (svc && formValues[svc.key]) {
       await saveIntegration(svc)
@@ -1133,7 +1135,7 @@ async function deleteIntegration(key: string) {
   try {
     const projectId = projectStore.currentProject?.project_id
     const scope = integrationScopes[key]
-    const svc = integrationServices.find(s => s.key === key)
+    const svc = integrationServices.value.find(s => s.key === key)
     // Delete the user token(s) when the integration lives there
     if (scope !== 'project') {
       await ignoreGone(apiFetch(`/api/tokens/${key}`, { method: 'DELETE' }))
@@ -1189,7 +1191,7 @@ const showAddIntegrationForm = ref(false)
 const newIntegrationKey = ref('')
 
 const newIntegrationService = computed(() =>
-  integrationServices.find(s => s.key === newIntegrationKey.value)
+  integrationServices.value.find(s => s.key === newIntegrationKey.value)
 )
 
 function cancelAddIntegration() {

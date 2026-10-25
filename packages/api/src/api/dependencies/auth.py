@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, Request, Response
 import redis.exceptions
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -14,6 +14,7 @@ _log = logging.getLogger("agents_universe.auth")
 
 from api.config import get_settings
 from api.database import get_db
+from api.errors import api_error
 from api.models.conversation import Conversation
 from api.models.project import Project
 from api.models.project_member import ProjectMember
@@ -42,7 +43,7 @@ async def get_current_user(
         return UserInfo(user_id=settings.auth_bypass_user_id, display_name="SYSTEM")
     session_id = request.cookies.get(settings.auth_cookie_name)
     if not session_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise api_error(401, "AUTH_REQUIRED", "Not authenticated")
     try:
         data = await get_session(redis, session_id)
     except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, TimeoutError) as e:
@@ -50,9 +51,9 @@ async def get_current_user(
         # Session state cannot be verified — fail closed with 503, never
         # degrade to an anonymous allow.
         _log.warning("Session service unavailable: %s", e)
-        raise HTTPException(status_code=503, detail="会话服务暂不可用，请稍后重试")
+        raise api_error(503, "AUTH_SESSION_BACKEND_UNAVAILABLE", "Session service is temporarily unavailable, please retry later")
     if not data or "user_id" not in data:
-        raise HTTPException(status_code=401, detail="Session expired")
+        raise api_error(401, "AUTH_SESSION_EXPIRED", "Session expired")
     try:
         await track_active_user(redis, data["user_id"], settings.active_users_window)
         # Renew session TTL on every authenticated REST request so that API
@@ -81,9 +82,12 @@ async def get_current_user(
     return UserInfo(user_id=data["user_id"], display_name=data.get("display_name"))
 
 
+# Shared {code, message} detail for the 403 private-project denial. Sites that
+# raise directly use api_error(403, "PROJECT_PRIVATE", ...); this dict is for
+# the few that embed the detail into another payload.
 PROJECT_PRIVATE_DENIED = {
     "code": "PROJECT_PRIVATE",
-    "message": "该项目为私有项目，您没有访问权限",
+    "message": "This project is private and you do not have access",
 }
 
 
@@ -133,13 +137,13 @@ async def authorize_project(
             "authorize_project DENIED: project_id=%s not found or inactive",
             project_id,
         )
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise api_error(404, "PROJECT_NOT_FOUND", "Project not found")
     if not await has_project_access(db, project, current_user.user_id):
         _log.warning(
             "authorize_project DENIED: project_id=%s private for user=%s",
             project_id, current_user.user_id,
         )
-        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
+        raise api_error(403, "PROJECT_PRIVATE", PROJECT_PRIVATE_DENIED["message"])
     _log.debug(
         "authorize_project OK: project_id=%s, slug=%s, created_by=%s",
         project_id, project.slug, project.created_by,
@@ -165,8 +169,8 @@ async def authorize_conversation(
     )
     row = result.first()
     if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "CONVERSATION_NOT_FOUND", "Conversation not found")
     conversation, project = row
     if not await has_project_access(db, project, current_user.user_id):
-        raise HTTPException(status_code=403, detail=PROJECT_PRIVATE_DENIED)
+        raise api_error(403, "PROJECT_PRIVATE", PROJECT_PRIVATE_DENIED["message"])
     return conversation

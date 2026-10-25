@@ -72,3 +72,63 @@ def test_public_flag_quoted_false_stays_false(tmp_path):
     path = tmp_path / "quoted.md"
     _write_with_frontmatter(path, 'public: "false"\n')
     assert load_skill(path).public is False
+
+
+def test_scalar_description_keeps_i18n_empty(tmp_path):
+    path = tmp_path / "scalar.md"
+    _write_with_frontmatter(path, "description: plain one-liner\n")
+    skill = load_skill(path)
+    assert skill.description == "plain one-liner"
+    assert skill.description_i18n == {}
+
+
+def test_locale_map_description_is_en_first(tmp_path):
+    """Skill/workflow descriptions are English-first: the LLM-injected
+    canonical must be the en entry, byte-identical to the pre-i18n scalar."""
+    en = "Profile any dataset before analysis — schema, distributions, gaps."
+    path = tmp_path / "mapped.md"
+    path.write_text(
+        "---\n"
+        "slug: mapped\n"
+        "description:\n"
+        f'  en-US: "{en}"\n'
+        '  zh-CN: "分析前先摸清数据：结构、分布、缺失。"\n'
+        "---\nBODY\n",
+        encoding="utf-8",
+    )
+    skill = load_skill(path)
+    assert skill.description == en
+    assert skill.description_i18n == {
+        "en-US": en,
+        "zh-CN": "分析前先摸清数据：结构、分布、缺失。",
+    }
+
+
+def test_workflow_map_description_keeps_llm_prompt_bytes(tmp_path):
+    """Regression guard for the only LLM injection of a description
+    (agent.py `## Available Workflows`): the canonical string must stay the
+    exact English text even when the frontmatter is a locale map."""
+    en = "Full ad-hoc data analysis pipeline — clarify the question, deliver."
+    wf = tmp_path / "ad-hoc.workflow.md"
+    wf.write_text(
+        "---\n"
+        "slug: ad-hoc\n"
+        "description:\n"
+        f'  en-US: "{en}"\n'
+        '  zh-CN: "即席分析全链路。"\n'
+        "---\nSTEPS\n",
+        encoding="utf-8",
+    )
+    assert load_skill(wf).description == en
+
+
+def test_non_locale_dict_description_degrades_to_empty(tmp_path):
+    """A structured dict with non-locale keys must not str()-leak into the
+    description; the loader degrades to empty instead of raising."""
+    path = tmp_path / "bad.md"
+    path.write_text(
+        "---\nslug: bad\ndescription:\n  slug: x\n---\nBODY\n", encoding="utf-8"
+    )
+    skill = load_skill(path)
+    assert skill.description == ""
+    assert skill.description_i18n == {}

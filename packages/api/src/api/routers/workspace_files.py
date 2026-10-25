@@ -17,12 +17,13 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import BaseModel
 
 from agent_core.paths import PathEscapeError, canonical, resolve_within
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.project import Project
 
 router = APIRouter(prefix="/api/projects/{project_id}/workspace")
@@ -49,7 +50,7 @@ def _resolve_target(project_fs: str, rel_path: str) -> Path:
     try:
         return resolve_within(Path(project_fs), rel_path)
     except PathEscapeError:
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise api_error(400, "WORKSPACE_PATH_INVALID", "Invalid path")
 
 
 def _list_entries(base: Path, target: Path) -> list[dict]:
@@ -100,7 +101,7 @@ async def list_workspace_files(
     base = Path(project_fs)
     target = _resolve_target(project_fs, path)
     if not await asyncio.to_thread(target.is_dir):
-        raise HTTPException(status_code=404, detail="Directory not found")
+        raise api_error(404, "WORKSPACE_DIRECTORY_NOT_FOUND", "Directory not found")
     entries = await asyncio.to_thread(_list_entries, base, target)
     return {"path": path, "entries": entries}
 
@@ -119,16 +120,16 @@ async def read_workspace_file(
     project_fs = await resolve_project_fs_path(project_id, db)
     target = _resolve_target(project_fs, path)
     if not await asyncio.to_thread(target.is_file):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise api_error(404, "WORKSPACE_FILE_NOT_FOUND", "File not found")
     stat = await asyncio.to_thread(target.stat)
     if stat.st_size > _MAX_READ_BYTES:
-        raise HTTPException(status_code=413, detail=f"File too large to read (>{_MAX_READ_BYTES} bytes)")
+        raise api_error(413, "WORKSPACE_FILE_TOO_LARGE", f"File too large to read (>{_MAX_READ_BYTES} bytes)")
     try:
         content = await asyncio.to_thread(target.read_text, "utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="File is not valid UTF-8 (binary?)")
+        raise api_error(400, "WORKSPACE_FILE_BINARY", "File is not valid UTF-8 (binary?)")
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
+        raise api_error(500, "WORKSPACE_READ_FAILED", f"Failed to read file: {e}")
     return {"path": path, "content": content.lstrip("﻿"), "size_bytes": stat.st_size}
 
 
@@ -155,21 +156,21 @@ async def write_workspace_file(
     is preserved verbatim (raw write, no parsing).
     """
     if len(body.content.encode("utf-8")) > _MAX_WRITE_BYTES:
-        raise HTTPException(status_code=413, detail=f"Content too large (>{_MAX_WRITE_BYTES} bytes)")
+        raise api_error(413, "WORKSPACE_CONTENT_TOO_LARGE", f"Content too large (>{_MAX_WRITE_BYTES} bytes)")
 
     from api.paths import resolve_project_fs_path
 
     project_fs = await resolve_project_fs_path(project_id, db)
     target = _resolve_target(project_fs, path)
     if await asyncio.to_thread(target.is_dir):
-        raise HTTPException(status_code=400, detail="Path is a directory")
+        raise api_error(400, "WORKSPACE_PATH_IS_DIRECTORY", "Path is a directory")
 
     # Same canonicalization as _list_entries: target is realpath'd.
     rel = target.relative_to(Path(canonical(project_fs)))
     # Writes into .git (hooks, config) are refused — same rule as the
     # agent-side filesystem tool: git executes those files unvalidated later.
     if ".git" in rel.parts:
-        raise HTTPException(status_code=400, detail=".git 目录为只读")
+        raise api_error(400, "WORKSPACE_GIT_READONLY", "The .git directory is read-only")
 
     # Snapshot the OLD content before overwriting (rollback snapshot, same
     # contract as the knowledge router's PUT version write).
@@ -184,7 +185,7 @@ async def write_workspace_file(
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, body.content, "utf-8")
     except OSError as e:
-        raise HTTPException(status_code=507, detail=f"Failed to write file: {e}")
+        raise api_error(507, "WORKSPACE_WRITE_FAILED", f"Failed to write file: {e}")
 
     # Knowledge files: snapshot a version and re-index in the background so
     # the next conversation sees the edited content (same flow as the

@@ -7,7 +7,7 @@ import traceback
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ _log = logging.getLogger("agents_universe.model_configs")
 from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.user import UserModelConfig
 from api.services.model_tier import infer_complexity_tier
 from api.services.token_vault import decrypt_or_none, encrypt, key_hint as make_hint
@@ -232,11 +233,11 @@ async def create_model_config(
     current_user: UserInfo = Depends(get_current_user),
 ):
     if body.provider not in VALID_PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unknown provider: {body.provider!r}")
+        raise api_error(400, "MODEL_PROVIDER_UNKNOWN", f"Unknown provider: {body.provider!r}")
     if not body.model_id.strip():
-        raise HTTPException(status_code=400, detail="model_id cannot be empty")
+        raise api_error(400, "MODEL_ID_EMPTY", "model_id cannot be empty")
     if body.provider == "azure_openai" and not body.base_url:
-        raise HTTPException(status_code=400, detail="Azure OpenAI requires a base URL")
+        raise api_error(400, "MODEL_AZURE_BASE_URL_REQUIRED", "Azure OpenAI requires a base URL")
 
     user_id = current_user.user_id
 
@@ -296,11 +297,11 @@ async def update_model_config(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="Model config not found")
+        raise api_error(404, "MODEL_CONFIG_NOT_FOUND", "Model config not found")
 
     if body.model_id is not None:
         if not body.model_id.strip():
-            raise HTTPException(status_code=400, detail="model_id cannot be empty")
+            raise api_error(400, "MODEL_ID_EMPTY", "model_id cannot be empty")
         row.model_id = body.model_id.strip()
 
     if body.api_key is not None:
@@ -322,7 +323,7 @@ async def update_model_config(
     if "reasoning_effort" in body.model_fields_set:
         row.reasoning_effort = body.reasoning_effort
     if row.provider == "azure_openai" and not row.base_url:
-        raise HTTPException(status_code=400, detail="Azure OpenAI requires a base URL")
+        raise api_error(400, "MODEL_AZURE_BASE_URL_REQUIRED", "Azure OpenAI requires a base URL")
 
     row.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -344,7 +345,7 @@ async def delete_model_config(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="Model config not found")
+        raise api_error(404, "MODEL_CONFIG_NOT_FOUND", "Model config not found")
 
     await db.delete(row)
     await db.commit()
@@ -396,7 +397,7 @@ async def test_model_config(
 
     if config_id == SYSTEM_DEFAULT_CONFIG_ID:
         if not settings.system_default_model_id:
-            raise HTTPException(status_code=404, detail="No system default configured")
+            raise api_error(404, "MODEL_NO_SYSTEM_DEFAULT", "No system default configured")
         api_key = settings.system_default_api_key
         base_url = settings.system_default_base_url
         model_id = settings.system_default_model_id
@@ -411,7 +412,7 @@ async def test_model_config(
         )
         row = result.scalar_one_or_none()
         if not row:
-            raise HTTPException(status_code=404, detail="Model config not found")
+            raise api_error(404, "MODEL_CONFIG_NOT_FOUND", "Model config not found")
 
         if not row.encrypted_key:
             return {"ok": False, "error": "No API key configured for this model"}

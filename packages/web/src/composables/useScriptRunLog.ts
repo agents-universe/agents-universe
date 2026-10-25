@@ -2,6 +2,7 @@ import { ref, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiBase } from '@/utils/basePath'
 import { scriptsApi } from '@/api/scripts'
+import { translateErrorCode } from '@/utils/apiError'
 
 export interface LogLine { text: string; level: string }
 
@@ -133,7 +134,7 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
       // ws !== myWs: a superseded socket must not write into the buffer its
       // replacement now owns (same-run reconnect keeps runId identical).
       if (!alive || ws !== myWs || activeRunId.value !== runId) return
-      let msg: { type?: string; level?: string; text?: string; log?: string; status?: string; exit_code?: number | null }
+      let msg: { type?: string; code?: string; level?: string; text?: string; log?: string; message?: string; status?: string; exit_code?: number | null }
       try {
         msg = JSON.parse(e.data as string) as typeof msg
       } catch {
@@ -144,6 +145,13 @@ export function useScriptRunLog(opts: { onDone?: (done: ScriptRunDone) => void }
         // Authoritative final state — the server closes the socket right after
         // this frame.
         markDone(runId, msg.status ?? 'failed', msg.exit_code ?? null)
+        return
+      }
+      if (msg.type === 'error') {
+        // Terminal protocol error (run vanished...) — an error-styled line,
+        // not a log entry with an "info" level.
+        runError.value = translateErrorCode(msg.code, msg.message) || 'Error'
+        pushLog({ text: runError.value, level: 'error' })
         return
       }
       pushLog({ text: msg.text ?? msg.log ?? String(e.data), level: msg.level ?? 'info' })

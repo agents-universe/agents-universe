@@ -27,7 +27,7 @@
           </div>
           <div class="publish-header-info">
             <span class="publish-header-eyebrow">{{ t('publishPage.embeddedTitle') }}</span>
-            <h1 class="publish-title">{{ session.title || session.agent?.display_name || session.agent?.slug || t('publishPage.untitled') }}</h1>
+            <h1 class="publish-title">{{ session.title || agentDisplayName || session.agent?.slug || t('publishPage.untitled') }}</h1>
             <p v-if="session.description" class="publish-desc">{{ session.description }}</p>
           </div>
           <span class="publish-badge" :title="t('publishPage.publisherModelBadgeHint')">
@@ -63,7 +63,7 @@
             >
               <div v-if="msg.role !== 'user'" class="publish-bubble-meta">
                 <span class="publish-bubble-dot" />
-                <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
+                <span>{{ agentDisplayName || t('publishPage.assistant') }}</span>
                 <span class="publish-bubble-time">{{ fmtTime(msg.created_at) }}</span>
               </div>
               <div class="publish-bubble-body" v-html="renderMarkdown(msg.content)" />
@@ -72,7 +72,7 @@
             <div v-if="streamingText" class="publish-bubble assistant streaming">
               <div class="publish-bubble-meta">
                 <span class="publish-bubble-dot" />
-                <span>{{ session.agent?.display_name || t('publishPage.assistant') }}</span>
+                <span>{{ agentDisplayName || t('publishPage.assistant') }}</span>
                 <span class="publish-typing">{{ t('publishPage.typing') }}</span>
               </div>
               <div class="publish-bubble-body" v-html="renderMarkdown(streamingText)" />
@@ -129,6 +129,8 @@ import { Bot, Send, Square, Sparkles, Loader2, Zap, AlertTriangle, X } from 'luc
 import { publishApi } from '@/api/publish'
 import { ApiError } from '@/api/client'
 import { renderMarkdown } from '@/utils/markdown'
+import { localizedText } from '@/utils/localize'
+import { translateApiErrorWith } from '@/utils/apiError'
 
 const route = useRoute()
 const router = useRouter()
@@ -160,6 +162,13 @@ let disposed = false
 
 const token = computed(() => session.value?.token ?? '')
 
+// Localized agent name for the header/bubble attribution.
+const agentDisplayName = computed(() => {
+  const agent = session.value?.agent
+  if (!agent) return ''
+  return localizedText(agent.display_name, agent.i18n?.display_name) ?? ''
+})
+
 // Close the floating chat window. Back to where the user came from (usually
 // the publishes management page); a direct visit/refresh leaves no in-app
 // history, so router.back() would exit the app entirely — fall back to /app.
@@ -174,10 +183,10 @@ function close() {
 // The backend's PROJECT_PRIVATE denial maps to a dedicated hint; anything
 // else falls back to the error's own message.
 function errorText(e: unknown, fallback: string): string {
-  if (e instanceof ApiError && e.code === 'PROJECT_PRIVATE') {
-    return t('publishPage.projectPrivate')
-  }
-  if (e instanceof Error && e.message) return e.message
+  // ApiError codes (PROJECT_PRIVATE, PUBLISH_STREAM_INTERRUPTED, …) map
+  // through the errors namespace; unknown codes and plain errors keep the
+  // raw message or the caller's fallback.
+  if (e instanceof Error && e.message) return translateApiErrorWith(e, fallback)
   return fallback
 }
 

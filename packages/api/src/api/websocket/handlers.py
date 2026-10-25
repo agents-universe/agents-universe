@@ -165,14 +165,18 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
         if row:
             _, project = row
             if not await has_project_access(db, project, user_id):
-                denied_reason = "该项目为私有项目，您没有访问权限"
+                denied_reason = "Project access denied"
 
     if row is None or denied_reason:
         # Accept only long enough to return a protocol-level error; manager.connect
         # must never run on this path, so abort/selection messages cannot affect the
         # owner's active connection.
         await ws.accept()
-        await ws.send_json({"type": "error", "message": denied_reason or "Conversation not found"})
+        await ws.send_json({
+            "type": "error",
+            "code": "PROJECT_PRIVATE" if denied_reason else "CONVERSATION_NOT_FOUND",
+            "message": denied_reason or "Conversation not found",
+        })
         await ws.close(code=4403)
         return
 
@@ -212,13 +216,13 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
             try:
                 msg = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
-                await ws.send_json({"type": "error", "message": "Invalid JSON"})
+                await ws.send_json({"type": "error", "code": "WS_INVALID_JSON", "message": "Invalid JSON"})
                 continue
             # Legal JSON that is not an object ([] / "str" / 42 / null) would
             # crash at msg.get() below and, via the outer except Exception,
             # cancel the running agent turn — reject it like malformed JSON.
             if not isinstance(msg, dict):
-                await ws.send_json({"type": "error", "message": "Invalid message format"})
+                await ws.send_json({"type": "error", "code": "WS_INVALID_MESSAGE", "message": "Invalid message format"})
                 continue
 
             if msg.get("type") == "ping":
@@ -239,7 +243,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
             # reachable so a cut-off socket can still end its running turn.
             if msg.get("type") in ("message", "user_selection_response"):
                 if not await _check_project_access(conversation_id, user_id):
-                    await ws.send_json({"type": "error", "message": "该项目为私有项目，您没有访问权限"})
+                    await ws.send_json({"type": "error", "code": "PROJECT_PRIVATE", "message": "Project access denied"})
                     continue
 
             if msg.get("type") == "user_selection_response":
@@ -289,9 +293,9 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                         # user believing the credential was stored while the
                         # next tool call still failed for lack of it.
                         if saved:
-                            await ws.send_json({"type": "info", "message": "密钥已保存。下次调用时将自动使用。"})
+                            await ws.send_json({"type": "info", "code": "SECRET_SAVED", "message": "Secret saved. It will be used automatically on the next call."})
                         else:
-                            await ws.send_json({"type": "error", "message": "密钥保存失败，请重试。"})
+                            await ws.send_json({"type": "error", "code": "SECRET_SAVE_FAILED", "message": "Failed to save the secret — please retry."})
                 elif is_secret and save_to_user:
                     saved = await _save_user_token_from_response(
                         user_id, msg
@@ -312,9 +316,9 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                     else:
                         # Same contract as the project-secrets branch above.
                         if saved:
-                            await ws.send_json({"type": "info", "message": "密钥已保存到用户仓库。下次调用时将自动使用。"})
+                            await ws.send_json({"type": "info", "code": "SECRET_SAVED", "message": "Secret saved to your user vault. It will be used automatically on the next call."})
                         else:
-                            await ws.send_json({"type": "error", "message": "密钥保存失败，请重试。"})
+                            await ws.send_json({"type": "error", "code": "SECRET_SAVE_FAILED", "message": "Failed to save the secret — please retry."})
                 else:
                     if is_secret:
                         # A secret response frame without a save_to_* flag
@@ -327,6 +331,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                         )
                         await ws.send_json({
                             "type": "error",
+                            "code": "SECRET_SAVE_TARGET_MISSING",
                             "message": "Secret response missing save_to_project_secrets/save_to_user_tokens — nothing saved, value not forwarded.",
                         })
                         continue
@@ -343,10 +348,10 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
                         )
                         if not resolved:
                             _log.warning("user_selection_response: no pending prompt for prompt_id=%s", prompt_id)
-                            await ws.send_json({"type": "error", "message": "No pending prompt for that prompt_id"})
+                            await ws.send_json({"type": "error", "code": "WS_PROMPT_NOT_PENDING", "message": "No pending prompt for that prompt_id"})
                     else:
                         _log.warning("user_selection_response: no session for %s", conversation_id)
-                        await ws.send_json({"type": "error", "message": "No active agent session — the agent may have timed out. Please resend your message."})
+                        await ws.send_json({"type": "error", "code": "WS_SESSION_EXPIRED", "message": "No active agent session — the agent may have timed out. Please resend your message."})
                 continue
 
             if msg.get("type") == "message":
@@ -454,7 +459,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     except Exception as e:
         _log.error("WebSocket handler error for %s: %s", conversation_id, e, exc_info=True)
         try:
-            await ws.send_json({"type": "error", "message": "An internal error occurred. Please try again."})
+            await ws.send_json({"type": "error", "code": "WS_INTERNAL_ERROR", "message": "An internal error occurred. Please try again."})
         except Exception:
             _log.debug("Failed to send error to client for %s (likely disconnected)", conversation_id)
         # Do NOT cancel active_task: the agent may still be running and keeps

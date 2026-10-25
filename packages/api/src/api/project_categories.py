@@ -11,6 +11,8 @@ from functools import lru_cache
 
 import yaml
 
+from agent_core.localization import normalize_i18n_field
+
 from .paths import KNOWLEDGE_TEMPLATE_DIR, PACKAGE_ROOT
 
 _log = logging.getLogger("agents_universe.project_categories")
@@ -70,11 +72,22 @@ def get_categories() -> list[dict]:
             for t in templates:  # 容错:不存在的知识条目仅告警
                 if t not in available:
                     _log.warning("category %s references unknown template %r", slug, t)
+            # label/description accept a shared scalar or a locale map; the zh
+            # entry stays the canonical string (creation-dialog default and
+            # stored project text), other locales ride in i18n for the picker.
+            label, label_i18n = normalize_i18n_field(entry.get("label", slug))
+            description, description_i18n = normalize_i18n_field(entry.get("description", ""))
+            i18n = {
+                key: value
+                for key, value in (("label", label_i18n), ("description", description_i18n))
+                if value
+            }
             out.append({
                 "slug": slug,
-                "label": str(entry.get("label", slug)),
-                "description": str(entry.get("description", "")),
+                "label": label or slug,
+                "description": description or "",
                 "templates": templates,
+                "i18n": i18n or None,
             })
         if out:
             return out
@@ -90,6 +103,7 @@ def get_categories() -> list[dict]:
             "label": "软件项目",
             "description": "全部知识条目",
             "templates": [],
+            "i18n": None,
         }]
 
 

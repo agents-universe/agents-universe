@@ -1,6 +1,8 @@
 ---
 slug: "integration/jira-implementer"
-description: "End-to-end Jira-to-PR: read a Jira card, clone/update target repos, implement code changes, commit, push, and open pull requests"
+description:
+  zh-CN: "端到端 Jira 转 PR：读取 Jira 卡片、克隆/更新目标仓库、实现代码变更、提交、推送并创建拉取请求"
+  en-US: "End-to-end Jira-to-PR: read a Jira card, clone/update target repos, implement code changes, commit, push, and open pull requests"
 ---
 
 # Skill: Jira Implementer

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agent_core.scheduling.cron import CronError, describe_cron, next_run_at, validate_cron
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models._compat import now_utc
 from api.models.conversation import Conversation
 from api.models.project import Project
@@ -110,7 +111,7 @@ def _validated_timezone(tz: str) -> str:
     try:
         ZoneInfo(tz)
     except (ZoneInfoNotFoundError, ValueError):
-        raise HTTPException(status_code=422, detail=f"Unknown timezone: {tz}")
+        raise api_error(422, "SCHEDULE_TIMEZONE_INVALID", f"Unknown timezone: {tz}")
     return tz
 
 
@@ -120,7 +121,7 @@ def _upcoming(cron_expr: str, tz: str, *, enabled: bool) -> datetime | None:
     try:
         return next_run_at(cron_expr, tz, now_utc())
     except CronError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise api_error(422, "SCHEDULE_CRON_INVALID", str(exc))
 
 
 async def _load_task(db: AsyncSession, schedule_id: str) -> ScheduledTask:
@@ -130,7 +131,7 @@ async def _load_task(db: AsyncSession, schedule_id: str) -> ScheduledTask:
         )
     ).scalar_one_or_none()
     if task is None:
-        raise HTTPException(status_code=404, detail="Scheduled task not found")
+        raise api_error(404, "SCHEDULE_NOT_FOUND", "Scheduled task not found")
     return task
 
 
@@ -167,7 +168,7 @@ async def _validate_target(
 
     if target_type == "script":
         if not script_id:
-            raise HTTPException(status_code=422, detail="script_id is required for a script task")
+            raise api_error(422, "SCHEDULE_SCRIPT_ID_REQUIRED", "script_id is required for a script task")
         script = (
             await db.execute(
                 select(AutomationScript).where(
@@ -177,15 +178,16 @@ async def _validate_target(
             )
         ).scalar_one_or_none()
         if script is None:
-            raise HTTPException(status_code=422, detail="Script not found in this project")
+            raise api_error(422, "SCHEDULE_SCRIPT_NOT_FOUND", "Script not found in this project")
         if script.script_type == "playwright":
-            raise HTTPException(
-                status_code=422,
-                detail="Playwright specs are scheduled with target_type=playwright",
+            raise api_error(
+                422,
+                "SCHEDULE_TARGET_TYPE_MISMATCH",
+                "Playwright specs are scheduled with target_type=playwright",
             )
     elif target_type == "playwright":
         if not spec_slug or not _SLUG_RE.match(spec_slug):
-            raise HTTPException(status_code=422, detail="Invalid spec slug")
+            raise api_error(422, "SCHEDULE_SPEC_SLUG_INVALID", "Invalid spec slug")
         from pathlib import Path
         spec = Path(project_fs) / "tests" / "generated" / f"{spec_slug}.spec.ts"
         try:
@@ -193,24 +195,24 @@ async def _validate_target(
         except OSError:
             ok = False
         if not ok:
-            raise HTTPException(
-                status_code=422, detail=f"Spec not found: tests/generated/{spec_slug}.spec.ts"
+            raise api_error(
+                422, "SCHEDULE_SPEC_NOT_FOUND", f"Spec not found: tests/generated/{spec_slug}.spec.ts"
             )
     elif target_type == "agent":
         if not agent_slug or not _SLUG_RE.match(agent_slug):
-            raise HTTPException(status_code=422, detail="Invalid agent slug")
+            raise api_error(422, "SCHEDULE_AGENT_SLUG_INVALID", "Invalid agent slug")
         if not (prompt or "").strip():
-            raise HTTPException(status_code=422, detail="prompt is required for an agent task")
+            raise api_error(422, "SCHEDULE_PROMPT_REQUIRED", "prompt is required for an agent task")
         try:
             resolved = resolve_agent_definition_path(agent_slug, project_fs)
         except ValueError:
-            raise HTTPException(status_code=422, detail="Invalid agent slug")
+            raise api_error(422, "SCHEDULE_AGENT_SLUG_INVALID", "Invalid agent slug")
         if resolved is None:
-            raise HTTPException(
-                status_code=422, detail=f"No agent definition found for {agent_slug!r}"
+            raise api_error(
+                422, "SCHEDULE_AGENT_NOT_FOUND", f"No agent definition found for {agent_slug!r}"
             )
     else:
-        raise HTTPException(status_code=422, detail=f"Unknown target type: {target_type}")
+        raise api_error(422, "SCHEDULE_TARGET_TYPE_INVALID", f"Unknown target type: {target_type}")
 
     if conversation_id:
         if validate_conversation:
@@ -226,9 +228,9 @@ async def _validate_target(
                 )
             ).scalar_one_or_none()
             if conv is None:
-                raise HTTPException(status_code=422, detail="Target conversation not found")
+                raise api_error(422, "SCHEDULE_CONVERSATION_NOT_FOUND", "Target conversation not found")
     elif require_conversation:
-        raise HTTPException(status_code=422, detail="conversation_id is required")
+        raise api_error(422, "SCHEDULE_CONVERSATION_REQUIRED", "conversation_id is required")
 
 
 def _env_json(env: dict[str, str] | None) -> str | None:
@@ -244,9 +246,10 @@ def _env_json(env: dict[str, str] | None) -> str | None:
         return None
     raw = json.dumps(env)
     if len(raw) > 2000:
-        raise HTTPException(
-            status_code=422,
-            detail=f"env serializes to {len(raw)} chars (max 2000); shrink the keys/values",
+        raise api_error(
+            422,
+            "SCHEDULE_ENV_TOO_LARGE",
+            f"env serializes to {len(raw)} chars (max 2000); shrink the keys/values",
         )
     return raw
 
@@ -278,14 +281,14 @@ async def preview_cron(
     """Next three fire times for an expression — used by the create dialog."""
     _validated_timezone(body.timezone)
     if validate_cron(body.cron_expr) is not None:
-        raise HTTPException(status_code=422, detail=validate_cron(body.cron_expr))
+        raise api_error(422, "SCHEDULE_CRON_INVALID", validate_cron(body.cron_expr))
     cursor = now_utc()
     upcoming: list[str] = []
     for _ in range(3):
         try:
             cursor = next_run_at(body.cron_expr, body.timezone, cursor)
         except CronError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise api_error(422, "SCHEDULE_CRON_INVALID", str(exc))
         upcoming.append(cursor.isoformat())
     return {"next_runs": upcoming, "description": describe_cron(body.cron_expr)}
 
@@ -300,7 +303,7 @@ async def create_schedule(
 ):
     _validated_timezone(body.timezone)
     if validate_cron(body.cron_expr) is not None:
-        raise HTTPException(status_code=422, detail=validate_cron(body.cron_expr))
+        raise api_error(422, "SCHEDULE_CRON_INVALID", validate_cron(body.cron_expr))
     await _validate_target(
         db, project, current_user,
         target_type=body.target_type,
@@ -374,7 +377,7 @@ async def update_schedule(
 
     _validated_timezone(timezone)
     if validate_cron(cron_expr) is not None:
-        raise HTTPException(status_code=422, detail=validate_cron(cron_expr))
+        raise api_error(422, "SCHEDULE_CRON_INVALID", validate_cron(cron_expr))
     # Validate env before touching the row so an overflow 422s cleanly.
     new_env_json = _env_json(body.env) if body.env is not None else None
     # Only an explicitly-changed conversation is re-validated — and against
@@ -477,14 +480,15 @@ async def run_schedule_now(
     except ScheduleNotFound:
         # The row was deleted between _load_task and the spawner's re-select.
         # The resource is gone, not the server failing.
-        raise HTTPException(status_code=404, detail="Scheduled task not found")
+        raise api_error(404, "SCHEDULE_NOT_FOUND", "Scheduled task not found")
     except ScheduleBusy as exc:
         # The exception distinguishes "previous run still active" from
-        # "process-wide queue full" — a fixed detail would mislabel the
+        # "process-wide queue full" — a fixed code would mislabel the
         # latter on an idle task.
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc) or "This task already has a run in progress",
+        raise api_error(
+            409,
+            "SCHEDULE_BUSY",
+            str(exc) or "This task already has a run in progress",
         )
     return {"run_id": run_id, "status": "pending"}
 

@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_conversation, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.agent import Agent
 from api.models.conversation import AgentTask, Conversation, Message as DbMessage
 from api.models.conversation_run import ConversationRun
@@ -308,7 +309,7 @@ async def create_conversation(
         result = await db.execute(select(Agent).where(Agent.slug == body.agent_id))
         db_agent = result.scalar_one_or_none()
         if db_agent is None or (db_agent.project_id is not None and db_agent.project_id != project_id):
-            raise HTTPException(status_code=404, detail="Agent not found")
+            raise api_error(404, "AGENT_NOT_FOUND", "Agent not found")
         resolved_agent_id = db_agent.agent_id
 
     conv = Conversation(
@@ -358,7 +359,7 @@ async def delete_conversation(
     # conversation is gone and the deleted row lingers forever. Same 409
     # policy as the compress endpoint.
     if ws_manager.is_turn_active(conversation_id):
-        raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再删除。")
+        raise api_error(409, "CONVERSATION_AGENT_RUNNING", "Agent is running; wait for it to finish before deleting.")
     # Guarded update — the is_turn_active check is advisory: a turn can claim
     # the conversation between that check and this UPDATE. Only a
     # status='active' row may be soft-deleted. The status predicate cannot
@@ -378,7 +379,7 @@ async def delete_conversation(
         # rowcount=0 means a concurrent delete already won the race after
         # authorize passed. Answer with the same 404 the second delete gets
         # instead of blaming an agent that may not even be running.
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "CONVERSATION_NOT_FOUND", "Conversation not found")
     # Commit before the (slow) media rmtree: a turn claimed while the status
     # change was still uncommitted would see status='active', run a full turn,
     # and its reply would land in a conversation deleted moments later —
@@ -404,7 +405,7 @@ async def delete_conversation(
             .values(status="active"),
         )
         await db.commit()
-        raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再删除。")
+        raise api_error(409, "CONVERSATION_AGENT_RUNNING", "Agent is running; wait for it to finish before deleting.")
     # Best-effort disk cleanup: uploads and generated images for this
     # conversation live under {PROJECTS_ROOT}/{slug}/.tmp/media/{id}/ and were
     # never reclaimed on delete — soft-deleted conversations' media (privacy
@@ -469,13 +470,13 @@ async def compress_conversation_messages(
 ):
     """Summarize the early conversation history and replace it with the summary."""
     if ws_manager.is_turn_active(conversation_id):
-        raise HTTPException(status_code=409, detail="Agent 正在运行，请等待完成后再压缩。")
+        raise api_error(409, "CONVERSATION_AGENT_RUNNING", "Agent is running; wait for it to finish before compressing.")
     try:
         # Concurrent compressions of the same conversation share the in-flight
         # call (singleflight) — no lock error, no duplicated summary pairs.
         result = await compress_once(db, conversation_id, current_user.user_id)
     except CompressionError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message)
+        raise api_error(e.status_code, e.code, e.message)
 
     remaining = await db.execute(
         select(DbMessage)

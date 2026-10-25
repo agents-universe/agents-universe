@@ -1,6 +1,8 @@
 ---
 slug: "security/static-code-audit"
-description: "White-box source audit - build audit context, run semgrep/bandit/pip-audit/detect-secrets, review injection sinks and authorization gaps, and emit the dynamic verification target list"
+description:
+  zh-CN: "白盒源码审计——构建审计上下文、运行 semgrep/bandit/pip-audit/detect-secrets、审查注入点与授权缺口，产出动态验证目标清单"
+  en-US: "White-box source audit - build audit context, run semgrep/bandit/pip-audit/detect-secrets, review injection sinks and authorization gaps, and emit the dynamic verification target list"
 type: "guidance"
 triggers:
   - "static code audit"

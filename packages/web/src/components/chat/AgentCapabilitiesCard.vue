@@ -1,14 +1,14 @@
 <template>
   <div v-if="agent" class="agent-capabilities-card">
-    <div class="agent-capabilities-label">{{ agent.label }}</div>
-    <div v-if="agent.description" class="agent-capabilities-desc">{{ agent.description }}</div>
+    <div class="agent-capabilities-label">{{ agentName }}</div>
+    <div v-if="agentDescription" class="agent-capabilities-desc">{{ agentDescription }}</div>
     <!-- Agent-authored prompts rendered raw via interpolation — never routed
          through t(), so @ { | in the strings stay inert (see locales.test.ts). -->
-    <div v-if="agent.starter_prompts?.length" class="agent-capabilities-prompts">
+    <div v-if="starterPrompts.length" class="agent-capabilities-prompts">
       <div class="agent-capabilities-prompts-label">{{ t('agentCard.starterLabel') }}</div>
       <div class="agent-capabilities-chips">
         <button
-          v-for="(prompt, i) in agent.starter_prompts"
+          v-for="(prompt, i) in starterPrompts"
           :key="i"
           type="button"
           class="agent-capabilities-chip"
@@ -22,13 +22,27 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { resolveLocalized, localizedText } from '@/utils/localize'
 import type { AgentInfo } from '@/types'
 
-defineProps<{ agent: AgentInfo | null }>()
+const props = defineProps<{ agent: AgentInfo | null }>()
 const emit = defineEmits<{ 'apply-prompt': [prompt: string] }>()
 
 const { t } = useI18n()
+
+const agentName = computed(() =>
+  props.agent ? localizedText(props.agent.label, props.agent.i18n?.display_name) : '',
+)
+const agentDescription = computed(() =>
+  props.agent ? localizedText(props.agent.description, props.agent.i18n?.description) : '',
+)
+const starterPrompts = computed(() => {
+  const prompts = props.agent?.starter_prompts
+  if (!prompts?.length) return []
+  return resolveLocalized(prompts, props.agent?.i18n?.starter_prompts) ?? prompts
+})
 </script>
 
 <style scoped>

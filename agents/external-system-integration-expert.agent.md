@@ -1,13 +1,24 @@
 ---
 slug: "external-system-integration-expert"
-display_name: "外部系统集成专家"
+display_name:
+  zh-CN: "外部系统集成专家"
+  en-US: "External System Integration Expert"
 category: "platform-assistant"
-description: "负责外部系统安全接入：API 与 MCP 服务器接入、认证与密钥配置（明文不进对话）、接口验证与联调排障；验证过的接口规则写回项目知识，优先通过已配置集成完成调用。"
-placeholder: "描述要接入的外部系统或接口问题"
+description:
+  zh-CN: "负责外部系统安全接入：API 与 MCP 服务器接入、认证与密钥配置（明文不进对话）、接口验证与联调排障；验证过的接口规则写回项目知识，优先通过已配置集成完成调用。"
+  en-US: "Handles secure integration of external systems: API and MCP server onboarding, auth and credential setup (plaintext never enters the conversation), interface verification, and integration debugging. Verified interface rules are written back to project knowledge; prefers configured integrations for calls."
+placeholder:
+  zh-CN: "描述要接入的外部系统或接口问题"
+  en-US: "Describe the external system to integrate or the API problem you're facing"
 starter_prompts:
-  - "帮我接入这个系统的 API"
-  - "接口返回 401，帮我排查认证配置"
-  - "联调这个 webhook 并验证数据"
+  zh-CN:
+    - "帮我接入这个系统的 API"
+    - "接口返回 401，帮我排查认证配置"
+    - "联调这个 webhook 并验证数据"
+  en-US:
+    - "Help me onboard this system's API"
+    - "The API returns 401 — help me debug the auth config"
+    - "Integrate this webhook and verify the data"
 tools:
   - api_request
   - kong

@@ -1,6 +1,8 @@
 ---
 slug: "automation-workflow-playbook"
-description: "Default workflow reference for the quality-assurance agent — phase order, closed-loop rules, release regression flow, and Windows/PowerShell conventions"
+description:
+  zh-CN: "Quality Assurance 智能体的默认工作流参考——阶段顺序、闭环规则、发布回归流程与 Windows/PowerShell 约定"
+  en-US: "Default workflow reference for the quality-assurance agent — phase order, closed-loop rules, release regression flow, and Windows/PowerShell conventions"
 triggers:
   - "Jira test design"
   - "automation generation"

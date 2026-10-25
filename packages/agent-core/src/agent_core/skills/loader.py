@@ -7,12 +7,18 @@ from pathlib import Path
 
 import frontmatter
 
+from agent_core.localization import normalize_i18n_field
+
 
 @dataclass
 class SkillDefinition:
     slug: str
     skill_type: str  # guidance | template | executable | composite
+    #: Canonical (English-first) description — the only value that reaches the
+    #: LLM prompt (``## Available Workflows``) or legacy consumers.
     description: str
+    #: Non-canonical locale variants from a frontmatter locale map; UI-only.
+    description_i18n: dict[str, str] = field(default_factory=dict)
     triggers: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     mixins: list[str] = field(default_factory=list)
@@ -91,10 +97,18 @@ def load_skill(file_path: str | Path, mixin_dir: str | Path | None = None) -> Sk
                 mixin_post = frontmatter.load(str(mixin_path))
                 body = body + f"\n\n---\n{mixin_post.content}"
 
+    # English-first canonical: skill/workflow descriptions are injected into
+    # the LLM prompt as-is today, so the map's en entry must stay
+    # byte-identical to the pre-i18n scalar for zero context drift.
+    description, description_i18n = normalize_i18n_field(
+        meta.get("description", ""), canonical_order=("en-US", "zh-CN")
+    )
+
     return SkillDefinition(
         slug=meta.get("slug", path.stem),
         skill_type=meta.get("type", "guidance"),
-        description=meta.get("description", ""),
+        description=description or "",
+        description_i18n=description_i18n or {},
         triggers=_as_list(meta.get("triggers")),
         tools=_as_list(meta.get("tools")),
         mixins=_as_list(meta.get("mixins")),

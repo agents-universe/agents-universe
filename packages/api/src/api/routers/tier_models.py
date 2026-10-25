@@ -1,7 +1,7 @@
 """User model configuration — one row per LLM provider per user."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.user import UserApiKey, UserToken, UserTierModel
 
 router = APIRouter()
@@ -63,9 +64,9 @@ async def upsert_model_config(
     current_user: UserInfo = Depends(get_current_user),
 ):
     if provider not in VALID_PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider!r}. Must be one of {sorted(VALID_PROVIDERS)}")
+        raise api_error(400, "MODEL_PROVIDER_UNKNOWN", f"Unknown provider: {provider!r}. Must be one of {sorted(VALID_PROVIDERS)}")
     if not body.model_id.strip():
-        raise HTTPException(status_code=400, detail="model_id cannot be empty")
+        raise api_error(400, "MODEL_ID_EMPTY", "model_id cannot be empty")
 
     user_id = current_user.user_id
     result = await db.execute(
@@ -95,7 +96,7 @@ async def upsert_model_config(
         # (with_for_update() locks only existing rows) — the loser violates
         # uq_user_tier_model on commit.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="Model config already exists (concurrent creation)")
+        raise api_error(409, "MODEL_CONFIG_EXISTS", "Model config already exists (concurrent creation)")
     return {"provider": provider, "model_id": body.model_id.strip()}
 
 
@@ -113,7 +114,7 @@ async def delete_model_config(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="Model config not found")
+        raise api_error(404, "MODEL_CONFIG_NOT_FOUND", "Model config not found")
     await db.delete(row)
     await db.commit()
     return {"deleted": provider}

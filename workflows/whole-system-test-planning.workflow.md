@@ -1,6 +1,8 @@
 ---
 slug: "whole-system-test-planning"
-description: "Design a whole-system test plan (tests/test-plan.md) from project knowledge — system inventory, risk/priority, coverage matrix, and login/account strategy with user vault credential collection"
+description:
+  zh-CN: "基于项目知识设计全系统测试计划（tests/test-plan.md）——系统清单、风险/优先级、覆盖矩阵，以及含用户密钥库凭据收集的登录/账号策略"
+  en-US: "Design a whole-system test plan (tests/test-plan.md) from project knowledge — system inventory, risk/priority, coverage matrix, and login/account strategy with user vault credential collection"
 triggers:
   - "whole-system test plan"
   - "test plan for the entire system"

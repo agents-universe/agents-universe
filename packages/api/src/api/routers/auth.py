@@ -9,7 +9,7 @@ import uuid
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.services.oidc_discovery import discover
 from api.services.preferences import get_or_create_preferences, serialize_preferences
 from api.services.redis_client import (
@@ -80,7 +81,7 @@ def _check_logout_origin(request: Request, settings) -> None:
         # (curl, API clients, older browsers) keep the direct-acting trust.
         if (request.headers.get("sec-fetch-site") or "").lower() == "cross-site":
             _log.warning("Cross-site logout attempt blocked: no referer, sec-fetch-site=cross-site")
-            raise HTTPException(status_code=403, detail="Cross-site logout blocked")
+            raise api_error(403, "AUTH_CROSS_SITE_LOGOUT", "Cross-site logout blocked")
         return  # no referer: the user is acting directly (curl, API client)
     try:
         ref_origin = urlsplit(referer)
@@ -109,7 +110,7 @@ def _check_logout_origin(request: Request, settings) -> None:
     allowed.update({"localhost", "127.0.0.1", "::1"})
     if ref_host.lower() not in allowed:
         _log.warning("Cross-site logout attempt blocked: referer=%s", referer[:120])
-        raise HTTPException(status_code=403, detail="Cross-site logout blocked")
+        raise api_error(403, "AUTH_CROSS_SITE_LOGOUT", "Cross-site logout blocked")
 
 
 def _basic_auth(client_id: str, client_secret: str) -> str:
@@ -224,29 +225,29 @@ async def auth_callback(
             },
         )
         if token_resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Token exchange failed")
+            raise api_error(401, "AUTH_TOKEN_EXCHANGE_FAILED", "Token exchange failed")
 
         try:
             access_token = token_resp.json().get("access_token")
         except ValueError:
-            raise HTTPException(status_code=401, detail="Invalid token response from SSO")
+            raise api_error(401, "AUTH_SSO_TOKEN_INVALID", "Invalid token response from SSO")
         if not access_token:
-            raise HTTPException(status_code=401, detail="No access_token in SSO response")
+            raise api_error(401, "AUTH_SSO_NO_ACCESS_TOKEN", "No access_token in SSO response")
 
         userinfo_resp = await client.get(
             endpoints.userinfo_endpoint,
             headers={"Authorization": f"Bearer {access_token}"},
         )
         if userinfo_resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Userinfo fetch failed")
+            raise api_error(401, "AUTH_SSO_USERINFO_FAILED", "Userinfo fetch failed")
 
     try:
         userinfo = userinfo_resp.json()
     except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid userinfo response from SSO")
+        raise api_error(401, "AUTH_SSO_USERINFO_INVALID", "Invalid userinfo response from SSO")
     user_id = (userinfo.get("sub") or "").strip()
     if not user_id:
-        raise HTTPException(status_code=401, detail="No sub in userinfo response")
+        raise api_error(401, "AUTH_SSO_NO_SUB", "No sub in userinfo response")
 
     session_id = str(uuid.uuid4())
     display_name = (

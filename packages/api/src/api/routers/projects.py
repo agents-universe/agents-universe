@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, Field
 
 _log = logging.getLogger("agents_universe.projects")
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user
+from api.errors import api_error
 from api.models.project import Project
 from api.models.project_member import ProjectMember
 from api.paths import KNOWLEDGE_TEMPLATE_DIR, PROJECTS_ROOT, PACKAGE_ROOT
@@ -60,15 +61,13 @@ async def _member_project_ids(
     return {str(pid) for pid in rows.scalars().all()}
 
 
-def _error(exc) -> HTTPException:
-    return HTTPException(
-        status_code=exc.status,
-        detail={
-            "code": exc.code,
-            "message": exc.message,
-            "deletion_id": getattr(exc, "deletion_id", None),
-            "retryable": getattr(exc, "retryable", False),
-        },
+def _error(exc):
+    return api_error(
+        exc.status,
+        exc.code,
+        exc.message,
+        deletion_id=getattr(exc, "deletion_id", None),
+        retryable=getattr(exc, "retryable", False),
     )
 
 
@@ -127,13 +126,11 @@ async def create_project(
     category = body.category or DEFAULT_CATEGORY
     if get_category(category) is None:
         valid = [c["slug"] for c in get_categories()]
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "unknown_category",
-                "message": f"未知项目分类: '{category}',可选: {', '.join(valid)}",
-                "valid_categories": valid,
-            },
+        raise api_error(
+            400,
+            "PROJECT_CATEGORY_UNKNOWN",
+            f"Unknown project category: '{category}'. Valid categories: {', '.join(valid)}",
+            valid_categories=valid,
         )
 
     # 1. Generate unique slug
@@ -156,10 +153,7 @@ async def create_project(
     # overwrite same-named files inside it and the new project would manage a
     # workspace it never created. Refuse the slug before the DB insert.
     if fs_path.exists() or fs_path.is_symlink():
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "slug_conflict", "message": "工作区路径已被占用，请更换项目名称"},
-        )
+        raise api_error(409, "PROJECT_SLUG_CONFLICT", "The workspace path is already taken; choose a different project name")
 
     # 3. Insert project record — commit DB first to release locks quickly.
     # The slug check above is check-then-insert: a concurrent request can win
@@ -185,18 +179,9 @@ async def create_project(
             # retried slug may sit on a leftover (DB-less) directory from a
             # failed creation/deletion and must not be silently adopted.
             if fs_path.exists() or fs_path.is_symlink():
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": "slug_conflict", "message": "工作区路径已被占用，请更换项目名称"},
-                )
+                raise api_error(409, "PROJECT_SLUG_CONFLICT", "The workspace path is already taken; choose a different project name")
     else:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "slug_conflict",
-                "message": "并发创建项目冲突，请重试",
-            },
-        )
+        raise api_error(409, "PROJECT_SLUG_CONFLICT", "Concurrent project creation conflict, please retry")
     await db.refresh(project)
 
     # 4. Create directories and copy templates AFTER commit (no lock held)
@@ -263,13 +248,7 @@ async def create_project(
         _log.error("Filesystem init failed for project %s; deactivating row", slug, exc_info=True)
         project.is_active = False
         await db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": "filesystem_init_failed",
-                "message": "项目工作区创建失败（磁盘或权限问题），请检查服务端环境后重试",
-            },
-        )
+        raise api_error(500, "PROJECT_FS_INIT_FAILED", "Project workspace creation failed (disk or permission issue); check the server environment and retry")
 
     # 5. Index knowledge files, then reset scores to 0 for fresh templates
     project_id = str(project.project_id)
@@ -374,6 +353,9 @@ async def list_categories(current_user: UserInfo = Depends(get_current_user)):
             "label": c["label"],
             "description": c["description"],
             "template_count": len(get_template_slugs(c["slug"]) or _all_template_count()),
+            # Locale maps of label/description for the picker; label/description
+            # stay the zh canonical.
+            "i18n": c.get("i18n"),
         }
         for c in get_categories()
     ]
@@ -420,12 +402,9 @@ async def update_project_visibility(
     )
     project = result.scalar_one_or_none()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise api_error(404, "PROJECT_NOT_FOUND", "Project not found")
     if project.created_by is None or project.created_by != current_user.user_id:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "PROJECT_NOT_OWNER", "message": "只有项目创建者可以修改项目可见性"},
-        )
+        raise api_error(403, "PROJECT_NOT_OWNER", "Only the project creator can change project visibility")
     project.visibility = body.visibility
     await db.commit()
     await db.refresh(project)

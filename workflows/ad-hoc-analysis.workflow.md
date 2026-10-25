@@ -1,6 +1,8 @@
 ---
 slug: "ad-hoc-analysis"
-description: "Full ad-hoc data analysis pipeline — clarify the question, locate and acquire data, profile, analyze, visualize, report, and persist knowledge"
+description:
+  zh-CN: "完整的即席数据分析管道——澄清问题、定位并获取数据、剖析、分析、可视化、报告并沉淀知识"
+  en-US: "Full ad-hoc data analysis pipeline — clarify the question, locate and acquire data, profile, analyze, visualize, report, and persist knowledge"
 triggers:
   - "analyze this"
   - "ad hoc analysis"

@@ -308,7 +308,9 @@ async def test_compress_bad_key_returns_400_not_500(client, db, make_project, mo
 
     resp = await client.post(f"/api/conversations/{conv.conversation_id}/compress")
     assert resp.status_code == 400
-    assert "control character" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["code"] == "COMPRESSION_PROVIDER_INVALID"
+    assert "control character" in detail["message"]
 
     # Nothing was rewritten: the failure happened before any row was touched.
     result = await db.execute(
@@ -788,7 +790,8 @@ async def test_compress_fat_short_without_tool_outputs_409(client, db, make_proj
 
     resp = await client.post(f"/api/conversations/{cid}/compress")
     assert resp.status_code == 409
-    assert "没有可精简" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["code"] == "COMPRESSION_NO_TRUNCATABLE_OUTPUT"
 
     from sqlalchemy import select
 

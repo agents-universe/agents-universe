@@ -181,6 +181,27 @@ def test_scalar_list_fields_are_normalized(tmp_path):
     assert candidate.workflows == ("demo-generation",)
 
 
+def test_locale_map_fields_collapse_to_zh_canonical(tmp_path):
+    """The roster is an LLM-facing tool result — bilingual frontmatter must
+    collapse to the zh canonical, never str(dict)."""
+    framework = _framework(tmp_path)
+    ws = _workspace(tmp_path)
+    _agent(
+        framework / "agents", "tech-lead",
+        frontmatter=(
+            "---\nslug: tech-lead\n"
+            "display_name:\n  zh-CN: 技术负责人\n  en-US: Tech Lead\n"
+            "description:\n  zh-CN: 实现侧的技术负责人\n  en-US: Implementation lead\n"
+            "---\n\nBody.\n"
+        ),
+    )
+
+    candidate = list_delegation_candidates(str(ws), str(framework))[0]
+
+    assert candidate.display_name == "技术负责人"
+    assert candidate.description == "实现侧的技术负责人"
+
+
 # --- filtering ---------------------------------------------------------------
 
 

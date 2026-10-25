@@ -1,6 +1,8 @@
 ---
 slug: "analysis/local-file-analyst"
-description: "Ingest local CSV/Excel/Parquet files into trustworthy pandas DataFrames via code_executor — encoding detection, sheet enumeration, sampling and chunked reads"
+description:
+  zh-CN: "经 code_executor 将本地 CSV/Excel/Parquet 文件载入可信的 pandas DataFrame——编码检测、工作表枚举、抽样与分块读取"
+  en-US: "Ingest local CSV/Excel/Parquet files into trustworthy pandas DataFrames via code_executor — encoding detection, sheet enumeration, sampling and chunked reads"
 type: "guidance"
 triggers:
   - "analyze this file"

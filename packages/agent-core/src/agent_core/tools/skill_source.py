@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 import frontmatter
 
+from ..localization import normalize_i18n_field
 from ._auth import get_token_optional
 from ._git_exec import _TIMEOUT_CLONE, _TIMEOUT_DEFAULT, _rmtree_force, _safe_git_env, run_git
 from ._http import validate_outbound_url
@@ -322,6 +323,19 @@ def _frontmatter_of(path: Path) -> dict[str, Any]:
         return frontmatter.load(str(path)).metadata or {}
     except Exception:
         return {}
+
+
+def _meta_description(meta: dict[str, Any]) -> str:
+    """Canonical (en-first) description from third-party frontmatter.
+
+    Upstream files may use a locale map; collapsing it here keeps the catalog
+    text and the installed skill's own description a plain string instead of
+    leaking ``str(dict)`` into LLM-facing tool results.
+    """
+    canonical, _ = normalize_i18n_field(
+        meta.get("description"), canonical_order=("en-US", "zh-CN")
+    )
+    return canonical or ""
 
 
 class SkillSourceTool(Tool):
@@ -636,7 +650,7 @@ class SkillSourceTool(Tool):
                 "kind": "bundle",
                 "skill_file": f"{rel}/SKILL.md",
                 "name": str(meta.get("name") or bundle.name),
-                "description": str(meta.get("description") or "")[:200],
+                "description": _meta_description(meta)[:200],
                 "files": len(members),
                 "size_bytes": sum(size for _p, size in members),
             })
@@ -656,7 +670,7 @@ class SkillSourceTool(Tool):
                 "kind": "file",
                 "skill_file": rel,
                 "name": str(meta.get("name") or meta.get("slug") or path.stem),
-                "description": str(meta.get("description") or "")[:200],
+                "description": _meta_description(meta)[:200],
                 "files": 1,
                 "size_bytes": size,
             })
@@ -811,7 +825,7 @@ class SkillSourceTool(Tool):
                 + "\n".join(attachments)
             )
 
-        description = str(meta.get("description") or f"Imported from {source.clone_url}")
+        description = _meta_description(meta) or f"Imported from {source.clone_url}"
         header: dict[str, Any] = {
             "slug": f"{_INSTALL_DIR}/{name}",
             "type": "guidance",

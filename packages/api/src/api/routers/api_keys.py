@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import traceback
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
+from api.errors import api_error
 from api.models.user import UserApiKey
 from api.services.token_vault import decrypt_or_none, encrypt, key_hint
 
@@ -85,7 +86,7 @@ async def upsert_api_key(
     current_user: UserInfo = Depends(get_current_user),
 ):
     if provider not in VALID_PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider!r}")
+        raise api_error(400, "API_KEY_PROVIDER_UNKNOWN", f"Unknown provider: {provider!r}")
 
     user_id = current_user.user_id
     result = await db.execute(
@@ -100,7 +101,7 @@ async def upsert_api_key(
     keep_existing = body.value in (None, "__keep__")
     if keep_existing:
         if row is None:
-            raise HTTPException(status_code=400, detail="No existing key to keep")
+            raise api_error(400, "API_KEY_NONE_TO_KEEP", "No existing key to keep")
         encrypted = row.encrypted_value
         hint = row.key_hint
     else:
@@ -126,7 +127,7 @@ async def upsert_api_key(
         # (with_for_update() locks only existing rows) — the loser violates
         # uq_user_api_key_provider on commit.
         await db.rollback()
-        raise HTTPException(status_code=409, detail="API key already exists (concurrent creation)")
+        raise api_error(409, "API_KEY_EXISTS", "API key already exists (concurrent creation)")
     return {"provider": provider, "key_hint": hint}
 
 
@@ -144,7 +145,7 @@ async def delete_api_key(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise api_error(404, "API_KEY_NOT_FOUND", "API key not found")
     await db.delete(row)
     await db.commit()
     return {"deleted": provider}
@@ -164,7 +165,7 @@ async def test_api_key(
     )
     row = result.scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="API key not configured")
+        raise api_error(404, "API_KEY_NOT_CONFIGURED", "API key not configured")
 
     if provider == "azure_openai":
         return {

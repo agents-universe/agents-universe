@@ -1,6 +1,8 @@
 ---
 slug: "integration/custom-api-onboarding"
-description: "End-to-end onboarding of a NEW third-party REST system into the project's integrations/custom-api catalog: collect config, capture secrets securely, write the catalog entry, verify with api_request, and optionally import an OpenAPI/Swagger spec"
+description:
+  zh-CN: "将新的第三方 REST 系统端到端接入项目的 integrations/custom-api 目录：收集配置、安全采集密钥、写入目录条目、经 api_request 验证，并可选导入 OpenAPI/Swagger 规范"
+  en-US: "End-to-end onboarding of a NEW third-party REST system into the project's integrations/custom-api catalog: collect config, capture secrets securely, write the catalog entry, verify with api_request, and optionally import an OpenAPI/Swagger spec"
 type: "guidance"
 triggers:
   - "新系统接入"

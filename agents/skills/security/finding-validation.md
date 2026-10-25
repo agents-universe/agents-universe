@@ -1,6 +1,8 @@
 ---
 slug: "security/finding-validation"
-description: "Validation gate before reporting - mandatory reproduction, false-positive elimination, CVSS 3.1 scoring, CWE mapping, and annotated evidence capture"
+description:
+  zh-CN: "报告前的验证门禁——强制复现、排除误报、CVSS 3.1 评分、CWE 映射与带标注的证据采集"
+  en-US: "Validation gate before reporting - mandatory reproduction, false-positive elimination, CVSS 3.1 scoring, CWE mapping, and annotated evidence capture"
 type: "guidance"
 triggers:
   - "validate finding"

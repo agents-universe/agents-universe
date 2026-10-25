@@ -33,9 +33,9 @@ async def load_model_credentials(
       ``sort_order`` — only configs that decrypted successfully enter the
       map, so auto routing never targets an unusable key.
     - ``fixed_config_id``: the resolved pin when it is present and usable;
-      ``"azure_endpoint_required"`` / ``"model_config_unavailable"`` when the
-      pinned config cannot be used (the caller turns these into a concrete
-      error message); None when no pin was requested.
+      ``"MODEL_AZURE_BASE_URL_REQUIRED"`` / ``"MODEL_CONFIG_UNAVAILABLE"`` when
+      the pinned config cannot be used (the caller turns these into a concrete
+      error message and WS error code); None when no pin was requested.
     """
     from sqlalchemy import select
 
@@ -157,8 +157,8 @@ async def load_model_credentials(
         fixed_config_id = None
     if fixed_config_id is not None:
         if fixed_config_id in azure_configs_missing_endpoint:
-            return credentials, tier_models, tier_map, "azure_endpoint_required"
+            return credentials, tier_models, tier_map, "MODEL_AZURE_BASE_URL_REQUIRED"
         if fixed_config_id not in tier_models or fixed_config_id not in credentials:
-            return credentials, tier_models, tier_map, "model_config_unavailable"
+            return credentials, tier_models, tier_map, "MODEL_CONFIG_UNAVAILABLE"
         return credentials, tier_models, tier_map, fixed_config_id
     return credentials, tier_models, tier_map, None

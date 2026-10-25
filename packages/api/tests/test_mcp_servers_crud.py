@@ -89,7 +89,8 @@ async def test_create_sanitized_slug_collision_conflict(client):
 async def test_create_requires_url(client):
     resp = await _create(client, url=None)
     assert resp.status_code == 400
-    assert "url" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["code"] == "MCP_URL_REQUIRED"
 
 
 async def test_create_rejects_non_http_url(client):
@@ -100,7 +101,9 @@ async def test_create_rejects_non_http_url(client):
 async def test_create_rejects_reserved_transport(client):
     resp = await _create(client, transport="stdio")
     assert resp.status_code == 400
-    assert "v2" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["code"] == "MCP_TRANSPORT_UNSUPPORTED"
+    assert "v2" in detail["message"]
 
 
 async def test_create_auth_requires_secret_ref(client):
@@ -111,7 +114,9 @@ async def test_create_auth_requires_secret_ref(client):
 async def test_create_rejects_sensitive_header(client):
     resp = await _create(client, headers={"Authorization": "Bearer xyz"})
     assert resp.status_code == 400
-    assert "secret_ref" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail["code"] == "MCP_HEADER_SENSITIVE"
+    assert "secret_ref" in detail["message"]
 
 
 async def test_create_accepts_non_sensitive_headers(client):

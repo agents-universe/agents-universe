@@ -1,6 +1,8 @@
 ---
 slug: "office/zip"
-description: "Compress files/folders into .zip archives and safely extract .zip archives — member-path validation (zip-slip), zip-bomb size checks, ASCII arcnames, verification, OUTPUT_DIR auto-delivery; for packaging deliverables or unpacking archives — not for tar/7z (explicit requests only, same safety rules) or for editing Office files (that is office/pptx|xlsx|docx)"
+description:
+  zh-CN: "将文件/目录压缩为 .zip 并安全解压 .zip——成员路径校验（zip-slip）、zip 炸弹体积检查、ASCII 归档名、校验、OUTPUT_DIR 自动交付；用于打包交付物或解包归档，不用于 tar/7z（仅限显式请求，同样的安全规则）或编辑 Office 文件（那是 office/pptx|xlsx|docx）"
+  en-US: "Compress files/folders into .zip archives and safely extract .zip archives — member-path validation (zip-slip), zip-bomb size checks, ASCII arcnames, verification, OUTPUT_DIR auto-delivery; for packaging deliverables or unpacking archives — not for tar/7z (explicit requests only, same safety rules) or for editing Office files (that is office/pptx|xlsx|docx)"
 type: "guidance"
 triggers:
   - "压缩zip"

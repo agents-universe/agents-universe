@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from api.main import app
-from api.paths import AGENTS_DIR, PROJECTS_ROOT
+from api.paths import AGENTS_DIR, PROJECTS_ROOT, WORKFLOWS_DIR
 from api.routers.agents import _parse_refs, _parse_str_list, _parse_tool_list
 from api.services.agent_sync import sync_agents_dir
 
@@ -44,6 +44,24 @@ def no_skill_registry():
     yield
     if original is not _MISSING:
         app.state.skill_registry = original
+
+
+@pytest.fixture
+def workflow_registry():
+    """Install the real framework workflow registry on the app (see
+    skill_registry for why ASGITransport needs this by hand)."""
+    from agent_core.skills.registry import SkillRegistry
+
+    original = getattr(app.state, "workflow_registry", _MISSING)
+    registry = SkillRegistry()
+    registry.load_dir(str(WORKFLOWS_DIR))
+    app.state.workflow_registry = registry
+    yield registry
+    if original is _MISSING:
+        if hasattr(app.state, "workflow_registry"):
+            delattr(app.state, "workflow_registry")
+    else:
+        app.state.workflow_registry = original
 
 
 def _write_project_agent(
@@ -240,3 +258,125 @@ async def test_list_without_registry_still_returns_200(client, no_skill_registry
         for a in resp.json()
         for s in a["skills"]
     )
+
+
+async def test_locale_map_agent_returns_canonical_plus_i18n(client, make_project):
+    """Bilingual frontmatter flows through sync into the response: the
+    top-level fields stay zh canonical, i18n carries the locale maps."""
+    project = await make_project("proj-i18nr")
+    ws = PROJECTS_ROOT / "proj-i18nr"
+    (ws / "agents").mkdir(parents=True, exist_ok=True)
+    (ws / "agents" / "proj-i18nr--bi.agent.md").write_text(
+        "---\n"
+        'slug: "proj-i18nr--bi"\n'
+        "display_name:\n  zh-CN: 助手\n  en-US: Helper\n"
+        "description:\n  zh-CN: 帮你做事\n  en-US: Helps you out\n"
+        "placeholder:\n  zh-CN: 说点什么…\n  en-US: Say something…\n"
+        "starter_prompts:\n"
+        "  zh-CN: [帮我做事]\n"
+        "  en-US: [Do my work]\n"
+        "---\n\nBody\n",
+        encoding="utf-8",
+    )
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    assert resp.status_code == 200
+    local = next(a for a in resp.json() if a["slug"] == "proj-i18nr--bi")
+    assert local["display_name"] == "助手"
+    assert local["description"] == "帮你做事"
+    assert local["placeholder"] == "说点什么…"
+    assert local["starter_prompts"] == ["帮我做事"]
+    assert local["i18n"] == {
+        "display_name": {"zh-CN": "助手", "en-US": "Helper"},
+        "description": {"zh-CN": "帮你做事", "en-US": "Helps you out"},
+        "placeholder": {"zh-CN": "说点什么…", "en-US": "Say something…"},
+        "starter_prompts": {"zh-CN": ["帮我做事"], "en-US": ["Do my work"]},
+    }
+
+
+async def test_scalar_agent_has_null_i18n(client, make_project):
+    project = await make_project("proj-ni18nr")
+    _write_project_agent("proj-ni18nr", "proj-ni18nr--plain", "Plain")
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    local = next(a for a in resp.json() if a["slug"] == "proj-ni18nr--plain")
+    assert local["i18n"] is None
+
+
+async def test_non_public_skill_description_backfilled_from_registry(
+    client, make_project, skill_registry
+):
+    """Frontmatter lists skills by slug — the tooltip description must come
+    back from the registry even for non-public skills."""
+    project = await make_project("proj-skb")
+    _write_project_agent(
+        "proj-skb",
+        "proj-skb--local",
+        "Local",
+        extra_frontmatter="skills:\n  - integration/pr-review-manager\n",
+    )
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    local = next(a for a in resp.json() if a["slug"] == "proj-skb--local")
+    pr = [s for s in local["skills"] if s["slug"] == "integration/pr-review-manager"]
+    assert len(pr) == 1
+    assert pr[0]["description"]  # no longer empty
+    assert pr[0]["public"] is False
+
+
+async def test_workflow_description_backfilled_from_registry(
+    client, make_project, skill_registry, workflow_registry
+):
+    """Workflows were never enriched at all — every tooltip description was
+    empty. The registry now fills description + i18n (no public badge)."""
+    project = await make_project("proj-wfb")
+    _write_project_agent(
+        "proj-wfb",
+        "proj-wfb--local",
+        "Local",
+        extra_frontmatter="workflows:\n  - tech-lead-jira-implementation-to-pr\n",
+    )
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    local = next(a for a in resp.json() if a["slug"] == "proj-wfb--local")
+    wf = [w for w in local["workflows"] if w["slug"] == "tech-lead-jira-implementation-to-pr"]
+    assert len(wf) == 1
+    assert wf[0]["description"]
+
+
+async def test_skill_registry_i18n_map_passthrough(client, make_project):
+    """A registry skill with a locale-map description exposes its
+    non-canonical variants via SkillRef.i18n."""
+    from agent_core.skills.loader import SkillDefinition
+    from agent_core.skills.registry import SkillRegistry
+
+    original = getattr(app.state, "skill_registry", _MISSING)
+    registry = SkillRegistry()
+    registry._skills["testing/bilingual"] = SkillDefinition(
+        slug="testing/bilingual",
+        skill_type="guidance",
+        description="Bilingual skill",
+        description_i18n={"zh-CN": "双语技能"},
+        body="",
+    )
+    app.state.skill_registry = registry
+    try:
+        project = await make_project("proj-ski18n")
+        _write_project_agent(
+            "proj-ski18n",
+            "proj-ski18n--local",
+            "Local",
+            extra_frontmatter="skills:\n  - testing/bilingual\n",
+        )
+
+        resp = await client.get(f"/api/agents?project_id={project.project_id}")
+        local = next(a for a in resp.json() if a["slug"] == "proj-ski18n--local")
+        skill = next(s for s in local["skills"] if s["slug"] == "testing/bilingual")
+        assert skill["description"] == "Bilingual skill"
+        assert skill["i18n"] == {"zh-CN": "双语技能"}
+    finally:
+        if original is _MISSING:
+            if hasattr(app.state, "skill_registry"):
+                delattr(app.state, "skill_registry")
+        else:
+            app.state.skill_registry = original

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_project, get_current_user, is_project_manager
+from api.errors import api_error
 from api.models.project import Project
 from api.models.project_member import ProjectMember
 
@@ -28,11 +29,8 @@ class MemberCreateBody(BaseModel):
     user_id: str = Field(max_length=100)
 
 
-def _not_manager() -> HTTPException:
-    return HTTPException(
-        status_code=403,
-        detail={"code": "PROJECT_NOT_MEMBER", "message": "仅项目创建者或成员可以管理访问名单"},
-    )
+def _not_manager():
+    return api_error(403, "PROJECT_NOT_MEMBER", "Only the project creator or members can manage the access list")
 
 
 def _member_row(m: ProjectMember) -> dict:
@@ -74,15 +72,9 @@ async def add_member(
         raise _not_manager()
     uid = body.user_id.strip()
     if not uid:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_USER_ID", "message": "user_id 不能为空"},
-        )
+        raise api_error(400, "INVALID_USER_ID", "user_id cannot be empty")
     if project.created_by is not None and uid == project.created_by:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "MEMBER_IS_OWNER", "message": "创建人已拥有项目访问权限，无需加入名单"},
-        )
+        raise api_error(400, "MEMBER_IS_OWNER", "The creator already has project access and does not need to join the list")
     existing = await db.execute(
         select(ProjectMember.project_id).where(
             ProjectMember.project_id == project.project_id,
@@ -90,10 +82,7 @@ async def add_member(
         )
     )
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "MEMBER_EXISTS", "message": "该用户已在访问名单中"},
-        )
+        raise api_error(409, "MEMBER_EXISTS", "This user is already on the access list")
     member = ProjectMember(
         project_id=str(project.project_id),
         user_id=uid,
@@ -106,10 +95,7 @@ async def add_member(
         # Check-then-insert race: a concurrent request can win between the
         # SELECT above and the INSERT — surface as 409, not 500.
         await db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "MEMBER_EXISTS", "message": "该用户已在访问名单中"},
-        )
+        raise api_error(409, "MEMBER_EXISTS", "This user is already on the access list")
     await db.refresh(member)
     return _member_row(member)
 
@@ -125,10 +111,7 @@ async def remove_member(
     if not await is_project_manager(db, project, current_user.user_id):
         raise _not_manager()
     if project.created_by is not None and user_id == project.created_by:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "MEMBER_IS_OWNER", "message": "不能移除项目创建人"},
-        )
+        raise api_error(400, "MEMBER_IS_OWNER", "The project creator cannot be removed")
     result = await db.execute(
         select(ProjectMember).where(
             ProjectMember.project_id == project.project_id,
@@ -137,9 +120,6 @@ async def remove_member(
     )
     member = result.scalar_one_or_none()
     if not member:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "MEMBER_NOT_FOUND", "message": "该用户不在访问名单中"},
-        )
+        raise api_error(404, "MEMBER_NOT_FOUND", "This user is not on the access list")
     await db.delete(member)
     await db.commit()

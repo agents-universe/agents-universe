@@ -227,7 +227,7 @@ async def test_delete_global_row_is_403(client, db, make_project):
         f"/api/projects/{project.project_id}/knowledge/technical/db-schema"
     )
     assert resp.status_code == 403, resp.text
-    assert resp.json()["detail"]["code"] == "global_knowledge"
+    assert resp.json()["detail"]["code"] == "KNOWLEDGE_GLOBAL_READONLY"
     assert await _get_row(db, None, "technical/db-schema") is not None
 
 

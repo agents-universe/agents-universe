@@ -1,6 +1,8 @@
 ---
 slug: "testing/jira-test-case-manager"
-description: "Read test design from a Jira comment, create a test card, and link it to the target requirement card"
+description:
+  zh-CN: "从 Jira 评论读取测试设计，创建测试卡并关联到目标需求卡"
+  en-US: "Read test design from a Jira comment, create a test card, and link it to the target requirement card"
 ---
 
 # Skill: Jira Test Case Manager

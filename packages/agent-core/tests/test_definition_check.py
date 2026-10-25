@@ -250,6 +250,40 @@ def test_missing_display_name_warns():
     assert "display_name" in _warnings(result)
 
 
+def test_locale_map_fields_do_not_warn():
+    """Bilingual frontmatter (locale maps) is a first-class shape — it must
+    not trip the missing-display_name or scalar-string warnings."""
+    result = check_definition(
+        "agents/proj-a--helper.agent.md",
+        _fm(
+            'slug: "proj-a--helper"\n'
+            "display_name:\n  zh-CN: 助手\n  en-US: Helper\n"
+            "description:\n  zh-CN: 帮忙\n  en-US: Helps out\n"
+            "starter_prompts:\n  zh-CN: [帮我做事]\n  en-US: [Do my work]\n"
+            "tools:\n  - filesystem"
+        ),
+        scope="project",
+        project_slug="proj-a",
+    )
+    assert result["ok"] is True
+    assert result["warnings"] == []
+
+
+def test_suggested_frontmatter_renders_canonical_of_locale_map():
+    """A locale map must collapse to its zh canonical in the scalar template
+    — never Python dict repr inside the suggested YAML."""
+    result = check_definition(
+        "agents/proj-a--bad.agent.md",
+        _fm('slug: "proj-a--wrong"\ndisplay_name:\n  zh-CN: 助手\n  en-US: Helper'),
+        scope="project",
+        project_slug="proj-a",
+    )
+    assert result["ok"] is False
+    suggestion = result["suggested_frontmatter"]
+    assert '"助手"' in suggestion
+    assert "{'zh-CN'" not in suggestion
+
+
 # --- references -------------------------------------------------------------
 
 

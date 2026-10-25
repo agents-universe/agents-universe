@@ -1,6 +1,8 @@
 ---
 slug: "office/xlsx"
-description: "Generate and edit Excel workbooks (.xlsx) with openpyxl — formulas over hardcoded results, number formats, financial-model color conventions, native charts, static formula verification (no LibreOffice in the container); for creating/exporting/editing workbooks — not for reading files into analysis (that is analysis/local-file-analyst)"
+description:
+  zh-CN: "用 openpyxl 生成与编辑 Excel 工作簿（.xlsx）——公式优先于硬编码结果、数字格式、财务模型配色惯例、原生图表、静态公式校验（容器内无 LibreOffice）；用于创建/导出/编辑工作簿，不用于读取文件做分析（那是 analysis/local-file-analyst）"
+  en-US: "Generate and edit Excel workbooks (.xlsx) with openpyxl — formulas over hardcoded results, number formats, financial-model color conventions, native charts, static formula verification (no LibreOffice in the container); for creating/exporting/editing workbooks — not for reading files into analysis (that is analysis/local-file-analyst)"
 type: "guidance"
 triggers:
   - "生成excel"

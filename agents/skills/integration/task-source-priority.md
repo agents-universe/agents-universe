@@ -1,6 +1,8 @@
 ---
 slug: "integration/task-source-priority"
-description: "Task-type → authoritative-source priority table. Read first for any task referencing a ticket (Jira key), pull request, or issue anchor: call the mapped integration tool directly as the first action — no local repository preamble."
+description:
+  zh-CN: "任务类型到权威来源的优先级表。凡任务涉及工单（Jira 键）、拉取请求或问题锚点，先读本技能：第一步直接调用对应的集成工具——不要先做本地仓库操作。"
+  en-US: "Task-type → authoritative-source priority table. Read first for any task referencing a ticket (Jira key), pull request, or issue anchor: call the mapped integration tool directly as the first action — no local repository preamble."
 routing:
   - id: "jira-card"
     priority: 10

@@ -1,6 +1,8 @@
 ---
 slug: "analysis/report-writer"
-description: "Produce conclusion-first Markdown analysis reports and self-contained HTML dashboards in the project workspace, and write results back to the analysis-scenarios knowledge log"
+description:
+  zh-CN: "在项目工作区产出结论先行的 Markdown 分析报告与自包含 HTML 看板，并将结果回写到 analysis-scenarios 知识日志"
+  en-US: "Produce conclusion-first Markdown analysis reports and self-contained HTML dashboards in the project workspace, and write results back to the analysis-scenarios knowledge log"
 type: "guidance"
 triggers:
   - "write a report"

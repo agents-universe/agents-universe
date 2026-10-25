@@ -1,6 +1,8 @@
 ---
 slug: "integration/custom-api-consumer"
-description: "Discover and call project third-party REST APIs via the api_request tool: catalog first, endpoint_key resolution, server-side auth from secret_ref, response extraction and failure handling"
+description:
+  zh-CN: "经 api_request 工具发现并调用项目第三方 REST API：先查目录、解析 endpoint_key、服务端从 secret_ref 取认证、提取响应并处理失败"
+  en-US: "Discover and call project third-party REST APIs via the api_request tool: catalog first, endpoint_key resolution, server-side auth from secret_ref, response extraction and failure handling"
 type: "guidance"
 triggers:
   - "第三方 api"

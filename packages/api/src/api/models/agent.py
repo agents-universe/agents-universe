@@ -35,5 +35,10 @@ class Agent(Base):
     # JSON string array of example prompts (UnicodeText: json.dumps
     # ensure_ascii escapes CJK far beyond a fixed Unicode(n) length).
     starter_prompts: Mapped[str | None] = mapped_column(UnicodeText)
+    # JSON locale map for the non-canonical locales of the UI fields above:
+    # {"display_name": {"en-US": "Tech Lead"}, "description": {...}, ...}.
+    # NULL when the definition file uses plain scalars. The canonical columns
+    # stay the single source for sorting, LLM-facing prefixes, and fallback.
+    i18n: Mapped[str | None] = mapped_column(UnicodeText)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)

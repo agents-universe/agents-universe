@@ -1,6 +1,8 @@
 ---
 slug: "integration/pr-review-manager"
-description: "Review PR checks, code defects, and Jira requirement satisfaction, and output findings plus a risk conclusion"
+description:
+  zh-CN: "审查 PR 检查项、代码缺陷与 Jira 需求满足度，输出问题清单与风险结论"
+  en-US: "Review PR checks, code defects, and Jira requirement satisfaction, and output findings plus a risk conclusion"
 ---
 
 # Skill: PR Review Manager

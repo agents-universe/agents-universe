@@ -68,6 +68,20 @@ describe('ProjectTree', () => {
     expect(wrapper.find('.project-category-tag').exists()).toBe(false)
   })
 
+  it('renders the visibility badge with public/private variants', () => {
+    favorites.resolvedFavoriteProjects = [
+      makeProject({ project_id: 'p-1', visibility: 'public' }),
+      makeProject({ project_id: 'p-2', visibility: 'private' }),
+    ]
+    const wrapper = mount(ProjectTree)
+    const badges = wrapper.findAll('.project-visibility-badge')
+    expect(badges.length).toBe(2)
+    expect(badges[0].text()).toBe('公共')
+    expect(badges[0].classes()).toContain('badge--green')
+    expect(badges[1].text()).toBe('私有')
+    expect(badges[1].classes()).toContain('badge--muted')
+  })
+
   it('shows the empty hint when no projects are favorited', () => {
     favorites.resolvedFavoriteProjects = []
     const wrapper = mount(ProjectTree)

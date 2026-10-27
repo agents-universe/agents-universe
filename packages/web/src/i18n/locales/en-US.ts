@@ -50,6 +50,8 @@ export default {
     projects: {
       title: 'Projects',
       emptyHint: 'Click + to favorite projects',
+      badgePublic: 'Public',
+      badgePrivate: 'Private',
     },
     agents: {
       title: 'Agents',

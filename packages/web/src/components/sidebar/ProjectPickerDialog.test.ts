@@ -112,6 +112,22 @@ describe('ProjectPickerDialog', () => {
     })
   })
 
+  it('renders the visibility badge with public/private variants', async () => {
+    projectStore.projects = [
+      makeProject({ project_id: 'p-1', visibility: 'public' }),
+      makeProject({ project_id: 'p-2', visibility: 'private' }),
+    ]
+    wrapper = mount(ProjectPickerDialog, { attachTo: document.body })
+    await vi.waitFor(() => {
+      const badges = document.querySelectorAll('.project-visibility-badge')
+      expect(badges.length).toBe(2)
+      expect(badges[0].textContent).toBe('公共')
+      expect(badges[0].classList.contains('badge--green')).toBe(true)
+      expect(badges[1].textContent).toBe('私有')
+      expect(badges[1].classList.contains('badge--muted')).toBe(true)
+    })
+  })
+
   it('filters projects by search query', async () => {
     projectStore.projects = [
       makeProject({ project_id: 'p-1', display_name: '销售分析' }),

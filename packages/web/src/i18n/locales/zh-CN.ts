@@ -50,6 +50,8 @@ export default {
     projects: {
       title: '项目',
       emptyHint: '点击 + 收藏项目',
+      badgePublic: '公共',
+      badgePrivate: '私有',
     },
     agents: {
       title: '智能体',

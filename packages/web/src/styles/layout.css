@@ -422,6 +422,11 @@
   background: var(--bg-tertiary);
 }
 
+/* 公有/私有可见性徽标 — 复用共享 .badge 原语,这里只补行内 flex 行为 */
+.project-visibility-badge {
+  flex-shrink: 0;
+}
+
 /* 「默认」标记:该智能体因项目分类而默认收藏,不是用户手动收藏的 */
 .picker-default-tag {
   flex-shrink: 0;

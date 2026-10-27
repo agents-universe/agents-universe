@@ -266,3 +266,87 @@ describe('TokenConfigModal add-model form', () => {
     expect((reopened.find('select').element as HTMLSelectElement).value).toBe('')
   })
 })
+
+describe('TokenConfigModal — context-overflow targeting', () => {
+  function makeModelConfig(configId: string, modelId: string) {
+    return {
+      config_id: configId,
+      provider: 'openai',
+      model_id: modelId,
+      key_hint: null,
+      base_url: null,
+      url_mode: 'base_url' as const,
+      complexity_tier: null,
+      context_window: null,
+      default_context_window: 128_000,
+      thinking_enabled: null,
+      reasoning_effort: null,
+      is_system: false,
+    }
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    stubApi()
+    useProjectStore().currentProject = makeProject('p1')
+    // The row element id is 'cfg-' + config_id — plain ids keep the
+    // expectations below readable.
+    agentsMock.getModelConfigs.mockResolvedValue([
+      makeModelConfig('row-a', 'gpt-5'),
+      makeModelConfig('row-b', 'gpt-5-mini'),
+    ])
+    // happy-dom has no layout engine — the call must exist to be asserted.
+    Element.prototype.scrollIntoView = vi.fn()
+  })
+
+  it('scrolls to and focuses the targeted row\'s context-window input', async () => {
+    // Real Teleport (not the stub): the stub re-creates its subtree on every
+    // re-render, which disconnects the focused input before assertions run.
+    // The targeting uses document.getElementById, so the tree must be in
+    // document.body — the real Teleport puts it there.
+    const wrapper = mount(TokenConfigModal, {
+      props: { targetConfigId: 'row-b' },
+    })
+    await flushPromises()
+    // The row appears after fetchModelConfigs resolves; the watcher retries
+    // until it lands in the DOM.
+    await nextTick()
+    await nextTick()
+
+    const row = document.getElementById('cfg-row-b')
+    expect(row).not.toBeNull()
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+    const input = row!.querySelector('input[data-field="context_window"]') as HTMLInputElement
+    expect(document.activeElement).toBe(input)
+    expect(row!.classList.contains('token-service-row--highlight')).toBe(true)
+    // The other row is untouched.
+    expect(document.getElementById('cfg-row-a')!.classList.contains('token-service-row--highlight')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('an unknown config id degrades to a plain open', async () => {
+    const wrapper = mount(TokenConfigModal, {
+      props: { targetConfigId: 'row-missing' },
+    })
+    await flushPromises()
+    await nextTick()
+    await nextTick()
+
+    expect(document.getElementById('cfg-row-missing')).toBeNull()
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
+    // Existing rows still render.
+    expect(document.getElementById('cfg-row-a')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('no target prop renders plainly (settings page without query)', async () => {
+    const wrapper = mount(TokenConfigModal)
+    await flushPromises()
+    await nextTick()
+
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
+    expect(document.querySelector('.token-service-row--highlight')).toBeNull()
+    wrapper.unmount()
+  })
+})

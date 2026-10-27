@@ -1,10 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import { useAgentStore } from '@/stores/agent'
+import { useAgentStore, AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
 import { i18n } from '@/i18n'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import type { AgentInfo, Message } from '@/types'
+
+const push = vi.fn()
+vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
 
 const po: AgentInfo = {
   agent_id: 'a1', slug: 'project-owner', label: 'Product Owner',
@@ -106,5 +109,46 @@ describe('MessageBubble — image lightbox', () => {
       i18n.global.t('common.close'),
     ])
     wrapper.unmount()
+  })
+})
+
+describe('MessageBubble — context-overflow action button', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    push.mockClear()
+  })
+
+  it('renders the button only on messages carrying the action', () => {
+    const wrapper = bubble({ role: 'assistant', isError: true, action: 'open_context_settings', actionConfigId: 'cfg-9' })
+    const btn = wrapper.find('.message-action-btn')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe(i18n.global.t('messageBubble.adjustContextSize'))
+
+    const plain = bubble({ role: 'assistant' })
+    expect(plain.find('.message-action-btn').exists()).toBe(false)
+  })
+
+  it('navigates to the model row named by actionConfigId', async () => {
+    const wrapper = bubble({
+      role: 'assistant', isError: true, action: 'open_context_settings', actionConfigId: 'cfg-9',
+    })
+    await wrapper.find('.message-action-btn').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/settings/tokens', query: { config: 'cfg-9' } })
+  })
+
+  it('falls back to the selected model config when the event carried none', async () => {
+    // bubble() swaps in a fresh pinia — read the store AFTER mounting so the
+    // setter lands on the same instance the component holds.
+    const wrapper = bubble({ role: 'assistant', isError: true, action: 'open_context_settings' })
+    useAgentStore().setSelectedConfigId('cfg-sel')
+    await wrapper.find('.message-action-btn').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/settings/tokens', query: { config: 'cfg-sel' } })
+  })
+
+  it('the auto-routing sentinel resolves no row — navigate without a query', async () => {
+    const wrapper = bubble({ role: 'assistant', isError: true, action: 'open_context_settings' })
+    useAgentStore().setSelectedConfigId(AUTO_MODEL_CONFIG_ID)
+    await wrapper.find('.message-action-btn').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/settings/tokens' })
   })
 })

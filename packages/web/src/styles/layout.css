@@ -803,6 +803,24 @@
   border: 1px solid rgba(220, 53, 69, 0.35);
 }
 
+/* Actionable hint inside an error bubble (context_exceeded → model settings) */
+.message-action-btn {
+  margin-top: 8px;
+  align-self: flex-start;
+  padding: 4px 12px;
+  border: 1px solid rgba(220, 53, 69, 0.45);
+  border-radius: 6px;
+  background: rgba(220, 53, 69, 0.15);
+  color: var(--color-error);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.message-action-btn:hover {
+  background: rgba(220, 53, 69, 0.28);
+}
+
 .message-meta {
   font-size: var(--text-2xs);
   color: var(--text-muted);

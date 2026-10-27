@@ -35,6 +35,9 @@ interface ConnectionEntry {
   pingTimer: ReturnType<typeof setInterval> | null
   connectedConversationId: string | null
   terminalMessageId: string | null
+  // Stashed between the context_exceeded event and its paired stream_end —
+  // the actionable bubble materializes once the turn fully settles.
+  pendingContextExceeded: { configId: string | null } | null
   lastMessageAt: number
   staleProbeSent: boolean
 }
@@ -273,6 +276,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         pingTimer: null,
         connectedConversationId: null,
         terminalMessageId: null,
+        pendingContextExceeded: null,
         lastMessageAt: 0,
         staleProbeSent: false,
       }
@@ -302,6 +306,7 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       pingTimer: null,
       connectedConversationId: null,
       terminalMessageId: null,
+      pendingContextExceeded: null,
       lastMessageAt: 0,
       staleProbeSent: false,
     }
@@ -526,6 +531,23 @@ export function useWebSocket(conversationId: Ref<string | null>) {
           // errored). Clear them so the next user_confirm starts clean
           // instead of stacking dialogs on a zombie.
           conv.clearPendingPrompts(convId)
+        }
+        // Context overflow: materialize the actionable hint AFTER the settle
+        // chain so any partial-content snapshot precedes it. The stop_reason
+        // fallback covers a lost context_exceeded frame (button then falls
+        // back to the store's selected model).
+        const ctxEx = entry.pendingContextExceeded
+        entry.pendingContextExceeded = null
+        if (!taskId && (ctxEx || (msg.stop_reason as string) === 'context_exceeded')) {
+          conv.addMessage({
+            id: `ctxex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            content: i18n.global.t('errors.CONTEXT_EXCEEDED'),
+            isError: true,
+            action: 'open_context_settings',
+            actionConfigId: ctxEx?.configId ?? undefined,
+            timestamp: Date.now(),
+          }, convId)
         }
         break
       }
@@ -784,6 +806,16 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         }, convId)
         break
       }
+      case 'context_exceeded':
+        // Arrives immediately before stream_end(stop_reason="context_exceeded").
+        // Do NOT settle here and do NOT set terminalMessageId — that would
+        // swallow the paired stream_end and strand isStreaming=true (Stop
+        // button spins). Stash so the bubble lands AFTER any partial-content
+        // snapshot the stream_end pushes (order: partial reply, then hint).
+        entry.pendingContextExceeded = {
+          configId: typeof msg.config_id === 'string' ? msg.config_id : null,
+        }
+        break
       case 'error': {
         const messageId = (msg.stream_message_id as string) ?? `err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         // Only errors that ENDED the turn settle the runtime:

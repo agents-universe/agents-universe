@@ -55,6 +55,76 @@ class StopReason(str, Enum):
         return mapping.get(raw, cls.UNKNOWN)
 
 
+# Substrings that identify a context-window overflow across the major
+# provider SDKs and common OpenAI-compatible gateways. Matched against the
+# lowercased exception text only when the HTTP status is 400 — a 400 without
+# any of these stays UNKNOWN so schema/auth errors keep the api_error path.
+_CONTEXT_OVERFLOW_MARKERS = (
+    # OpenAI SDK / Azure OpenAI / OpenAI-compatible gateways
+    "maximum context length",
+    "context_length_exceeded",
+    "context length exceeded",
+    # Anthropic SDK (raised as BadRequestError, distinct from the streamed
+    # model_context_window_exceeded stop reason)
+    "prompt is too long",
+    "model_context_window_exceeded",
+    # Google Gemini SDK
+    "input token count exceeds",
+    "reduce the length of the input",
+    "input length and",
+    # Generic gateway phrasings ("context window exceeded", "too long for
+    # the model's context window")
+    "too long for",
+)
+
+
+def classify_api_error(exc: BaseException) -> StopReason:
+    """Map a provider/SDK exception to CONTEXT_EXCEEDED on context-window overflow.
+
+    Duck-typed on purpose: the SDKs (openai/anthropic/google-genai) are
+    optional dependencies loaded only via the registry, so their exception
+    classes must not be imported here. Status code is read from whichever
+    attribute the raising layer carries; the text sweep covers the differing
+    error-body shapes (str(exc), .message, .body, .details, HTTP response).
+
+    Classification only picks a branch — the caller never forwards the
+    exception text to the UI, so no credential scrubbing is needed here.
+    """
+    status = getattr(exc, "status_code", None)  # openai/anthropic APIStatusError
+    if not isinstance(status, int):
+        status = getattr(exc, "code", None)  # google-genai APIError.code
+    if not isinstance(status, int):
+        response = getattr(exc, "response", None)  # httpx.HTTPStatusError
+        status = getattr(response, "status_code", None)
+    if status == 413:
+        # Payload too large on a chat request ≈ overflow — no text match
+        # needed (gateways phrase this one every possible way).
+        return StopReason.CONTEXT_EXCEEDED
+    if status != 400:
+        return StopReason.UNKNOWN
+
+    parts = [str(exc)]
+    for attr in ("message", "body", "details"):
+        value = getattr(exc, attr, None)
+        if value:
+            parts.append(str(value))
+    response = getattr(exc, "response", None)
+    body_text = getattr(response, "text", None)
+    if body_text:
+        parts.append(str(body_text))
+    text = " ".join(parts).lower()
+
+    if any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS):
+        return StopReason.CONTEXT_EXCEEDED
+    # "context window" alone is too broad (config errors mention it too) —
+    # require an overflow verb next to it.
+    if "context window" in text and any(
+        verb in text for verb in ("exceed", "exceeded", "overflow", "too large")
+    ):
+        return StopReason.CONTEXT_EXCEEDED
+    return StopReason.UNKNOWN
+
+
 def thinking_enabled_by_env() -> bool:
     """Shared extended-thinking switch (AGENT_EXTENDED_THINKING, default on).
 

@@ -511,6 +511,78 @@ describe('useWebSocket error frame settlement', () => {
   })
 })
 
+describe('useWebSocket context_exceeded affordance', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('bubbles the actionable hint after the paired stream_end', () => {
+    // context_exceeded arrives BEFORE stream_end — the stash must not
+    // settle streaming (that would swallow the stream_end and strand
+    // isStreaming), and the bubble must land AFTER the partial snapshot.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+    fire(ws, { type: 'stream_delta', delta: 'partial reply' })
+
+    fire(ws, { type: 'context_exceeded', message_id: 'm1', config_id: 'cfg-1' })
+    // Event alone: no bubble, streaming untouched.
+    expect(store.messages).toHaveLength(0)
+    expect(store.isStreaming).toBe(true)
+
+    fire(ws, { type: 'stream_end', message_id: 'm1', stop_reason: 'context_exceeded' })
+
+    expect(store.isStreaming).toBe(false)
+    expect(store.messages).toHaveLength(2)
+    // First: the partial-content snapshot.
+    expect(store.messages[0].content).toBe('partial reply')
+    expect(store.messages[0].isError).toBeFalsy()
+    // Then: the actionable error bubble.
+    const bubble = store.messages[1]
+    expect(bubble.isError).toBe(true)
+    expect(bubble.action).toBe('open_context_settings')
+    expect(bubble.actionConfigId).toBe('cfg-1')
+    expect(bubble.content).toBe(i18n.global.t('errors.CONTEXT_EXCEEDED'))
+  })
+
+  it('falls back to the stop_reason when the event frame is lost', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'stream_end', message_id: 'm2', stop_reason: 'context_exceeded' })
+
+    expect(store.isStreaming).toBe(false)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].isError).toBe(true)
+    expect(store.messages[0].action).toBe('open_context_settings')
+    // No event frame → no config id; the button falls back to the store.
+    expect(store.messages[0].actionConfigId).toBeUndefined()
+  })
+
+  it('task stream_end with context stop reason does not bubble', () => {
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    const { ws } = mount('conv-a')
+
+    fire(ws, { type: 'stream_end', message_id: 'm3', task_id: 't1', stop_reason: 'context_exceeded' })
+
+    expect(store.messages).toHaveLength(0)
+  })
+})
+
 describe('useWebSocket connection-cap eviction', () => {
   beforeEach(() => {
     vi.useFakeTimers()

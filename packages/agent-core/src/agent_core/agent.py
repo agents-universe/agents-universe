@@ -51,7 +51,7 @@ from .compressor import (
 )
 from .knowledge.loader import KnowledgeContextResult
 from .model_routing import resolve_tier_config
-from .providers.base import LLMProvider, Message, StopReason, ToolDefinition
+from .providers.base import LLMProvider, Message, StopReason, ToolDefinition, classify_api_error
 from .providers.registry import get_provider
 from .session import ConversationSession, UserInputEntry
 from .skills.registry import SkillRegistry
@@ -1567,6 +1567,15 @@ class Agent:
                         pending_tool_ids,
                         _scrub_credentials(traceback.format_exc(), self._credentials),
                     )
+                    if classify_api_error(api_err) is StopReason.CONTEXT_EXCEEDED:
+                        # OpenAI/Gemini/gateways raise context overflow as an
+                        # ordinary 400/413 exception (only Anthropic streams a
+                        # stop reason) — route it to the same context_exceeded
+                        # affordance instead of a raw "LLM API error" bubble.
+                        await session.emit("context_exceeded", message_id=message_id, config_id=config_id)
+                        await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="context_exceeded")
+                        emitted_end = True
+                        break
                     await session.emit("error", message=err_msg)
                     await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="api_error")
                     emitted_end = True
@@ -1604,7 +1613,7 @@ class Agent:
                     break
 
                 if stop_reason == StopReason.CONTEXT_EXCEEDED:
-                    await session.emit("context_exceeded", message_id=message_id)
+                    await session.emit("context_exceeded", message_id=message_id, config_id=config_id)
                     await session.emit("stream_end", message_id=message_id, total_tokens=session.tokens_used, stop_reason="context_exceeded")
                     emitted_end = True
                     break
@@ -2460,6 +2469,10 @@ class Agent:
                     pending_tool_ids,
                     scrubbed_tb,
                 )
+                if classify_api_error(api_err) is StopReason.CONTEXT_EXCEEDED:
+                    # Same message as the stop-reason branch below so the task
+                    # card reads identically whichever path caught the overflow.
+                    raise RuntimeError("Context window exceeded during task execution") from api_err
                 raise RuntimeError(
                     f"LLM API error: {_scrub_credentials(str(api_err), self._credentials)}\n"
                     f"  task_id={task_id}, model={provider.model_name}, "

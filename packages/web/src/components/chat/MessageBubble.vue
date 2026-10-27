@@ -118,6 +118,16 @@
       <span class="knowledge-loaded-label">{{ t('messageBubble.knowledgeLoaded') }}</span>
       <span v-for="slug in message.knowledgeLoaded" :key="slug" class="knowledge-slug-chip">{{ slug }}</span>
     </div>
+
+    <!-- Context-overflow hint: jump straight to the model's context_size field -->
+    <button
+      v-if="message.action === 'open_context_settings'"
+      class="message-action-btn"
+      type="button"
+      @click="openContextSettings"
+    >
+      {{ t('messageBubble.adjustContextSize') }}
+    </button>
   </div>
 
   <!-- Image lightbox -->
@@ -147,11 +157,12 @@
 <script setup lang="ts">
 import { computed, ref, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { Bot, Download, X, ZoomIn, ZoomOut } from 'lucide-vue-next'
 import { renderMarkdown } from '@/utils/markdown'
 import { relativeTime } from '@/utils/time'
 import { withApi } from '@/utils/basePath'
-import { useAgentStore } from '@/stores/agent'
+import { useAgentStore, AUTO_MODEL_CONFIG_ID } from '@/stores/agent'
 import type { Message, ImageRecord, AgentTask, ToolCallRecord } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
 import TaskPlanCard from './TaskPlanCard.vue'
@@ -161,7 +172,25 @@ import MermaidBlock from './MermaidBlock.vue'
 const props = defineProps<{ message: Message }>()
 
 const { t } = useI18n()
+const router = useRouter()
 const agentStore = useAgentStore()
+
+// Context-overflow hint button: open Settings → AI Models targeting the
+// config that overflowed (event-supplied), falling back to the conversation's
+// selected model. The 'auto' sentinel resolves per turn, so it can't name a
+// row — navigate without the query and let the page open plainly.
+function openContextSettings() {
+  const cfg =
+    props.message.actionConfigId ??
+    (agentStore.selectedConfigId && agentStore.selectedConfigId !== AUTO_MODEL_CONFIG_ID
+      ? agentStore.selectedConfigId
+      : null)
+  router.push(
+    cfg
+      ? { path: '/settings/tokens', query: { config: cfg } }
+      : { path: '/settings/tokens' },
+  )
+}
 
 // Attribution badge: assistant replies always show which agent produced them
 // (even the conversation's current agent); user messages only badge

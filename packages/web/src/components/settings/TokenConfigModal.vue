@@ -46,7 +46,9 @@
           <div
             v-for="cfg in userConfigs"
             :key="cfg.config_id"
+            :id="'cfg-' + cfg.config_id"
             class="token-service-row"
+            :class="{ 'token-service-row--highlight': cfg.config_id === highlightedConfigId }"
           >
             <div class="token-service-header">
               <component :is="providerIcon(cfg.provider)" :size="16" class="token-service-icon" />
@@ -100,6 +102,7 @@
                   type="number"
                   min="1"
                   step="1000"
+                  data-field="context_window"
                   :placeholder="t('tokenConfig.contextPlaceholder')"
                   @change="editForms[cfg.config_id].windowDirty = true"
                 />
@@ -443,7 +446,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { KeyRound, X, Cpu, Zap, Cloud, GitBranch, BookOpen, Globe, Sparkles } from 'lucide-vue-next'
 import { apiFetch, ApiError } from '@/api/client'
@@ -457,6 +460,9 @@ import { useClickOutside } from '@/composables/useClickOutside'
 import type { ProjectSecret, ReasoningEffort } from '@/types'
 
 const emit = defineEmits<{ close: [] }>()
+// ?config=<id> from the context_exceeded bubble: scroll to & focus that row's
+// context-size input once the forms are built.
+const props = defineProps<{ targetConfigId?: string | null }>()
 const overlayEl = ref<HTMLElement | null>(null)
 useClickOutside(overlayEl, () => emit('close'), true)
 const { t } = useI18n()
@@ -507,6 +513,41 @@ function initEditForms() {
 }
 
 watch(userConfigs, initEditForms, { immediate: true })
+
+// ── Context-overflow targeting (context_exceeded bubble → ?config=<id>) ──
+
+const highlightedConfigId = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+
+function scrollToContextField(configId: string | null) {
+  if (!configId) return
+  // The row only exists once its edit block is rendered — initEditForms runs
+  // synchronously in the userConfigs watcher, so wait a tick for the DOM.
+  void nextTick(() => {
+    const row = document.getElementById(`cfg-${configId}`)
+    if (!row) return  // unknown id → plain open (graceful)
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    const input = row.querySelector<HTMLInputElement>('input[data-field="context_window"]')
+    input?.focus({ preventScroll: true })
+    highlightedConfigId.value = configId
+    if (highlightTimer) clearTimeout(highlightTimer)
+    highlightTimer = setTimeout(() => { highlightedConfigId.value = null }, 2400)
+  })
+}
+
+let targetLanded = false
+watch(
+  [() => props.targetConfigId, userConfigs],
+  ([id]) => {
+    if (!id || targetLanded) return
+    scrollToContextField(id)
+    // Cold visit: configs load async — the first attempt may run before the
+    // row exists. The DOM check in nextTick flips this once it lands.
+    void nextTick(() => { targetLanded = document.getElementById(`cfg-${id}`) != null })
+  },
+  { immediate: true },
+)
+onUnmounted(() => { if (highlightTimer) clearTimeout(highlightTimer) })
 
 // Same rule as the add form: re-infer tier/window when the model id changes
 // unless the user explicitly overrode that field, so a save persists the
@@ -1300,6 +1341,12 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 .system-default-row {
   opacity: 0.8;
   border-left: 3px solid var(--accent);
+}
+/* Transient flash after the context_exceeded button targets this row */
+.token-service-row--highlight {
+  border-left: 3px solid var(--accent);
+  background: rgba(107, 159, 255, 0.08);
+  transition: background 0.3s;
 }
 .system-badge {
   background: var(--accent);

@@ -284,6 +284,7 @@ export default {
     answeredByTitle: '由 {label} 回复',
     sentToTitle: '发送给 {label}',
     modelUsed: '本次回复使用的模型',
+    adjustContextSize: '调整上下文大小',
     modelTierTitle: '自动路由档位',
     roleUser: '用户',
     roleAssistant: '智能体',
@@ -813,6 +814,7 @@ export default {
     MODEL_PROVIDER_UNKNOWN: '未知的模型供应商。{detail}',
     MODEL_ID_EMPTY: '模型 ID 不能为空。',
     MODEL_NO_SYSTEM_DEFAULT: '未配置系统默认模型。',
+    CONTEXT_EXCEEDED: '当前会话已超出模型的上下文窗口，请在「设置 → AI 模型」中调整模型上下文大小后重试。',
     // 压缩
     COMPRESSION_FAILED: '会话压缩失败。',
     COMPRESSION_TOO_SHORT: '会话内容太短，无需压缩。',

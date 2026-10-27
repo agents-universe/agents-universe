@@ -285,6 +285,7 @@ export default {
     answeredByTitle: 'Answered by {label}',
     sentToTitle: 'Sent to {label}',
     modelUsed: 'Model used for this reply',
+    adjustContextSize: 'Adjust context size',
     modelTierTitle: 'Auto-routing tier',
     roleUser: 'User',
     roleAssistant: 'Assistant',
@@ -815,6 +816,7 @@ export default {
     MODEL_PROVIDER_UNKNOWN: 'Unknown model provider. {detail}',
     MODEL_ID_EMPTY: 'model_id cannot be empty.',
     MODEL_NO_SYSTEM_DEFAULT: 'No system default model configured.',
+    CONTEXT_EXCEEDED: "This conversation has exceeded the model's context window. Adjust the model's context size in Settings → AI Models, then retry.",
     // Compression
     COMPRESSION_FAILED: 'Conversation compression failed.',
     COMPRESSION_TOO_SHORT: 'The conversation is too short to compress.',

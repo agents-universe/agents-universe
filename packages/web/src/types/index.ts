@@ -173,6 +173,10 @@ export interface Message {
   modelTier?: string
   modelName?: string
   isError?: boolean
+  /** Server-driven actionable hint rendered as a button in this bubble. */
+  action?: 'open_context_settings'
+  /** Model config the action opens settings for (context-size target). */
+  actionConfigId?: string
   /** Partial assistant output cut short by an in-flight user injection. */
   interrupted?: boolean
   /** This turn's own token cost; absent on legacy rows and on

@@ -377,6 +377,40 @@ async def test_run_failed_and_error_row_on_api_error(agent_spy, db, make_project
     assert refs.get("error") is True
 
 
+async def test_run_failed_and_error_row_on_context_exceeded(agent_spy, db, make_project):
+    """context_exceeded + stream_end(stop_reason=context_exceeded) from the
+    agent (Anthropic stop reason or a classified OpenAI/Gemini overflow 400):
+    the run is failed with the context-window explanation and a persistable
+    error row — the frontend's adjust-context-settings bubble renders live,
+    this row is what a reload shows."""
+    conv = await _make_conversation(db, make_project)
+    await _add_config(db)
+    msg_id = str(uuid.uuid4())
+
+    async def _run(kwargs):
+        await kwargs["session"].emit(
+            "context_exceeded", message_id=msg_id, config_id="cfg-1"
+        )
+        await kwargs["session"].emit(
+            "stream_end", message_id=msg_id, total_tokens=0,
+            stop_reason="context_exceeded",
+        )
+
+    agent_spy["behavior"] = _run
+    await _send(conv.conversation_id, {"type": "message", "content": "hello"})
+
+    run = await _get_run(db, conv.conversation_id)
+    assert run.status == "failed"
+    assert run.error_message == "Conversation exceeds the model's context window"
+
+    msgs = await _assistant_messages(db, conv.conversation_id)
+    assert len(msgs) == 1
+    assert "context window" in msgs[0].content
+    import json as _json
+    refs = _json.loads(msgs[0].knowledge_refs)
+    assert refs.get("error") is True
+
+
 async def test_run_failed_on_empty_model_response(agent_spy, db, make_project):
     """A stream_end with no content and no stop_reason (empty model output)
     must not look like a completed turn: run failed with an explanation and

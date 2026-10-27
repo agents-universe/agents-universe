@@ -247,3 +247,21 @@ async def test_list_projects_defaults_missing_category_to_software(client):
     item = next(p for p in listing.json() if p["display_name"] == "no-cat-row")
     assert item["category"] == "software"
     assert item["category_label"] == "软件项目"
+
+
+async def test_project_payload_carries_category_i18n(client):
+    """Project serialization carries the category locale map for UI tags;
+    category_label stays the zh canonical."""
+    resp = await _create(client, "i18n-tag", "data-analysis")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["category_label"] == "数据分析"
+    assert body["category_i18n"]["label"]["en-US"] == "Data Analysis"
+    assert body["category_i18n"]["label"]["zh-CN"] == "数据分析"
+
+    got = await client.get(f"/api/projects/{body['project_id']}")
+    assert got.json()["category_i18n"]["label"]["en-US"] == "Data Analysis"
+
+    listing = await client.get("/api/projects")
+    item = next(p for p in listing.json() if p["display_name"] == "i18n-tag")
+    assert item["category_i18n"]["label"]["en-US"] == "Data Analysis"

@@ -39,7 +39,7 @@
           >
             <Folder :size="14" class="picker-item-icon" />
             <span class="picker-item-name">{{ project.display_name }}</span>
-            <span v-if="project.category_label" class="picker-category-tag">{{ project.category_label }}</span>
+            <span v-if="project.category_label" class="picker-category-tag">{{ localizedText(project.category_label, project.category_i18n?.label) }}</span>
             <button
               class="picker-star"
               :class="{ favorited: favoritesStore.isProjectFavorited(project.project_id) }"
@@ -136,6 +136,7 @@ import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
 import { projectsApi } from '@/api/projects'
 import type { Project, ProjectCategory } from '@/types'
+import { localizedText } from '@/utils/localize'
 import DeleteProjectDialog from './DeleteProjectDialog.vue'
 import ProjectSettingsDialog from './ProjectSettingsDialog.vue'
 import CategoryPicker from './CategoryPicker.vue'

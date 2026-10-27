@@ -94,13 +94,17 @@ def _serialize_project(
     # one subquery per project (N+1).
     category = project.category or DEFAULT_CATEGORY
     is_owner = project.created_by is not None and project.created_by == user_id
+    cat = get_category(category) or {}
     return {
         "project_id": str(project.project_id),
         "slug": project.slug,
         "display_name": project.display_name,
         "description": project.description,
         "category": category,
-        "category_label": (get_category(category) or {}).get("label", category),
+        "category_label": cat.get("label", category),
+        # Locale map for UI tags; category_label stays the zh canonical.
+        # null when the registry entry carries no locale variants (fallback).
+        "category_i18n": cat.get("i18n"),
         "parent_id": str(project.parent_id) if project.parent_id else None,
         "can_delete": is_owner
             and (child_ids is None or project.project_id not in child_ids),

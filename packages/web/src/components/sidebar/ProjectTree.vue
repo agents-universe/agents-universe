@@ -21,7 +21,7 @@
       >
         <Folder :size="14" class="project-icon" />
         <span class="project-name">{{ project.display_name }}</span>
-        <span v-if="project.category_label" class="project-category-tag">{{ project.category_label }}</span>
+        <span v-if="project.category_label" class="project-category-tag">{{ localizedText(project.category_label, project.category_i18n?.label) }}</span>
       </div>
     </div>
 
@@ -39,6 +39,7 @@ import { Plus, Folder } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
 import type { Project } from '@/types'
+import { localizedText } from '@/utils/localize'
 import ProjectPickerDialog from './ProjectPickerDialog.vue'
 
 const { t } = useI18n()

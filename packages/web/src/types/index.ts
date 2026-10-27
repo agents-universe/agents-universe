@@ -16,6 +16,8 @@ export interface Project {
   can_delete: boolean
   category: string
   category_label?: string
+  /** Non-canonical locale variants of category_label (label stays zh). */
+  category_i18n?: ProjectCategory['i18n']
   created_by: string | null
   visibility: 'public' | 'private'
   is_owner: boolean

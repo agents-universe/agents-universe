@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ProjectTree from './ProjectTree.vue'
+import { setLocale } from '@/i18n'
 import type { Project } from '@/types'
 
 const router = vi.hoisted(() => ({ push: vi.fn() }))
@@ -36,12 +37,27 @@ function makeProject(over: Partial<Project> = {}): Project {
 }
 
 describe('ProjectTree', () => {
+  afterEach(() => setLocale('zh-CN'))
+
   it('renders the category tag for favorited projects', () => {
     favorites.resolvedFavoriteProjects = [makeProject()]
     const wrapper = mount(ProjectTree)
     const tag = wrapper.find('.project-category-tag')
     expect(tag.exists()).toBe(true)
     expect(tag.text()).toBe('数据分析')
+  })
+
+  it('renders the localized English category tag when the locale is en-US', () => {
+    favorites.resolvedFavoriteProjects = [
+      makeProject({
+        category_i18n: { label: { 'zh-CN': '数据分析', 'en-US': 'Data Analysis' } },
+      }),
+    ]
+    setLocale('en-US')
+    const wrapper = mount(ProjectTree)
+    const tag = wrapper.find('.project-category-tag')
+    expect(tag.exists()).toBe(true)
+    expect(tag.text()).toBe('Data Analysis')
   })
 
   it('omits the tag when a project has no category_label', () => {

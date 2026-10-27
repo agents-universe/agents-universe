@@ -90,9 +90,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Node 18. Install Node 22 LTS (from the China mirror) so agents can run Playwright.
 # Cache the tarball in BuildKit's cache store so repeated builds skip the download.
 RUN --mount=type=cache,target=/tmp/node-dl \
-    NODE_TAR=node-v22.14.0-linux-x64.tar.gz \
+    NODE_TAR=node-v22.23.4-linux-x64.tar.gz \
     && if [ ! -f "/tmp/node-dl/$NODE_TAR" ]; then \
-        curl -fsSLk "$NODE_BASE_URL/v22.14.0/$NODE_TAR" -o "/tmp/node-dl/$NODE_TAR"; \
+        curl -fsSLk "$NODE_BASE_URL/v22.23.4/$NODE_TAR" -o "/tmp/node-dl/$NODE_TAR"; \
     fi \
     && tar -xz -C /usr/local --strip-components=1 -f "/tmp/node-dl/$NODE_TAR" \
     && node --version && npm --version

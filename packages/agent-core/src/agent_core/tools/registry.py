@@ -45,6 +45,7 @@ _OPTIONAL_TOOL_MODULES = {
     "github":             ("agent_core.tools.github",             "GitHubTool"),
     "kong":               ("agent_core.tools.kong",               "KongTool"),
     "api_request":        ("agent_core.tools.api_request",        "ApiRequestTool"),
+    "web_search":         ("agent_core.tools.web_search",         "WebSearchTool"),
     "secret_vault":       ("agent_core.tools.secret_vault",       "SecretVaultTool"),
     "test_generator":     ("agent_core.tools.test_generator",     "TestGeneratorTool"),
     "script_writer":      ("agent_core.tools.script_writer",      "ScriptWriterTool"),

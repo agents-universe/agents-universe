@@ -28,6 +28,7 @@ tools:
   - code_executor
   - chart_renderer
   - api_request
+  - web_search
   - user_confirm
   - plan_task
   - delegate_agent

@@ -32,6 +32,7 @@ tools:
   - git_repo
   - repo_graph
   - web_fetch
+  - web_search
   - api_request
   - delegate_agent
   - list_agents

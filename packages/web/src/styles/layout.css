@@ -1608,27 +1608,17 @@
 
 .meter-value { font-weight: 500; color: var(--text-primary); }
 
-.meter-bar-bg, .completeness-bar-bg {
+.meter-bar-bg {
   background: rgba(255,255,255,0.05);
   border-radius: 3px;
   height: 4px;
   overflow: hidden;
 }
 
-.meter-bar-fill, .completeness-bar-fill {
+.meter-bar-fill {
   height: 100%;
   border-radius: 3px;
   transition: width 0.4s ease;
-}
-
-.completeness-row { margin-bottom: 9px; }
-
-.completeness-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
 }
 
 .loaded-list { list-style: none; padding: 0; }
@@ -4447,50 +4437,6 @@ textarea:focus-visible {
 }
 .token-inline-msg.success { color: var(--color-success); }
 .token-inline-msg.error { color: var(--color-error); }
-
-/* ── Completeness Bar (refined) ───────────────────────────────────────────── */
-.completeness-bar {
-  margin-bottom: 8px;
-}
-.completeness-bar-label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-}
-.completeness-bar-category {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.completeness-bar-icon {
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-.completeness-bar-pct {
-  font-size: 11px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-}
-.completeness-bar-pct.fill-green { color: var(--color-success); }
-.completeness-bar-pct.fill-amber { color: var(--color-warning); }
-.completeness-bar-pct.fill-red { color: var(--color-error); }
-.completeness-bar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 3px;
-  height: 5px;
-  overflow: hidden;
-}
-.completeness-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease;
-}
-.completeness-bar-fill.fill-green { background: var(--color-success); }
-.completeness-bar-fill.fill-amber { background: var(--color-warning); }
-.completeness-bar-fill.fill-red { background: var(--color-error); }
 
 /* ── Knowledge Panel Section Labels ───────────────────────────────────────── */
 .section-label {

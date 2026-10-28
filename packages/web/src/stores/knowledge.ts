@@ -1,20 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { KnowledgeItem, DynamicLoadedItem, CategoryCompleteness } from '@/types'
+import type { KnowledgeItem, DynamicLoadedItem } from '@/types'
 
 export const useKnowledgeStore = defineStore('knowledge', () => {
   const items = ref<KnowledgeItem[]>([])
-  const completeness = ref<CategoryCompleteness>({})
   const loadedThisTurn = ref<string[]>([])
   const dynamicallyLoaded = ref<DynamicLoadedItem[]>([])
   const refreshToken = ref(0)
 
   function setItems(list: KnowledgeItem[]) {
     items.value = list
-  }
-
-  function setCompleteness(c: CategoryCompleteness) {
-    completeness.value = c
   }
 
   function setLoadedThisTurn(slugs: string[]) {
@@ -44,7 +39,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   function reset() {
     items.value = []
-    completeness.value = {}
     loadedThisTurn.value = []
     dynamicallyLoaded.value = []
     refreshToken.value = 0
@@ -52,12 +46,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   return {
     items,
-    completeness,
     loadedThisTurn,
     dynamicallyLoaded,
     refreshToken,
     setItems,
-    setCompleteness,
     setLoadedThisTurn,
     addDynamicLoad,
     removeDynamicLoad,

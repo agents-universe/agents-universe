@@ -319,8 +319,6 @@ export interface DynamicLoadedItem {
   boundToTask: string | null
 }
 
-export type CategoryCompleteness = Record<string, number>
-
 // ── Memory ────────────────────────────────────────────────────────────────────
 
 export interface SessionNote {

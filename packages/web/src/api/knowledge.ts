@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import type { KnowledgeItem, KnowledgeChildItem, KnowledgeAncestor, CategoryCompleteness } from '@/types'
+import type { KnowledgeItem, KnowledgeChildItem, KnowledgeAncestor } from '@/types'
 
 const enc = encodeURIComponent
 
@@ -30,9 +30,6 @@ export interface KnowledgeTemplate {
 export const knowledgeApi = {
   getItems: (projectId: string, rootOnly = false, signal?: AbortSignal) =>
     apiFetch<KnowledgeItem[]>(`/api/projects/${enc(projectId)}/knowledge${rootOnly ? '?root_only=true' : ''}`, { signal }),
-
-  getCompleteness: (projectId: string, signal?: AbortSignal) =>
-    apiFetch<CategoryCompleteness>(`/api/projects/${enc(projectId)}/knowledge/completeness`, { signal }),
 
   getFile: (projectId: string, slug: string) =>
     apiFetch<KnowledgeFileDetail>(`/api/projects/${enc(projectId)}/knowledge/${enc(slug)}`),

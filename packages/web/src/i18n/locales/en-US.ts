@@ -379,10 +379,10 @@ export default {
     historyLabel: 'History',
   },
   knowledgePanel: {
-    completeness: 'Completeness',
     loadedThisTurn: 'Loaded this turn',
     dynamicLoaded: 'Dynamically loaded',
     allItems: 'Knowledge entries',
+    score: '{n} pts',
     copyTemplate: 'Copy from system template',
     systemBadge: 'System',
   },
@@ -728,7 +728,7 @@ export default {
     },
     rightKnowledge: {
       title: 'Knowledge',
-      body: 'Every project has a dedicated knowledge base. This panel shows completeness, what was loaded this turn and dynamically loaded items.',
+      body: 'Every project has a dedicated knowledge base. This panel shows what was loaded this turn and dynamically loaded items.',
     },
     rightMemory: {
       title: 'Memory',

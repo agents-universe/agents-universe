@@ -1,19 +1,5 @@
 <template>
   <div class="knowledge-panel">
-    <!-- Completeness -->
-    <div class="knowledge-panel-section" v-if="Object.keys(knowledgeStore.completeness).length">
-      <div class="section-label">
-        <BarChart3 :size="12" class="section-label-icon" />
-        {{ t('knowledgePanel.completeness') }}
-      </div>
-      <CompletenessBar
-        v-for="(score, cat) in knowledgeStore.completeness"
-        :key="cat"
-        :category="String(cat)"
-        :score="score"
-      />
-    </div>
-
     <!-- Loaded this turn -->
     <div class="knowledge-panel-section" v-if="knowledgeStore.loadedThisTurn.length">
       <div class="section-label">
@@ -85,7 +71,7 @@
             {{ item.children_slugs.length }}
           </span>
           <span class="knowledge-item-score" :class="scoreClass(item.completeness_score)">
-            {{ Math.round(item.completeness_score) }}%
+            {{ t('knowledgePanel.score', { n: Math.round(item.completeness_score) }) }}
           </span>
         </div>
       </div>
@@ -112,10 +98,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { BarChart3, Zap, FileCheck, RefreshCw, Sparkles, Library, FolderOpen, FileText, CopyPlus } from 'lucide-vue-next'
+import { Zap, FileCheck, RefreshCw, Sparkles, Library, FolderOpen, FileText, CopyPlus } from 'lucide-vue-next'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useKnowledgeData } from '@/composables/useKnowledgeData'
-import CompletenessBar from './CompletenessBar.vue'
 import KnowledgeFileViewer from './KnowledgeFileViewer.vue'
 import TemplatePickerDialog from './TemplatePickerDialog.vue'
 

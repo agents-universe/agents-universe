@@ -378,10 +378,10 @@ export default {
     historyLabel: '历史',
   },
   knowledgePanel: {
-    completeness: '完整度',
     loadedThisTurn: '本轮已加载',
     dynamicLoaded: '动态加载',
     allItems: '知识条目',
+    score: '{n}分',
     copyTemplate: '从系统模板复制',
     systemBadge: '系统',
   },
@@ -727,7 +727,7 @@ export default {
     },
     rightKnowledge: {
       title: '知识面板',
-      body: '每个项目都有独立的知识库。这里展示知识完整度、本轮加载与动态加载的条目。',
+      body: '每个项目都有独立的知识库。这里展示本轮加载与动态加载的条目。',
     },
     rightMemory: {
       title: '记忆面板',

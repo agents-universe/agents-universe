@@ -31,6 +31,11 @@ describe('resolveRoute', () => {
   it('returns null without a project id', () => {
     expect(resolveRoute('/projects/{projectId}/chat', null)).toBeNull()
   })
+
+  it('passes placeholder-free templates through without a project id', () => {
+    expect(resolveRoute('/app', null)).toBe('/app')
+    expect(resolveRoute('/settings/tokens', null)).toBe('/settings/tokens')
+  })
 })
 
 describe('waitForRoute', () => {

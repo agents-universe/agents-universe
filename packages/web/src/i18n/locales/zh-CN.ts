@@ -753,9 +753,17 @@ export default {
       title: '设置 — 集成',
       body: '接入 git、Jira、Confluence，并注册 MCP 服务器。智能体可按需将它们作为工具使用。',
     },
-    done: {
-      title: '全部搞定',
-      body: '核心功能就介绍到这里。随时可以从侧栏重播本引导。',
+    createProjectPrompt: {
+      title: '创建你的项目',
+      body: '引导就到这里——现在就创建一个新项目吧。每个项目拥有独立的知识库、智能体、脚本和会话。之后可随时从侧栏重播本引导。',
+    },
+    knowledgeIntro: {
+      title: '让智能体学习项目知识',
+      body: '项目已创建。把项目资料交给智能体来学习：发一个 Confluence 页面地址（智能体会遍历学习其中的子页面）、Git 仓库地址或网页链接，也可以上传 Excel、Word 等文档——它会整理并录入知识库，供后续对话引用。',
+    },
+    knowledgeCopyTemplate: {
+      title: '开始录入知识',
+      body: '也可以从这里复制知识库模板，按模板撰写文档放入知识库。本面板会持续展示智能体已学到的内容。',
     },
   },
   // 后端结构化错误码 → 中文文案。未知码回退服务端英文原文（translateApiError）。

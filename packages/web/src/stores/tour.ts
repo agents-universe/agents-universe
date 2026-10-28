@@ -1,20 +1,23 @@
 /**
  * Tour orchestration store.
  *
- * The tour is driven by the declarative registry in `src/tour/steps.ts`.
- * `start()` returns a promise that resolves when the tour stops (finish /
- * skip / Esc).
+ * Tours are driven by the declarative registry in `src/tour/steps.ts`.
+ * `start(tourId, …)` returns a promise that resolves when that tour stops
+ * (finish / skip / Esc). Only the `main` tour persists completion
+ * (`/api/preferences`, optimistic writes with console.warn on failure — a
+ * failed patch means the tour re-runs next login, acceptable self-healing);
+ * the `knowledge` tour is fire-and-forget, triggered by project creation.
  *
- * Persistence is server-side (`/api/preferences`); all local writes are
- * optimistic with a console.warn on failure — a failed patch means the tour
- * re-runs next login, which is acceptable self-healing.
+ * A project created while any tour runs defers its knowledge tour into a
+ * single pending slot, flushed when the active tour stops — the two tours
+ * never overlap.
  */
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { Router } from 'vue-router'
 import { patchPreferences, type UserPreferences } from '@/api/preferences'
 import { resolveRoute, waitForRoute, waitForSelector } from '@/tour/engine'
-import { TOUR_STEPS, currentProjectId, isMobile, type TourStep } from '@/tour/steps'
+import { TOURS, currentProjectId, isMobile, type TourStep, type TourId } from '@/tour/steps'
 
 let activeRouter: Router | null = null
 
@@ -24,6 +27,12 @@ export const useTourStore = defineStore('tour', () => {
   /** A step transition (route push / waitFor / action) is in flight. */
   const waiting = ref(false)
   const completed = ref(false)
+  const activeTourId = ref<TourId | null>(null)
+
+  /** Single deferred slot: a project was created while a tour was running. */
+  let pendingTourId: TourId | null = null
+
+  const activeSteps = computed<TourStep[]>(() => TOURS[activeTourId.value ?? 'main'])
 
   let stopPromise: Promise<void> | null = null
   let stopResolve: (() => void) | null = null
@@ -38,24 +47,28 @@ export const useTourStore = defineStore('tour', () => {
   }
 
   function currentStep(): TourStep | null {
-    return TOUR_STEPS[stepIndex.value] ?? null
+    return activeSteps.value[stepIndex.value] ?? null
   }
 
   /**
-   * Start (or resume) the tour. Resolves once the tour ends via
+   * Start (or resume) a tour. Resolves once the tour ends via
    * finish/skip/Esc. `fromIndex` re-runs the same step conditions.
    */
-  function start(fromIndex = 0, router?: Router): Promise<void> {
+  function start(tourId: TourId = 'main', fromIndex = 0, router?: Router): Promise<void> {
     if (router) activeRouter = router
     if (stopPromise) return stopPromise
+    // Claim the tour id and index eagerly: currentStep() must index the new
+    // tour's step array before advanceTo lands its first step.
+    activeTourId.value = tourId
+    stepIndex.value = fromIndex
     isActive.value = true
     installKeydown()
     lockBodyScroll()
     stopPromise = new Promise<void>((resolve) => {
       stopResolve = resolve
     })
-    // Advance evaluates conditions + routes; the tour always terminates at
-    // the 'done' step (or by skipping past the end → finish()).
+    // Advance evaluates conditions + routes; the tour always terminates by
+    // running past the last step → finish().
     void advanceTo(fromIndex)
     return stopPromise
   }
@@ -79,13 +92,13 @@ export const useTourStore = defineStore('tour', () => {
       // stay put rather than show a broken one.
       while (index >= 0) {
         if (aborted()) return
-        const step = TOUR_STEPS[index]
+        const step = activeSteps.value[index]
         if (step.skipOnMobile && isMobile()) {
           index--
           continue
         }
         // Same context the forward pass gives it: the step being left.
-        const prevStepId = TOUR_STEPS[stepIndex.value]?.id ?? null
+        const prevStepId = activeSteps.value[stepIndex.value]?.id ?? null
         if (step.condition && !step.condition({ prevStepId })) {
           index--
           continue
@@ -130,6 +143,9 @@ export const useTourStore = defineStore('tour', () => {
   }
 
   async function completeTour() {
+    // Only the main tour is persisted — the knowledge tour finishing (or
+    // every step skipping on mobile) must never touch preferences.
+    if (activeTourId.value !== 'main') return
     completed.value = true
     try {
       await patchPreferences({ onboarding_completed: true })
@@ -149,10 +165,30 @@ export const useTourStore = defineStore('tour', () => {
     waiting.value = false
     uninstallKeydown()
     unlockBodyScroll()
+    activeTourId.value = null
     const resolve = stopResolve
     stopResolve = null
     stopPromise = null
     resolve?.()
+    // Single flush point (finish/skip/Esc/advanceTo fall-off all end here):
+    // a project created while the tour ran gets its knowledge tour now.
+    const pending = pendingTourId
+    pendingTourId = null
+    if (pending) void start(pending, 0, activeRouter ?? undefined)
+  }
+
+  /**
+   * Called by both create dialogs after a successful creation — starts the
+   * knowledge tour, or defers it until the currently running tour stops.
+   */
+  function notifyProjectCreated(router?: Router) {
+    if (router) activeRouter = router
+    if (isActive.value) {
+      pendingTourId = 'knowledge' // latest creation wins — single slot
+      return
+    }
+    if (isMobile()) return // every knowledge step is skipOnMobile — don't flash
+    void start('knowledge', 0, activeRouter ?? undefined)
   }
 
   /**
@@ -205,9 +241,9 @@ export const useTourStore = defineStore('tour', () => {
     const gen = tourGen
     const aborted = () => gen !== tourGen
     try {
-      while (index < TOUR_STEPS.length) {
+      while (index < activeSteps.value.length) {
         if (aborted()) return
-        const step = TOUR_STEPS[index]
+        const step = activeSteps.value[index]
         if (step.skipOnMobile && isMobile()) {
           console.warn(`tour: skipping "${step.id}" — mobile layout`)
           index++
@@ -215,7 +251,7 @@ export const useTourStore = defineStore('tour', () => {
         }
         // Conditions see the step the tour is leaving — e.g. 'project-created'
         // only shows when the create-project form was actually displayed.
-        const prevStepId = TOUR_STEPS[stepIndex.value]?.id ?? null
+        const prevStepId = activeSteps.value[stepIndex.value]?.id ?? null
         if (step.condition && !step.condition({ prevStepId })) {
           console.warn(`tour: skipping "${step.id}" — condition not met`)
           index++
@@ -290,6 +326,8 @@ export const useTourStore = defineStore('tour', () => {
     stepIndex,
     waiting,
     completed,
+    activeTourId,
+    activeSteps,
     setServerState,
     currentStep,
     start,
@@ -299,5 +337,6 @@ export const useTourStore = defineStore('tour', () => {
     finish,
     completeTour,
     stop,
+    notifyProjectCreated,
   }
 })

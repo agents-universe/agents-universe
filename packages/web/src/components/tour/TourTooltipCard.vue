@@ -16,7 +16,7 @@
     <div class="tour-tooltip-actions">
       <button class="tour-skip-btn" @click="tour.skip()">{{ t('tour.skip') }}</button>
       <span class="tour-progress">
-        {{ t('tour.stepOf', { current: tour.stepIndex + 1, total: TOUR_STEPS.length }) }}
+        {{ t('tour.stepOf', { current: tour.stepIndex + 1, total: tour.activeSteps.length }) }}
       </span>
       <button
         class="btn-primary tour-next-btn"
@@ -33,7 +33,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTourStore } from '@/stores/tour'
-import { TOUR_STEPS, type TourStep } from '@/tour/steps'
+import type { TourStep } from '@/tour/steps'
 import { setLocale, type AppLocale } from '@/i18n'
 import { patchPreferences } from '@/api/preferences'
 
@@ -42,7 +42,9 @@ defineProps<{ step: TourStep }>()
 const tour = useTourStore()
 const { t, locale } = useI18n()
 
-const isLast = computed(() => tour.stepIndex >= TOUR_STEPS.length - 1)
+// Derived from the ACTIVE tour's length so knowledge-tour steps get the
+// same 完成 affordance at their own end.
+const isLast = computed(() => tour.stepIndex >= tour.activeSteps.length - 1)
 
 function chooseLocale(value: AppLocale) {
   setLocale(value)

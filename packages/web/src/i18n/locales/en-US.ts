@@ -754,9 +754,17 @@ export default {
       title: 'Settings — integrations',
       body: 'Connect git, Jira and Confluence, and register MCP servers. Agents then use them as tools on demand.',
     },
-    done: {
-      title: "You're all set",
-      body: 'That covers the basics. You can replay this tour anytime from the sidebar.',
+    createProjectPrompt: {
+      title: 'Create your project',
+      body: 'That wraps up the tour — go ahead and create a new project now. Every project has its own knowledge base, agents, scripts and conversations. You can replay this tour anytime from the sidebar.',
+    },
+    knowledgeIntro: {
+      title: 'Teach the agent about your project',
+      body: 'Your project is ready. Hand the agent project material to learn from: paste a Confluence page URL (it will walk the child pages), a git repo URL or a web page link, or upload Excel / Word documents — it distills them into the knowledge base for later conversations.',
+    },
+    knowledgeCopyTemplate: {
+      title: 'Start adding knowledge',
+      body: 'You can also copy a knowledge-base template here and write your docs against it. This panel keeps showing what the agent has learned.',
     },
   },
   // Backend structured error codes → English copy. Unknown codes fall back

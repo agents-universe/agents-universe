@@ -54,6 +54,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { FolderPlus, X } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
+import { useTourStore } from '@/stores/tour'
 import { projectsApi } from '@/api/projects'
 import type { ProjectCategory } from '@/types'
 import CategoryPicker from './CategoryPicker.vue'
@@ -65,6 +66,7 @@ useClickOutside(overlayEl, () => emit('close'), true)
 
 const { t } = useI18n()
 const projectStore = useProjectStore()
+const tourStore = useTourStore()
 const router = useRouter()
 const name = ref('')
 const loading = ref(false)
@@ -108,6 +110,7 @@ async function create() {
     projectStore.setCurrentProject(project)
     router.push(`/projects/${project.project_id}/chat`)
     emit('close')
+    tourStore.notifyProjectCreated(router)
   } catch (e) {
     error.value = e instanceof Error ? e.message : t('common.createFailed')
   } finally {

@@ -69,7 +69,7 @@ function goSettings() {
 }
 
 function startTour() {
-  void tourStore.start(0, router)
+  void tourStore.start('main', 0, router)
 }
 
 function handleLogout() {

@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="tour.isActive" class="tour-layer" :class="{ 'tour-layer--dim': isCenterStep }">
+    <div v-if="tour.isActive && step" class="tour-layer" :class="{ 'tour-layer--dim': isCenterStep }">
       <template v-if="!isCenterStep">
         <!-- Four backdrop segments around the hole; block clicks outside it -->
         <div v-if="hole" class="tour-backdrop" :style="segmentStyle('top')" />

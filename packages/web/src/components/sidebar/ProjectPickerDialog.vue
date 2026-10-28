@@ -139,6 +139,7 @@ import { useRouter } from 'vue-router'
 import { Folder, FolderHeart, Star, Search, SearchX, Plus, X, Trash2, Settings } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
+import { useTourStore } from '@/stores/tour'
 import { projectsApi } from '@/api/projects'
 import type { Project, ProjectCategory } from '@/types'
 import { localizedText } from '@/utils/localize'
@@ -154,6 +155,7 @@ useClickOutside(overlayEl, () => emit('close'), true)
 const { t } = useI18n()
 const projectStore = useProjectStore()
 const favoritesStore = useFavoritesStore()
+const tourStore = useTourStore()
 const router = useRouter()
 
 const search = ref('')
@@ -244,6 +246,7 @@ async function createProject() {
     projectStore.setCurrentProject(project)
     router.push(`/projects/${project.project_id}/chat`)
     emit('close')
+    tourStore.notifyProjectCreated(router)
   } catch (e) {
     createError.value = e instanceof Error ? e.message : t('common.createFailed')
   } finally {

@@ -30,6 +30,9 @@ const favorites = vi.hoisted(() => ({
 }))
 vi.mock('@/stores/favorites', () => ({ useFavoritesStore: () => favorites }))
 
+const tourStore = vi.hoisted(() => ({ notifyProjectCreated: vi.fn() }))
+vi.mock('@/stores/tour', () => ({ useTourStore: () => tourStore }))
+
 const agentStore = vi.hoisted(() => ({
   agents: [] as Array<{ slug: string; project_id: string | null }>,
   fetchAgents: vi.fn(),

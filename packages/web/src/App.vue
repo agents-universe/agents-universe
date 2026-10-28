@@ -41,7 +41,7 @@ onMounted(async () => {
         // A brand-new user gets the tour first; returning users who already
         // completed it see nothing on login.
         if (!tourStore.completed && !document.querySelector('.modal-overlay')) {
-          await tourStore.start(0, router)
+          await tourStore.start('main', 0, router)
         }
       }
     }

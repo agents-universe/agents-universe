@@ -1,5 +1,9 @@
 /**
- * Tour step registry — the declarative definition of the guided tour.
+ * Tour step registry — the declarative definition of the guided tours.
+ *
+ * Two tours share the engine: `main` (first-run onboarding, persisted via
+ * `onboarding_completed`) ends on the create-project dialog; `knowledge` is a
+ * short unpersisted tour fired after every project creation.
  *
  * Steps are evaluated in order; every step's `condition` is re-evaluated at
  * advance time (not tour start), so "does the user have a project" stays
@@ -9,6 +13,7 @@
 import type { Router } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import type { AppLocale } from '@/i18n'
+import { waitForSelector } from './engine'
 
 const MOBILE_BREAKPOINT = 1024 // must match AppLayout.vue
 
@@ -75,8 +80,11 @@ function clickRightPanelTab(tabId: 'conversations' | 'knowledge' | 'memory') {
   tab?.click()
 }
 
-function openCreateProjectDialog() {
-  document.querySelector<HTMLElement>('.empty-project-btn')?.click()
+async function openCreateProjectDialog() {
+  // The final main step arrives from /settings/tokens, which remounts the
+  // layout — the CTA may render a tick after waitForRoute resolved.
+  const el = await waitForSelector('.empty-project-btn', 3000)
+  if (el instanceof HTMLElement) el.click()
 }
 
 function clickIntegrationsTab() {
@@ -86,7 +94,7 @@ function clickIntegrationsTab() {
 const noProjects = () => useProjectStore().projects.length === 0
 const hasProject = () => currentProjectId() != null
 
-export const TOUR_STEPS: TourStep[] = [
+export const MAIN_TOUR_STEPS: TourStep[] = [
   // First, an explicit language pick — the rest of the tour (and the app)
   // renders in the chosen language immediately after the click.
   {
@@ -261,5 +269,50 @@ export const TOUR_STEPS: TourStep[] = [
     waitFor: '.token-tabs',
   },
 
-  { id: 'done', titleKey: 'tour.done.title', bodyKey: 'tour.done.body', center: true },
+  // The tour's true ending — everyone lands on the create-project dialog,
+  // including reruns by users who already have projects (no condition).
+  {
+    id: 'create-project-prompt',
+    titleKey: 'tour.createProjectPrompt.title',
+    bodyKey: 'tour.createProjectPrompt.body',
+    route: '/app',
+    target: '.create-project-dialog',
+    action: openCreateProjectDialog,
+    waitFor: '.create-project-dialog',
+  },
 ]
+
+/**
+ * Post-creation tour — fired once after every project creation (never
+ * persisted). Deliberately short: it interrupts a user who just did real
+ * work. Two steps only; on mobile all steps skip and the tour finishes
+ * without writing any preference.
+ */
+export const KNOWLEDGE_TOUR_STEPS: TourStep[] = [
+  {
+    id: 'knowledge-intro',
+    titleKey: 'tour.knowledgeIntro.title',
+    bodyKey: 'tour.knowledgeIntro.body',
+    route: CHAT_ROUTE,
+    target: '.knowledge-panel',
+    action: () => clickRightPanelTab('knowledge'),
+    waitFor: '.knowledge-panel',
+    condition: hasProject,
+    skipOnMobile: true,
+  },
+  {
+    id: 'knowledge-copy-template',
+    titleKey: 'tour.knowledgeCopyTemplate.title',
+    bodyKey: 'tour.knowledgeCopyTemplate.body',
+    target: '.knowledge-copy-template-btn',
+    condition: hasProject,
+    skipOnMobile: true,
+  },
+]
+
+export type TourId = 'main' | 'knowledge'
+
+export const TOURS: Record<TourId, TourStep[]> = {
+  main: MAIN_TOUR_STEPS,
+  knowledge: KNOWLEDGE_TOUR_STEPS,
+}

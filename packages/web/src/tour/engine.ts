@@ -31,8 +31,11 @@ export function waitForSelector(selector: string, timeoutMs = 8000): Promise<Ele
   })
 }
 
-/** Replace the '{projectId}' placeholder; null project id → null (step skipped). */
+/** Replace the '{projectId}' placeholder; null project id → null (step skipped).
+ *  Templates without the placeholder (`/app`, `/settings/tokens`) pass through —
+ *  they are reachable without a project. */
 export function resolveRoute(template: string, projectId: string | null): string | null {
+  if (!template.includes('{projectId}')) return template
   if (projectId == null) return null
   return template.replace('{projectId}', projectId)
 }

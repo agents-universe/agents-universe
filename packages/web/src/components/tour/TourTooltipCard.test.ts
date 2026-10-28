@@ -7,6 +7,7 @@ import type { TourStep } from '@/tour/steps'
 const tour = vi.hoisted(() => ({
   stepIndex: 0,
   waiting: false,
+  activeSteps: [{}, {}] as unknown[],
   next: vi.fn(),
   skip: vi.fn(),
   finish: vi.fn(),
@@ -54,5 +55,17 @@ describe('TourTooltipCard', () => {
     const step: TourStep = { id: 'welcome', titleKey: 'tour.welcome.title', bodyKey: 'tour.welcome.body', center: true }
     const wrapper = mount(TourTooltipCard, { props: { step }})
     expect(wrapper.find('.tour-choices').exists()).toBe(false)
+  })
+
+  it('the final step of the ACTIVE tour renders 完成 and calls finish', async () => {
+    // isLast derives from the active tour's own length (mocked: 2 steps).
+    tour.stepIndex = 1
+    const step: TourStep = { id: 'welcome', titleKey: 'tour.welcome.title', bodyKey: 'tour.welcome.body', center: true }
+    const wrapper = mount(TourTooltipCard, { props: { step }})
+    const next = wrapper.find('.tour-next-btn')
+    expect(next.text()).toBe('完成')
+    await next.trigger('click')
+    expect(tour.finish).toHaveBeenCalled()
+    tour.stepIndex = 0
   })
 })

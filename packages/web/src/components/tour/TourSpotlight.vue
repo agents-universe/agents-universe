@@ -48,7 +48,10 @@ const isCenterStep = computed(() => step.value?.center ?? false)
 /* ── measurement ─────────────────────────────────────────────── */
 function measure() {
   const s = step.value
-  if (!s || s.center) {
+  // While inactive the layer is unmounted (tooltipEl ref null) — measuring
+  // an anchored step would make positionTooltip re-schedule itself on
+  // nextTick forever, freezing the page in a microtask loop.
+  if (!tour.isActive || !s || s.center) {
     hole.value = null
     tooltipPos.value = null
     return
@@ -145,7 +148,10 @@ function positionTooltip() {
     (step.value?.placement ?? 'bottom') as Placement,
   )
   tooltipPos.value = { left: pos.left, top: pos.top }
-  if (!hasCard) nextTick(positionTooltip)
+  // Re-run once the card has rendered (first frame of a center → anchored
+  // step). Never while inactive: the layer is unmounted and the ref stays
+  // null, which would loop forever.
+  if (!hasCard && tour.isActive) nextTick(positionTooltip)
 }
 
 function tooltipStyle() {
@@ -159,6 +165,10 @@ function tooltipStyle() {
 // height reflects the text actually being shown.
 watch(() => tour.stepIndex, measure, { flush: 'post' })
 watch(() => tour.isActive, measure, { flush: 'post' })
+// A tour's first step keeps stepIndex at 0 (no change to observe), and its
+// action may mount the target after start() — waiting flipping false is the
+// signal that the transition settled and the target can be measured.
+watch(() => tour.waiting, measure, { flush: 'post' })
 
 onMounted(() => {
   measure()

@@ -111,14 +111,16 @@ class AgentDelegateTool(Tool):
         "have (a tool you lack, a domain you do not know). The agent runs as a "
         "sub-task of this conversation, its reply is visible to the user, and its "
         "summary comes back to you — then you finish the user's answer. Never "
-        "delegate work you can do yourself."
+        "delegate work you can do yourself. Write a self-contained brief: the "
+        "delegated agent does not see this conversation."
     )
     description = (
         "Run another agent on a self-contained subtask and get its result back. "
         "Requirements: 'agent' is a slug from list_agents; 'brief' is the full "
         "instruction for that agent, written as if to a colleague who has not seen "
-        "this conversation — include the concrete inputs it needs; 'reason' states "
-        "what capability you lack, in one sentence. Returns status (ok / error / "
+        "this conversation (it is started without history) — include the concrete "
+        "inputs it needs; 'reason' states what capability you lack, in one "
+        "sentence. Returns status (ok / error / "
         "timeout / aborted / refused), a summary of what the agent did, and the "
         "message_id of its reply in the transcript. The agent may ask the user to "
         "confirm a risky action; you do not need to relay it."
@@ -134,8 +136,11 @@ class AgentDelegateTool(Tool):
                 "type": "string",
                 "description": (
                     "The subtask, self-contained: what to do, which inputs to use, "
-                    "what to return. The agent sees the conversation history but not "
-                    "your reasoning about why you are delegating."
+                    "what to return. The agent starts WITHOUT the conversation "
+                    "history — include the background, identifiers, and constraints "
+                    "it needs; it can call load_conversation_history for prior "
+                    "context, but do not rely on it. It never sees your reasoning "
+                    "about why you are delegating."
                 ),
             },
             "reason": {

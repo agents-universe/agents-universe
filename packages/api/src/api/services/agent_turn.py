@@ -559,10 +559,15 @@ async def run_turn(
             # Load conversation history from DB (media_dir enables attachment rehydration).
             # turn_agent_slug lets _load_history mark replies produced by other
             # agents so the @-mentioned agent does not mistake them for its own.
-            history = await _load_history(
-                db, conversation_id, Path(fs_path) / ".tmp" / "media" / conversation_id,
-                turn_agent_slug=agent_config.slug,
-            )
+            # Isolated delegated turns start with no history at all — the brief is
+            # self-contained and the child can page history via load_conversation_history.
+            if nested and settings.agent_delegation_isolated_context:
+                history = []
+            else:
+                history = await _load_history(
+                    db, conversation_id, Path(fs_path) / ".tmp" / "media" / conversation_id,
+                    turn_agent_slug=agent_config.slug,
+                )
 
             # Load personal memories for this user (scoped to current project)
             personal_memory_ctx = await _load_personal_memories(db, user_id, project_id)
@@ -755,6 +760,16 @@ async def run_turn(
                 except Exception as exc:
                     _log.warning("repo_graph tool injection failed: %s", exc)
 
+            # Isolated delegated turns get a bounded way to page conversation
+            # history (they are started with none preloaded). Root turns never
+            # see it, and it is not declarable in agent frontmatter.
+            if nested and settings.agent_delegation_isolated_context:
+                try:
+                    from agent_core.tools.conversation_history import LoadConversationHistoryTool
+                    agent.add_tools({"load_conversation_history": LoadConversationHistoryTool()})
+                except Exception as exc:
+                    _log.warning("load_conversation_history tool injection failed: %s", exc)
+
             # An @-mention turn hands this message to a different agent than
             # the conversation default. Say so in the LLM-facing message only -
             # the persisted row keeps the text exactly as the user typed it.
@@ -766,16 +781,29 @@ async def run_turn(
                 # — inviting it to answer the user directly instead of
                 # reporting back to the agent that asked.
                 parent_slug = delegation.chain[-2] if len(delegation.chain) > 1 else None
-                llm_user_content = (
-                    f"{content}\n\n"
-                    f"[System note: you are running as a delegated sub-task for "
-                    f"@{parent_slug or 'another agent'}, not answering the user directly. "
-                    f"The instruction above was written by that agent, not by the user. "
-                    f"Report back to it: what you did, what you found, and anything it has "
-                    f"to decide. If you need an answer only the user can give, ask for it — "
-                    f"the question is routed to the user from here. Assistant replies in the "
-                    f"history prefixed with [name] were produced by other agents, not by you.]"
-                )
+                if settings.agent_delegation_isolated_context:
+                    llm_user_content = (
+                        f"{content}\n\n"
+                        f"[System note: you are running as a delegated sub-task for "
+                        f"@{parent_slug or 'another agent'}, not answering the user directly. "
+                        f"The instruction above was written by that agent, not by the user. "
+                        f"You start WITHOUT the conversation history; call load_conversation_history "
+                        f"if you need prior context. "
+                        f"Report back to it: what you did, what you found, and anything it has "
+                        f"to decide. If you need an answer only the user can give, ask for it — "
+                        f"the question is routed to the user from here.]"
+                    )
+                else:
+                    llm_user_content = (
+                        f"{content}\n\n"
+                        f"[System note: you are running as a delegated sub-task for "
+                        f"@{parent_slug or 'another agent'}, not answering the user directly. "
+                        f"The instruction above was written by that agent, not by the user. "
+                        f"Report back to it: what you did, what you found, and anything it has "
+                        f"to decide. If you need an answer only the user can give, ask for it — "
+                        f"the question is routed to the user from here. Assistant replies in the "
+                        f"history prefixed with [name] were produced by other agents, not by you.]"
+                    )
             elif (
                 conv_default_agent_slug
                 and agent_config.slug != conv_default_agent_slug
@@ -2027,6 +2055,106 @@ async def _load_history(
                 ))
 
     return history
+
+
+async def load_history_page(
+    db,
+    conversation_id: str,
+    *,
+    viewer_agent_slug: str | None = None,
+    limit: int = 20,
+    before: int | None = None,
+    agent: str | None = None,
+    max_chars_per_message: int = 2000,
+    max_total_chars: int = 48_000,
+) -> dict:
+    """One bounded page of a conversation's text history for the
+    load_conversation_history tool (isolated delegated turns).
+
+    Scoped like _load_history's attribution: assistant replies produced by an
+    agent other than *viewer_agent_slug* are prefixed "[display_name]:" so the
+    reader can tell its own output from other agents'. Only user/assistant
+    text rows are returned — tool calls and thinking stay out (they live inside
+    the assistant row's JSON, which a delegated reader has no use for), and the
+    delegated brief never appears because it is not persisted (G16).
+    """
+    from sqlalchemy import select
+    from api.models.conversation import Message as DbMessage
+
+    limit = max(1, min(int(limit), 50))
+
+    query = (
+        select(DbMessage)
+        .where(
+            DbMessage.conversation_id == conversation_id,
+            DbMessage.role.in_(("user", "assistant")),
+            DbMessage.content.isnot(None),
+            DbMessage.content != "",
+        )
+        .order_by(DbMessage.sequence_num.desc())
+        .limit(limit + 1)  # one extra row detects whether older messages exist
+    )
+    if agent:
+        query = query.where(DbMessage.agent_slug == agent)
+    if before is not None:
+        query = query.where(DbMessage.sequence_num < int(before))
+
+    result = await db.execute(query)
+    rows = list(reversed(result.scalars().all()))  # oldest-first for the reader
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[-limit:]  # drop the oldest extras — page walks backwards
+
+    # Slug -> display_name, same full-scan approach as _load_history (the
+    # agents table is small; a subquery per message would cost more).
+    agent_display_names: dict[str, str] = {}
+    if viewer_agent_slug:
+        from api.models.agent import Agent as AgentModel
+        _names = await db.execute(select(AgentModel.slug, AgentModel.display_name))
+        agent_display_names = {slug: name for slug, name in _names.all()}
+
+    def _truncate(text: str) -> str:
+        if len(text) <= max_chars_per_message:
+            return text
+        half = max_chars_per_message // 2
+        return f"{text[:half]}\n…\n{text[-half:]}"
+
+    messages: list[dict] = []
+    total_chars = 0
+    for m in reversed(rows):  # newest-first — the cap keeps the newest segment
+        text = (m.content or "").strip()
+        if not text:
+            continue
+        if (
+            viewer_agent_slug
+            and m.role == "assistant"
+            and m.agent_slug
+            and m.agent_slug != viewer_agent_slug
+        ):
+            display = agent_display_names.get(m.agent_slug, m.agent_slug)
+            text = f"[{display}]:\n{text}"
+        text = _truncate(text)
+        if messages and total_chars + len(text) > max_total_chars:
+            # Keep the newest contiguous segment; the dropped older messages
+            # remain pageable via before=next_before (same philosophy as
+            # _load_history's byte cap).
+            has_more = True
+            break
+        messages.append({
+            "sequence": m.sequence_num,
+            "role": m.role,
+            "agent": m.agent_slug,
+            "text": text,
+        })
+        total_chars += len(text)
+    messages.reverse()  # oldest-first reading order
+
+    return {
+        "messages": messages,
+        "count": len(messages),
+        "has_more": has_more,
+        "next_before": messages[0]["sequence"] if messages else None,
+    }
 
 
 async def _load_personal_memories(db, user_id: str, project_id: str | None = None) -> str:

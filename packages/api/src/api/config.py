@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # Depth counts nested turns: 2 allows root -> child -> grandchild, 0 disables.
     agent_delegation_max_depth: int = 2
     agent_delegation_timeout_seconds: int = 1800
+    # Delegated sub-turns start with isolated context: no conversation history
+    # preloaded (the child gets the brief + its knowledge only) and a
+    # load_conversation_history tool injected so it can page history on demand.
+    # Set false to restore the legacy behavior (full history injected into every
+    # child turn, no tool, legacy G8 note).
+    agent_delegation_isolated_context: bool = True
 
 
     # Atlassian (base URL is system-level; tokens are per-user in DB)

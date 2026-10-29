@@ -52,7 +52,11 @@ Optional tools (lazy-loaded, enabled per agent): `browser_playwright`, `chart_re
 ### Agent Delegation (delegation.py, tools/agent_delegate.py)
 An agent that lacks a capability can hand a subtask to another agent instead of telling the
 user to switch: `list_agents` shows the project's roster, `delegate_agent` runs one of them as
-a **nested turn** and returns its summary. The parent blocks on the tool call and then writes
+a **nested turn** and returns its summary. Delegated turns run with **isolated context** — the
+child starts with its own system prompt, the brief and its knowledge (no conversation history
+preloaded) and receives a `load_conversation_history` tool to page prior messages on demand
+(`AGENT_DELEGATION_ISOLATED_CONTEXT=false` restores preloaded history). The parent blocks on
+the tool call and then writes
 the final answer itself — the subtask is not a handoff of the conversation. The delegated
 agent's reply is persisted as its own message row with its own `agent_slug`, so the UI shows it
 with the usual "answered by X" attribution; its stream deltas, task events, abort acks and

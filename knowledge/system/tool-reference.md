@@ -248,10 +248,12 @@ slugs outside the caller's `delegates_to` allowlist. Cross-project agents never 
 ## delegate_agent
 
 Runs another agent on a self-contained subtask, inside the current turn, and returns what it
-did. The delegated agent gets the full conversation history (other agents' replies are prefixed
-`[display_name]:`), and its own reply is persisted as a normal assistant message attributed to
-its slug — it is visible to the user. The calling agent blocks until the subtask finishes, then
-writes the user-facing answer itself.
+did. The delegated agent starts with **isolated context** — no conversation history preloaded,
+so write the brief as if to a colleague who has not seen this conversation (it can page history
+back in via `load_conversation_history`, but do not rely on it). Its own reply is persisted as a
+normal assistant message attributed to its slug — it is visible to the user, and on the parent's
+next turn other agents' replies are prefixed `[display_name]:`. The calling agent blocks until
+the subtask finishes, then writes the user-facing answer itself.
 
 ```
 Inputs: agent (str — slug from list_agents),
@@ -273,8 +275,30 @@ A delegated agent may still ask the user to confirm a destructive action — tha
 routed to the same conversation.
 
 Controlled by `AGENT_DELEGATION_ENABLED` (kill switch), `AGENT_DELEGATION_MAX_DEPTH` (default 2,
-`0` disables) and `AGENT_DELEGATION_TIMEOUT_SECONDS` (default 1800). Both tools are optional
+`0` disables) and `AGENT_DELEGATION_TIMEOUT_SECONDS` (default 1800). `AGENT_DELEGATION_ISOLATED_CONTEXT`
+(default `true`) gates the isolated child context — set it to `false` to restore the legacy
+behavior where every delegated turn preloads the full conversation history (no tool injected,
+legacy system note). Both tools are optional
 modules — an agent that does not declare them in `tools:` never sees them.
+
+## load_conversation_history
+
+Pages earlier messages of the current conversation back in, for delegated sub-turns that started
+without history. **Not declarable** — the framework injects it into nested (delegated) turns
+only, when `AGENT_DELEGATION_ISOLATED_CONTEXT` is on; root turns never see it.
+
+```
+Inputs: limit (int, optional — 1-50, default 20; messages oldest-first),
+        before (int, optional — sequence-number cursor; pass next_before to page further back),
+        agent (str, optional — return only that agent's replies)
+Output: {messages: [{sequence, role, agent, text}], count, has_more, next_before, note?}
+```
+
+Assistant replies produced by an agent other than the calling one are prefixed
+`[display_name]:` (same rule as the turn-level history); tool calls and thinking are omitted and
+long texts truncated head+tail (≤2000 chars per message, ≤48 KB per page). The delegated brief
+never appears — it is not persisted. The cursor (`before=next_before`) walks the transcript
+backwards; `has_more` marks whether older messages remain.
 
 ## memory_rw
 

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **委派子代理隔离上下文 + 按需历史回填工具** - 委派子轮此前预载完整会话历史（最多 200 条 / 50MB），与 `delegate_agent` 要求 brief 自包含的描述自相矛盾，且深度 2 委派链上同一历史被逐层重复读取。现子轮以隔离上下文启动（自有 system prompt + brief + 知识，不预载历史），框架注入 `load_conversation_history` 工具（不可声明、仅嵌套轮可见）供其按需分页回读历史（`limit` 1-50 / `before` 游标 / `agent` 过滤，沿用 `[display_name]:` 归属前缀，每条 ≤2000 字符头尾截断、每页 ≤48KB）。`brief` 参数描述与 G8 系统提示同步改写（父侧写自包含 brief、子侧被告知无历史可调工具）；新增 `AGENT_DELEGATION_ISOLATED_CONTEXT` 开关（默认 true，置 false 恢复预载历史的遗留行为——不注入工具、保留旧系统提示）。归属徽标、委派锁、深度/环路/策略校验、`DelegationTransport` 白名单与 token 记账均不变
+
 ## [1.6.0] - 2026-10-28
 
 ### 新增

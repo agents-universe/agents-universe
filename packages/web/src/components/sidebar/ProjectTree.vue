@@ -21,12 +21,6 @@
       >
         <Folder :size="14" class="project-icon" />
         <span class="project-name">{{ project.display_name }}</span>
-        <span v-if="project.category_label" class="project-category-tag">{{ localizedText(project.category_label, project.category_i18n?.label) }}</span>
-        <span
-          class="badge project-visibility-badge"
-          :class="project.visibility === 'public' ? 'badge--green' : 'badge--muted'"
-          :title="project.visibility === 'public' ? t('sidebar.projects.badgePublic') : t('sidebar.projects.badgePrivate')"
-        >{{ project.visibility === 'public' ? t('sidebar.projects.badgePublic') : t('sidebar.projects.badgePrivate') }}</span>
       </div>
     </div>
 
@@ -44,7 +38,6 @@ import { Plus, Folder } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
 import type { Project } from '@/types'
-import { localizedText } from '@/utils/localize'
 import ProjectPickerDialog from './ProjectPickerDialog.vue'
 
 const { t } = useI18n()

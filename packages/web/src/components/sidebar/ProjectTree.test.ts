@@ -39,47 +39,12 @@ function makeProject(over: Partial<Project> = {}): Project {
 describe('ProjectTree', () => {
   afterEach(() => setLocale('zh-CN'))
 
-  it('renders the category tag for favorited projects', () => {
+  it('renders the project name without category or visibility tags', () => {
     favorites.resolvedFavoriteProjects = [makeProject()]
     const wrapper = mount(ProjectTree)
-    const tag = wrapper.find('.project-category-tag')
-    expect(tag.exists()).toBe(true)
-    expect(tag.text()).toBe('数据分析')
-  })
-
-  it('renders the localized English category tag when the locale is en-US', () => {
-    favorites.resolvedFavoriteProjects = [
-      makeProject({
-        category_i18n: { label: { 'zh-CN': '数据分析', 'en-US': 'Data Analysis' } },
-      }),
-    ]
-    setLocale('en-US')
-    const wrapper = mount(ProjectTree)
-    const tag = wrapper.find('.project-category-tag')
-    expect(tag.exists()).toBe(true)
-    expect(tag.text()).toBe('Data Analysis')
-  })
-
-  it('omits the tag when a project has no category_label', () => {
-    favorites.resolvedFavoriteProjects = [
-      makeProject({ category_label: undefined }),
-    ]
-    const wrapper = mount(ProjectTree)
+    expect(wrapper.find('.project-name').text()).toBe('销售分析')
     expect(wrapper.find('.project-category-tag').exists()).toBe(false)
-  })
-
-  it('renders the visibility badge with public/private variants', () => {
-    favorites.resolvedFavoriteProjects = [
-      makeProject({ project_id: 'p-1', visibility: 'public' }),
-      makeProject({ project_id: 'p-2', visibility: 'private' }),
-    ]
-    const wrapper = mount(ProjectTree)
-    const badges = wrapper.findAll('.project-visibility-badge')
-    expect(badges.length).toBe(2)
-    expect(badges[0].text()).toBe('公共')
-    expect(badges[0].classes()).toContain('badge--green')
-    expect(badges[1].text()).toBe('私有')
-    expect(badges[1].classes()).toContain('badge--muted')
+    expect(wrapper.find('.project-visibility-badge').exists()).toBe(false)
   })
 
   it('shows the empty hint when no projects are favorited', () => {

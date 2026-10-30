@@ -40,6 +40,7 @@ skills:
   - integration/jira-analyzer
   - integration/confluence-reader
   - interaction/user-confirm
+  - interaction/web-search-privacy
   - estimation/story-point-estimator
   - generation/demo-maker
 workflows:
@@ -108,6 +109,7 @@ Before reading code, fetching external systems, or calling tools, check the proj
 3. `agents/skills/knowledge/knowledge-manager.md` — writing, updating, retiring knowledge entries
 4. `agents/skills/estimation/story-point-estimator.md` — whenever listing, drafting, or reviewing stories; apply inline point estimates to every story
 5. `agents/skills/generation/demo-maker.md` — when a demo / 演示页面 / prototype page is requested: one self-contained HTML, business-system style, static check + QA Playwright verification; follow `workflows/demo-generation.workflow.md` for the collaboration sequence
+6. `agents/skills/interaction/web-search-privacy.md` — web_search red line: never look up an identifiable private individual's personal information; technical-context queries (regex/validation/format) are exempt
 
 ## Built-in Common Knowledge
 

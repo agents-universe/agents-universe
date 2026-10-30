@@ -6,6 +6,8 @@
 
 ### 新增
 
+- **web_search 隐私限制技能** - 新增 `interaction/web-search-privacy` 引导技能：禁止用 `web_search`（及后续 web_fetch）检索可识别自然人的个人信息（身份证/手机号/住址/户籍/征信/通话记录、人肉/开盒类聚合查询），中英双语触发词命中时注入约束正文；技术语境豁免——把个人信息当数据格式/校验/脱敏/加密/合规话题查询（如「手机号正则」「phone number validation regex」）正常放行。经 frontmatter `skills:` 分发给项目负责人与数据分析专家；配套资产测试校验 slug/双语触发词/工具声明与触发激活
+
 - **web_search 首选 Keenable keyless 搜索** - 默认引擎链改为 Keenable（`POST api.keenable.ai/v1/search/public`，免 API key，结果自带已提取页面正文，snippet 限 500 字）→ Bing RSS → 百度 → DuckDuckGo；429（免费小时限速）/ 402 / 其他报错与非 JSON 响应均记入 engines_tried 后静默降级，全灭时 hint 说明 429 会自行恢复。`engine` 参数新增 `keenable` 可钉单引擎；`keenable.ai` 加入提交卫生 URL 白名单
 
 - **委派子代理隔离上下文 + 按需历史回填工具** - 委派子轮此前预载完整会话历史（最多 200 条 / 50MB），与 `delegate_agent` 要求 brief 自包含的描述自相矛盾，且深度 2 委派链上同一历史被逐层重复读取。现子轮以隔离上下文启动（自有 system prompt + brief + 知识，不预载历史），框架注入 `load_conversation_history` 工具（不可声明、仅嵌套轮可见）供其按需分页回读历史（`limit` 1-50 / `before` 游标 / `agent` 过滤，沿用 `[display_name]:` 归属前缀，每条 ≤2000 字符头尾截断、每页 ≤48KB）。`brief` 参数描述与 G8 系统提示同步改写（父侧写自包含 brief、子侧被告知无历史可调工具）；新增 `AGENT_DELEGATION_ISOLATED_CONTEXT` 开关（默认 true，置 false 恢复预载历史的遗留行为——不注入工具、保留旧系统提示）。归属徽标、委派锁、深度/环路/策略校验、`DelegationTransport` 白名单与 token 记账均不变

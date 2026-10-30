@@ -41,6 +41,7 @@ skills:
   - analysis/dataviz
   - analysis/report-writer
   - interaction/user-confirm
+  - interaction/web-search-privacy
   - office/xlsx
 workflows:
   - ad-hoc-analysis
@@ -113,6 +114,7 @@ Before querying any data:
 7. `agents/skills/knowledge/knowledge-manager.md` — knowledge write conventions
 8. `agents/skills/interaction/user-confirm.md` — selection/text/secret prompts and storage scope rules
 9. `agents/skills/office/xlsx.md` — when the user wants analysis results exported as a formatted Excel workbook (生成excel / 导出excel / 编辑excel), read this skill before producing; write the workbook to `$OUTPUT_DIR` so it auto-delivers as an `/api/media/` attachment
+10. `agents/skills/interaction/web-search-privacy.md` — web_search red line: never look up an identifiable private individual's personal information; technical-context queries (regex/validation/format) are exempt
 
 ## Built-in Common Knowledge
 

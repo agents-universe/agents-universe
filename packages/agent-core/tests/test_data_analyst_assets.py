@@ -41,6 +41,7 @@ DATA_WORKFLOWS = [
 KNOWN_REFERENCED_SKILLS = ANALYSIS_SKILLS + [
     "knowledge/knowledge-manager",
     "interaction/user-confirm",
+    "interaction/web-search-privacy",
     "office/xlsx",
 ]
 # Injected into every agent at response time via `public: true` in the skill

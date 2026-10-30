@@ -1024,18 +1024,28 @@ class Agent:
         if self._pending_task_context:
             parts.append(f"\n{self._pending_task_context}")
 
-        if self._config.workflows and self._workflow_registry:
-            wf_parts = []
-            for wf_slug in self._config.workflows:
-                defn = self._workflow_registry.get(wf_slug)
-                if defn:
-                    wf_parts.append(f"- **{wf_slug}**: {defn.description}")
-            if wf_parts:
-                parts.append("\n## Available Workflows\n" + "\n".join(wf_parts))
-                parts.append(
-                    '\nTo follow a workflow, use `filesystem read_file` on '
-                    '`workflows/<slug>.workflow.md` for detailed steps.'
-                )
+        if self._workflow_registry:
+            # Effective workflows = agent frontmatter list + every public
+            # workflow in the (overlay) registry, deduped by slug. Public
+            # entries append after declared ones so an agent's own ordering
+            # stays stable; a project copy shadowing a public slug keeps the
+            # public flag off when its own frontmatter omits it.
+            wf_slugs = list(self._config.workflows)
+            for defn in self._workflow_registry.all():
+                if defn.public and defn.slug not in wf_slugs:
+                    wf_slugs.append(defn.slug)
+            if wf_slugs:
+                wf_parts = []
+                for wf_slug in wf_slugs:
+                    defn = self._workflow_registry.get(wf_slug)
+                    if defn:
+                        wf_parts.append(f"- **{wf_slug}**: {defn.description}")
+                if wf_parts:
+                    parts.append("\n## Available Workflows\n" + "\n".join(wf_parts))
+                    parts.append(
+                        '\nTo follow a workflow, use `filesystem read_file` on '
+                        '`workflows/<slug>.workflow.md` for detailed steps.'
+                    )
 
         self._static_prompt_cache = "\n".join(parts)
         return self._static_prompt_cache

@@ -112,27 +112,27 @@ def _registry_refs(registry) -> dict[str, SkillRef]:
     }
 
 
-def _merge_public_skills(skills: list[SkillRef], public_refs: list[SkillRef]) -> list[SkillRef]:
-    """Ensure every public skill appears exactly once in an agent's list.
+def _merge_public_refs(refs: list[SkillRef], public_refs: list[SkillRef]) -> list[SkillRef]:
+    """Ensure every public skill/workflow appears exactly once in an agent's list.
 
     A matching entry may come from a stale DB row or a project agent whose
     frontmatter still lists the slug — keep it and just flag it public instead
     of appending a duplicate. Appended entries are copies: the registry refs
     are shared across every agent in the response.
     """
-    by_slug = {r.slug: r for r in skills}
+    by_slug = {r.slug: r for r in refs}
     for p in public_refs:
         existing = by_slug.get(p.slug)
         if existing is None:
-            skills.append(p.model_copy())
-            by_slug[p.slug] = skills[-1]
+            refs.append(p.model_copy())
+            by_slug[p.slug] = refs[-1]
         else:
             existing.public = True
             if not existing.description:
                 existing.description = p.description
             if existing.i18n is None:
                 existing.i18n = p.i18n
-    return skills
+    return refs
 
 
 def _backfill_refs(
@@ -208,11 +208,12 @@ def _to_response(
     public_refs: list[SkillRef] | None = None,
     skill_map: dict[str, SkillRef] | None = None,
     workflow_map: dict[str, SkillRef] | None = None,
+    public_workflows: list[SkillRef] | None = None,
 ) -> AgentResponse:
-    skills = _merge_public_skills(_parse_refs(a.skills), public_refs or [])
+    skills = _merge_public_refs(_parse_refs(a.skills), public_refs or [])
     _backfill_refs(skills, skill_map or {}, propagate_public=True)
-    workflows = _parse_refs(a.workflows)
-    _backfill_refs(workflows, workflow_map or {}, propagate_public=False)
+    workflows = _merge_public_refs(_parse_refs(a.workflows), public_workflows or [])
+    _backfill_refs(workflows, workflow_map or {}, propagate_public=True)
     return AgentResponse(
         agent_id=a.agent_id,
         slug=a.slug,
@@ -260,6 +261,7 @@ async def list_agents(
     skill_map = _registry_refs(getattr(request.app.state, "skill_registry", None))
     workflow_map = _registry_refs(getattr(request.app.state, "workflow_registry", None))
     public_refs = [r for r in skill_map.values() if r.public]
+    public_workflow_refs = [r for r in workflow_map.values() if r.public]
     if project_id:
         project = await authorize_project(project_id, db, _current_user)
         await _sync_project_agents(db, project)
@@ -273,7 +275,7 @@ async def list_agents(
             select(Agent).where(Agent.project_id.is_(None)).order_by(Agent.display_name)
         )
     return [
-        _to_response(a, public_refs, skill_map, workflow_map)
+        _to_response(a, public_refs, skill_map, workflow_map, public_workflow_refs)
         for a in result.scalars().all()
     ]
 

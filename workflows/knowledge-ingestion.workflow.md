@@ -1,5 +1,6 @@
 ---
 slug: "knowledge-ingestion"
+public: true
 description:
   zh-CN: "将 URL 内容摄入当前项目知识库"
   en-US: "Ingest content from a URL into the current project's knowledge base"

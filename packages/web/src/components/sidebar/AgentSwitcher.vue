@@ -54,7 +54,10 @@
           <span class="agent-tooltip__heading">{{ t('sidebar.agents.tooltipWorkflows') }}</span>
           <div class="agent-tooltip__list">
             <div v-for="w in tooltipAgent.workflows" :key="w.slug" class="agent-tooltip__item">
-              <span class="agent-tooltip__slug">{{ w.slug }}</span>
+              <div class="agent-tooltip__slug-row">
+                <span v-if="w.public" class="public-badge">{{ t('sidebar.agents.badgePublic') }}</span>
+                <span class="agent-tooltip__slug">{{ w.slug }}</span>
+              </div>
               <span v-if="w.description" class="agent-tooltip__item-desc">{{ localizedText(w.description, w.i18n) }}</span>
             </div>
           </div>

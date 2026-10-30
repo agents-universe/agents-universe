@@ -344,6 +344,47 @@ async def test_workflow_description_backfilled_from_registry(
     assert wf[0]["description"]
 
 
+async def test_public_workflow_injected_into_every_agent(client, db, workflow_registry):
+    """A `public: true` workflow appears on every agent's list even though no
+    agent frontmatter declares it — same semantics as public skills."""
+    public_slugs = {w.slug for w in workflow_registry.all() if w.public}
+    assert public_slugs, "framework workflows should carry at least one public entry"
+
+    await sync_agents_dir(db, AGENTS_DIR, project_id=None, is_system=True)
+
+    resp = await client.get("/api/agents")
+    assert resp.status_code == 200
+    agents = resp.json()
+    assert agents  # framework agents synced
+    for a in agents:
+        for slug in public_slugs:
+            matches = [w for w in a["workflows"] if w["slug"] == slug]
+            assert len(matches) == 1, f"{a['slug']}: {len(matches)} {slug} entries"
+            assert matches[0]["public"] is True
+
+
+async def test_public_workflow_dedupes_entry_still_listed_in_frontmatter(
+    client, make_project, workflow_registry
+):
+    """Project agent files may still list the public slug — the merge must
+    flag that row public instead of appending a duplicate."""
+    public_slug = next(w.slug for w in workflow_registry.all() if w.public)
+    project = await make_project("proj-pubwf")
+    _write_project_agent(
+        "proj-pubwf",
+        "proj-pubwf--local",
+        "Local",
+        extra_frontmatter=f"workflows:\n  - {public_slug}\n",
+    )
+
+    resp = await client.get(f"/api/agents?project_id={project.project_id}")
+    assert resp.status_code == 200
+    local = next(a for a in resp.json() if a["slug"] == "proj-pubwf--local")
+    matches = [w for w in local["workflows"] if w["slug"] == public_slug]
+    assert len(matches) == 1
+    assert matches[0]["public"] is True
+
+
 async def test_skill_registry_i18n_map_passthrough(client, make_project):
     """A registry skill with a locale-map description exposes its
     non-canonical variants via SkillRef.i18n."""

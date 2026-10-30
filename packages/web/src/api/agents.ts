@@ -9,7 +9,7 @@ interface AgentApiResponse {
   category?: string | null
   project_id?: string | null
   skills: Array<{ slug: string; description: string; public?: boolean; i18n?: LocaleOverrides<string> | null }>
-  workflows: Array<{ slug: string; description: string; i18n?: LocaleOverrides<string> | null }>
+  workflows: Array<{ slug: string; description: string; public?: boolean; i18n?: LocaleOverrides<string> | null }>
   tools?: string[]
   placeholder?: string | null
   starter_prompts?: string[]

@@ -36,7 +36,10 @@ function makeAgent(): AgentInfo {
       },
       { slug: 'interaction/user-confirm', description: 'Ask the user' },
     ],
-    workflows: [],
+    workflows: [
+      { slug: 'knowledge-ingestion', description: 'Ingest URL into knowledge', public: true },
+      { slug: 'ad-hoc-analysis', description: 'Ad-hoc analysis' },
+    ],
     tools: [],
   }
 }
@@ -66,6 +69,37 @@ describe('AgentSwitcher', () => {
 
     const items = [...document.body.querySelectorAll('.agent-tooltip__item')]
     const plain = items.find((el) => el.textContent?.includes('interaction/user-confirm'))
+    expect(plain).toBeDefined()
+    expect(plain!.querySelector('.public-badge')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('shows the 公共 badge on public workflows in the hover tooltip', async () => {
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    const wrapper = mount(AgentSwitcher)
+
+    await wrapper.find('.agent-item').trigger('mouseenter')
+
+    const badges = [...document.body.querySelectorAll('.public-badge')]
+    const wfBadge = badges.find((b) =>
+      b.closest('.agent-tooltip__item')!.querySelector('.agent-tooltip__slug')!.textContent ===
+      'knowledge-ingestion',
+    )
+    expect(wfBadge).toBeDefined()
+    expect(wfBadge!.textContent).toBe('公共')
+
+    wrapper.unmount()
+  })
+
+  it('omits the badge for non-public workflows', async () => {
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    const wrapper = mount(AgentSwitcher)
+
+    await wrapper.find('.agent-item').trigger('mouseenter')
+
+    const items = [...document.body.querySelectorAll('.agent-tooltip__item')]
+    const plain = items.find((el) => el.textContent?.includes('ad-hoc-analysis'))
     expect(plain).toBeDefined()
     expect(plain!.querySelector('.public-badge')).toBeNull()
 

@@ -1,6 +1,7 @@
 """Filesystem tool — read/write/list files within the project scope."""
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..definition_check import check_definition, project_slug_from_workspace
+from ..paths import canonical
 from .base import Tool, ToolContext
 
 _log = logging.getLogger(__name__)
@@ -17,6 +19,17 @@ _log = logging.getLogger(__name__)
 # already huge there); writing is capped to bound disk usage.
 _MAX_READ_BYTES = 2_000_000
 _MAX_WRITE_BYTES = 5_000_000
+
+# tree operation: build/scratch directories are hidden from the overview
+# (still reachable via list_dir), temp work trees are shown but not
+# recursed, and depth/entry caps bound the cost of huge repos/ checkouts.
+_TREE_NOISE = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".next", ".cache",
+}
+_TREE_NO_DESCEND = {".tmp/work"}
+_MAX_TREE_DEPTH = 4
+_MAX_TREE_ENTRIES = 200
 
 
 def _definition_check(
@@ -64,21 +77,25 @@ def _normalize_rel_path(rel_path: str, project_fs_path: str) -> str:
 
     normalized = rel_path.replace("\\", "/")
 
-    # Strip absolute path prefix matching the workspace (resolved or raw form)
+    # Strip an absolute prefix matching the workspace. Prefix candidates
+    # include the canonical form (realpath+normcase) so a drive-letter-case
+    # or 8.3-short-name variant of the same directory still matches;
+    # comparison is case-insensitive and slices the original-cased string.
+    # The leading slash is dropped first so "/e:/..."-shaped input reaches
+    # the comparison at all.
+    stripped = normalized.lstrip("/")
     for prefix in (
-        str(base).replace("\\", "/") + "/",
-        project_fs_path.replace("\\", "/").rstrip("/") + "/",
+        canonical(project_fs_path).as_posix(),
+        str(base).replace("\\", "/"),
+        project_fs_path.replace("\\", "/"),
     ):
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):]
+        prefix_no_slash = prefix.rstrip("/").lstrip("/")
+        if not prefix_no_slash:
+            continue
+        if stripped.lower().startswith(prefix_no_slash.lower() + "/"):
+            normalized = stripped[len(prefix_no_slash) + 1:]
             return normalized or rel_path
-        stripped = normalized.lstrip("/")
-        prefix_no_slash = prefix.lstrip("/")
-        if stripped.startswith(prefix_no_slash):
-            normalized = stripped[len(prefix_no_slash):]
-            return normalized or rel_path
-
-    normalized = normalized.lstrip("/")
+    normalized = stripped
 
     # Strip "projects/slug/" prefix — only when no real projects/{slug}/
     # subdirectory exists; the model may legitimately mean that subdir (e.g.
@@ -90,7 +107,7 @@ def _normalize_rel_path(rel_path: str, project_fs_path: str) -> str:
     # Strip bare "slug/" prefix — same guard: with a real top-level {slug}/
     # subdirectory, `web/index.html` means the subdir, not a path prefix to
     # strip (which would silently read/write/delete the WRONG file).
-    if normalized.startswith(f"{slug}/") and not (base / slug).is_dir():
+    if normalized.lower().startswith(f"{slug.lower()}/") and not (base / slug).is_dir():
         normalized = normalized[len(slug) + 1:]
 
     return normalized or rel_path
@@ -161,20 +178,142 @@ def _upload_store_names(parts: list[str], context: ToolContext) -> list[str]:
     return sorted(names()) if names else []
 
 
+def _not_found_hint(
+    rel_path: str,
+    target: Path,
+    scope_root: Path,
+    scope: str,
+    extra_names: list[str] | None = None,
+    label: str = "File",
+) -> dict[str, Any]:
+    """Error payload for a missing path, with self-correction aids.
+
+    Walks up from the target's parent to the deepest directory that exists —
+    a typo in a middle segment then still gets listing context — and offers
+    case-insensitive / close-name candidates for the first missing segment
+    (one scandir of that single directory, never a workspace-wide walk).
+    Mirrors knowledge_rw's did_you_mean pattern so both tools teach the model
+    the same way to recover. Host absolute paths are never included; the
+    system prompt already names the workspace root.
+    """
+    hint: dict[str, Any] = {"error": f"{label} not found: {rel_path}", "scope": scope}
+
+    closest: Path | None = None
+    probe = target.parent
+    while True:
+        if probe.is_dir():
+            closest = probe
+            break
+        if probe == scope_root or probe.parent == probe:
+            break
+        probe = probe.parent
+
+    if closest is None:
+        if extra_names:
+            hint["available_in_parent"] = sorted(extra_names)[:30]
+        return hint
+
+    try:
+        closest_rel = closest.relative_to(scope_root).as_posix() or "."
+    except ValueError:
+        closest_rel = "."
+    hint["closest_existing_dir"] = closest_rel
+
+    names: list[str] = []
+    try:
+        for i, entry in enumerate(closest.iterdir()):
+            if i >= 1000:  # absurdly large dirs: listing is an aid, not an audit
+                break
+            names.append(entry.name)
+    except OSError:
+        names = []
+    names.sort()
+
+    all_names = sorted(set(names + (extra_names or [])))
+    if all_names:
+        hint["available_in_parent"] = all_names[:30]
+
+    missing_tail = target.relative_to(closest).parts if target.is_relative_to(closest) else ()
+    if missing_tail and names:
+        first_missing = missing_tail[0]
+        matches = [n for n in names if n.lower() == first_missing.lower()]
+        if not matches:
+            matches = difflib.get_close_matches(first_missing, names, n=5, cutoff=0.6)
+        if matches:
+            base_parts = [] if closest_rel == "." else closest_rel.split("/")
+            hint["did_you_mean"] = [
+                "/".join([*base_parts, m, *missing_tail[1:]]) for m in matches[:5]
+            ]
+    return hint
+
+
+def _tree(target: Path, rel_path: str, depth: int) -> dict[str, Any]:
+    """Indented text overview of the directory tree under *target*.
+
+    Disk-only: in-memory uploads under .tmp/media are not merged — tree is an
+    orientation aid, list_dir keeps the per-directory listing contract.
+    """
+    lines: list[str] = []
+    count = 0
+    truncated = False
+
+    root_label = "." if rel_path in (".", "") else rel_path.rstrip("/") + "/"
+    lines.append(root_label)
+
+    def _walk(dir_path: Path, dir_rel: str, level: int) -> None:
+        nonlocal count, truncated
+        if truncated:
+            return
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda e: e.name.lower())
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name in _TREE_NOISE:
+                continue
+            if count >= _MAX_TREE_ENTRIES:
+                truncated = True
+                return
+            is_dir = entry.is_dir()
+            entry_rel = f"{dir_rel}/{entry.name}" if dir_rel else entry.name
+            lines.append("  " * level + entry.name + ("/" if is_dir else ""))
+            count += 1
+            if is_dir and level + 1 < depth and entry_rel not in _TREE_NO_DESCEND:
+                _walk(entry, entry_rel, level + 1)
+
+    _walk(target, "" if rel_path in (".", "") else rel_path.rstrip("/"), 0)
+    if truncated:
+        lines.append(
+            f"… (truncated at {_MAX_TREE_ENTRIES} entries — use list_dir to go deeper)"
+        )
+    return {
+        "path": rel_path,
+        "tree": "\n".join(lines),
+        "entry_count": count,
+        "truncated": truncated,
+    }
+
+
 class FilesystemTool(Tool):
     name = "filesystem"
     prompt_hint = (
         "Preferred tool for ALL file reads, writes, and directory listings — never use "
-        "shell cat/head/tail/echo>/sed for reading or writing files. It has no content "
+        "shell cat/head/tail/echo>/sed for reading or writing files. If you are unsure "
+        "where a file lives, call operation 'tree' (workspace overview) or 'list_dir' "
+        "before reading — never guess file paths. It has no content "
         "search; shell grep/find is acceptable for searching only. Writing or reading an "
         "agent/skill/workflow definition returns a `definition_check` block: when `ok` is "
         "false the file will NOT be registered — fix the reported errors and rewrite the "
         "file before reporting the task as done."
     )
     description = (
-        "Read, write, list, or delete files within the current project directory. "
-        "All paths must be relative to the project root or knowledge directory. "
-        "Writes and reads of definition files (agents/*.agent.md, skills/*.md, "
+        "Read, write, list, tree, or delete files within the current project workspace. "
+        "All paths must be relative to the workspace root (e.g. 'reports/summary.md'); "
+        "knowledge lives at knowledge/ inside the workspace — there is no separate "
+        "knowledge-directory scope. Paths under agents/, workflows/, and "
+        "knowledge/_template/ are additionally served read-only from the framework "
+        "directory when the workspace copy is missing. "
+        "Reads and writes of definition files (agents/*.agent.md, skills/*.md, "
         "workflows/*.workflow.md) also return an advisory `definition_check` block."
     )
     parameters = {
@@ -182,16 +321,22 @@ class FilesystemTool(Tool):
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["read_file", "write_file", "list_dir", "delete_file", "create_dir"],
+                "enum": ["read_file", "write_file", "list_dir", "tree", "delete_file", "create_dir"],
                 "description": "The filesystem operation to perform",
             },
             "path": {
                 "type": "string",
-                "description": "Relative path from the project root",
+                "description": "Workspace-relative path, e.g. 'reports/summary.md'; use '.' for the workspace root",
             },
             "content": {
                 "type": "string",
                 "description": "Content to write (for write_file only)",
+            },
+            "depth": {
+                "type": "integer",
+                "description": "tree only: recursion depth (default 2, max 4)",
+                "minimum": 1,
+                "maximum": 4,
             },
         },
         "required": ["operation", "path"],
@@ -218,14 +363,15 @@ class FilesystemTool(Tool):
         # from the framework root. agents/ and workflows/ are overlay paths:
         # the project workspace shadows the global copies — reads prefer the
         # workspace, writes are routed to the workspace. knowledge/_template
-        # stays strictly read-only.
+        # stays strictly read-only. tree bypasses the overlay entirely: it is
+        # project-scope only and must never enumerate the framework tree.
         _is_framework_path = (
             rel_path.startswith("agents/")
             or rel_path.startswith("workflows/")
             or rel_path == "knowledge/_template"
             or rel_path.startswith("knowledge/_template/")
         )
-        if _is_framework_path and context.framework_root:
+        if _is_framework_path and context.framework_root and operation != "tree":
             _is_shadowed = rel_path.startswith("agents/") or rel_path.startswith("workflows/")
             if operation in ("write_file", "delete_file", "create_dir"):
                 # Shadowed writes fall through to the project-scope handling
@@ -240,9 +386,14 @@ class FilesystemTool(Tool):
                     if ws_target.is_relative_to(ws_base) and ws_target.exists():
                         if operation == "list_dir":
                             return _list_dir(ws_target, rel_path)
-                        return _attach_definition_check(
+                        result = _attach_definition_check(
                             _read_file(ws_target, rel_path), rel_path, context, "project"
                         )
+                        # Which copy served the read matters: a model asking
+                        # for a workspace file must be able to tell it got
+                        # the framework's global file instead.
+                        result["source"] = "workspace"
+                        return result
                 if operation not in ("read_file", "list_dir"):
                     return {"error": f"{rel_path.split('/')[0]}/ directory is read-only"}
                 target = (Path(context.framework_root) / rel_path).resolve()
@@ -259,18 +410,17 @@ class FilesystemTool(Tool):
                 if not target.is_relative_to(scope_root):
                     return {"error": f"Access denied: path {rel_path!r} is outside allowed scope"}
                 if not target.exists():
-                    if operation == "list_dir":
-                        return {"error": f"Directory not found: {rel_path}"}
-                    parent = target.parent
-                    hint: dict[str, Any] = {"error": f"File not found: {rel_path}"}
-                    if parent.is_dir():
-                        hint["available_in_parent"] = sorted(e.name for e in parent.iterdir())[:30]
-                    return hint
+                    return _not_found_hint(
+                        rel_path, target, scope_root, "framework",
+                        label="Directory" if operation == "list_dir" else "File",
+                    )
                 if operation == "list_dir":
                     return _list_dir(target, rel_path)
-                return _attach_definition_check(
+                result = _attach_definition_check(
                     _read_file(target, rel_path), rel_path, context, "global"
                 )
+                result["source"] = "framework"
+                return result
 
         # Security: resolve and validate path is within project scope
         base = Path(context.project_fs_path).resolve()
@@ -287,7 +437,6 @@ class FilesystemTool(Tool):
                 return {"error": ".git 目录为只读：hooks/config 会被 git 在后续命令中执行，请写到项目其他位置"}
 
         if operation == "read_file":
-            parent = target.parent
             if target.exists():
                 return _attach_definition_check(
                     _read_file(target, rel_path), rel_path, context, "project"
@@ -306,15 +455,10 @@ class FilesystemTool(Tool):
                     _log.warning("filesystem read_file: store upload not UTF-8: %s", rel_path)
                     return {"error": f"Cannot read {rel_path}: file is not valid UTF-8 (binary?)"}
                 return {"content": content, "path": rel_path, "size_bytes": len(content.encode())}
-            hint: dict[str, Any] = {"error": f"File not found: {rel_path}"}
-            names = []
-            if parent.is_dir():
-                names = sorted(e.name for e in parent.iterdir())
-            if media_parts:
-                names = sorted(set(names + _upload_store_names(media_parts[:-1], context)))
-            if names:
-                hint["available_in_parent"] = names[:30]
-            return hint
+            return _not_found_hint(
+                rel_path, target, base, "project",
+                extra_names=_upload_store_names(media_parts[:-1], context) if media_parts else None,
+            )
 
         elif operation == "write_file":
             # `null` becomes "" (the key is present so the default never fires
@@ -358,7 +502,7 @@ class FilesystemTool(Tool):
             media_parts = _media_parts(rel_path)
             store_names = _upload_store_names(media_parts, context) if media_parts else []
             if not target.exists() and not store_names:
-                return {"error": f"Directory not found: {rel_path}"}
+                return _not_found_hint(rel_path, target, base, "project", label="Directory")
             if target.exists() and not target.is_dir():
                 return {"error": f"Not a directory: {rel_path}"}
             entries = []
@@ -381,6 +525,18 @@ class FilesystemTool(Tool):
                     })
                 entries.sort(key=lambda e: e["name"])
             return {"entries": entries, "count": len(entries)}
+
+        elif operation == "tree":
+            if not target.exists():
+                return _not_found_hint(rel_path, target, base, "project", label="Directory")
+            if not target.is_dir():
+                return {"error": f"Not a directory: {rel_path}"}
+            try:
+                depth = int(params.get("depth") or 2)
+            except (TypeError, ValueError):
+                depth = 2
+            depth = max(1, min(depth, _MAX_TREE_DEPTH))
+            return _tree(target, rel_path, depth)
 
         elif operation == "delete_file":
             if not target.exists():

@@ -114,7 +114,7 @@ If `filesystem` fails for a specific file, try these alternatives:
 - **Do NOT** use `cat`, `head`, or `less` via `shell` as the first approach. The `filesystem` tool is always available and requires no system binary.
 - **Do NOT** use absolute paths like `/app/projects/slug/repos/...`. Always use relative paths starting with `repos/`.
 - **Do NOT** repeatedly call `git_repo(operation="show")` if it fails. Switch to `filesystem(operation="read_file")` immediately.
-- **Do NOT** guess file paths. Always `list_dir` first to discover the actual structure.
+- **Do NOT** guess file paths. Always `list_dir` (or `tree` for an overview) first to discover the actual structure.
 
 ## File Size Limits
 

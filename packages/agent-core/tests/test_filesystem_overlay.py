@@ -53,6 +53,7 @@ async def test_read_workflows_workspace_shadows_framework(tmp_path):
         _ctx(proj, fw),
     )
     assert result["content"] == "PROJECT WORKFLOW"
+    assert result["source"] == "workspace"
 
 
 async def test_read_agents_falls_back_to_framework_when_workspace_missing(tmp_path):
@@ -67,6 +68,7 @@ async def test_read_agents_falls_back_to_framework_when_workspace_missing(tmp_pa
         _ctx(proj, fw),
     )
     assert result["content"] == "FRAMEWORK AGENT"
+    assert result["source"] == "framework"
 
 
 async def test_delete_workflow_removes_workspace_copy_only(tmp_path):

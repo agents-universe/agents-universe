@@ -58,6 +58,7 @@ allowed_hosts = [
   "anthropic.com",         # Anthropic API default
   "googleapis.com",        # Gemini API default
   "agents-universe.com",   # this project's own public site
+  "keenable.ai",           # web_search first-choice keyless search endpoint
   "bing.com",              # web_search tool endpoints (keyless SERP scraping)
   "baidu.com",
   "duckduckgo.com",

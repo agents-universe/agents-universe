@@ -1,13 +1,15 @@
-"""Web search tool — free search by scraping search-engine result pages.
+"""Web search tool — free search with a keyless-first fallback chain.
 
-No API key: queries Bing (RSS), Baidu (HTML), or DuckDuckGo (HTML) directly
-and parses the result markup with stdlib. Engines are tried in a fallback
-chain (WEB_SEARCH_ENGINES env overrides the order); a blocked or unreachable
-engine silently falls through to the next, and only an all-fail run surfaces
-an error with per-engine reasons.
+No API key anywhere: Keenable's keyless endpoint (ranked results with page
+text already extracted) is tried first, then Bing (RSS), Baidu (HTML), and
+DuckDuckGo (HTML) result pages parsed with stdlib. Engines are tried in a
+fallback chain (WEB_SEARCH_ENGINES env overrides the order); a rate-limited,
+blocked, or unreachable engine silently falls through to the next, and only
+an all-fail run surfaces an error with per-engine reasons.
 """
 from __future__ import annotations
 
+import json
 import logging
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -28,7 +30,17 @@ _TIMEOUT_SECONDS = 15
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
 _MAX_REDIRECTS = 3
 _MAX_QUERY_CHARS = 512
-_DEFAULT_CHAIN = ("bing", "baidu", "duckduckgo")
+_DEFAULT_CHAIN = ("keenable", "bing", "baidu", "duckduckgo")
+
+# Keenable "pro" retrieval takes longer than scraping a SERP page.
+_KEENABLE_TIMEOUT = 20
+_KEENABLE_URL = "https://api.keenable.ai/v1/search/public"
+# The public (keyless) tier rejects requests without this attribution header.
+_KEENABLE_HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-Keenable-Title": "agent-world web_search",
+}
 
 _HEADERS = {
     "User-Agent": (
@@ -294,7 +306,80 @@ async def _search_duckduckgo(query: str, num: int, context: ToolContext) -> list
     return parser.results[:num]
 
 
+async def _search_keenable(query: str, num: int, context: ToolContext) -> list[dict[str, str]]:
+    url = _KEENABLE_URL
+    try:
+        validate_url(url)
+        validate_outbound_url(url)
+    except SSRFError as e:
+        raise _SearchError(f"blocked by SSRF policy: {e}") from e
+
+    http = ensure_http_client(context, target_url=url)
+    payload = {"query": query, "mode": "pro", "snippet_max_length": 500}
+
+    try:
+        async with http.stream(
+            "POST",
+            url,
+            timeout=_KEENABLE_TIMEOUT,
+            headers=_KEENABLE_HEADERS,
+            json=payload,
+            follow_redirects=False,
+        ) as response:
+            status = response.status_code
+            if status in (301, 302, 303, 307, 308):
+                raise _SearchError(f"unexpected redirect (HTTP {status})")
+            total = 0
+            chunks: list[bytes] = []
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > _MAX_PAGE_BYTES:
+                    raise _SearchError(f"response too large (exceeded {_MAX_PAGE_BYTES} bytes)")
+                chunks.append(chunk)
+            text = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+    except httpx.TimeoutException:
+        raise _SearchError(f"timed out after {_KEENABLE_TIMEOUT}s") from None
+    except httpx.RequestError as e:
+        raise _SearchError(f"request failed: {e}") from e
+
+    if status == 429:
+        raise _SearchError("rate limited (429) — keyless hourly cap reached")
+    if status == 402:
+        raise _SearchError("insufficient credits (402)")
+    if status >= 400:
+        detail = ""
+        try:
+            body = json.loads(text)
+            if isinstance(body, dict):
+                detail = str(body.get("message") or body.get("error") or body.get("detail") or "")
+        except ValueError:
+            detail = text.strip()[:200]
+        raise _SearchError(f"HTTP {status}" + (f": {detail}" if detail else ""))
+
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise _SearchError(f"parse error (non-JSON response): {e}") from e
+    raw_results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(raw_results, list):
+        raise _SearchError("parse error: 'results' missing from response")
+
+    results: list[dict[str, str]] = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        item_url = str(item.get("url") or "").strip()
+        if not title or not item_url:
+            continue
+        results.append({"title": title, "url": item_url, "snippet": str(item.get("snippet") or "")})
+        if len(results) >= num:
+            break
+    return results
+
+
 _ENGINE_FUNCTIONS = {
+    "keenable": _search_keenable,
     "bing": _search_bing,
     "baidu": _search_baidu,
     "duckduckgo": _search_duckduckgo,
@@ -313,13 +398,15 @@ def _resolve_chain(engine: str, context: ToolContext) -> list[str]:
 class WebSearchTool(Tool):
     name = "web_search"
     prompt_hint = (
-        "Free web search (no API key) by scraping Bing/Baidu/DuckDuckGo result "
-        "pages. Use for current info, market research, and docs discovery; "
-        "follow up with web_fetch to read promising URLs and verify anything "
-        "critical. Engines fail over automatically — if all fail, retry later "
-        "or pin a single engine."
+        "Free web search (no API key): Keenable's keyless endpoint first, "
+        "then Bing/Baidu/DuckDuckGo result pages. Use for current info, market "
+        "research, and docs discovery; follow up with web_fetch to read "
+        "promising URLs and verify anything critical. Engines fail over "
+        "automatically — if all fail, retry later or pin a single engine."
     )
-    description = "Search the web via search engine result pages (Bing/Baidu/DuckDuckGo; no API key)."
+    description = (
+        "Search the web via Keenable with Bing/Baidu/DuckDuckGo fallback (no API key)."
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -327,7 +414,7 @@ class WebSearchTool(Tool):
             "num_results": {"type": "integer", "default": 8, "description": "Max results (1-10)"},
             "engine": {
                 "type": "string",
-                "enum": ["auto", "bing", "baidu", "duckduckgo"],
+                "enum": ["auto", "keenable", "bing", "baidu", "duckduckgo"],
                 "default": "auto",
                 "description": "Pin a specific engine or use the fallback chain",
             },
@@ -349,7 +436,12 @@ class WebSearchTool(Tool):
 
         engine = params.get("engine", "auto")
         if not isinstance(engine, str) or engine not in ("auto", *_ENGINE_FUNCTIONS):
-            return {"error": f"Unknown engine: {engine!r}; use auto/bing/baidu/duckduckgo"}
+            return {
+                "error": (
+                    f"Unknown engine: {engine!r}; "
+                    "use auto/keenable/bing/baidu/duckduckgo"
+                )
+            }
 
         tried: list[dict[str, str]] = []
         for name in _resolve_chain(engine, context):
@@ -371,7 +463,8 @@ class WebSearchTool(Tool):
             "engines_tried": tried,
             "hint": (
                 "Each engine's reason is in engines_tried (timeout = unreachable, "
-                "captcha/challenge = blocked). Set WEB_SEARCH_ENGINES=bing,baidu to "
-                "skip unreachable engines, or configure a proxy for DuckDuckGo."
+                "captcha/challenge = blocked, 429 = keyless rate limit that "
+                "recovers on its own). Set WEB_SEARCH_ENGINES=bing,baidu to skip "
+                "unreachable engines, or configure a proxy for DuckDuckGo."
             ),
         }

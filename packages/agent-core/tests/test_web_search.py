@@ -1,6 +1,7 @@
-"""Tests for the web_search tool (Bing RSS / Baidu HTML / DuckDuckGo HTML)."""
+"""Tests for the web_search tool (Keenable / Bing RSS / Baidu / DuckDuckGo)."""
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -79,6 +80,27 @@ async def _run(tool, params, http):
     return await tool.execute(params, make_context(http=http))
 
 
+KEENABLE_JSON = json.dumps({
+    "query": "example",
+    "mode": "pro",
+    "results": [
+        {
+            "title": "Keenable Result A",
+            "url": "https://example.com/keen-a",
+            "snippet": "Page text for A",
+            "description": "",
+            "published_at": "2026-01-01",
+        },
+        {"title": "Keenable Result B", "url": "https://example.com/keen-b", "snippet": "Text B"},
+        {"title": "", "url": "https://example.com/skip", "snippet": "no title — dropped"},
+    ],
+})
+
+
+def _keenable_resp(text=KEENABLE_JSON, status=200):
+    return _resp(text, status=status, headers={"content-type": "application/json"})
+
+
 async def test_bing_rss_success():
     http = _mock_http([_resp(BING_RSS, headers={"content-type": "application/rss+xml"})])
     result = await _run(WebSearchTool(), {"query": "example", "engine": "bing"}, http)
@@ -113,13 +135,64 @@ async def test_duckduckgo_uddg_unwrap():
     assert result["results"][0]["snippet"] == "Snippet text for A"
 
 
+async def test_keenable_success_first_in_chain():
+    http = _mock_http([_keenable_resp()])
+    result = await _run(WebSearchTool(), {"query": "example"}, http)
+    assert result["engine"] == "keenable"
+    assert result["count"] == 2  # title-less entry dropped
+    assert result["results"][0] == {
+        "title": "Keenable Result A",
+        "url": "https://example.com/keen-a",
+        "snippet": "Page text for A",
+    }
+    method, url = http.stream.call_args[0][0], http.stream.call_args[0][1]
+    assert method == "POST"
+    assert url == "https://api.keenable.ai/v1/search/public"
+    kwargs = http.stream.call_args[1]
+    assert kwargs["headers"]["X-Keenable-Title"]
+    assert kwargs["json"]["query"] == "example"
+    assert kwargs["json"]["mode"] == "pro"
+
+
+async def test_keenable_429_falls_back_to_bing():
+    http = _mock_http([
+        _keenable_resp(text='{"message":"rate limit"}', status=429),
+        _resp(BING_RSS, headers={"content-type": "application/rss+xml"}),
+    ])
+    result = await _run(WebSearchTool(), {"query": "example"}, http)
+    assert result["engine"] == "bing"
+    assert result["count"] == 2
+
+
+async def test_engine_pin_keenable_all_fail_without_fallback():
+    http = _mock_http([
+        _keenable_resp(text='{"message":"rate limit"}', status=429),
+    ])
+    result = await _run(WebSearchTool(), {"query": "x", "engine": "keenable"}, http)
+    assert result["error"] == "All search engines failed"
+    assert len(result["engines_tried"]) == 1
+    assert result["engines_tried"][0]["engine"] == "keenable"
+    assert "429" in result["engines_tried"][0]["reason"]
+    assert http.stream.call_count == 1
+
+
+async def test_keenable_non_json_body_is_engine_failure():
+    html = "<html>gateway error</html>"
+    http = _mock_http([
+        _keenable_resp(text=html),
+        _resp(BING_RSS, headers={"content-type": "application/rss+xml"}),
+    ])
+    result = await _run(WebSearchTool(), {"query": "x"}, http)
+    assert result["engine"] == "bing"
+
+
 async def test_auto_fallback_second_engine_wins():
     http = _mock_http([
-        _resp("busy", status=503),                       # bing fails
-        _resp(BAIDU_HTML),                               # baidu succeeds
+        _keenable_resp(text="busy", status=503),         # keenable fails
+        _resp(BING_RSS, headers={"content-type": "application/rss+xml"}),  # bing wins
     ])
     result = await _run(WebSearchTool(), {"query": "案例"}, http)
-    assert result["engine"] == "baidu"
+    assert result["engine"] == "bing"
     assert result["count"] == 2
 
 
@@ -131,6 +204,7 @@ async def test_baidu_captcha_page_blocked():
 
 async def test_all_engines_fail_reports_reasons():
     http = _mock_http([
+        _keenable_resp(text='{"message":"rate limit"}', status=429),   # keenable: 429
         _resp("busy", status=503),                                     # bing: HTTP 503
         _redirect("https://wappass.baidu.com/captcha/verify"),         # baidu: captcha hop
         _resp("请完成安全验证后继续访问"),                               # wappass page
@@ -139,6 +213,7 @@ async def test_all_engines_fail_reports_reasons():
     result = await _run(WebSearchTool(), {"query": "x"}, http)
     assert result["error"] == "All search engines failed"
     reasons = {t["engine"]: t["reason"] for t in result["engines_tried"]}
+    assert "429" in reasons["keenable"]
     assert "HTTP 503" in reasons["bing"]
     assert "captcha" in reasons["baidu"]
     assert "timed out" in reasons["duckduckgo"]
@@ -160,10 +235,11 @@ async def test_timeout_falls_through_chain():
         httpx.TimeoutException("t1"),
         httpx.TimeoutException("t2"),
         httpx.TimeoutException("t3"),
+        httpx.TimeoutException("t4"),
     ])
     result = await _run(WebSearchTool(), {"query": "x"}, http)
     assert result["error"] == "All search engines failed"
-    assert len(result["engines_tried"]) == 3
+    assert len(result["engines_tried"]) == 4
     assert all("timed out" in t["reason"] for t in result["engines_tried"])
 
 

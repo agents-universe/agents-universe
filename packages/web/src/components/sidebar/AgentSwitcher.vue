@@ -46,7 +46,7 @@
                 <span v-if="s.public" class="public-badge">{{ t('sidebar.agents.badgePublic') }}</span>
                 <span class="agent-tooltip__slug">{{ s.slug }}</span>
               </div>
-              <span v-if="s.description" class="agent-tooltip__item-desc">{{ localizedText(s.description, s.i18n) }}</span>
+              <span v-if="s.description" class="agent-tooltip__item-desc" :title="localizedText(s.description, s.i18n)">{{ localizedText(s.description, s.i18n) }}</span>
             </div>
           </div>
         </div>
@@ -58,7 +58,7 @@
                 <span v-if="w.public" class="public-badge">{{ t('sidebar.agents.badgePublic') }}</span>
                 <span class="agent-tooltip__slug">{{ w.slug }}</span>
               </div>
-              <span v-if="w.description" class="agent-tooltip__item-desc">{{ localizedText(w.description, w.i18n) }}</span>
+              <span v-if="w.description" class="agent-tooltip__item-desc" :title="localizedText(w.description, w.i18n)">{{ localizedText(w.description, w.i18n) }}</span>
             </div>
           </div>
         </div>

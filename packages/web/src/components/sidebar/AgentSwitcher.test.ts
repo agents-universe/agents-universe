@@ -105,4 +105,21 @@ describe('AgentSwitcher', () => {
 
     wrapper.unmount()
   })
+
+  it('exposes the full skill/workflow description via title on the clamped desc', async () => {
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    const wrapper = mount(AgentSwitcher)
+
+    await wrapper.find('.agent-item').trigger('mouseenter')
+
+    const descs = [...document.body.querySelectorAll('.agent-tooltip__item-desc')]
+    expect(descs.map((el) => el.getAttribute('title'))).toEqual([
+      'Manage project knowledge',
+      'Ask the user',
+      'Ingest URL into knowledge',
+      'Ad-hoc analysis',
+    ])
+
+    wrapper.unmount()
+  })
 })

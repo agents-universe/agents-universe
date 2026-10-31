@@ -241,9 +241,37 @@ def _not_found_hint(
             matches = difflib.get_close_matches(first_missing, names, n=5, cutoff=0.6)
         if matches:
             base_parts = [] if closest_rel == "." else closest_rel.split("/")
-            hint["did_you_mean"] = [
-                "/".join([*base_parts, m, *missing_tail[1:]]) for m in matches[:5]
-            ]
+            suggestions: list[str] = []
+            for m in matches[:5]:
+                # Case-correct every tail segment the disk can confirm, not
+                # just the first: "reports/summary.md" should suggest
+                # "Reports/Summary.md", not "Reports/summary.md". Each step
+                # descends only into a directory that really exists; from the
+                # first non-existent (or non-directory) level on, the tail is
+                # unverifiable and passes through unchanged.
+                parts = [*base_parts, m]
+                cursor = closest / m
+                verified = True
+                for seg in missing_tail[1:]:
+                    real: str | None = None
+                    if verified and cursor.is_dir():
+                        try:
+                            real = next(
+                                (e.name for e in cursor.iterdir() if e.name.lower() == seg.lower()),
+                                None,
+                            )
+                        except OSError:
+                            real = None
+                    if real is not None:
+                        parts.append(real)
+                        cursor = cursor / real
+                    else:
+                        # Unverifiable from here on: pass the rest through
+                        # unchanged so the suggestion keeps the full tail.
+                        parts.append(seg)
+                        verified = False
+                suggestions.append("/".join(parts))
+            hint["did_you_mean"] = suggestions
     return hint
 
 

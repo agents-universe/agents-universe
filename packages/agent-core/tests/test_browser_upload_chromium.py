@@ -11,6 +11,7 @@ test_browser_bbox.py.
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import http.server
 import threading
@@ -89,10 +90,18 @@ async def _uploaded(page_url: str, ctx: ToolContext, params: dict) -> dict:
     assert "error" not in goto, goto
     result = await tool.execute(params, ctx)
     assert "error" not in result, result
-    text = await tool.execute({"operation": "get_text", "selector": "#out"}, ctx)
+    # The page's report() awaits file.text() before writing #out, so the
+    # upload call returning does not mean the read-back has landed — poll
+    # rather than race one get_text against the browser's microtask queue.
     import json
 
-    return json.loads(text["text"])
+    deadline = asyncio.get_event_loop().time() + 5
+    while True:
+        text = await tool.execute({"operation": "get_text", "selector": "#out"}, ctx)
+        if text.get("text"):
+            return json.loads(text["text"])
+        assert asyncio.get_event_loop().time() < deadline, f"#out never filled: {text}"
+        await asyncio.sleep(0.05)
 
 
 @requires_chromium

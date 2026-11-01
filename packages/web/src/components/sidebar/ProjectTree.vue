@@ -20,7 +20,7 @@
         @click="selectProject(project)"
       >
         <Folder :size="14" class="project-icon" />
-        <span class="project-name">{{ project.display_name }}</span>
+        <span class="project-name" :title="project.display_name">{{ project.display_name }}</span>
       </div>
     </div>
 

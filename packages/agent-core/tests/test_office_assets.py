@@ -26,6 +26,7 @@ OFFICE_SKILLS = [
     "office/pdf",
     "office/web-slides",
     "office/zip",
+    "integration/email-reader",
 ]
 OFFICE_TRIGGER_CASES = [
     ("帮我生成ppt", "office/pptx"),
@@ -35,6 +36,8 @@ OFFICE_TRIGGER_CASES = [
     ("把这周的分析报告导出成pdf", "office/pdf"),
     ("把这个文件夹打包成zip", "office/zip"),
     ("帮我解压这个压缩包", "office/zip"),
+    ("查收邮件里的附件", "integration/email-reader"),
+    ("check inbox", "integration/email-reader"),
 ]
 
 _CJK_RE = re.compile(r"[一-鿿]")

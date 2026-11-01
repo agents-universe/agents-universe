@@ -126,4 +126,69 @@ describe('GraphPage', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('boom')
   })
+
+  it('requests no level params by default (overview)', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    mountPage()
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenCalledWith('p-1', undefined)
+  })
+
+  it('re-fetches with level=full and gains symbol type chips on toggle', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.graph-chip').some((c) => c.text() === '函数')).toBe(false)
+
+    const fullPayload = graphPayload({
+      level: 'full',
+      nodes: [
+        { id: 'api:f:src/x.py', repo: 'api', type: 'file', name: 'src/x.py' },
+        { id: 'api:s:src/x.py:bar', repo: 'api', type: 'function', name: 'bar' },
+      ],
+      edges: [{ src: 'api:f:src/x.py', dst: 'api:s:src/x.py:bar', type: 'calls' }],
+      counts: { nodes: 2, edges: 1, docs: 0, repos: 1 },
+    })
+    projectGraphApi.getGraph.mockResolvedValue(fullPayload)
+    await wrapper
+      .findAll('.graph-chip')
+      .find((c) => c.text() === '完整')!
+      .trigger('click')
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', {
+      level: 'full',
+      maxNodes: 1500,
+    })
+    expect(wrapper.findAll('.graph-chip').some((c) => c.text() === '函数')).toBe(true)
+  })
+
+  it('re-fetches with the new cap when maxNodes changes in full mode', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper
+      .findAll('.graph-chip')
+      .find((c) => c.text() === '完整')!
+      .trigger('click')
+    await flushPromises()
+
+    await wrapper.find('select.graph-select').setValue('5000')
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', {
+      level: 'full',
+      maxNodes: 5000,
+    })
+  })
+
+  it('drops level params again when switching back to overview', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    const wrapper = mountPage()
+    await flushPromises()
+    const chips = () => wrapper.findAll('.graph-chip')
+    await chips().find((c) => c.text() === '完整')!.trigger('click')
+    await flushPromises()
+    await chips().find((c) => c.text() === '概览')!.trigger('click')
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', undefined)
+  })
 })

@@ -8,6 +8,9 @@
           <p v-if="graph" class="graph-sub">
             {{ t('graphPage.counts', { nodes: graph.counts.nodes, edges: graph.counts.edges }) }}
             <span v-if="graph.truncated"> · {{ t('graphPage.truncated') }}</span>
+            <span v-if="graph.truncated && level === 'full'">
+              · {{ t('graphPage.truncatedFullHint') }}
+            </span>
           </p>
         </div>
       </div>
@@ -53,6 +56,29 @@
 
     <div v-else-if="graph" class="graph-body">
       <div class="graph-toolbar">
+        <div class="graph-chip-group">
+          <span class="graph-chip-label">{{ t('graphPage.levelLabel') }}</span>
+          <button
+            class="graph-chip"
+            :class="{ on: level === 'overview' }"
+            @click="level = 'overview'"
+          >
+            {{ t('graphPage.levelOverview') }}
+          </button>
+          <button class="graph-chip" :class="{ on: level === 'full' }" @click="level = 'full'">
+            {{ t('graphPage.levelFull') }}
+          </button>
+          <select
+            v-if="level === 'full'"
+            v-model.number="maxNodes"
+            class="graph-select"
+            :title="t('graphPage.maxNodesLabel')"
+          >
+            <option :value="1500">1500</option>
+            <option :value="3000">3000</option>
+            <option :value="5000">5000</option>
+          </select>
+        </div>
         <div v-if="graph.repos.length" class="graph-chip-group">
           <span class="graph-chip-label">{{ t('graphPage.reposLabel') }}</span>
           <button
@@ -157,6 +183,10 @@ const visibleTypes = ref<Set<string>>(new Set())
 const visibleRepos = ref<Set<string>>(new Set())
 const search = ref('')
 
+// View preferences: survive project switches (like the repo/type chips).
+const level = ref<'overview' | 'full'>('overview')
+const maxNodes = ref(1500) // DEFAULT_MAX_NODES; the server clamps to [200, 5000]
+
 const selectedId = ref<string | null>(null)
 const focusNode = ref<string | null>(null)
 const canvasRef = ref<InstanceType<typeof GraphCanvas> | null>(null)
@@ -235,7 +265,11 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const data = await projectGraphApi.getGraph(pid)
+    // Overview omits the query string entirely: first load matches the
+    // server defaults byte-for-byte.
+    const params =
+      level.value === 'full' ? { level: 'full' as const, maxNodes: maxNodes.value } : undefined
+    const data = await projectGraphApi.getGraph(pid, params)
     if (seq !== loadSeq) return
     graph.value = data
     // Fresh payload: previously selected node may no longer exist.
@@ -339,6 +373,13 @@ watch(projectId, () => {
   visibleRepos.value = new Set()
   message.value = { text: '', ok: true }
   void load()
+})
+
+// Rapid toggles are safe: each load() bumps loadSeq and the losing
+// response is discarded.
+watch(level, () => void load())
+watch(maxNodes, () => {
+  if (level.value === 'full') void load()
 })
 
 onMounted(() => {
@@ -510,6 +551,16 @@ onMounted(() => {
 
 .graph-chip.warn {
   border-style: dashed;
+}
+
+.graph-select {
+  flex: none;
+  padding: 3px 6px;
+  border: 1px solid var(--border-color, #374151);
+  border-radius: 8px;
+  background: var(--bg-secondary, #111827);
+  color: var(--text-primary, #e5e7eb);
+  font-size: 11px;
 }
 
 .graph-search {

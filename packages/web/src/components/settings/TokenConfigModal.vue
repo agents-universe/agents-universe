@@ -439,6 +439,86 @@
               {{ mcpMessage.ok ? '✓' : '✗' }} {{ mcpMessage.text }}
             </span>
           </div>
+
+          <!-- Email servers (IMAP/SMTP) — repeatable, one row per mailbox -->
+          <div class="token-section mcp-section">
+            <div class="token-section-title">
+              <Mail :size="14" class="token-section-icon" />
+              <span>{{ t('tokenConfig.emailTitle') }}</span>
+            </div>
+            <p class="token-section-hint">{{ t('tokenConfig.emailHint') }}</p>
+
+            <!-- Server add/edit form -->
+            <div v-if="showEmailForm" class="token-edit-block mcp-edit-block">
+              <div class="mcp-form-grid">
+                <input v-model="emailForm.display_name" class="input" type="text" :placeholder="t('tokenConfig.emailNamePlaceholder')" />
+                <input v-model="emailForm.slug" class="input" type="text" :placeholder="t('tokenConfig.emailSlugPlaceholder')" />
+                <input v-model="emailForm.imap_host" class="input" type="text" :placeholder="t('tokenConfig.emailImapHostPlaceholder')" />
+                <input v-model.number="emailForm.imap_port" class="input" type="number" min="1" max="65535" :placeholder="t('tokenConfig.emailPortPlaceholder', { port: 993 })" />
+                <select v-model="emailForm.imap_security" class="input">
+                  <option value="ssl">IMAP SSL</option>
+                  <option value="starttls">IMAP STARTTLS</option>
+                  <option value="none">IMAP {{ t('tokenConfig.emailSecurityNone') }}</option>
+                </select>
+                <input v-model="emailForm.smtp_host" class="input" type="text" :placeholder="t('tokenConfig.emailSmtpHostPlaceholder')" />
+                <input v-model.number="emailForm.smtp_port" class="input" type="number" min="1" max="65535" :placeholder="t('tokenConfig.emailPortPlaceholder', { port: 587 })" />
+                <select v-model="emailForm.smtp_security" class="input">
+                  <option value="ssl">SMTP SSL</option>
+                  <option value="starttls">SMTP STARTTLS</option>
+                  <option value="none">SMTP {{ t('tokenConfig.emailSecurityNone') }}</option>
+                </select>
+                <input v-model="emailForm.username" class="input" type="text" :placeholder="t('tokenConfig.emailUsernamePlaceholder')" />
+                <input
+                  v-model="emailForm.password"
+                  class="input"
+                  type="password"
+                  :placeholder="emailEditId ? t('tokenConfig.keyConfiguredKeepEmpty') : t('tokenConfig.emailPasswordPlaceholder')"
+                />
+                <label class="mcp-toggle">
+                  <input v-model="emailForm.allow_private_network" type="checkbox" />
+                  {{ t('tokenConfig.emailAllowPrivate') }}
+                </label>
+                <label class="mcp-toggle">
+                  <input v-model="emailForm.enabled" type="checkbox" />
+                  {{ t('tokenConfig.enabled') }}
+                </label>
+              </div>
+              <div class="token-row-actions">
+                <button class="btn-sm" @click="saveEmailServer" :disabled="emailSaving || !emailFormReady">
+                  {{ emailSaving ? t('common.saving') : t('common.save') }}
+                </button>
+                <button class="btn-sm secondary" @click="cancelEmailForm">{{ t('common.cancel') }}</button>
+              </div>
+            </div>
+            <button v-else class="btn-sm add-model-btn" @click="openEmailForm()">
+              {{ t('tokenConfig.emailAddServer') }}
+            </button>
+
+            <div v-if="emailLoading" class="token-empty-state">{{ t('common.loading') }}</div>
+            <div v-else-if="!emailServers.length" class="token-empty-state">{{ t('tokenConfig.emailEmpty') }}</div>
+            <ul v-else class="mcp-list">
+              <li v-for="s in emailServers" :key="s.email_server_id" class="mcp-item">
+                <div class="mcp-item-main">
+                  <span class="mcp-name">{{ s.display_name || s.slug }}</span>
+                  <span class="mcp-slug">{{ s.slug }}</span>
+                  <span v-if="s.key_hint" class="token-hint-badge">{{ s.key_hint }}</span>
+                </div>
+                <div class="mcp-item-meta">
+                  <span class="mcp-url">IMAP {{ s.imap_host }}:{{ s.imap_port }} · SMTP {{ s.smtp_host }}:{{ s.smtp_port }}</span>
+                  <span class="mcp-slug">{{ s.username }}</span>
+                  <span class="mcp-status" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? t('tokenConfig.enabledStatus') : t('tokenConfig.disabledStatus') }}</span>
+                  <button class="btn-sm" @click="openEmailForm(s)">{{ t('tokenConfig.edit') }}</button>
+                  <button class="btn-sm secondary" @click="testEmailServer(s)" :disabled="emailTesting === s.email_server_id">
+                    {{ emailTesting === s.email_server_id ? t('common.testing') : t('common.test') }}
+                  </button>
+                  <button class="btn-sm secondary" @click="deleteEmailServer(s)">{{ t('common.delete') }}</button>
+                </div>
+              </li>
+            </ul>
+            <span v-if="emailMessage.text" class="token-inline-msg mcp-inline-msg" :class="emailMessage.ok ? 'success' : 'error'">
+              {{ emailMessage.ok ? '✓' : '✗' }} {{ emailMessage.text }}
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -448,7 +528,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { KeyRound, X, Cpu, Zap, Cloud, GitBranch, BookOpen, Globe, Sparkles } from 'lucide-vue-next'
+import { KeyRound, X, Cpu, Zap, Cloud, GitBranch, BookOpen, Globe, Sparkles, Mail } from 'lucide-vue-next'
 import { apiFetch, ApiError } from '@/api/client'
 import { modelConfigsApi } from '@/api/modelConfigs'
 import { createProjectSecret, deleteProjectSecret, listProjectSecrets, updateProjectSecret } from '@/api/projectSecrets'
@@ -920,6 +1000,168 @@ async function deleteMcpServer(server: McpServerInfo) {
   }
 }
 
+// ── Email servers (IMAP/SMTP, one row per mailbox) ─────────────────
+
+interface EmailServerInfo {
+  email_server_id: string
+  slug: string
+  display_name: string | null
+  imap_host: string
+  imap_port: number
+  imap_security: string
+  smtp_host: string
+  smtp_port: number
+  smtp_security: string
+  username: string
+  key_hint: string | null
+  allow_private_network: boolean
+  enabled: boolean
+}
+
+const emailServers = ref<EmailServerInfo[]>([])
+const emailLoading = ref(false)
+const showEmailForm = ref(false)
+const emailSaving = ref(false)
+const emailTesting = ref<string | null>(null)
+const emailEditId = ref<string | null>(null)
+const emailMessage = reactive({ ok: true, text: '' })
+const emailForm = reactive({
+  display_name: '',
+  slug: '',
+  imap_host: '',
+  imap_port: 993,
+  imap_security: 'ssl',
+  smtp_host: '',
+  smtp_port: 587,
+  smtp_security: 'starttls',
+  username: '',
+  password: '',
+  allow_private_network: false,
+  enabled: true,
+})
+
+const emailFormReady = computed(() =>
+  emailForm.slug.trim() &&
+  emailForm.imap_host.trim() &&
+  emailForm.smtp_host.trim() &&
+  emailForm.username.trim() &&
+  // Creating needs the password; editing may keep the stored one.
+  (emailEditId.value !== null || emailForm.password !== '')
+)
+
+function openEmailForm(server?: EmailServerInfo) {
+  emailEditId.value = server?.email_server_id ?? null
+  emailForm.display_name = server?.display_name ?? ''
+  emailForm.slug = server?.slug ?? ''
+  emailForm.imap_host = server?.imap_host ?? ''
+  emailForm.imap_port = server?.imap_port ?? 993
+  emailForm.imap_security = server?.imap_security ?? 'ssl'
+  emailForm.smtp_host = server?.smtp_host ?? ''
+  emailForm.smtp_port = server?.smtp_port ?? 587
+  emailForm.smtp_security = server?.smtp_security ?? 'starttls'
+  emailForm.username = server?.username ?? ''
+  // Never prefill: the password is write-only, empty means "keep stored".
+  emailForm.password = ''
+  emailForm.allow_private_network = server?.allow_private_network ?? false
+  emailForm.enabled = server?.enabled ?? true
+  emailMessage.text = ''
+  showEmailForm.value = true
+}
+
+function cancelEmailForm() {
+  showEmailForm.value = false
+}
+
+async function loadEmailServers() {
+  emailLoading.value = true
+  try {
+    emailServers.value = await apiFetch<EmailServerInfo[]>('/api/email/servers')
+  } catch {
+    emailServers.value = []
+  } finally {
+    emailLoading.value = false
+  }
+}
+
+async function saveEmailServer() {
+  emailSaving.value = true
+  emailMessage.ok = true
+  emailMessage.text = ''
+  try {
+    const body = {
+      slug: emailForm.slug.trim(),
+      display_name: emailForm.display_name.trim() || null,
+      imap_host: emailForm.imap_host.trim(),
+      imap_port: emailForm.imap_port,
+      imap_security: emailForm.imap_security,
+      smtp_host: emailForm.smtp_host.trim(),
+      smtp_port: emailForm.smtp_port,
+      smtp_security: emailForm.smtp_security,
+      username: emailForm.username.trim(),
+      // Omitted on edit when empty — the API keeps the stored password.
+      password: emailForm.password || null,
+      allow_private_network: emailForm.allow_private_network,
+      enabled: emailForm.enabled,
+    }
+    if (emailEditId.value) {
+      await apiFetch(`/api/email/servers/${emailEditId.value}`, { method: 'PUT', body: JSON.stringify(body) })
+    } else {
+      await apiFetch('/api/email/servers', { method: 'POST', body: JSON.stringify(body) })
+    }
+    emailMessage.ok = true
+    emailMessage.text = t('common.saved')
+    showEmailForm.value = false
+    await loadEmailServers()
+  } catch (e) {
+    emailMessage.ok = false
+    emailMessage.text = e instanceof Error ? e.message : t('common.saveFailed')
+  } finally {
+    emailSaving.value = false
+  }
+}
+
+async function testEmailServer(server: EmailServerInfo) {
+  emailTesting.value = server.email_server_id
+  emailMessage.ok = true
+  emailMessage.text = ''
+  try {
+    const res = await apiFetch<{ ok: boolean; imap?: { ok: boolean; note?: string; error?: string }; smtp?: { ok: boolean; note?: string; error?: string } }>(
+      `/api/email/servers/${server.email_server_id}/test`,
+      { method: 'POST' }
+    )
+    if (res.ok) {
+      emailMessage.ok = true
+      emailMessage.text = t('tokenConfig.emailTestOk')
+    } else if (res.imap && !res.imap.ok) {
+      emailMessage.ok = false
+      emailMessage.text = t('tokenConfig.emailTestImapFail', { error: res.imap.error || t('common.connectionFailed') })
+    } else {
+      emailMessage.ok = false
+      emailMessage.text = t('tokenConfig.emailTestSmtpFail', { error: res.smtp?.error || t('common.connectionFailed') })
+    }
+  } catch (e) {
+    emailMessage.ok = false
+    emailMessage.text = e instanceof Error ? e.message : t('common.testFailed')
+  } finally {
+    emailTesting.value = null
+  }
+}
+
+async function deleteEmailServer(server: EmailServerInfo) {
+  if (!window.confirm(t('tokenConfig.deleteConfirm', { name: server.display_name || server.slug }))) return
+  emailMessage.ok = true
+  emailMessage.text = ''
+  try {
+    await apiFetch(`/api/email/servers/${server.email_server_id}`, { method: 'DELETE' })
+    emailMessage.ok = true
+    emailMessage.text = t('common.deleted')
+    await loadEmailServers()
+  } catch (e) {
+    emailMessage.ok = false
+    emailMessage.text = e instanceof Error ? e.message : t('common.deleteFailed')
+  }
+}
+
 /** Services the user has configured (user_tokens and/or project_secrets) */
 const configuredIntegrationKeys = ref<Set<string>>(new Set())
 
@@ -1332,6 +1574,7 @@ onMounted(async () => {
   await projectStore.ensureCurrentProject()
   loadIntegrationTokens()
   loadMcpServers()
+  loadEmailServers()
   document.addEventListener('keydown', onKeydown)
 })
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))

@@ -75,6 +75,19 @@ describe('AgentPickerDialog', () => {
     })
   })
 
+  it('groups recruiting agents under the recruiting heading', async () => {
+    agentStore.agents = [
+      makeAgent('office-assistant', 'office-docs', '办公助手'),
+      makeAgent('recruiting-assistant', 'recruiting', '招聘助理'),
+    ]
+    mountDialog()
+    await vi.waitFor(() => {
+      const headings = [...document.querySelectorAll('.picker-category-heading')].map(h => h.textContent)
+      // recruiting sorts right after office-docs in the category order
+      expect(headings).toEqual(['办公文档', '招聘'])
+    })
+  })
+
   it('marks an agent that is favorited by the project category', async () => {
     agentStore.agents = [makeAgent('project-owner', 'agile-development', 'Product Owner')]
     favorites.favorited.add('project-owner')

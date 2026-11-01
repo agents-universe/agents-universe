@@ -206,3 +206,102 @@ async def get_secret_optional(context: ToolContext, service_key: str, *, environ
         return await get_secret(context, service_key, environment=environment)
     except ToolAuthError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Email server integration (Settings → Integrations → 邮件服务器)
+# ---------------------------------------------------------------------------
+
+#: The one hint every "not configured" path surfaces to the user. Agents
+#: holding the email-reader skill are instructed to relay it verbatim —
+#: never to ask for a password in chat.
+EMAIL_NOT_CONFIGURED_HINT = (
+    "尚未配置邮件服务器。请在 Settings → 外部集成 → 邮件服务器 中添加："
+    "填入 IMAP/SMTP 主机、端口、TLS 方式与用户名密码，可配置多台。"
+)
+
+_EMAIL_COLUMNS = (
+    "email_server_id, slug, display_name, imap_host, imap_port, imap_security, "
+    "smtp_host, smtp_port, smtp_security, username, key_hint, "
+    "allow_private_network, enabled"
+)
+
+
+def _row_to_server(row) -> dict:
+    """Map a raw email_servers row to a plain dict (no password column)."""
+    return {
+        "email_server_id": row[0],
+        "slug": row[1],
+        "display_name": row[2],
+        "imap_host": row[3],
+        "imap_port": int(row[4]),
+        "imap_security": row[5],
+        "smtp_host": row[6],
+        "smtp_port": int(row[7]),
+        "smtp_security": row[8],
+        "username": row[9],
+        "key_hint": row[10],
+        # SQLite returns 0/1 for BIT/BOOLEAN columns — normalize to bool so
+        # callers never see truthy ints on one dialect and True on another.
+        "allow_private_network": bool(row[11]),
+        "enabled": bool(row[12]),
+    }
+
+
+async def list_email_servers(context: ToolContext) -> list[dict]:
+    """Enabled email servers of the current user — metadata only, no password.
+
+    Missing table/db degrades to an empty list: the email tool turns that
+    into EMAIL_NOT_CONFIGURED_HINT rather than crashing the conversation.
+    """
+    if not context.db_session:
+        return []
+    try:
+        result = await context.db_session.execute(
+            text(
+                f"SELECT {_EMAIL_COLUMNS} FROM email_servers "
+                "WHERE user_id = :uid AND enabled = 1 ORDER BY slug"
+            ),
+            {"uid": context.user_id},
+        )
+    except Exception as e:  # table absent on a pre-migration DB
+        _log.warning("list_email_servers failed: %s", e)
+        return []
+    return [_row_to_server(row) for row in result.fetchall()]
+
+
+async def get_email_server(context: ToolContext, slug: str) -> dict:
+    """Resolve one configured server including its decrypted password.
+
+    The password is for the email tool's internal use only — it must never
+    appear in a tool result, log, or error message. Raises ToolAuthError
+    with the user-facing configuration hint when the server is unknown,
+    disabled, or the DB/session is unavailable.
+    """
+    not_configured = ToolAuthError(
+        "email",
+        message=f"邮件服务器 '{slug}' 未配置。{EMAIL_NOT_CONFIGURED_HINT}",
+    )
+    if not context.db_session:
+        raise not_configured
+    result = await context.db_session.execute(
+        text(
+            f"SELECT {_EMAIL_COLUMNS}, encrypted_password FROM email_servers "
+            "WHERE user_id = :uid AND slug = :slug AND enabled = 1"
+        ),
+        {"uid": context.user_id, "slug": slug},
+    )
+    row = result.first()
+    if not row:
+        raise not_configured
+    server = _row_to_server(row)
+    try:
+        server["password"] = _decrypt(row[13], context.user_id, context)
+    except RuntimeError as e:
+        raise ToolAuthError("email", message=f"邮件服务器 '{slug}' 密码解密失败：{e}")
+    except Exception:
+        raise ToolAuthError(
+            "email",
+            message=f"邮件服务器 '{slug}' 密码已损坏 — 请在 Settings → 外部集成 → 邮件服务器 中重新保存。",
+        )
+    return server

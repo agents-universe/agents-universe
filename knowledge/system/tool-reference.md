@@ -410,3 +410,57 @@ Output for create_pr: {success, number, url, title, head, base} or {status: "alr
 ```
 
 For `create_pr`, a 422 response is not automatically a duplicate: the tool queries open PRs with the exact `owner:head_branch` and `base_branch`, returning `already_exists` only when exactly one matching open PR is found; zero or multiple matches return an explicit error. Never approve or merge during implementation delivery without separate authorization.
+
+## email
+
+IMAP/SMTP mailbox access through servers configured in Settings → 外部集成 → 邮件服务器 (user-scoped, multiple allowed, password stored encrypted and never shown). Select a server by `slug`. All fetches use BODY.PEEK — reading never marks messages as seen; v1 has no delete/move/flag operations.
+
+```
+Operations: list_servers, list_messages, get_message, download_attachments, send
+Inputs:
+  server (required except list_servers) — server slug from list_servers
+  folder        — mailbox folder (default INBOX)
+  criteria      — {from, subject_contains, since (ISO date), unseen} for list_messages
+  limit         — list_messages result cap (default 20, max 50)
+  uid           — message UID for get_message / download_attachments
+  max_chars     — body text cap for get_message (default 20000)
+  to/cc/bcc, subject (required), body, in_reply_to — for send
+Output:
+  list_servers   — {servers: [{slug, display_name, imap_host, imap_port, username, key_hint, enabled}], hint?}
+                   empty list carries a hint to configure servers in Settings
+  list_messages  — {count, messages: [{uid, from, to, subject, date, flags, has_attachments}]} (envelopes only)
+  get_message    — {uid, from, to, subject, date, body, truncated, attachments: [{filename, size, content_type}]}
+                   plain text preferred, HTML stripped; attachments metadata only
+  download_attachments — {files: [{filename, path, size}], skipped: [{filename, error}], note?}
+                   files land under .tmp/mail/{conversation_id}/ (workspace-relative paths)
+  send           — {success} or {cancelled: true, error?}
+```
+
+- **Not configured**: `list_servers` returns an empty list with a configuration hint, and other operations fail with "邮件服务器 '<slug>' 未配置" plus the same hint. Relay it verbatim (Settings → 外部集成 → 邮件服务器); never ask the user for a password in the chat.
+- **Send confirmation**: `send` shows a confirmation card BEFORE any SMTP I/O; `cancelled: true` means denied or no interactive channel — final for that attempt, never retry silently. `From` is always the configured username.
+- **SSRF**: connections to private addresses are blocked unless the server row has 允许内网地址 enabled.
+- **Redaction**: passwords are stripped from every error (`[REDACTED:email]`); do not work around it.
+- Gmail requires an app-specific password. Related skills: `integration/email-reader`, `screening/email-intake`.
+
+## doc_reader
+
+Extracts text from office/PDF documents — the only path for binary files (`filesystem read_file` rejects binary; `code_executor` cannot see the in-memory upload store). Parsers: python-docx / pypdf / openpyxl (all preinstalled).
+
+```
+Operations: read (default), info
+Inputs:
+  path (required) — workspace-relative path, e.g. .tmp/mail/<cid>/resume.docx
+                    or .tmp/media/<cid>/file.docx (resolves via the upload store)
+  max_chars — text cap for read (default 50000, max 200000)
+  max_pages — PDF page cap for read (default 20, max 100)
+  sheet     — Excel sheet name (default: first sheet)
+Output:
+  read  — {path, format, text, truncated, meta}
+          meta: docx {paragraphs, tables}; pdf {pages_total, pages_read};
+          xlsx {sheets, sheet, rows_read}; txt {bytes}
+  info  — {path, format, meta} without text (triage large files first)
+```
+
+- Formats: `.docx` (paragraphs + pipe-joined table rows), `.pdf`, `.xlsx/.xlsm` (first sheet, 500-row cap), `.txt/.md/.csv` (UTF-8, bad bytes replaced). Others return an actionable error pointing at `code_executor`.
+- Encrypted PDFs return "PDF is encrypted"; image-only PDFs yield empty text — report as unreadable, never guess.
+- Path confinement: escapes (`../`, absolute paths) are rejected. `.tmp/media/<cid>/...` paths fall back to the conversation upload store; expired uploads report "re-attach".

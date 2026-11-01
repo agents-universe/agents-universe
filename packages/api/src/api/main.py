@@ -296,7 +296,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
 
     # API routers
-    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_graph, project_members, project_secrets, projects, publish, schedules, script_runs, scripts, tier_models, tokens, workspace_files
+    from .routers import agents, api_keys, conversations, email_servers, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_graph, project_members, project_secrets, projects, publish, schedules, script_runs, scripts, tier_models, tokens, workspace_files
 
     app.include_router(agents.router, tags=["agents"])
     app.include_router(projects.router, tags=["projects"])
@@ -318,6 +318,7 @@ def create_app() -> FastAPI:
     app.include_router(workspace_files.router, tags=["workspace-files"])
     app.include_router(memories.router, tags=["memories"])
     app.include_router(integrations.router, tags=["integrations"])
+    app.include_router(email_servers.router, tags=["email-servers"])
     app.include_router(mcp_servers.router, tags=["mcp-servers"])
     app.include_router(project_secrets.router, prefix="/api/projects/{project_id}/secrets", tags=["project-secrets"])
     app.include_router(project_members.router, tags=["project-members"])

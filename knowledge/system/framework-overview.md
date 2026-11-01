@@ -46,7 +46,7 @@ Core tools (always available): `filesystem`, `knowledge_rw`, `memory_rw`, `web_f
 `planner` (declared as `plan_task`), `sql_query`, `shell`, `deliver_file`.
 Optional tools (lazy-loaded, enabled per agent): `browser_playwright`, `chart_renderer`,
 `code_executor`, `image_annotator`, `focus_template`, `user_confirm`, `jira`, `confluence`,
-`github`, `kong`, `api_request`, `secret_vault`, `test_generator`, `script_writer`,
+`github`, `kong`, `api_request`, `email`, `doc_reader`, `secret_vault`, `test_generator`, `script_writer`,
 `scheduler`, `git_repo`, `repo_graph`, `skill_source`, `delegate_agent`, `list_agents`.
 
 ### Agent Delegation (delegation.py, tools/agent_delegate.py)

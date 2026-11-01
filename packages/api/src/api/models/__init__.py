@@ -2,6 +2,7 @@
 from ..database import Base
 from .agent import Agent
 from .conversation import AgentTask, Conversation, Message
+from .email_server import EmailServer
 from .conversation_run import ConversationRun
 from .knowledge import KnowledgeLoadEvent, KnowledgeMetadata, KnowledgeVersion
 from .memory import EpisodicMemory, PersonalMemory
@@ -28,6 +29,7 @@ __all__ = [
     "KnowledgeMetadata", "KnowledgeVersion", "KnowledgeLoadEvent",
     "PersonalMemory", "EpisodicMemory",
     "MCPServer",
+    "EmailServer",
     "AutomationScript", "ScriptRun",
     "ScheduledTask", "ScheduledTaskRun",
 ]

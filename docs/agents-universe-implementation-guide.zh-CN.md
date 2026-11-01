@@ -582,6 +582,8 @@ MCP（Model Context Protocol）用于把外部工具服务器接入平台：
 
 这意味着 MCP 是扩展协议而不是“模型本身的能力”。它解决工具发现和传输标准化；项目仍必须负责凭据解析、SSRF 防护、破坏性操作确认、错误降级和连接清理。
 
+并非所有外部接入都走 MCP：`email`（IMAP/SMTP 收发信）与 `jira`/`github`/`kong` 等内置供应商代理同属「外部集成」模式——配置存 `email_servers` 表（用户级、多台、AES-256-GCM 加密密码），在 Settings → 外部集成页以表单录入（用户名/密码只进设置页，永不经对话），工具按 `slug` 选服务器、错误经 `redact_secrets` 脱敏；配套 `doc_reader` 解析落盘的 Word/PDF/Excel 附件。未配置时工具返回配置引导 hint，持有 `integration/email-reader` 技能的智能体原样转述、绝不索要密码。
+
 ## 11. 企业控制面：身份、密钥、隔离与沙箱
 
 ### 11.1 密钥不进入模型上下文

@@ -6,6 +6,8 @@
 
 ### 新增
 
+- **邮件服务器集成 + 招聘助理智能体** - 外部集成新增「邮件服务器」区（`email_servers` 表，用户级、多台，迁移 `d8e4f2a6b9c7`）：表单录入 IMAP/SMTP 主机/端口/TLS 与用户名密码（密码 AES-256-GCM 加密、只回 key_hint 永不回显；编辑留空保持不变；连接测试双探针 + 错误脱敏；内网服务器按行勾选绕过 SSRF）。配套 `email` 内置工具（`list_servers`/`list_messages`/`get_message`/`download_attachments`/`send`：全程 UID + BODY.PEEK 不改已读；附件落 `.tmp/mail/{cid}/` 经文件名消毒/大小上限/碰撞后缀/越界复核；`send` 在任何 SMTP I/O 之前走确认门，无 session/超时 fail-closed；错误一律 `redact_secrets`）与 `doc_reader` 文档解析工具（docx/pdf/xlsx/txt，含聊天上传 `.tmp/media/` 内存回退，路径约束 + 页/字/行钳制）。技能 `integration/email-reader`（未配置时原样转述配置引导、绝不在对话索要密码）+ 三个 `screening/*` 技能（收件 intake/四维评分引证据+反偏见护栏/汇总报告模板）+ `resume-initial-screening` 工作流；新增全局「招聘助理」智能体（`recruiting` 分类，选择器新增招聘分组）。tool-reference/framework-overview/实施指南同步；api 10 + agent-core 34 + web 20 新测试全绿
+
 - **web_search 隐私限制技能** - 新增 `interaction/web-search-privacy` 引导技能：禁止用 `web_search`（及后续 web_fetch）检索可识别自然人的个人信息（身份证/手机号/住址/户籍/征信/通话记录、人肉/开盒类聚合查询），中英双语触发词命中时注入约束正文；技术语境豁免——把个人信息当数据格式/校验/脱敏/加密/合规话题查询（如「手机号正则」「phone number validation regex」）正常放行。经 frontmatter `skills:` 分发给项目负责人与数据分析专家；配套资产测试校验 slug/双语触发词/工具声明与触发激活
 
 - **web_search 首选 Keenable keyless 搜索** - 默认引擎链改为 Keenable（`POST api.keenable.ai/v1/search/public`，免 API key，结果自带已提取页面正文，snippet 限 500 字）→ Bing RSS → 百度 → DuckDuckGo；429（免费小时限速）/ 402 / 其他报错与非 JSON 响应均记入 engines_tried 后静默降级，全灭时 hint 说明 429 会自行恢复。`engine` 参数新增 `keenable` 可钉单引擎；`keenable.ai` 加入提交卫生 URL 白名单

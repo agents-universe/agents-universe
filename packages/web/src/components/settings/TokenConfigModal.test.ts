@@ -350,3 +350,114 @@ describe('TokenConfigModal — context-overflow targeting', () => {
     wrapper.unmount()
   })
 })
+
+describe('TokenConfigModal — email servers', () => {
+  const EMAIL = {
+    email_server_id: 'e1',
+    slug: 'recruiting-inbox',
+    display_name: '招聘收件箱',
+    imap_host: 'imap.example.com',
+    imap_port: 993,
+    imap_security: 'ssl',
+    smtp_host: 'smtp.example.com',
+    smtp_port: 587,
+    smtp_security: 'starttls',
+    username: 'hr@example.com',
+    key_hint: '...pass',
+    allow_private_network: false,
+    enabled: true,
+  }
+
+  function stubEmail(servers: typeof EMAIL[] = []) {
+    apiMock.apiFetch.mockImplementation((url: string, options?: RequestInit) => {
+      if (url === '/api/integrations/defaults') return Promise.resolve({})
+      if (url === '/api/tokens') return Promise.resolve([])
+      if (url.endsWith('/mcp-servers')) return Promise.resolve([])
+      if (url === '/api/email/servers') {
+        if (options?.method === 'POST') return Promise.resolve({})
+        return Promise.resolve(servers)
+      }
+      return Promise.resolve({})
+    })
+  }
+
+  // The Teleport stub recreates its subtree on re-render, so a captured
+  // section node goes stale after any click that toggles the form. Always
+  // re-query.
+  function emailSectionOf(wrapper: Awaited<ReturnType<typeof mountOnIntegrationsTab>>) {
+    return wrapper.findAll('.mcp-section').find((s) => s.text().includes('邮件服务器'))!
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    stubEmail()
+    useProjectStore().currentProject = makeProject('p1')
+  })
+
+  it('shows the empty state until a server is added', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    expect(emailSectionOf(wrapper).text()).toContain('未配置邮件服务器')
+  })
+
+  it('creates a server and sends the typed password', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    await emailSectionOf(wrapper).find('.add-model-btn').trigger('click')
+    await nextTick()
+
+    const inputs = emailSectionOf(wrapper).findAll('.mcp-form-grid input')
+    // display_name, slug, imap_host, imap_port, smtp_host, smtp_port, username, password
+    await inputs[0].setValue('招聘收件箱')
+    await inputs[1].setValue('recruiting-inbox')
+    await inputs[2].setValue('imap.example.com')
+    await inputs[4].setValue('smtp.example.com')
+    await inputs[6].setValue('hr@example.com')
+    await inputs[7].setValue('sup3r-s3cret')
+    await emailSectionOf(wrapper).find('.token-row-actions button').trigger('click')
+    await flushPromises()
+
+    const postCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === '/api/email/servers' && opts?.method === 'POST',
+    )
+    expect(postCall).toBeDefined()
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body.slug).toBe('recruiting-inbox')
+    expect(body.password).toBe('sup3r-s3cret')
+  })
+
+  it('edit with an empty password keeps the stored one (password: null)', async () => {
+    stubEmail([EMAIL])
+    const wrapper = await mountOnIntegrationsTab()
+    // Listed row shows the badge but never a plaintext password.
+    expect(emailSectionOf(wrapper).text()).toContain('...pass')
+    expect(emailSectionOf(wrapper).text()).not.toContain('sup3r')
+
+    // Edit is the first per-item action.
+    await emailSectionOf(wrapper).findAll('.mcp-item .btn-sm')[0].trigger('click')
+    await nextTick()
+
+    const passwordInput = emailSectionOf(wrapper).findAll('.mcp-form-grid input')
+      .find((i) => (i.element as HTMLInputElement).type === 'password')!
+    expect((passwordInput.element as HTMLInputElement).placeholder).toContain('留空')
+    await passwordInput.setValue('')
+    await emailSectionOf(wrapper).find('.token-row-actions button').trigger('click')
+    await flushPromises()
+
+    const putCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === '/api/email/servers/e1' && opts?.method === 'PUT',
+    )
+    expect(putCall).toBeDefined()
+    expect(JSON.parse(putCall![1].body as string).password).toBeNull()
+  })
+
+  it('lists multiple servers with IMAP/SMTP host:port and username', async () => {
+    const second = { ...EMAIL, email_server_id: 'e2', slug: 'hr-personal', display_name: 'HR 个人邮箱', username: 'someone@example.com' }
+    stubEmail([EMAIL, second])
+    const wrapper = await mountOnIntegrationsTab()
+    const emailSection = emailSectionOf(wrapper)
+    expect(emailSection.findAll('.mcp-item')).toHaveLength(2)
+    expect(emailSection.text()).toContain('IMAP imap.example.com:993')
+    expect(emailSection.text()).toContain('SMTP smtp.example.com:587')
+    expect(emailSection.text()).toContain('someone@example.com')
+  })
+})

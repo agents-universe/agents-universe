@@ -126,11 +126,12 @@ const filteredAgents = computed(() => {
 
 // '' must stay last: the grouping below uses `slice(0, -1)` as the set of
 // known categories, and the '' bucket collects everything not listed here.
-const categoryOrder = ['agile-development', 'data-analysis', 'office-docs', 'platform-assistant', 'security', 'customer-service', '']
+const categoryOrder = ['agile-development', 'data-analysis', 'office-docs', 'recruiting', 'platform-assistant', 'security', 'customer-service', '']
 const categoryLabels: Record<string, string> = {
   'agile-development': t('agentPicker.categoryAgile'),
   'data-analysis': t('agentPicker.categoryDataAnalysis'),
   'office-docs': t('agentPicker.categoryOfficeDocs'),
+  'recruiting': t('agentPicker.categoryRecruiting'),
   'platform-assistant': t('agentPicker.categoryPlatform'),
   'security': t('agentPicker.categorySecurity'),
   'customer-service': t('agentPicker.categoryCustomerService'),

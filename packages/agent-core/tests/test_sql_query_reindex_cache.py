@@ -8,7 +8,7 @@ until process restart.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +18,24 @@ from agent_core.tools.base import ToolContext
 from agent_core.tools.sql_query import SqlQueryTool
 
 
+def _db_session() -> AsyncMock:
+    """AsyncSession stand-in with the shapes index_directory actually uses.
+
+    A bare AsyncMock models every call as awaitable, but the indexer needs
+    (a) execute() to await to a Result (scalars().all()) and (b) begin_nested()
+    to be a plain call returning an async context manager.
+    """
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    db.execute.return_value = result
+    nested = MagicMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=False)
+    db.begin_nested = MagicMock(return_value=nested)
+    return db
+
+
 def _context(tmp_path, cache: KnowledgeCache) -> ToolContext:
     (tmp_path / "knowledge").mkdir(exist_ok=True)
     return ToolContext(
@@ -25,7 +43,7 @@ def _context(tmp_path, cache: KnowledgeCache) -> ToolContext:
         project_fs_path=str(tmp_path),
         conversation_id="c1",
         user_id="u1",
-        db_session=AsyncMock(),
+        db_session=_db_session(),
         knowledge_cache=cache,
     )
 

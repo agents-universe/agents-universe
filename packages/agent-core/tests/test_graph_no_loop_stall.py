@@ -1,9 +1,10 @@
 """Event-loop liveness + output caps for the repo knowledge graph.
 
-Regression for the production disconnect: build_repo_graph's sync tail
-(manifest json.load/dump, graph assembly, report render) used to run on the
-event loop — a large .NET checkout froze it for seconds, uvicorn's WS ping
-went unanswered, and the server closed the socket mid-turn.
+Regression for the production disconnect: build_repo_graph's sync tail used
+to run on the event loop — a large .NET checkout froze it for seconds,
+uvicorn's WS ping went unanswered, and the server closed the socket
+mid-turn. The tail is now graphify extraction/conversion plus JSON
+persistence, still required to run entirely in worker threads.
 
 Covers, in one place:
 - the build tail runs in worker threads (identity check + gap ticker),
@@ -18,7 +19,6 @@ Covers, in one place:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import subprocess
 import threading
 import time
@@ -29,8 +29,6 @@ import pytest
 import agent_core.knowledge.graph.builder as builder
 import agent_core.tools.repo_graph as repo_graph_mod
 from agent_core.knowledge.graph.builder import build_repo_graph, maybe_build_auto
-from agent_core.knowledge.graph.cache import GraphCache
-from agent_core.knowledge.graph.languages import detect_language
 from agent_core.knowledge.graph.model import (
     EDGE_CALLS,
     GraphEdge,
@@ -42,7 +40,6 @@ from agent_core.knowledge.graph.model import (
     repo_graph_dir,
     symbol_id,
 )
-from agent_core.knowledge.graph.parser import FileParseResult
 from agent_core.knowledge.graph.queries import (
     IMPACT_LIMIT,
     NEIGHBOR_LIMIT,
@@ -77,17 +74,6 @@ def _seed(path: Path, files: dict[str, str], git: bool = True) -> Path:
         _run("add", ".", cwd=path)
         _run("commit", "-m", "seed", cwd=path)
     return path
-
-
-def _fake_parse(path: Path, rel: str) -> FileParseResult:
-    """Grammar-free parse: keeps these tests hermetic (no tree-sitter/network)."""
-    data = path.read_bytes()
-    return FileParseResult(
-        sha256=hashlib.sha256(data).hexdigest(),
-        lang=detect_language(rel) or "text",
-        stats={"error": None},
-        lines=data.count(b"\n") + 1,
-    )
 
 
 def _make_context(project: Path) -> ToolContext:
@@ -130,24 +116,23 @@ async def _record_max_gap(work) -> float:
 
 @pytest.mark.asyncio
 async def test_build_tail_sleeps_happen_off_loop(tmp_path: Path, monkeypatch):
-    """Injected 0.4s sleeps in _assemble_graph/cache.save must not gap the loop."""
+    """Injected 0.4s sleeps in extract/conversion must not gap the loop."""
     repo = _seed(tmp_path / "repo", {"main.py": "def main():\n    return 1\n"})
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
-    real_assemble = builder._assemble_graph
+    real_build_graph = builder.build_graph
 
-    def slow_assemble(*args, **kwargs):
+    def slow_build_graph(*args, **kwargs):
         time.sleep(_SLEEP_S)
-        return real_assemble(*args, **kwargs)
+        return real_build_graph(*args, **kwargs)
 
-    real_save = GraphCache.save
+    real_to_repo_graph = builder.to_repo_graph
 
-    def slow_save(self, state):
+    def slow_to_repo_graph(*args, **kwargs):
         time.sleep(_SLEEP_S)
-        return real_save(self, state)
+        return real_to_repo_graph(*args, **kwargs)
 
-    monkeypatch.setattr(builder, "_assemble_graph", slow_assemble)
-    monkeypatch.setattr(GraphCache, "save", slow_save)
+    monkeypatch.setattr(builder, "build_graph", slow_build_graph)
+    monkeypatch.setattr(builder, "to_repo_graph", slow_to_repo_graph)
 
     async def _work() -> None:
         summary = await build_repo_graph(repo, tmp_path / "kg")
@@ -166,7 +151,6 @@ async def test_sync_tail_runs_in_worker_threads(tmp_path: Path, monkeypatch):
         return None
 
     monkeypatch.setattr(builder, "_tracked_files", _no_git)
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
     main_ident = threading.get_ident()
     idents: dict[str, int] = {}
@@ -180,18 +164,18 @@ async def test_sync_tail_runs_in_worker_threads(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(builder, "_walk_files", record("walk", builder._walk_files))
     monkeypatch.setattr(builder, "_candidate_files", record("candidates", builder._candidate_files))
     monkeypatch.setattr(builder, "load_repo_graph", record("load_graph", builder.load_repo_graph))
-    monkeypatch.setattr(builder, "_assemble_graph", record("assemble", builder._assemble_graph))
+    monkeypatch.setattr(builder, "build_graph", record("extract", builder.build_graph))
+    monkeypatch.setattr(builder, "to_repo_graph", record("convert", builder.to_repo_graph))
     monkeypatch.setattr(builder, "render_report", record("report", builder.render_report))
     monkeypatch.setattr(builder, "save_repo_graph", record("save_graph", builder.save_repo_graph))
     monkeypatch.setattr(builder, "compact_map", record("compact_map", builder.compact_map))
-    monkeypatch.setattr(GraphCache, "load", record("cache_load", GraphCache.load))
-    monkeypatch.setattr(GraphCache, "save", record("cache_save", GraphCache.save))
+    monkeypatch.setattr(builder, "_save_manifest", record("manifest", builder._save_manifest))
 
     summary = await build_repo_graph(repo, tmp_path / "kg")
     assert summary["status"] == "built"
     expected = (
-        "walk", "candidates", "load_graph", "assemble", "report",
-        "save_graph", "compact_map", "cache_load", "cache_save",
+        "walk", "candidates", "load_graph", "extract", "convert", "report",
+        "save_graph", "compact_map", "manifest",
     )
     for name in expected:
         assert name in idents, f"{name} never ran"
@@ -199,30 +183,34 @@ async def test_sync_tail_runs_in_worker_threads(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_large_dotnet_tree_build_keeps_loop_live(tmp_path: Path, monkeypatch):
-    """Real tree: src .cs files plus a bin/obj flood — excluded, and no stall."""
+async def test_large_dotnet_tree_build_keeps_loop_live(tmp_path: Path):
+    """Real tree: src .cs files plus a bin/obj flood — excluded, and no stall.
+
+    Sizes are trimmed vs the old parser-era suite (real graphify extraction
+    replaces the fake parse) but still exercise the exclusion at scale.
+    """
     files: dict[str, str] = {}
-    for i in range(20):
-        for j in range(30):  # 600 source files
+    for i in range(10):
+        for j in range(10):  # 100 source files
             files[f"src/Ns{i}/Cls{j}.cs"] = f"namespace Ns{i} {{ public class Cls{j} {{}} }}\n"
-    for i in range(60):  # 1200 generated files under build output
-        for j in range(20):
+    for i in range(20):  # 400 generated files under build output
+        for j in range(10):
             files[f"bin/Debug/net8/Gen{i}_{j}.cs"] = f"// generated {i}_{j}\n"
             files[f"obj/Debug/Obj{i}_{j}.cs"] = f"// generated obj {i}_{j}\n"
     repo = _seed(tmp_path / "dotnet", files)
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
     async def _work() -> None:
         summary = await build_repo_graph(repo, tmp_path / "kg")
         assert summary["status"] == "built"
-        assert summary["stats"]["files"] == 600  # bin/obj never indexed
+        assert summary["stats"]["files"] == 100  # bin/obj never indexed
 
     max_gap = await _record_max_gap(_work())
     assert max_gap < _MAX_LOOP_GAP_S, f"event loop stalled {max_gap:.3f}s"
 
     graph = load_cached(tmp_path / "kg")
     assert graph is not None
-    offenders = [n.name for n in graph.nodes if n.name.startswith(("bin/", "obj/"))]
+    offenders = [n.id for n in graph.nodes if n.type == "file"
+                 and n.id.startswith(("f:bin/", "f:obj/"))]
     assert not offenders, f"build output leaked into graph: {offenders[:5]}"
 
 
@@ -231,21 +219,20 @@ async def test_large_dotnet_tree_build_keeps_loop_live(tmp_path: Path, monkeypat
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_bin_obj_excluded_when_git_tracked(tmp_path: Path, monkeypatch):
+async def test_bin_obj_excluded_when_git_tracked(tmp_path: Path):
     repo = _seed(tmp_path / "tracked", {
         "src/Main.cs": "namespace App { public class Main {} }\n",
         "bin/Generated.cs": "namespace App { public class Gen {} }\n",
         "obj/Obj.cs": "namespace App { public class Obj {} }\n",
         ".vs/Editor.cs": "class Vs {} \n",
     })
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
     summary = await build_repo_graph(repo, tmp_path / "kg")
     assert summary["status"] == "built"
     assert summary["stats"]["files"] == 1
     graph = load_cached(tmp_path / "kg")
     names = {n.name for n in graph.nodes if n.type == "file"}
-    assert names == {"src/Main.cs"}
+    assert names == {"Main.cs"}
 
 
 @pytest.mark.asyncio
@@ -260,7 +247,6 @@ async def test_bin_obj_excluded_in_walk_fallback(tmp_path: Path, monkeypatch):
         return None
 
     monkeypatch.setattr(builder, "_tracked_files", _no_git)
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
     summary = await build_repo_graph(repo, tmp_path / "kg")
     assert summary["status"] == "built"
@@ -273,7 +259,7 @@ async def test_bin_obj_excluded_in_walk_fallback(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_explicit_build_refuses_oversized_tree(tmp_path: Path, monkeypatch):
-    proj = _seed(tmp_path / "proj" / "repos" / "big", {
+    _seed(tmp_path / "proj" / "repos" / "big", {
         "a.py": "def a():\n    return 1\n",
         "b.py": "def b():\n    return 2\n",
     })
@@ -329,18 +315,17 @@ async def test_builds_serialize_per_kg_dir(tmp_path: Path, monkeypatch):
     proj = tmp_path / "proj"
     repo = proj / "repos" / "locked"
     _seed(repo, {"main.py": "def main():\n    return 1\n"})
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
 
     entered = threading.Event()
     release = threading.Event()
-    real_assemble = builder._assemble_graph
+    real_build_graph = builder.build_graph
 
-    def blocking_assemble(*args, **kwargs):
+    def blocking_build_graph(*args, **kwargs):
         entered.set()
         assert release.wait(10), "test never released the build"
-        return real_assemble(*args, **kwargs)
+        return real_build_graph(*args, **kwargs)
 
-    monkeypatch.setattr(builder, "_assemble_graph", blocking_assemble)
+    monkeypatch.setattr(builder, "build_graph", blocking_build_graph)
 
     kg_dir = repo_graph_dir(str(proj), "locked")
     explicit = asyncio.create_task(
@@ -350,7 +335,7 @@ async def test_builds_serialize_per_kg_dir(tmp_path: Path, monkeypatch):
         if entered.is_set():
             break
         await asyncio.sleep(0.01)
-    assert entered.is_set(), "explicit build never reached assembly"
+    assert entered.is_set(), "explicit build never reached extraction"
     assert builder._BUILD_LOCKS[str(kg_dir)].locked(), "explicit build holds no lock"
 
     auto = asyncio.create_task(maybe_build_auto(repo, str(proj), "locked"))
@@ -370,10 +355,9 @@ async def test_builds_serialize_per_kg_dir(tmp_path: Path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_query_load_cached_off_loop(tmp_path: Path, monkeypatch):
+async def test_query_load_cached_off_loop(tmp_path: Path):
     proj = tmp_path / "proj"
     _seed(proj / "repos" / "sample", {"main.py": "def main():\n    return 1\n"})
-    monkeypatch.setattr(builder, "parse_file", _fake_parse)
     await RepoGraphTool().execute({"operation": "build"}, _make_context(proj))
 
     main_ident = threading.get_ident()
@@ -384,9 +368,12 @@ async def test_query_load_cached_off_loop(tmp_path: Path, monkeypatch):
         idents.append(threading.get_ident())
         return real_load(*args, **kwargs)
 
-    monkeypatch.setattr(repo_graph_mod, "load_cached", wrapped)
-    result = await RepoGraphTool().execute(
-        {"operation": "query", "query": "main"}, _make_context(proj))
+    repo_graph_mod.load_cached = wrapped
+    try:
+        result = await RepoGraphTool().execute(
+            {"operation": "query", "query": "main"}, _make_context(proj))
+    finally:
+        repo_graph_mod.load_cached = real_load
     assert "matches" in result
     assert idents, "load_cached never ran"
     assert idents[0] != main_ident, "query path loaded graph.json on the event loop"
@@ -398,7 +385,7 @@ def _hub_graph(hub_degree: int = 300) -> RepoGraph:
     edges = []
     for i in range(hub_degree):
         fid = file_id(f"src/F{i}.cs")
-        nodes.append(GraphNode(id=fid, type="file", name=f"src/F{i}.cs", lang="csharp"))
+        nodes.append(GraphNode(id=fid, type="file", name=f"F{i}.cs", lang="csharp"))
         edges.append(GraphEdge(src=fid, dst=hub, type=EDGE_CALLS))
     return RepoGraph(
         repo=RepoMeta(name="hub", head_sha="", langs=["csharp"], built_at=now_epoch()),

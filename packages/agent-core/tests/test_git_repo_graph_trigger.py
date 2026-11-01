@@ -14,7 +14,6 @@ import pytest
 
 import agent_core.knowledge.graph.builder as _builder_mod
 import agent_core.tools.git_repo as _git_repo_mod
-from agent_core.knowledge.graph.languages import get_grammar
 from agent_core.tools.git_repo import GitRepoTool
 from agent_core.tools.repo_graph import RepoGraphTool
 
@@ -69,8 +68,10 @@ def _make_two_branch_remote(tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.fixture
 def grammars():
-    if get_grammar("python") is None:
-        pytest.skip("tree-sitter python grammar unavailable (offline?)")
+    try:
+        import graphify.extract  # noqa: F401
+    except ImportError:
+        pytest.skip("graphifyy not installed")
     return True
 
 

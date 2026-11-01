@@ -3,7 +3,7 @@
 Reuses the built-in incremental graph engine (the same one the ``repo_graph``
 tool and auto-build on git ops use) so later runs only re-parse changed files.
 Output lives under ``.tmp/repo_graph/<name>/`` (git-ignored):
-graph.json + graph_report.md + cache/index.json.
+graph.json + graph_report.md + graphify-out/ (AST cache).
 
 Usage:
     python scripts/build_kg.py            # incremental (fast when nothing changed)

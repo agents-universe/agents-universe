@@ -51,7 +51,10 @@ EDGE_READS = "reads"
 EDGE_WRITES = "writes"
 EDGE_FOREIGN_KEY = "foreign_key"
 EDGE_PRIMARY_KEY = "primary_key"
-# "contains" and "references" are schema-reserved for v2.
+# Generic reference (graphify "uses"/"references" edges that are neither a
+# call nor a schema relation); traversal treats it like any other edge.
+EDGE_REFERENCES = "references"
+# "contains" remains schema-reserved: containment is derived from node ids.
 
 
 @dataclass

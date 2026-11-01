@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_core.knowledge.graph.languages import get_grammar
 from agent_core.tools.base import ToolContext
 from agent_core.tools.registry import build_tool_registry
 from agent_core.tools.repo_graph import RepoGraphTool
@@ -73,8 +72,10 @@ def project(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def grammars():
-    if get_grammar("python") is None:
-        pytest.skip("tree-sitter python grammar unavailable (offline?)")
+    try:
+        import graphify.extract  # noqa: F401
+    except ImportError:
+        pytest.skip("graphifyy not installed")
     return True
 
 

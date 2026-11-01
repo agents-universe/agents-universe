@@ -124,16 +124,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     "/tmp/agent-core[test]" \
     "/tmp/api[test]"
 
-# Bake the tree-sitter grammars for the repo knowledge graph: the runtime
-# sandbox has no network and the language pack downloads grammars lazily at
-# first use, which would silently fail every parse in the container. The
-# grammars are vendored in the repo (docker/ts-grammars, refreshed with
-# scripts/fetch_ts_grammars.py) and copied verbatim — the build never needs
-# the network for them. The cache dir is the pack's Linux layout
-# (libtree_sitter_<lang>.so); the runtime finds it via
-# TREE_SITTER_GRAMMAR_CACHE (PackConfig in languages.py). No jsx — the pack
-# ships none, and get_grammar falls back to the javascript grammar.
-COPY docker/ts-grammars /opt/ts-grammars
+# (tree-sitter grammars for the repo knowledge graph need no bake step:
+# graphifyy pulls them as compiled tree-sitter-* wheels at pip install time.)
 
 # Arm the sandbox file-access guard even when a command overrides PYTHONPATH:
 # site.py auto-imports sitecustomize.py from site-packages, so the audit hook
@@ -194,8 +186,6 @@ COPY --from=python-deps /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /ms-playwright /ms-playwright
 COPY --from=python-deps /opt/semgrep-venv /opt/semgrep-venv
-# Tree-sitter grammars baked in the deps stage (runtime sandbox has no network)
-COPY --from=python-deps /opt/ts-grammars /opt/ts-grammars
 
 # Copy Mermaid runtime from the web-build stage (no local npm install required)
 COPY --from=web-build /app/node_modules/mermaid/dist/mermaid.min.js /app/vendor/mermaid/mermaid.min.js
@@ -221,7 +211,6 @@ ENV JAVA_HOME=/usr/lib/jvm/msopenjdk-21-amd64 \
     GRADLE_USER_HOME=/home/appuser/.gradle \
     PYTHONPATH=/app/src \
     SEMGREP_SEND_METRICS=off \
-    TREE_SITTER_GRAMMAR_CACHE=/opt/ts-grammars \
     PATH="/usr/lib/jvm/msopenjdk-21-amd64/bin:${PATH}" \
     npm_config_cache=/tmp/npm-cache
 
@@ -250,11 +239,16 @@ RUN set -eux; \
     python -m sslyze --help; \
     python -m dirsearch --version; \
     python -m wafw00f.main -V; \
-    python -c "from agent_core.knowledge.graph.languages import get_grammar; \
-        assert get_grammar('java') is not None, 'java grammar not found in baked cache dir'; \
-        from agent_core.knowledge.graph.parser import parse_bytes; \
-        r = parse_bytes(b'@interface Marker {} class A {}', 'A.java', 'java'); \
-        assert r.stats.get('error') is None and len(r.symbols) >= 2, r.stats"
+    python -c "from graphify.extract import extract; from graphify.build import build; \
+        from pathlib import Path; import tempfile; \
+        d = Path(tempfile.mkdtemp()); \
+        j = d/'A.java'; j.write_text('@interface Marker {}\npublic class A { void go() {} }\n'); \
+        ex = extract([j], cache_root=Path(tempfile.mkdtemp()), root=d, parallel=False); \
+        assert any(n.get('label') == 'A' for n in ex['nodes']), ex['nodes']; \
+        s = d/'schema.sql'; s.write_text('CREATE TABLE t (id INTEGER PRIMARY KEY);'); \
+        ex2 = extract([s], cache_root=Path(tempfile.mkdtemp()), root=d, parallel=False); \
+        assert any(n.get('label') == 't' for n in ex2['nodes']), ex2['nodes']; \
+        g = build([ex], root=d); assert g.number_of_nodes() >= 2"
 
 # Configure nginx for non-root execution.
 # All runtime-writable paths live under /tmp/nginx. /tmp is world-writable
@@ -296,7 +290,7 @@ RUN sed -i 's/\r$//' /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
 RUN mkdir -p /home/appuser/.m2 /home/appuser/.gradle /app/projects /tmp/npm-cache \
-    && chown -R appuser:appuser /app /ms-playwright /home/appuser /tmp/npm-cache /opt/ts-grammars
+    && chown -R appuser:appuser /app /ms-playwright /home/appuser /tmp/npm-cache
 
 EXPOSE 8000
 USER appuser

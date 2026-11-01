@@ -1,11 +1,10 @@
-"""Incremental repo graph builder (mirrors graphify's design).
+"""Incremental repo graph builder on top of graphify.
 
-``cache/index.json`` IS the per-file parse store: graph.json is re-assembled
-purely from it, so rebuilds only re-parse files whose SHA256 changed. The
-head_sha fast path skips even hashing when nothing changed. Cross-file
-resolution (imports -> module files, calls -> symbols) is a pure function
-over the per-file results, so the whole pipeline is deterministic and
-testable without a server.
+Candidate selection (git ls-files, exclusion dirs, size caps, head_sha fast
+path) stays here; AST extraction, cross-file resolution and clustering are
+graphify's job, reached through ``graphify_adapter`` — the only module that
+imports the library. Results are converted to our schema-v2 RepoGraph, so
+store/queries/report and every tool consumer are unchanged.
 
 Git subprocess calls here (rev-parse, ls-files) never take a token and run
 no hooks; the env is filtered like the tool layer's safe_env for defense in
@@ -15,37 +14,25 @@ tools package.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-import posixpath
 import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from .cache import GraphCache, GraphCacheState
-from .languages import EXCLUDED_DIRS, detect_language, max_file_bytes
-from .model import (
-    EDGE_CALLS,
-    EDGE_FOREIGN_KEY,
-    EDGE_IMPORTS,
-    EDGE_INHERITS,
-    EDGE_PRIMARY_KEY,
-    EDGE_READS,
-    EDGE_WRITES,
-    NODE_COLUMN,
-    GraphEdge,
-    GraphNode,
-    RepoGraph,
-    RepoMeta,
-    file_id,
-    now_epoch,
-    parse_node_id,
-    repo_graph_dir,
-    symbol_id,
+from .graphify_adapter import (
+    GraphifyUnavailable,
+    build_graph,
+    lang_of,
+    to_repo_graph,
 )
-from .parser import file_sha256, over_size_limit, parse_file
+from .model import (
+    RepoGraph,
+    repo_graph_dir,
+)
 from .report import REPORT_FILE, compact_map, render_report
 from .store import GRAPH_FILE, invalidate_cached, load_repo_graph, save_repo_graph
 
@@ -55,8 +42,8 @@ _log = logging.getLogger(__name__)
 # of files would stall the turn for little in-context value.
 AUTO_BUILD_MAX_FILES = 3000
 # Explicit `repo_graph build` may force past AUTO_BUILD_MAX_FILES but still
-# refuses absurd trees: hashing/serializing tens of thousands of files holds
-# the build lock and bloats graph.json far past what the LLM can use.
+# refuses absurd trees: extracting tens of thousands of files holds the build
+# lock and bloats graph.json far past what the LLM can use.
 MAX_BUILD_FILES = 10_000
 # Per-file skip reasons recorded in stats/report (rel -> reason). Bounded so
 # a repo of a thousand giant generated files cannot bloat graph.json.
@@ -64,17 +51,41 @@ SKIPPED_FILES_MAX = 100
 # Git listing/rev-parse should answer in seconds; a wedged git (stale index
 # lock, hung fsmonitor) must not hold a build forever.
 _GIT_TIMEOUT_S = 10.0
-_PARSE_CONCURRENCY = 8  # tree-sitter releases the GIL during parse
 _BUILD_LOCKS: dict[str, asyncio.Lock] = {}  # one build at a time per kg_dir
 
-_TS_EXTS = (".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".vue")
+# Skip giant / minified / generated files outright. graphify's SQL extractor
+# is an AST walk, not our old streaming parser: a spike-measured 6.9MB /
+# 60k-table dump took ~3.5 minutes, so SQL gets a much smaller cap than the
+# old 1GiB — anything past 2MB is a generated dump, not a migration script.
+MAX_FILE_BYTES = 2 * 1024 * 1024
+SQL_MAX_FILE_BYTES = 2 * 1024 * 1024
 
-# Edge types whose target is resolved through the symbol indexes in pass 3.
-# Everything else in a parse result (e.g. imports) is handled elsewhere.
-_RESOLVED_EDGE_TYPES = (
-    EDGE_CALLS, EDGE_INHERITS, EDGE_READS, EDGE_WRITES,
-    EDGE_FOREIGN_KEY, EDGE_PRIMARY_KEY,
-)
+# Committed vendor/build dirs are still skipped even when git ls-files lists
+# them — they are noise, not architecture. bin/obj/.vs are .NET build output
+# and IDE state: a walked or include_untracked build would otherwise index
+# thousands of generated .cs files.
+EXCLUDED_DIRS: frozenset[str] = frozenset({
+    ".git", "node_modules", "vendor", "dist", "build", "out", "coverage",
+    "__pycache__", ".venv", "venv", ".next", ".nuxt", ".tox",
+    ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
+    "bin", "obj", ".vs",
+})
+
+# What we index — graphify parses ~114 extensions, but the repo_graph tool's
+# contract (and the agents' prompts) cover these languages only. Its broader
+# set includes .json/.yaml, which would sweep lockfiles and our own
+# .tmp/repo_graph artifacts into "source files".
+INDEX_EXTS: frozenset[str] = frozenset({
+    ".py", ".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs", ".jsx",
+    ".vue", ".java", ".cs", ".sql",
+})
+
+# The per-repo graphify cache lives inside our storage dir, so git_repo's
+# whole-directory cleanup also removes it. Never rename without checking
+# git_repo.py's graph teardown.
+GRAPHIFY_CACHE_DIRNAME = "graphify-out"
+
+_MANIFEST_FILE = "build_manifest.json"
 
 # Mirrors ToolContext._ENV_DENY_* — these git calls need no secrets.
 _ENV_DENY_SUFFIXES = frozenset(
@@ -244,11 +255,11 @@ async def _untracked_files(repo: Path) -> list[str] | None:
 
 
 def _candidate_files(files: list[str]) -> list[str]:
-    """Files worth indexing: supported ext, not in an excluded dir."""
+    """Files worth indexing: indexed ext, not in an excluded dir."""
     return sorted({
         rel for rel in files
         if not any(part.lower() in EXCLUDED_DIRS for part in rel.split("/"))
-        and detect_language(rel) is not None
+        and Path(rel).suffix.lower() in INDEX_EXTS
     })
 
 
@@ -264,16 +275,28 @@ def _untracked_hint(untracked_candidates: list[str]) -> str | None:
     )
 
 
-def _missing_grammar_langs(results: dict[str, dict[str, Any]]) -> tuple[list[str], int]:
-    """Languages whose parse results carry 'grammar unavailable' errors."""
-    missing: set[str] = set()
-    count = 0
-    for entry in results.values():
-        error = str(entry.get("stats", {}).get("error") or "")
-        if error.startswith("grammar unavailable: "):
-            missing.add(error.split(": ", 1)[1])
-            count += 1
-    return sorted(missing), count
+def _max_file_bytes(rel: str) -> int:
+    return SQL_MAX_FILE_BYTES if rel.lower().endswith(".sql") else MAX_FILE_BYTES
+
+
+def _load_manifest(kg_dir: Path) -> dict[str, Any] | None:
+    """Small per-build manifest: candidate list + build mode for the fast path.
+
+    graphify's AST cache alone cannot answer "does the stored graph cover
+    every current candidate" — the head_sha fast path needs the exact list.
+    """
+    try:
+        data = json.loads((kg_dir / _MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_manifest(kg_dir: Path, *, tracked_only: bool, candidates: list[str]) -> None:
+    payload = json.dumps({"tracked_only": tracked_only, "candidates": candidates})
+    tmp = kg_dir / (_MANIFEST_FILE + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, kg_dir / _MANIFEST_FILE)
 
 
 async def build_repo_graph(
@@ -283,7 +306,7 @@ async def build_repo_graph(
 
     One build at a time per kg_dir — auto-builds (git_repo ops) and explicit
     ``repo_graph build`` share this lock, so a forced rebuild can never race
-    an auto-build on the same manifest. The lock lives here (not in
+    an auto-build on the same cache. The lock lives here (not in
     maybe_build_auto) so every entry point serializes identically.
 
     See _build_repo_graph_locked for the build semantics.
@@ -293,16 +316,13 @@ async def build_repo_graph(
         return await _build_repo_graph_locked(repo, kg_dir, force, include_untracked)
 
 
-def _persist(
-    cache: GraphCache, state: GraphCacheState, graph: RepoGraph, kg_dir: Path
-) -> str:
-    """Persist manifest + graph + report; returns the compact repo map.
+def _persist(graph: RepoGraph, kg_dir: Path) -> str:
+    """Persist graph + report; returns the compact repo map.
 
-    Runs in a worker thread (one to_thread call for the whole tail): the two
-    JSON dumps alone can freeze the event loop for seconds on a large repo,
-    which would starve WS pings/heartbeats and drop the client connection.
+    Runs in a worker thread (one to_thread call for the whole tail): the JSON
+    dump alone can freeze the event loop for seconds on a large repo, which
+    would starve WS pings/heartbeats and drop the client connection.
     """
-    cache.save(state)
     save_repo_graph(graph, kg_dir)
     (kg_dir / REPORT_FILE).write_text(render_report(graph), encoding="utf-8")
     return compact_map(graph)
@@ -313,11 +333,11 @@ async def _build_repo_graph_locked(
 ) -> dict[str, Any]:
     """Build/refresh the graph for one checkout; returns a summary dict.
 
-    Fast path: head unchanged AND the manifest already covers every candidate
-    source file -> up_to_date with zero hashing. Otherwise every candidate
-    file is hashed but only changed ones are re-parsed (bounded thread pool);
-    deleted files drop out of the manifest; then graph.json and
-    graph_report.md are assembled purely from the manifest.
+    Fast path: head unchanged AND the stored manifest already covers every
+    candidate source file -> up_to_date with zero hashing. Otherwise every
+    candidate is size/containment-checked and handed to graphify (its SHA256
+    AST cache skips unchanged files internally), then converted to schema v2
+    and persisted.
 
     By default only *tracked* files are indexed (the graph mirrors committed
     architecture). Files that exist on disk but are not tracked yet are
@@ -325,14 +345,12 @@ async def _build_repo_graph_locked(
     silently misread as "no code". Pass ``include_untracked=True`` to fold
     them into the candidates as well.
 
-    Every CPU/JSON-heavy step (manifest load, walk, assembly, persistence)
+    Every CPU/JSON-heavy step (walk, extraction, conversion, persistence)
     runs via asyncio.to_thread: this coroutine shares the process event loop
     with the WebSocket it must keep alive.
     """
     started = time.perf_counter()
     kg_dir.mkdir(parents=True, exist_ok=True)
-    cache = GraphCache(kg_dir / "cache")
-    state = await asyncio.to_thread(cache.load)
 
     tracked = await _tracked_files(repo)
     if tracked is None:
@@ -348,6 +366,7 @@ async def _build_repo_graph_locked(
     head = await _git_head_sha(repo)
 
     existing = await asyncio.to_thread(load_repo_graph, kg_dir)
+    manifest = await asyncio.to_thread(_load_manifest, kg_dir)
     if (
         not force
         # "" = HEAD unresolvable (no git / worktree / empty repo). The stored
@@ -356,9 +375,10 @@ async def _build_repo_graph_locked(
         # unchanged file set never reach the graph.
         and head
         and existing is not None
+        and manifest is not None
         and existing.repo.head_sha == head
-        and state.tracked_only == (not include_untracked)
-        and set(candidates) <= set(state.files)
+        and manifest.get("tracked_only") == (not include_untracked)
+        and set(candidates) <= set(manifest.get("candidates") or [])
     ):
         summary = {
             "status": "up_to_date",
@@ -387,124 +407,76 @@ async def _build_repo_graph_locked(
             ),
         }
 
-    counters: dict[str, Any] = {"parsed": 0, "reused": 0, "failed": 0, "skipped": 0}
-    failed_reasons: dict[str, int] = {}
     skipped_files: dict[str, str] = {}
     repo_resolved = repo.resolve()
+    paths: list[Path] = []
+    accepted: list[str] = []
 
-    def _mark_skipped(rel: str, reason: str) -> None:
-        counters["skipped"] += 1
-        if len(skipped_files) < SKIPPED_FILES_MAX:
-            skipped_files[rel] = reason
-
-    async def _handle(rel: str) -> None:
-        # resolve() follows symlinks/junctions: a walked path can leave the
+    def _prepare() -> None:
+        # resolve() follows symlinks/junctions: a listed path can leave the
         # checkout (external files' symbols would land in graph.json) or land
-        # on a device file (/dev/zero hashes forever while holding the build
-        # lock — st_size is 0 there, so parse_file's size guard misses it).
-        # Hash only regular files still inside the repo — the same rule
-        # knowledge/loader.py applies (inlined; this module must not import
-        # the tools package).
-        try:
-            path = (repo / rel).resolve()
-            contained = path.is_relative_to(repo_resolved) and path.is_file()
-        except OSError:
-            contained = False
-        if not contained:
-            _mark_skipped(rel, "missing or outside repo")
-            state.files.pop(rel, None)
-            return
-        # Size check before hashing: a giant generated file must not cost a
-        # full hash every build. The manifest marker (no sha) keeps the fast
-        # path intact and is never reused as a parse entry — if the file
-        # shrinks below the cap, the sha mismatch reparses it for real.
-        lang = detect_language(rel)
-        try:
-            size = path.stat().st_size
-        except OSError:  # deleted between ls-files and stat — skip
-            _mark_skipped(rel, "unreadable")
-            state.files.pop(rel, None)
-            return
-        limit = max_file_bytes(lang)
-        if over_size_limit(path, size, lang):
-            reason = (
-                f"over {limit // (1 << 20)}MB limit" if limit >= (1 << 20)
-                else f"over {limit}B limit"
-            )
-            _mark_skipped(rel, reason)
-            state.files[rel] = {"lang": lang, "skipped": reason}
-            _log.debug("repo graph %s: skipping %s (%s)", repo.name, rel, reason)
-            return
-        try:
-            sha = await asyncio.to_thread(file_sha256, path)
-        except OSError:  # deleted between ls-files and read — skip
-            _mark_skipped(rel, "unreadable")
-            state.files.pop(rel, None)
-            return
-        entry = cache.get(state, rel)
-        if (
-            entry is not None
-            and entry.get("sha") == sha
-            and not entry.get("stats", {}).get("error")
-        ):
-            counters["reused"] += 1
-            return
-        # Entries with a parse error are never reused: they re-parse below so
-        # a fixed parser (or a grammar that arrived later) heals the graph on
-        # the next build instead of serving the stale failure forever.
-        result = await asyncio.to_thread(parse_file, path, rel)
-        if result is None:  # raced past the stat check: vanished / unreadable
-            _mark_skipped(rel, "unreadable")
-            state.files.pop(rel, None)
-            return
-        if result.stats.get("error"):
-            counters["failed"] += 1
-            reason = str(result.stats["error"])
-            failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
-        cache.set_file(state, rel, result)
-        counters["parsed"] += 1
+        # on a device file. Hash only regular files still inside the repo —
+        # the same rule knowledge/loader.py applies (inlined; this module
+        # must not import the tools package).
+        for rel in candidates:
+            try:
+                path = (repo / rel).resolve()
+                contained = path.is_relative_to(repo_resolved) and path.is_file()
+            except OSError:
+                contained = False
+            if not contained:
+                if len(skipped_files) < SKIPPED_FILES_MAX:
+                    skipped_files[rel] = "missing or outside repo"
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                if len(skipped_files) < SKIPPED_FILES_MAX:
+                    skipped_files[rel] = "unreadable"
+                continue
+            limit = _max_file_bytes(rel)
+            if size > limit:
+                if len(skipped_files) < SKIPPED_FILES_MAX:
+                    skipped_files[rel] = f"over {limit // (1 << 20)}MB limit"
+                continue
+            paths.append(path)
+            accepted.append(rel)
 
-    semaphore = asyncio.Semaphore(_PARSE_CONCURRENCY)
+    await asyncio.to_thread(_prepare)
 
-    async def _guarded(rel: str) -> None:
-        async with semaphore:
-            await _handle(rel)
-
-    await asyncio.gather(*(_guarded(rel) for rel in candidates))
-
-    # Deleted files: entries that no longer exist as tracked sources.
-    for rel in list(state.files):
-        if rel not in candidates:
-            state.files.pop(rel, None)
-
-    # Manifest markers for skipped files stay in state.files (fast path) but
-    # never become graph results — same as the old pop-and-forget behaviour.
-    results = {
-        rel: state.files[rel] for rel in candidates
-        if rel in state.files and not state.files[rel].get("skipped")
-    }
-    counters["failed_reasons"] = failed_reasons
-    counters["skipped_files"] = skipped_files
-    graph = await asyncio.to_thread(_assemble_graph, repo.name, head, results, counters)
-    graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
-    graph.stats["untracked_sources"] = 0 if include_untracked else len(untracked_candidates)
-
-    missing, grammar_failed = _missing_grammar_langs(results)
-    grammar_warning = None
-    if missing:
-        grammar_warning = (
-            f"tree-sitter grammars unavailable: {', '.join(missing)} — "
-            f"{grammar_failed} source file(s) produced no symbols. Remediation: "
-            f"run python -c \"from tree_sitter_language_pack import prefetch; "
-            f"prefetch({missing!r})\" with network access, or rebuild the image "
-            "(grammars are baked at build time)."
+    # force only bypasses the head_sha fast path: graphify's SHA256 AST cache
+    # still serves unchanged files, so "rebuild after edits" re-extracts only
+    # what actually changed (same semantics the old manifest cache had).
+    try:
+        result = await asyncio.to_thread(
+            build_graph, paths, root=repo, cache_root=kg_dir / GRAPHIFY_CACHE_DIRNAME
         )
-        _log.warning("repo graph %s: %s", repo.name, grammar_warning)
+    except GraphifyUnavailable as exc:
+        _log.error("repo graph %s: %s", repo.name, exc)
+        return {"status": "failed", "reason": str(exc)}
 
-    # Record the build mode so a later build in the other mode cannot reuse
-    # this manifest through the fast path.
-    state.tracked_only = not include_untracked
-    repo_map = await asyncio.to_thread(_persist, cache, state, graph, kg_dir)
+    langs = sorted({
+        lang for rel in accepted
+        if (lang := lang_of(rel))
+    })
+    graph = await asyncio.to_thread(
+        to_repo_graph,
+        result,
+        repo_name=repo.name,
+        head_sha=head,
+        candidates=accepted,
+        langs=langs,
+        extra_stats={
+            "skipped_files": skipped_files,
+            "untracked_sources": 0 if include_untracked else len(untracked_candidates),
+        },
+    )
+    graph.stats["build_ms"] = int((time.perf_counter() - started) * 1000)
+    graph.stats["graphify_import_ms"] = result.import_ms
+
+    await asyncio.to_thread(_save_manifest, kg_dir,
+                            tracked_only=not include_untracked, candidates=candidates)
+    repo_map = await asyncio.to_thread(_persist, graph, kg_dir)
     invalidate_cached(kg_dir)
     _log.info("repo graph %s: %d files, %d nodes, %d edges (%d ms)",
               repo.name, graph.stats.get("files", 0), graph.stats.get("nodes", 0),
@@ -516,13 +488,14 @@ async def _build_repo_graph_locked(
         "repo_map": repo_map,
         "graph_path": str(kg_dir / GRAPH_FILE),
     }
-    warnings = []
-    if grammar_warning:
-        warnings.append(grammar_warning)
+    if result.failed_sources:
+        summary["warning"] = (
+            f"{len(result.failed_sources)} source file(s) failed to extract "
+            "(see graph_report.md)"
+        )
     if untracked_candidates and not include_untracked:
-        warnings.append(_untracked_hint(untracked_candidates))
-    if warnings:
-        summary["warning"] = " ".join(warnings)
+        hint = _untracked_hint(untracked_candidates)
+        summary["warning"] = f"{summary['warning']} {hint}" if "warning" in summary else hint
     return summary
 
 
@@ -555,501 +528,3 @@ async def maybe_build_auto(
     except Exception as exc:
         _log.exception("auto repo graph build failed for %s", repo_name)
         return {"status": "failed", "reason": str(exc)}
-
-
-# ---------------------------------------------------------------------------
-# Cross-file assembly (pure — deterministic, unit-testable)
-# ---------------------------------------------------------------------------
-
-def _assemble_graph(
-    repo_name: str,
-    head_sha: str,
-    results: dict[str, dict[str, Any]],
-    counters: dict[str, Any] | None = None,
-) -> RepoGraph:
-    """Derive a RepoGraph from per-file parse results (manifest entries)."""
-    counters = counters or {}
-    nodes: list[GraphNode] = []
-    edges: list[GraphEdge] = []
-    seen_nodes: set[str] = set()
-    seen_edges: set[tuple[str, str, str]] = set()
-
-    def add_node(node: GraphNode) -> None:
-        if node.id not in seen_nodes:
-            seen_nodes.add(node.id)
-            nodes.append(node)
-
-    def add_edge(src: str, dst: str, etype: str) -> None:
-        key = (src, dst, etype)
-        if key not in seen_edges and src != dst:
-            seen_edges.add(key)
-            edges.append(GraphEdge(src=src, dst=dst, type=etype))
-
-    langs = sorted({detect_language(rel) for rel in results if detect_language(rel)})
-    module_index = set(results)
-    # Java source roots (src/main/java, src/, repo root) — package paths are
-    # relative to one of these. Derived from the tracked .java files.
-    java_roots = _java_source_roots(results)
-    # C# source roots — namespace segments map to directories under these.
-    cs_roots = _source_roots(results, "csharp")
-
-    # Pass 1: file nodes, symbol nodes, per-file indexes.
-    # qname/last_seg indexes are keyed by (lang, name) so same-named symbols in
-    # different languages (Java Greeter vs TS Greeter) never collide.
-    file_node_ids: dict[str, str] = {}
-    file_symbols: dict[str, set[str]] = {}
-    qname_index: dict[tuple[str, str], list[str]] = {}
-    last_seg_index: dict[tuple[str, str], list[str]] = {}  # (lang, last seg)
-    # SQL identifiers are case-insensitive server-side, so cross-file targets
-    # frequently differ in case (dbo.Orders vs dbo.orders). Side-index keyed
-    # casefolded; pass 3 consults it only on an exact miss with a unique hit.
-    sql_cf_index: dict[str, list[str]] = {}
-    for rel, entry in results.items():
-        lang = entry.get("lang", "")
-        file_node_ids[rel] = file_id(rel)
-        add_node(GraphNode(
-            id=file_id(rel), type="file", name=rel,
-            lang=entry.get("lang"), lines=entry.get("lines", 0),
-        ))
-        symbols: set[str] = set()
-        for symbol in entry.get("symbols", []):
-            qname = symbol.get("name", "")
-            if not qname:
-                continue
-            node_id = symbol_id(rel, qname)
-            if node_id in seen_nodes:
-                continue  # redefinition — keep the first
-            symbols.add(qname)
-            add_node(GraphNode(
-                id=node_id, type=symbol.get("type", "symbol"),
-                name=qname, line=symbol.get("line", 0),
-            ))
-            # Columns stay out of the resolution indexes: a wide table would
-            # flood last_seg_index with generic names (Id, Name, CreatedAt)
-            # and drown real symbols. resolve_node searches graph.nodes
-            # directly, so columns remain findable; file_symbols keeps them
-            # for primary_key src resolution.
-            if symbol.get("type") != NODE_COLUMN:
-                qname_index.setdefault((lang, qname), []).append(node_id)
-                last_seg_index.setdefault((lang, qname.rsplit(".", 1)[-1]), []).append(node_id)
-            if lang == "sql":
-                sql_cf_index.setdefault(qname.casefold(), []).append(node_id)
-        file_symbols[rel] = symbols
-
-    # Pass 2: imports -> file-level edges (external modules only counted).
-    external_imports = 0
-    for rel, entry in results.items():
-        lang = entry.get("lang", "")
-        for imp in entry.get("imports", []):
-            module = imp.get("module") or ""
-            if not module:
-                continue
-            if lang == "csharp":
-                # a `using` names a namespace (a directory), so one import can
-                # fan out to every .cs file in the matching directory.
-                targets = _cs_import_targets(module, module_index, cs_roots)
-                if not targets:
-                    external_imports += 1
-                    continue
-                for target_rel in targets:
-                    add_edge(file_node_ids[rel], file_node_ids[target_rel], EDGE_IMPORTS)
-                continue
-            target_rel = _resolve_module(module, rel, lang, module_index, java_roots)
-            if lang == "python" and imp.get("name") and set(module) == {"."}:
-                # `from . import helper` imports the submodule when it exists;
-                # the package itself is only the attribute fallback.
-                target_rel = _resolve_module(
-                    module + imp["name"], rel, lang, module_index, java_roots
-                ) or target_rel
-            if target_rel is None:
-                external_imports += 1
-                continue
-            add_edge(file_node_ids[rel], file_node_ids[target_rel], EDGE_IMPORTS)
-
-    # Pass 3: calls / inherits / sql refs -> symbol-or-file edges.
-    # Ambiguity resolves to None (counted, never guessed) — the same contract
-    # every language shares.
-    unresolved_calls = 0
-    unresolved_refs = 0
-    for rel, entry in results.items():
-        lang = entry.get("lang", "")
-        symbols = file_symbols[rel]
-        aliases = _alias_map(entry)
-        for edge in entry.get("edges", []):
-            etype = edge.get("type")
-            if etype not in _RESOLVED_EDGE_TYPES:
-                continue
-            target = edge.get("target") or ""
-            if not target:
-                continue
-            src_qname = edge.get("from")
-            if src_qname and src_qname in symbols:
-                src_id = symbol_id(rel, src_qname)
-            else:
-                src_id = file_node_ids[rel]  # module-level call
-            if etype == EDGE_CALLS:
-                dst = _resolve_call(
-                    target, rel, lang, symbols, aliases, file_symbols,
-                    file_node_ids, qname_index, last_seg_index, module_index,
-                    java_roots, cs_roots,
-                )
-            else:
-                dst = _resolve_symbol(
-                    target, rel, lang, file_symbols, qname_index, last_seg_index
-                )
-            if dst is None and lang == "sql":
-                # exact (case-sensitive) resolution missed: accept a casefold
-                # match only when it is unique — SQL names fold case but two
-                # tables differing only by case must not be guessed between.
-                cf = sql_cf_index.get(target.casefold(), [])
-                if len(cf) == 1:
-                    dst = cf[0]
-            if dst is None:
-                if etype == EDGE_CALLS:
-                    unresolved_calls += 1
-                else:
-                    unresolved_refs += 1
-            else:
-                add_edge(src_id, dst, etype)
-
-    # Parse-rate coverage: how many files per language yielded at least one
-    # symbol. Surfaced in the report so a sparse graph is visible as a number
-    # instead of a silent gap.
-    lang_coverage: dict[str, dict[str, int]] = {}
-    with_symbols = 0
-    for entry in results.values():
-        lang = entry.get("lang", "")
-        cov = lang_coverage.setdefault(lang, {"files": 0, "with_symbols": 0})
-        cov["files"] += 1
-        if entry.get("symbols"):
-            cov["with_symbols"] += 1
-            with_symbols += 1
-
-    stats: dict[str, Any] = {
-        "files": len(results),
-        "nodes": len(nodes),
-        "edges": len(edges),
-        "parsed": counters.get("parsed", 0),
-        "reused": counters.get("reused", 0),
-        "failed": counters.get("failed", 0),
-        "skipped": counters.get("skipped", 0),
-        "unresolved_calls": unresolved_calls,
-        "unresolved_refs": unresolved_refs,
-        "external_imports": external_imports,
-        "with_symbols": with_symbols,
-        "lang_coverage": lang_coverage,
-        "failed_reasons": counters.get("failed_reasons", {}),
-        "skipped_files": counters.get("skipped_files") or {},
-    }
-    return RepoGraph(
-        repo=RepoMeta(name=repo_name, head_sha=head_sha, langs=langs, built_at=now_epoch()),
-        stats=stats,
-        nodes=nodes,
-        edges=edges,
-    )
-
-
-# --- module (import) resolution -------------------------------------------
-
-def _source_roots(results: dict[str, dict[str, Any]], lang: str) -> list[str]:
-    """Most-specific source roots for the tracked files of one language.
-
-    A FQCN import like com.example.lib.Greeter (Java) or a namespace like
-    MyApp.Services (C#) resolves relative to the root that contains its
-    package/namespace dir. Common roots are src/main/java and src/; files at
-    the repo root imply the root itself. Longer roots are tried first because
-    they match the file most precisely.
-    """
-    lang_files = [rel for rel, entry in results.items() if entry.get("lang") == lang]
-    if not lang_files:
-        return []
-    roots = {""}  # repo root always applies
-    for rel in lang_files:
-        parts = rel.split("/")
-        # the package path is everything under the source root; any prefix of
-        # the file path can be the root — collect the shortest sensible ones
-        # (src/main/java, src/main, src, ...) up to the file's parent.
-        for i in range(1, len(parts)):
-            roots.add("/".join(parts[:i]))
-    # "" is kept: it is the repo-root fallback the docstring promises, and a
-    # package tree sitting directly at the repo root only resolves through it.
-    # The second key forces it last: -count("") ties with any single-segment
-    # root ("src", "com"), and set-iteration order would otherwise decide.
-    return sorted(roots, key=lambda r: (-r.count("/"), r == ""))
-
-
-def _java_source_roots(results: dict[str, dict[str, Any]]) -> list[str]:
-    return _source_roots(results, "java")
-
-
-def _resolve_module(
-    module: str,
-    rel: str,
-    lang: str,
-    module_index: set[str],
-    java_roots: list[str] | None = None,
-    cs_roots: list[str] | None = None,
-) -> str | None:
-    """Map an import specifier to a tracked rel path; None when external."""
-    rel_dir = posixpath.dirname(rel)
-    if lang == "python":
-        candidates = _py_module_candidates(module, rel_dir)
-    elif lang in ("typescript", "tsx", "javascript", "jsx"):
-        candidates = _ts_module_candidates(module, rel_dir)
-    elif lang == "java":
-        candidates = _java_candidates_with_roots(module, java_roots or [""])
-    elif lang == "csharp":
-        # single-target view (the alias/call path); pass 2 fans out to every
-        # file in the namespace directory via _cs_import_targets directly.
-        targets = _cs_import_targets(module, module_index, cs_roots or [""])
-        return targets[0] if targets else None
-    else:
-        return None
-    for candidate in candidates:
-        if candidate in module_index:
-            return candidate
-    return None
-
-
-def _cs_import_targets(module: str, module_index: set[str], roots: list[str]) -> list[str]:
-    """All .cs files under the most specific directory matching the namespace.
-
-    A C# ``using`` names a namespace (a directory), not a file: for
-    ``MyApp.Services`` the candidates are ``MyApp/Services`` then ``MyApp``
-    under each source root, most specific root first. The first directory that
-    contains tracked .cs files wins and ALL its files are returned — a
-    namespace can hold many types, so edges to every file in it are a
-    deliberate over-approximation.
-    """
-    parts = [p for p in module.split(".") if p]
-    if not parts:
-        return []
-    dirs = ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
-    for root in roots:  # roots are pre-sorted most-specific first
-        for directory in dirs:
-            prefix = f"{root}/{directory}/" if root else f"{directory}/"
-            hits = sorted(
-                r for r in module_index
-                if r.startswith(prefix) and r.endswith(".cs")
-            )
-            if hits:
-                return hits
-    return []
-
-
-def _py_module_candidates(module: str, rel_dir: str) -> list[str]:
-    dots = len(module) - len(module.lstrip("."))
-    if dots:
-        # One dot is the importing file's own package; each further dot walks
-        # up one level (`from ..util import x` in a/b/c.py is a/util.py, not
-        # a/b/util.py). Absolute imports stay repo-root relative.
-        base = rel_dir
-        for _ in range(dots - 1):
-            base = posixpath.dirname(base)
-    else:
-        base = ""
-    stripped = module[dots:]
-    dotted = stripped.replace(".", "/")
-    if not dotted:
-        # `from . import x` / `from .. import y` — the package itself
-        return [f"{base}/__init__.py"] if base else []
-    prefix = f"{base}/" if base else ""
-    return [f"{prefix}{dotted}.py", f"{prefix}{dotted}/__init__.py"]
-
-
-def _java_candidates_with_roots(module: str, roots: list[str]) -> list[str]:
-    """FQCN candidates under every source root, most specific root first."""
-    base = _java_module_candidates(module)
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for root in roots:  # roots are pre-sorted most-specific first
-        for candidate in base:
-            full = posixpath.join(root, candidate) if root else candidate
-            if full not in seen:
-                seen.add(full)
-                ordered.append(full)
-    return ordered
-
-
-def _java_module_candidates(module: str) -> list[str]:
-    """FQCN -> package-relative file-path candidates, most specific first.
-
-    Java imports name a fully-qualified type (com.example.lib.Greeter), a
-    package (com.example.lib.*) or a static member (com.example.lib.Util.run).
-    Every dotted prefix maps to a candidate .java file (the last segment may be
-    a type or a member), so a type import hits Greeter.java and a static import
-    falls through to Util.java. Paths are relative to a source root; the
-    builder tries each root (src/main/java, src, repo root) as a prefix.
-    """
-    parts = module.split(".")
-    if not parts or not all(parts):
-        return []
-    return ["/".join(parts[:i]) + ".java" for i in range(len(parts), 0, -1)]
-
-
-def _ts_module_candidates(module: str, rel_dir: str) -> list[str]:
-    if module.startswith("/"):  # repo-root-absolute (rare)
-        base = module[1:]
-    else:
-        base = posixpath.join(rel_dir, module) if rel_dir else module
-    if any(base.endswith(ext) for ext in _TS_EXTS):
-        return [posixpath.normpath(base)]
-    candidates = []
-    for ext in _TS_EXTS:
-        candidates.append(posixpath.normpath(f"{base}{ext}"))
-        candidates.append(posixpath.normpath(f"{base}/index{ext}"))
-    return candidates
-
-
-# --- import alias maps ----------------------------------------------------
-
-def _alias_map(entry: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
-    """Local name -> (module, symbol|None). None means module-level binding."""
-    lang = entry.get("lang", "")
-    aliases: dict[str, tuple[str, str | None]] = {}
-    for imp in entry.get("imports", []):
-        module = imp.get("module") or ""
-        name = imp.get("name")
-        alias = imp.get("alias")
-        if not module:
-            continue
-        if lang == "python":
-            if name:
-                aliases[alias or name] = (module, name)
-            else:
-                aliases[alias or module.split(".")[0]] = (module, None)
-        elif lang == "csharp":
-            # only `using O = Other.Thing;` binds a local name; plain `using`
-            # directives record alias=None and resolve through the global
-            # lang-scoped index instead (same as Java's static imports).
-            if alias:
-                aliases[alias] = (module, None)
-        elif name == "*":
-            aliases[alias or module] = (module, None)
-        elif name:
-            aliases[alias or name] = (module, name)
-        # side-effect imports bind nothing
-    return aliases
-
-
-# --- call/symbol resolution ------------------------------------------------
-
-def _match_alias(target: str, aliases: dict[str, tuple[str, str | None]]):
-    """(module, rest|None, imported) for the longest alias matching target.
-
-    ``imported`` is the name the import bound (None for a module-level
-    binding). A relative from-import such as ``from . import helper`` binds a
-    submodule name there, which is how call resolution finds helper's file.
-    """
-    if target in aliases:
-        module, name = aliases[target]
-        return module, name, name
-    best_alias: str | None = None
-    for alias in aliases:
-        if target.startswith(alias + ".") and (best_alias is None or len(alias) > len(best_alias)):
-            best_alias = alias
-    if best_alias is None:
-        return None
-    module, name = aliases[best_alias]
-    rest = target[len(best_alias) + 1:]
-    return module, rest, name
-
-
-def _lookup_in_file(rest: str, target_rel: str, file_symbols: dict[str, set[str]]) -> str | None:
-    """Exact qname in the file, else the unique suffix match; None if ambiguous."""
-    symbols = file_symbols.get(target_rel, set())
-    if rest in symbols:
-        return rest
-    matches = [s for s in symbols if s.endswith("." + rest)]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _resolve_call(
-    target: str,
-    rel: str,
-    lang: str,
-    symbols: set[str],
-    aliases: dict[str, tuple[str, str | None]],
-    file_symbols: dict[str, set[str]],
-    file_node_ids: dict[str, str],
-    qname_index: dict[tuple[str, str], list[str]],
-    last_seg_index: dict[tuple[str, str], list[str]],
-    module_index: set[str],
-    java_roots: list[str] | None = None,
-    cs_roots: list[str] | None = None,
-) -> str | None:
-    """Resolve a call target to a node id, or None (unresolved).
-
-    Order: same-file exact -> import alias (module then symbol, module-level
-    fallback to the file node) -> global exact qname -> suffix match.
-    """
-    if target in symbols:
-        return symbol_id(rel, target)
-    matched = _match_alias(target, aliases)
-    if matched is not None:
-        module, rest, imported = matched
-        target_rel = None
-        if lang == "python" and imported is not None and set(module) == {"."}:
-            # `from . import helper` binds the submodule when one exists
-            # (Python tries it before the package attribute), so resolve the
-            # call into helper's file and fall back to the package itself.
-            target_rel = _resolve_module(
-                module + imported, rel, lang, module_index, java_roots, cs_roots
-            )
-        if target_rel is None:
-            target_rel = _resolve_module(
-                module, rel, lang, module_index, java_roots, cs_roots
-            )
-        if target_rel is None:
-            return None
-        if rest:
-            symbol = _lookup_in_file(rest, target_rel, file_symbols)
-            if symbol:
-                return symbol_id(target_rel, symbol)
-        return file_node_ids[target_rel]
-    return _resolve_symbol(target, rel, lang, file_symbols, qname_index, last_seg_index)
-
-
-def _resolve_symbol(
-    target: str,
-    rel: str,
-    lang: str,
-    file_symbols: dict[str, set[str]],
-    qname_index: dict[tuple[str, str], list[str]],
-    last_seg_index: dict[tuple[str, str], list[str]],
-) -> str | None:
-    """Language-scoped qname/suffix resolution; prefers unique or same-file
-    matches. Scoping by lang keeps same-named symbols in different languages
-    (Java Greeter vs TS Greeter) from colliding.
-
-    Calls through local variables ("app.start", "g.greet") can't be typed
-    statically, so when the full target doesn't match, progressively shorter
-    suffixes are tried (longest first) and the first unambiguous hit wins.
-    """
-    ids = qname_index.get((lang, target))
-    if ids:
-        if len(ids) == 1:
-            return ids[0]
-        same_rel = [nid for nid in ids if parse_node_id(nid)[1] == rel]
-        return same_rel[0] if len(same_rel) == 1 else None
-    parts = target.split(".")
-    # drop=0 covers single-segment targets ("_go" -> "MainApp._go") and
-    # already-exact qnames; longer drops handle calls through local variables
-    # ("app.start" -> "MainApp.start").
-    for drop in range(len(parts)):
-        candidate = ".".join(parts[drop:])
-        matches = [
-            nid for nid in last_seg_index.get((lang, parts[-1]), [])
-            if (qname := parse_node_id(nid)[2]) and (
-                qname == candidate or qname.endswith("." + candidate)
-            )
-        ]
-        if not matches:
-            continue
-        same_rel = [nid for nid in matches if parse_node_id(nid)[1] == rel]
-        if len(same_rel) == 1:
-            return same_rel[0]
-        if len(matches) == 1:
-            return matches[0]
-        # ambiguous at this length — a shorter suffix may still be unique
-    return None

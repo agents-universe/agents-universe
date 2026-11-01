@@ -32,6 +32,10 @@ const router = createRouter({
           component: () => import('@/pages/WorkspacePage.vue'),
         },
         {
+          path: 'graph',
+          component: () => import('@/pages/GraphPage.vue'),
+        },
+        {
           path: 'publishes',
           component: () => import('@/pages/PublishesPage.vue'),
         },

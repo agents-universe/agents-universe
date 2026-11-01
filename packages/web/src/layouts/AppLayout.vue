@@ -112,7 +112,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, FolderTree, Rocket, Shrink, CalendarClock } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Bot, Menu, PanelRight, MessageSquare, BookOpen, Brain, FolderTree, Network, Rocket, Shrink, CalendarClock } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useAgentStore } from '@/stores/agent'
 import { useConversationStore } from '@/stores/conversation'
@@ -235,15 +235,16 @@ const router = useRouter()
 // into the unified workspace tab, so their old segments also count as workspace
 // (they redirect to it).
 const pageSegment = computed(() => {
-  const m = route.path.match(/^\/projects\/[^/]+\/(chat|workspace|knowledge|scripts|publishes|schedules)(?:\/|$)/)
+  const m = route.path.match(/^\/projects\/[^/]+\/(chat|workspace|graph|knowledge|scripts|publishes|schedules)(?:\/|$)/)
   if (!m) return null
-  if (m[1] === 'chat' || m[1] === 'publishes' || m[1] === 'schedules') return m[1]
+  if (m[1] === 'chat' || m[1] === 'graph' || m[1] === 'publishes' || m[1] === 'schedules') return m[1]
   return 'workspace'
 })
 
 const navTabs = computed(() => [
   { id: 'chat' as const, label: t('layout.tabConversations'), icon: MessageSquare },
   { id: 'workspace' as const, label: t('layout.tabWorkspace'), icon: FolderTree },
+  { id: 'graph' as const, label: t('layout.tabGraph'), icon: Network },
   { id: 'publishes' as const, label: t('layout.tabPublishes'), icon: Rocket },
   { id: 'schedules' as const, label: t('layout.tabSchedules'), icon: CalendarClock },
 ])
@@ -270,7 +271,7 @@ async function handleCompress() {
   }
 }
 
-function goToPage(segment: 'chat' | 'workspace' | 'publishes' | 'schedules') {
+function goToPage(segment: 'chat' | 'workspace' | 'graph' | 'publishes' | 'schedules') {
   const pid = route.params.projectId
   if (!pid) return
   // No query forwarding: ?new=1 belongs to a specific entry flow

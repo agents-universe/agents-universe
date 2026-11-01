@@ -29,3 +29,9 @@ declare module 'markdown-it-highlightjs/core' {
   ) => void
   export default plugin
 }
+
+// cytoscape-fcose ships no types; the only usage is cytoscape.use(fcose).
+declare module 'cytoscape-fcose' {
+  const fcose: unknown
+  export default fcose
+}

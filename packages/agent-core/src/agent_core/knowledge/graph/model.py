@@ -39,7 +39,7 @@ NODE_VIEW = "view"              # CREATE VIEW (sql)
 NODE_COLUMN = "column"          # column inside CREATE TABLE (sql)
 NODE_PROCEDURE = "procedure"    # CREATE PROCEDURE (sql) — distinct from function
 NODE_TRIGGER = "trigger"        # CREATE TRIGGER (sql)
-# "module" is reserved for v2 knowledge-page nodes.
+NODE_MODULE = "module"            # knowledge page node (project-level aggregate)
 
 EDGE_IMPORTS = "imports"
 EDGE_CALLS = "calls"

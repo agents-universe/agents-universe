@@ -296,12 +296,13 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
 
     # API routers
-    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_members, project_secrets, projects, publish, schedules, script_runs, scripts, tier_models, tokens, workspace_files
+    from .routers import agents, api_keys, conversations, integrations, knowledge, mcp_servers, media, memories, model_configs, preferences, project_graph, project_members, project_secrets, projects, publish, schedules, script_runs, scripts, tier_models, tokens, workspace_files
 
     app.include_router(agents.router, tags=["agents"])
     app.include_router(projects.router, tags=["projects"])
     app.include_router(conversations.router, tags=["conversations"])
     app.include_router(knowledge.router, tags=["knowledge"])
+    app.include_router(project_graph.router, tags=["project-graph"])
     app.include_router(tokens.router, prefix="/api/tokens", tags=["tokens"])
     app.include_router(api_keys.router, prefix="/api/api-keys", tags=["api-keys"])
     app.include_router(tier_models.router, prefix="/api/tier-models", tags=["tier-models"])

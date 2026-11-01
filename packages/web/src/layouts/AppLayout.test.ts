@@ -62,20 +62,28 @@ beforeEach(() => {
 })
 
 describe('AppLayout center topnav', () => {
-  it('renders 会话 / 工作区 / 发布 / 定时任务 with the publishes tab active', () => {
+  it('renders 会话 / 工作区 / 图谱 / 发布 / 定时任务 with the publishes tab active', () => {
     routeState.path = '/projects/p-1/publishes'
     const wrapper = mount(AppLayout)
     const tabs = wrapper.findAll('.center-tab')
-    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '发布', '定时任务'])
-    expect(tabs[2].classes()).toContain('active')
+    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '图谱', '发布', '定时任务'])
+    expect(tabs[3].classes()).toContain('active')
     expect(tabs[0].classes()).not.toContain('active')
+  })
+
+  it('marks the graph tab active on the graph segment', () => {
+    routeState.path = '/projects/p-1/graph'
+    const wrapper = mount(AppLayout)
+    const tabs = wrapper.findAll('.center-tab')
+    expect(tabs[2].classes()).toContain('active')
+    expect(tabs[1].classes()).not.toContain('active')
   })
 
   it('marks the schedules tab active on the schedules segment', () => {
     routeState.path = '/projects/p-1/schedules'
     const wrapper = mount(AppLayout)
     const tabs = wrapper.findAll('.center-tab')
-    expect(tabs[3].classes()).toContain('active')
+    expect(tabs[4].classes()).toContain('active')
     expect(tabs[1].classes()).not.toContain('active')
   })
 
@@ -84,13 +92,13 @@ describe('AppLayout center topnav', () => {
     const wrapper = mount(AppLayout)
     const tabs = wrapper.findAll('.center-tab')
     expect(tabs[0].classes()).toContain('active')
-    expect(tabs[2].classes()).not.toContain('active')
+    expect(tabs[3].classes()).not.toContain('active')
   })
 
   it('navigates via goToPage when a tab is clicked', async () => {
     routeState.path = '/projects/p-1/chat'
     const wrapper = mount(AppLayout)
-    await wrapper.findAll('.center-tab')[2].trigger('click')
+    await wrapper.findAll('.center-tab')[3].trigger('click')
     expect(routerPush).toHaveBeenCalledWith('/projects/p-1/publishes')
   })
 

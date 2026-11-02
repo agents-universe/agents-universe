@@ -25,7 +25,7 @@ export class ApiError extends Error {
 // the login redirect.
 let redirectingToLogin = false
 
-function redirectToLogin(): void {
+export function redirectToLogin(): void {
   if (redirectingToLogin) return
   redirectingToLogin = true
   window.location.href = withApi('/auth/login')

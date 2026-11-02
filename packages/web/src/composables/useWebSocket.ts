@@ -4,6 +4,7 @@ import { useConversationStore } from '@/stores/conversation'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useMemoryStore } from '@/stores/memory'
 import { conversationsApi } from '@/api/conversations'
+import { redirectToLogin } from '@/api/client'
 import { apiBase } from '@/utils/basePath'
 import { i18n } from '@/i18n'
 import { translateErrorCode } from '@/utils/apiError'
@@ -26,6 +27,13 @@ const PING_INTERVAL_MS = 30_000
 // slack for busy agent runs where the server event loop may lag.
 const STALE_MS = PING_INTERVAL_MS * 3
 export const MAX_CONNECTIONS = 5
+// A connection must survive this long before its backoff ladder resets to
+// the fast phase. onopen used to reset retries immediately, so any churn
+// where every attempt briefly handshakes (two tabs kicked/reconnecting, a
+// flapping proxy) pinned the ladder at 1s forever. 10s is far longer than
+// a kick cycle but well under PING_INTERVAL_MS, so a genuinely healthy
+// connection resets before its first ping.
+export const STABLE_RESET_MS = 10_000
 
 interface ConnectionEntry {
   ws: WebSocket | null
@@ -33,6 +41,12 @@ interface ConnectionEntry {
   retries: number
   retryTimer: ReturnType<typeof setTimeout> | null
   pingTimer: ReturnType<typeof setInterval> | null
+  // Armed on open, fires STABLE_RESET_MS later to reset retries — cleared
+  // on every close/reopen so a short-lived socket never resets the ladder.
+  stableTimer: ReturnType<typeof setTimeout> | null
+  // Terminal close codes (4001 session expired / 4403 no access): stop the
+  // automatic ladder entirely — retrying cannot succeed without user action.
+  terminal: boolean
   connectedConversationId: string | null
   terminalMessageId: string | null
   // Stashed between the context_exceeded event and its paired stream_end —
@@ -185,6 +199,10 @@ function _closeSocket(entry: ConnectionEntry) {
     clearTimeout(entry.retryTimer)
     entry.retryTimer = null
   }
+  if (entry.stableTimer) {
+    clearTimeout(entry.stableTimer)
+    entry.stableTimer = null
+  }
   if (entry.ws) {
     entry.ws.onopen = null
     entry.ws.onclose = null
@@ -274,6 +292,8 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         retries: 0,
         retryTimer: null,
         pingTimer: null,
+        stableTimer: null,
+        terminal: false,
         connectedConversationId: null,
         terminalMessageId: null,
         pendingContextExceeded: null,
@@ -304,6 +324,8 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       retries: 0,
       retryTimer: null,
       pingTimer: null,
+      stableTimer: null,
+      terminal: false,
       connectedConversationId: null,
       terminalMessageId: null,
       pendingContextExceeded: null,
@@ -320,11 +342,18 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${proto}://${location.host}${apiBase}/ws/conversations/${id}`)
     entry.ws = ws
+    // A previous attempt's stability timer must never reset retries for this
+    // new socket: _scheduleRetry → _open does not go through _closeSocket,
+    // so without this the stale timer would fire mid-handshake and collapse
+    // the ladder.
+    if (entry.stableTimer) {
+      clearTimeout(entry.stableTimer)
+      entry.stableTimer = null
+    }
 
     ws.onopen = () => {
       entry.connectedConversationId = id
       entry.status.value = 'connected'
-      entry.retries = 0
       entry.lastMessageAt = Date.now()
       entry.staleProbeSent = false
       _failedConversations.delete(id)
@@ -335,6 +364,14 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         clearTimeout(entry.retryTimer)
         entry.retryTimer = null
       }
+      // Reset the ladder only after the connection PROVES stable — an
+      // immediate reset meant every briefly-successful attempt (kicked by a
+      // second tab, flapping proxy) restarted the fast 1s phase forever.
+      entry.stableTimer = setTimeout(() => {
+        entry.stableTimer = null
+        // identity guard: the entry may already belong to a later socket.
+        if (entry.ws === ws) entry.retries = 0
+      }, STABLE_RESET_MS)
       _startPing(id, entry)
       // Reconcile local streaming state on EVERY successful connection, not
       // just reconnects: a connection that died while the server turn kept
@@ -367,10 +404,32 @@ export function useWebSocket(conversationId: Ref<string | null>) {
       }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (errorFired) return
+      // The socket this stability timer was judging just died — without this
+      // clear it would still fire mid-backoff (entry.ws is NOT nulled by
+      // onclose) and wrongly collapse the ladder to its fast phase.
+      if (entry.stableTimer) {
+        clearTimeout(entry.stableTimer)
+        entry.stableTimer = null
+      }
       if (entry.status.value === 'connected') {
         entry.status.value = 'disconnected'
+      }
+      // Terminal codes need user action — retrying can only hammer a server
+      // that will keep refusing (4001 = session expired; 4403 = no access).
+      // Everything else (1006, 4409 superseded, missing code from older
+      // callers/tests) stays on the normal ladder.
+      const code = (event as CloseEvent | undefined)?.code
+      if (code === 4001 || code === 4403) {
+        entry.terminal = true
+        entry.status.value = 'failed'
+        if (entry.retryTimer) {
+          clearTimeout(entry.retryTimer)
+          entry.retryTimer = null
+        }
+        if (code === 4001) redirectToLogin()
+        return
       }
       _scheduleRetry(id, entry)
     }
@@ -407,6 +466,9 @@ export function useWebSocket(conversationId: Ref<string | null>) {
   }
 
   function _scheduleRetry(id: string, entry: ConnectionEntry) {
+    // A terminal close (4001/4403) must not be revived by a late onerror or
+    // any other path reaching here.
+    if (entry.terminal) return
     // Reconnection never gives up. An outage of the reverse proxy, a sleeping
     // laptop or a captive portal routinely lasts longer than the fast ladder,
     // and this used to delete the entry outright — with connect() reachable
@@ -565,6 +627,10 @@ export function useWebSocket(conversationId: Ref<string | null>) {
         // A confirmation-dialog answer persisted as a real user row — there
         // is no optimistic entry to settle (the dialog dismissal is local),
         // so append the row directly, deduped by its deterministic id.
+        // Multi-tab: the OTHER tab's dialog must close too, or it lingers
+        // until clicked (answer then bounces with WS_PROMPT_NOT_PENDING).
+        // Idempotent no-op on the tab that just answered.
+        conv.removePendingPrompt((msg.prompt_id as string) ?? '', convId)
         conv.recordSelectionAnswer((msg.message_id as string) ?? '', (msg.content as string) ?? '', convId)
         break
       case 'input_rejected':
@@ -855,6 +921,9 @@ export function useWebSocket(conversationId: Ref<string | null>) {
     const id = conversationId.value
     if (!id) return false
     const entry = _connections.get(id)
+    // Terminal state: don't implicitly re-knit a ladder the close handler
+    // deliberately stopped (only an explicit reconnect()/connect() does).
+    if (entry?.terminal) return false
     if (!entry?.ws || entry.ws.readyState !== WebSocket.OPEN) {
       // Not connected: make sure an attempt is actually in flight. A live
       // handshake or an armed backoff must not be restarted — that would

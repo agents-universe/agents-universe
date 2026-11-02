@@ -4,7 +4,8 @@ import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationStore } from '@/stores/conversation'
 import { i18n } from '@/i18n'
-import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES, MAX_CONNECTIONS } from './useWebSocket'
+import { closeAllConnections, closeConnection, useWebSocket, _failedConversations, MAX_RETRIES, MAX_CONNECTIONS, STABLE_RESET_MS } from './useWebSocket'
+import { redirectToLogin } from '@/api/client'
 
 const conversationsApi = vi.hoisted(() => ({
   getMessages: vi.fn(),
@@ -12,6 +13,11 @@ const conversationsApi = vi.hoisted(() => ({
   getLatestRun: vi.fn(),
 }))
 vi.mock('@/api/conversations', () => ({ conversationsApi }))
+
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return { ...actual, redirectToLogin: vi.fn() }
+})
 
 /**
  * Drive the real onmessage → _dispatch path with a stubbed WebSocket.
@@ -764,5 +770,160 @@ describe('useWebSocket connection-cap eviction', () => {
 
     expect(_failedConversations.has('conv-parked')).toBe(true)
     expect(parked.status.value).toBe('failed')
+  })
+})
+
+describe('useWebSocket terminal close codes and stable reset', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    // _connections is module state: earlier suites (esp. the cap block) leave
+    // entries behind, which would satisfy connect()'s "already connected"
+    // early-return and leave mount() without a fresh socket.
+    closeAllConnections()
+    localStorage.clear()
+    instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    conversationsApi.getMessages.mockResolvedValue([])
+    conversationsApi.getTasks.mockResolvedValue([])
+    conversationsApi.getLatestRun.mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('close code 4001 stops retrying and redirects to login', () => {
+    // Session expired: the server now accepts first and closes with 4001
+    // (pre-accept close was answered as HTTP 403, leaving the browser with
+    // 1006 → an infinite "connecting" loop on a dead session).
+    useConversationStore().startConversation('conv-4001')
+    const { ws, status } = mount('conv-4001')
+
+    ws.onclose!({ code: 4001 } as CloseEvent)
+
+    expect(vi.mocked(redirectToLogin)).toHaveBeenCalledTimes(1)
+    expect(status.value).toBe('failed')
+    const before = instances.length
+    vi.advanceTimersByTime(60_000)
+    expect(instances.length).toBe(before) // no zombie ladder
+  })
+
+  it('close code 4403 stops auto retry; send stays dead but reconnect() works', () => {
+    useConversationStore().startConversation('conv-4403')
+    const { ws, status, send, reconnect } = mount('conv-4403')
+
+    ws.onclose!({ code: 4403 } as CloseEvent)
+
+    // No access — redirecting to login would be wrong.
+    expect(vi.mocked(redirectToLogin)).not.toHaveBeenCalled()
+    expect(status.value).toBe('failed')
+    const before = instances.length
+    vi.advanceTimersByTime(60_000)
+    expect(instances.length).toBe(before)
+
+    // send() must not silently revive the stopped ladder.
+    expect(send({ type: 'ping' })).toBe(false)
+    expect(instances.length).toBe(before)
+
+    // An explicit user action starts over with a fresh (non-terminal) entry.
+    expect(reconnect()).toBe(true)
+    expect(instances.length).toBe(before + 1)
+  })
+
+  it('close code 4409 walks the normal backoff ladder (not terminal)', () => {
+    useConversationStore().startConversation('conv-4409')
+    const { ws } = mount('conv-4409')
+
+    ws.onclose!({ code: 4409 } as CloseEvent)
+    vi.advanceTimersByTime(1300) // fast phase: 1s (+20% jitter) < 1300
+    expect(instances.length).toBe(2)
+
+    // Second failure climbs to the 2s phase — 1300ms must NOT be enough,
+    // proving neither a reset-to-fast (the old onopen bug) nor a stop.
+    instances[1].onclose!({ code: 4409 } as CloseEvent)
+    vi.advanceTimersByTime(1300)
+    expect(instances.length).toBe(2)
+    vi.advanceTimersByTime(1500) // cumulative 2800 > 2s + jitter
+    expect(instances.length).toBe(3)
+  })
+
+  it('a close with no code still retries', () => {
+    // Callers/tests that fire onclose without a CloseEvent payload must keep
+    // working: only explicit 4001/4403 are terminal.
+    useConversationStore().startConversation('conv-nocode')
+    const { ws } = mount('conv-nocode')
+
+    ws.onclose!({} as CloseEvent)
+    vi.advanceTimersByTime(1300)
+
+    expect(instances.length).toBe(2)
+  })
+
+  it('retries reset only after the connection stays stable for STABLE_RESET_MS', () => {
+    useConversationStore().startConversation('conv-stable')
+    const { ws } = mount('conv-stable')
+
+    // Round 1: a failure climbs the ladder to retries = 1.
+    ws.onclose!({} as CloseEvent)
+    vi.advanceTimersByTime(1300)
+    expect(instances.length).toBe(2)
+
+    // The next attempt opens but dies almost immediately: with the old
+    // immediate reset this collapsed back to the 1s phase (the multi-tab
+    // kick storm pinned every ladder at 1s forever).
+    const second = instances[1]
+    second.onopen!(new Event('open'))
+    second.onclose!({} as CloseEvent)
+    vi.advanceTimersByTime(1300)
+    expect(instances.length).toBe(2) // 2s phase: 1300 not enough
+    vi.advanceTimersByTime(1500)
+    expect(instances.length).toBe(3)
+
+    // A connection that survives STABLE_RESET_MS earns the fast phase back.
+    const third = instances[2]
+    third.onopen!(new Event('open'))
+    vi.advanceTimersByTime(STABLE_RESET_MS + 100)
+    third.onclose!({} as CloseEvent)
+    vi.advanceTimersByTime(1300)
+    expect(instances.length).toBe(4)
+  })
+
+  it('user_selection_recorded closes the dialog in every tab', () => {
+    // Multi-tab: when one tab answers the confirmation, the frame multicasts
+    // to all sockets — the other tab's dialog must close too, or it lingers
+    // until clicked and the answer then bounces with WS_PROMPT_NOT_PENDING.
+    const store = useConversationStore()
+    store.startConversation('conv-prompt')
+    const { ws } = mount('conv-prompt')
+
+    fire(ws, {
+      type: 'user_selection_required',
+      prompt_id: 'p1',
+      field_key: 'confirm',
+      question: 'Proceed?',
+      options: [],
+    })
+    expect(store.pendingPrompts).toHaveLength(1)
+
+    fire(ws, {
+      type: 'user_selection_recorded',
+      prompt_id: 'p1',
+      message_id: 'm1',
+      content: 'yes',
+    })
+    expect(store.pendingPrompts).toHaveLength(0)
+    expect(store.messages.filter((m) => m.id === 'm1')).toHaveLength(1)
+
+    // A duplicate frame (resent / racing tab) must not double-append.
+    fire(ws, {
+      type: 'user_selection_recorded',
+      prompt_id: 'p1',
+      message_id: 'm1',
+      content: 'yes',
+    })
+    expect(store.messages.filter((m) => m.id === 'm1')).toHaveLength(1)
   })
 })

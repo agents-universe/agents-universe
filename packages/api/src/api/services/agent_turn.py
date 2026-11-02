@@ -121,8 +121,9 @@ class _ManagerTransport(Transport):
 
     async def send(self, conversation_id: str, data: dict) -> bool:
         delivered = await manager.send(conversation_id, data)
-        # manager.send targets the live connection. With nobody connected
-        # (the test path drives _handle_message with no socket), fall back to
+        # manager.send multicasts to every live connection (delivered ==
+        # at least one tab received it). Only when NO socket is connected
+        # (the test path drives _handle_message with no socket) fall back to
         # the raw socket like the old _send_turn_error did so errors are not
         # silently lost on the last-resort path.
         if not delivered:

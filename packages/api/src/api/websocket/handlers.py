@@ -137,11 +137,11 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
         user_id = session_data["user_id"]
 
     # Authorize the conversation before registering the socket.  In particular,
-    # do not let an unauthorized client replace the connection/abort event for
-    # a conversation key it does not own. Also re-check project visibility at
-    # connect: a member removed from a private project must not reconnect into
-    # the socket (the per-message check below backstops sockets that were
-    # already open when access was revoked).
+    # do not let an unauthorized client join the connection set or affect the
+    # abort event for a conversation key it does not own. Also re-check project
+    # visibility at connect: a member removed from a private project must not
+    # reconnect into the socket (the per-message check below backstops sockets
+    # that were already open when access was revoked).
     from api.database import AsyncSessionLocal
     from api.dependencies.auth import has_project_access
     from api.models.conversation import Conversation
@@ -170,7 +170,7 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     if row is None or denied_reason:
         # Accept only long enough to return a protocol-level error; manager.connect
         # must never run on this path, so abort/selection messages cannot affect the
-        # owner's active connection.
+        # owner's live sockets.
         await ws.accept()
         await ws.send_json({
             "type": "error",
@@ -439,8 +439,9 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     except WebSocketDisconnect:
         # Do NOT abort the agent - it may still be running.  The agent's
         # forward_events() continues persisting to DB; manager.send()
-        # silently drops live events when no WS is connected.  When the
-        # user returns, a new WS reconnects and picks up the live stream.
+        # multicasts to whatever sockets remain and only drops the frame
+        # when the last one is gone.  Other tabs on this conversation keep
+        # streaming; a returning tab picks up the live stream.
         if active_task and not active_task.done():
             _log.debug(
                 "WS disconnected but agent still running for %s - continuing in background",

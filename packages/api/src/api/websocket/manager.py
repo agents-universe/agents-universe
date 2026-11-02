@@ -20,20 +20,30 @@ _log = logging.getLogger("agents_universe.ws")
 # before the producer gives up. Tests shrink it.
 _SEND_TIMEOUT_S = 5.0
 
+# Cap on sockets one conversation may hold open. Multi-tab use is a normal
+# scenario (each tab opens its own WS), but an unbounded set would let a
+# reconnect storm or a scripted client grow per-frame send cost without
+# limit. Normal users never approach it; over the cap the NEWEST socket is
+# refused with 4409, and the frontend's stable-connection backoff keeps a
+# refused tab from hammering the endpoint.
+_MAX_WS_PER_CONVERSATION = 8
+
 
 class ConnectionManager:
     """Manages active WebSocket connections keyed by conversation_id.
 
-    A conversation may have at most one *active* WS at a time.  When a new
-    socket connects it replaces the previous one — but the associated
-    **session**, **abort event**, and **session memories** are *not* removed
-    on disconnect.  This allows the agent to continue running in the
-    background after the user switches conversations; the new WS picks up
-    live events via ``manager.send()`` when the user returns.
+    A conversation may hold **several** active WS sockets at once — the same
+    user opening the same conversation in multiple browser tabs is a normal
+    scenario, and ``send()`` multicasts each frame to every socket.  The
+    associated **session**, **abort event**, and **session memories** are
+    keyed by conversation only (socket-count independent) and are *not*
+    removed on disconnect.  This allows the agent to continue running in the
+    background after the user switches conversations; a returning WS picks up
+    live events via ``manager.send()``.
     """
 
     def __init__(self) -> None:
-        self._connections: dict[str, WebSocket] = {}
+        self._connections: dict[str, set[WebSocket]] = {}
         self._abort_events: dict[str, asyncio.Event] = {}
         # First-cause token for each set abort event ("ws_abort_frame",
         # "publish_sse_client_disconnect", ...). Kept alongside the event and
@@ -93,43 +103,55 @@ class ConnectionManager:
     async def connect(self, conversation_id: str, ws: WebSocket) -> None:
         await ws.accept()
         async with self._lock:
-            old = self._connections.get(conversation_id)
-            self._connections[conversation_id] = ws
+            socks = self._connections.get(conversation_id)
+            if socks is None:
+                socks = self._connections[conversation_id] = set()
+            socks.add(ws)
             # Preserve existing abort event — a background agent's
             # _watch_abort coroutine is waiting on it.
             if conversation_id not in self._abort_events:
                 self._abort_events[conversation_id] = asyncio.Event()
-        # Close the replaced socket OUTSIDE the lock: only the send target
-        # was ever replaced before — the old receive loop stayed alive, so a
-        # message from the old tab still started turns whose events were all
-        # delivered to the new socket (split brain), and the old handler
-        # leaked until the client closed it. Closing it raises
-        # WebSocketDisconnect in the old handler, which unwinds through its
-        # existing cleanup (identity-guarded disconnect no-ops here).
-        if old is not None and old is not ws:
+            over_cap = len(socks) > _MAX_WS_PER_CONVERSATION
+            if over_cap:
+                # Refuse the NEWEST socket: the tabs already streaming stay
+                # undisturbed. Closed outside the lock below.
+                socks.discard(ws)
+                if not socks:
+                    self._connections.pop(conversation_id, None)
+        if over_cap:
             try:
-                await old.close(code=4409)
+                await ws.close(code=4409)
             except Exception:
                 pass
 
     async def disconnect(self, conversation_id: str, ws: WebSocket | None = None) -> None:
-        """Remove the WS connection for *conversation_id*.
+        """Remove *ws* (or, when *ws* is omitted, every socket) for
+        *conversation_id*.
 
-        Session, abort event and session memories are **kept** when an agent
-        is still running, so that a reconnected WS can resume receiving
-        events and the user can still abort.  They are cleaned up only when
-        no turn is in flight.
+        Session, abort event and session memories are **kept** while any
+        socket remains or an agent is still running, so that the surviving
+        tabs keep receiving events and the user can still abort.  They are
+        cleaned up only when the last socket leaves and no turn is in flight.
         """
         async with self._lock:
-            if ws is not None and self._connections.get(conversation_id) is not ws:
-                return  # a newer socket has already replaced this one
-            self._connections.pop(conversation_id, None)
+            if ws is None:
+                self._connections.pop(conversation_id, None)
+            else:
+                socks = self._connections.get(conversation_id)
+                if socks is not None:
+                    socks.discard(ws)
+                    # Empty set MUST pop the key: deregister_session gates
+                    # its abort/memories cleanup on `not in _connections`,
+                    # and a lingering empty set would leak them forever.
+                    if not socks:
+                        self._connections.pop(conversation_id, None)
             # A claimed turn has not registered its session yet (history-load
             # window), but it IS running: run_turn wires its abort watcher to
             # this very event. Popping it here would leave Stop setting a
             # fresh event nobody waits on.
             if (
-                conversation_id not in self._sessions
+                conversation_id not in self._connections
+                and conversation_id not in self._sessions
                 and conversation_id not in self._claimed_turns
             ):
                 self._abort_events.pop(conversation_id, None)
@@ -137,19 +159,21 @@ class ConnectionManager:
                 self._session_memories.pop(conversation_id, None)
 
     async def send(self, conversation_id: str, data: dict[str, Any]) -> bool:
-        """Send a JSON message to the current WS for *conversation_id*.
+        """Multicast a JSON message to every WS connected to *conversation_id*.
 
-        Returns ``True`` if delivered, ``False`` if no WS is connected or
-        the send failed.  Failures and send timeouts cause the dead WS to be
-        evicted so the next reconnect can register a fresh one.  A timeout is
-        treated like "no WS connected": the turn keeps running and persisting
-        to the DB — a half-open socket must not abort the run.
+        Returns ``True`` if at least one socket received it, ``False`` if no
+        WS is connected or the frame could not be delivered anywhere.
+        Per-socket failures and send timeouts evict only that socket, so one
+        half-open tab never stops delivery to the others.  A timeout is
+        treated like "this socket is gone": the turn keeps running and
+        persisting to the DB — a half-open socket must not abort the run.
         """
         async with self._lock:
-            ws = self._connections.get(conversation_id)
-        if not ws:
+            socks = tuple(self._connections.get(conversation_id, ()))
+        if not socks:
             return False
         try:
+            # Encode once, share the bytes-equivalent string across sockets.
             payload = json.dumps(data, default=_json_default)
         except (TypeError, ValueError) as e:
             # A payload that fails to encode is a local bug, not a dead
@@ -158,6 +182,19 @@ class ConnectionManager:
             # a tool_call_end payload).
             _log.warning("Dropping unserializable WS frame for %s: %s", conversation_id, e)
             return False
+        results = await asyncio.gather(
+            *(self._send_one(conversation_id, ws, payload) for ws in socks),
+            return_exceptions=True,
+        )
+        return any(r is True for r in results)
+
+    async def _send_one(self, conversation_id: str, ws: WebSocket, payload: str) -> bool:
+        """Deliver *payload* to a single socket; evict it on timeout/failure.
+
+        Sends run in parallel via gather() in send(), so the total wall time
+        stays bounded by one _SEND_TIMEOUT_S rather than N of them, and one
+        stuck socket cannot delay the others.
+        """
         try:
             # Task-own the coroutine from creation: a bare coroutine handed
             # to wait_for can be created and dropped un-awaited when the
@@ -186,10 +223,14 @@ class ConnectionManager:
             return False
 
     async def _evict(self, conversation_id: str, ws: WebSocket) -> None:
-        """Drop *ws* if it is still the current connection and close it."""
+        """Drop *ws* from its conversation set (leaving other sockets alone)
+        and close it."""
         async with self._lock:
-            if self._connections.get(conversation_id) is ws:
-                self._connections.pop(conversation_id, None)
+            socks = self._connections.get(conversation_id)
+            if socks is not None:
+                socks.discard(ws)
+                if not socks:
+                    self._connections.pop(conversation_id, None)
         try:
             await ws.close(code=1011)
         except Exception:

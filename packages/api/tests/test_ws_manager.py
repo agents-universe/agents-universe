@@ -3,9 +3,9 @@
 Verifies the core behaviours that enable background agent execution:
 - disconnect() does NOT remove session/abort/memories while agent is running
 - deregister_session() cleans up only when no WS is connected
-- send() routes to the current registered WS (supports reconnection)
+- send() multicasts to EVERY WS registered for the conversation (multi-tab)
 - is_session_active() / get_running_conversations() queries
-- connect() preserves existing abort events
+- connect() preserves existing abort events and keeps existing sockets
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def _make_session(user_id: str = "u1"):
 async def test_connect_registers_ws_and_creates_abort_event(mgr):
     ws = _make_ws()
     await mgr.connect("c1", ws)
-    assert mgr._connections["c1"] is ws
+    assert mgr._connections["c1"] == {ws}
     assert "c1" in mgr._abort_events
 
 
@@ -108,16 +108,73 @@ async def test_disconnect_cleans_all_when_no_session(mgr):
     assert "c1" not in mgr._session_memories
 
 
-async def test_disconnect_ignores_stale_ws(mgr):
-    """If a newer WS has replaced the old one, disconnect(old_ws) is a no-op."""
+async def test_connect_keeps_both_sockets_and_disconnect_removes_only_self(mgr):
+    """Multi-tab: a second socket must NOT evict or close the first one, and
+    disconnecting one tab leaves the other fully functional."""
     ws1 = _make_ws()
     await mgr.connect("c1", ws1)
     ws2 = _make_ws()
-    await mgr.connect("c1", ws2)  # replaces ws1
+    await mgr.connect("c1", ws2)
 
-    await mgr.disconnect("c1", ws1)  # should be ignored
+    assert mgr._connections["c1"] == {ws1, ws2}
+    ws1.close.assert_not_awaited()  # the first tab is never kicked
+    ws2.close.assert_not_awaited()
 
-    assert mgr._connections["c1"] is ws2  # ws2 still registered
+    await mgr.disconnect("c1", ws1)
+
+    assert mgr._connections["c1"] == {ws2}  # ws2 still registered
+    # A session/agent still running must survive one tab closing.
+    mgr.register_session("c1", _make_session())
+    assert "c1" in mgr._sessions
+
+
+async def test_disconnect_last_socket_cleans_up(mgr):
+    """The key must be popped when the set empties — a lingering empty set
+    would make deregister_session's `not in _connections` forever False and
+    leak abort events / memories."""
+    ws1 = _make_ws()
+    ws2 = _make_ws()
+    await mgr.connect("c1", ws1)
+    await mgr.connect("c1", ws2)
+
+    await mgr.disconnect("c1", ws1)
+    assert "c1" in mgr._connections  # one tab still open
+
+    await mgr.disconnect("c1", ws2)
+    assert "c1" not in mgr._connections
+
+
+async def test_connect_does_not_close_existing_socket(mgr):
+    """A second tab joining must not touch the first tab's socket or its
+    abort event (the background agent's _watch_abort waits on it)."""
+    ws1 = _make_ws()
+    await mgr.connect("c1", ws1)
+    original_event = mgr._abort_events["c1"]
+
+    ws2 = _make_ws()
+    await mgr.connect("c1", ws2)
+
+    ws1.close.assert_not_awaited()
+    assert mgr._abort_events["c1"] is original_event
+    assert mgr._connections["c1"] == {ws1, ws2}
+
+
+async def test_connect_enforces_per_conversation_cap(mgr):
+    """Over the cap the NEWEST socket is refused with 4409; the sockets
+    already streaming are undisturbed."""
+    sockets = []
+    for i in range(8):  # cap = 8
+        ws = _make_ws()
+        await mgr.connect("c1", ws)
+        sockets.append(ws)
+
+    late = _make_ws()
+    await mgr.connect("c1", late)
+
+    assert mgr._connections["c1"] == set(sockets)
+    late.close.assert_awaited_once_with(code=4409)
+    for ws in sockets:
+        ws.close.assert_not_awaited()
 
 
 # ── deregister_session ─────────────────────────────────────────────
@@ -125,7 +182,7 @@ async def test_disconnect_ignores_stale_ws(mgr):
 def test_deregister_session_removes_session_only_when_ws_connected(mgr):
     """If WS is still connected, only session is removed - abort/memories stay."""
     ws = _make_ws()
-    mgr._connections["c1"] = ws
+    mgr._connections["c1"] = {ws}
     mgr._sessions["c1"] = _make_session()
     mgr._abort_events["c1"] = asyncio.Event()
     mgr._session_memories["c1"] = [{"note": "x", "timestamp": 1}]
@@ -233,16 +290,100 @@ async def test_send_timeout_evicts_half_open_ws(mgr, monkeypatch, caplog):
 
 
 async def test_send_routes_to_reconnected_ws(mgr):
-    """After reconnect, send() delivers to the new WS, not the old one."""
+    """After a tab closes and the user reconnects, send() delivers to the
+    live WS — the closed one is gone from the set, not silently shadowed."""
     ws1 = _make_ws()
     await mgr.connect("c1", ws1)
+    await mgr.disconnect("c1", ws1)  # tab closed
     ws2 = _make_ws()
     await mgr.connect("c1", ws2)  # reconnect
 
     await mgr.send("c1", {"type": "stream_delta", "delta": "x"})
 
-    ws1.send_text.assert_not_called()  # old WS not used
+    ws1.send_text.assert_not_called()  # closed WS not used
     ws2.send_text.assert_called_once()  # new WS used
+
+
+async def test_send_multicasts_to_all_sockets(mgr):
+    """Multi-tab: every socket on the conversation receives every frame."""
+    ws1 = _make_ws()
+    ws2 = _make_ws()
+    await mgr.connect("c1", ws1)
+    await mgr.connect("c1", ws2)
+
+    result = await mgr.send("c1", {"type": "stream_delta", "delta": "hi"})
+
+    assert result is True
+    ws1.send_text.assert_called_once()
+    ws2.send_text.assert_called_once()
+    # Same encoded payload goes to both.
+    assert ws1.send_text.call_args[0][0] == ws2.send_text.call_args[0][0]
+
+
+async def test_send_evicts_only_dead_socket(mgr):
+    """One failing socket must not stop delivery to — or evict — the others."""
+    ws1 = _make_ws()
+    ws1.send_text.side_effect = RuntimeError("connection closed")
+    ws2 = _make_ws()
+    await mgr.connect("c1", ws1)
+    await mgr.connect("c1", ws2)
+
+    result = await mgr.send("c1", {"type": "ping"})
+
+    assert result is True  # ws2 got it
+    assert mgr._connections["c1"] == {ws2}  # only the dead one evicted
+    ws1.close.assert_awaited()
+
+
+async def test_send_timeout_evicts_only_half_open_socket(mgr, monkeypatch, caplog):
+    """A half-open tab is evicted on its own; the healthy tab still gets the
+    frame and send() reports delivered."""
+    import api.websocket.manager as mgr_mod
+    import logging
+
+    monkeypatch.setattr(mgr_mod, "_SEND_TIMEOUT_S", 0.05)
+    ws_hang = _make_ws()
+    ws_ok = _make_ws()
+
+    async def _hang(_payload):
+        await asyncio.sleep(60)
+
+    ws_hang.send_text.side_effect = _hang
+    await mgr.connect("c1", ws_hang)
+    await mgr.connect("c1", ws_ok)
+
+    with caplog.at_level(logging.WARNING, logger="agents_universe.ws"):
+        result = await mgr.send("c1", {"type": "ping"})
+
+    assert result is True
+    assert mgr._connections["c1"] == {ws_ok}
+    ws_ok.send_text.assert_called_once()
+    ws_hang.close.assert_awaited_once_with(code=1011)
+    assert "WS send timed out" in caplog.text
+
+
+async def test_deregister_session_cleans_when_last_socket_gone(mgr):
+    """Regression for the empty-set-must-pop rule: with both sockets gone,
+    deregister_session must be able to reclaim abort/memories."""
+    ws1 = _make_ws()
+    ws2 = _make_ws()
+    await mgr.connect("c1", ws1)
+    await mgr.connect("c1", ws2)
+    mgr.register_session("c1", _make_session())
+    mgr.add_session_memory("c1", "note", 1.0)
+
+    await mgr.disconnect("c1", ws1)
+    mgr.deregister_session("c1")
+    # One tab still open → preserved.
+    assert "c1" in mgr._abort_events
+    assert "c1" in mgr._session_memories
+
+    await mgr.disconnect("c1", ws2)
+    assert "c1" not in mgr._connections
+
+    mgr.deregister_session("c1")
+    assert "c1" not in mgr._abort_events
+    assert "c1" not in mgr._session_memories
 
 
 # ── is_session_active / get_running_conversations ─────────────────
@@ -293,7 +434,7 @@ async def test_lifecycle_disconnect_reconnect_finish(mgr):
     # 2. User reconnects
     ws2 = _make_ws()
     await mgr.connect("c1", ws2)
-    assert mgr._connections["c1"] is ws2
+    assert mgr._connections["c1"] == {ws2}
 
     # 3. Agent finishes
     mgr.deregister_session("c1")

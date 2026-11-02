@@ -817,7 +817,9 @@ class ShellTool(Tool):
         "use the `git_repo` tool to clone repositories. "
         "ALL paths must be relative to the project root - absolute paths, ~, and ../ "
         "are rejected. If a command is rejected, switch to a dedicated tool instead of "
-        "rephrasing. Playwright/npm test commands run dependency + browser setup first "
+        "rephrasing. For structural questions about clones under repos/ (where is X "
+        "defined, who calls X, impact), prefer repo_graph over grep. "
+        "Playwright/npm test commands run dependency + browser setup first "
         "(self-healing); use shell for .spec.ts runs only as a last-resort fallback - "
         "ad-hoc browser probes belong to browser_playwright / code_executor python-playwright."
     )

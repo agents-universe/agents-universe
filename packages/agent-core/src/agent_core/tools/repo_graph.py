@@ -28,10 +28,12 @@ _log = logging.getLogger("agent_core.repo_graph")
 class RepoGraphTool(Tool):
     name = "repo_graph"
     prompt_hint = (
-        "Query the code knowledge graph of cloned git repositories (auto-built on "
-        "clone/checkout/pull). Consult it BEFORE reading files: query/neighbors/"
-        "impact/path answer structural questions in a few tokens. The graph is "
-        "deterministic and may miss dynamic references; read files for semantics."
+        "Code knowledge graph of cloned git repositories (auto-built on "
+        "clone/checkout/pull). For clones under repos/, try it BEFORE grep/file "
+        "reads: 'where is X defined' → query, 'who calls X / blast radius' → "
+        "neighbors/impact, 'call path A→B' → path — a few tokens instead of "
+        "whole-file reads. Deterministic; may miss dynamic references — read "
+        "files for semantics."
     )
     description = (
         "Code knowledge graph for git clones. Operations: build, query, neighbors, "

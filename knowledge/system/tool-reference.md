@@ -220,6 +220,33 @@ Key operations:
 
 Force push permanently disabled. Non-fast-forward push → run sync_branch, resolve conflicts, retest, push normally.
 
+## repo_graph
+
+Deterministic code knowledge graph for cloned git repositories — answers structural questions ("where is X defined", "who calls X", "what breaks if I change X") in a few tokens instead of grepping and reading whole files. Auto-built on `git_repo` clone/checkout/pull; cache lives under `.tmp/repo_graph/<repo>/`.
+
+```
+Operations: build, query, neighbors, impact, path, report
+
+Inputs (every operation):
+  repository      — clone name (or owner/repo); exclusive with repository_path
+  repository_path — project-relative existing checkout; exclusive with repository
+  query           — symbol/file substring (query); symbol name (others)
+  symbol          — target symbol for neighbors/impact
+  from / to       — path endpoints (symbol or file); depth (neighbors 1-2);
+                    max_hops (path 1-6); force / include_untracked (build only)
+
+Key operations:
+  query     — find symbols and files by name across the clone
+  neighbors — list symbols connected to one symbol (callers/callees/imports)
+  impact    — what depends on a symbol: refactor blast radius
+  path      — shortest call path between two symbols
+  report    — compact repo map (also embedded in clone/pull results)
+  build     — (re)create the graph; auto-build skips repos >3000 files;
+              explicit build refuses >10k files ("use search/read tools instead")
+```
+
+Graph-first order for clone work: `repo_graph` (locate) → `git_repo search/log/show` or `filesystem` read (semantics of the pointed-to file). The graph is deterministic and may miss dynamic references — a navigation aid, not a spec; always read files for behavior/semantics. Covers `.py .ts .tsx .js .jsx .vue .java .cs .sql` in **git clones only**, tracked files by default — workspace code outside clones, untracked files, and skipped repos fall back to grep/filesystem as usual.
+
 ## planner (plan_task)
 
 Generate a structured task list for complex goals. Runs on the conversation's current model.

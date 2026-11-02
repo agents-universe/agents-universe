@@ -162,8 +162,10 @@ class GitRepoTool(Tool):
     ) -> None:
         """Best-effort graph build after a mutation; never affects the git result.
 
-        Skips repos over the auto-build limit (with a hint), and swallows any
-        exception — a failed graph must not fail a successful git operation.
+        Builds inline up to AUTO_BUILD_MAX_FILES, queues a background build
+        (status `queued`) between that and MAX_BUILD_FILES, skips larger
+        repos with a hint — and swallows any exception: a failed graph must
+        not fail a successful git operation.
         """
         try:
             summary = await maybe_build_auto(repo, context.project_fs_path, repo.name)

@@ -38,8 +38,11 @@ from .store import GRAPH_FILE, invalidate_cached, load_repo_graph, save_repo_gra
 
 _log = logging.getLogger(__name__)
 
-# Auto-builds (git_repo ops) skip repos larger than this — parsing thousands
-# of files would stall the turn for little in-context value.
+# Auto-builds (git_repo ops) run inline up to this many files — small repos
+# finish inside the turn so the clone result carries a fresh compact map.
+# Larger repos (up to MAX_BUILD_FILES) queue a background build instead of
+# being skipped: parsing thousands of files would stall the turn for little
+# in-context value, but they should still end up indexed.
 AUTO_BUILD_MAX_FILES = 3000
 # Explicit `repo_graph build` may force past AUTO_BUILD_MAX_FILES but still
 # refuses absurd trees: extracting tens of thousands of files holds the build
@@ -52,6 +55,44 @@ SKIPPED_FILES_MAX = 100
 # lock, hung fsmonitor) must not hold a build forever.
 _GIT_TIMEOUT_S = 10.0
 _BUILD_LOCKS: dict[str, asyncio.Lock] = {}  # one build at a time per kg_dir
+
+# Background auto-builds: one live task per kg_dir (git ops during a build
+# set `rerun` instead of stacking tasks), bounded by a semaphore so a burst
+# of clones cannot fan out unbounded graphify extraction memory. In-process
+# and single-loop, like the API scheduler: a process exit drops queued
+# builds, recovered by the next git op or an explicit repo_graph build.
+class _AutoBuild:
+    __slots__ = ("task", "rerun", "files", "last", "repo", "project_fs_path", "repo_name")
+
+    def __init__(self, task: asyncio.Task, files: int, repo: Path,
+                 project_fs_path: str, repo_name: str) -> None:
+        self.task = task
+        self.rerun = False  # git op landed mid-build → run one more pass
+        self.files = files  # candidate count, for the "in progress" hint
+        self.last: dict[str, Any] | None = None  # most recent summary
+        # For a done-callback restart (rerun set after the worker exited).
+        self.repo = repo
+        self.project_fs_path = project_fs_path
+        self.repo_name = repo_name
+
+
+_AUTO_BUILDS: dict[str, _AutoBuild] = {}  # key = str(kg_dir)
+
+
+def _auto_build_sem() -> asyncio.Semaphore:
+    """Concurrency cap for background builds, bound per running loop.
+
+    A module-level Semaphore would bind to whichever loop first acquires it
+    and then reject every other loop (pytest-asyncio runs each test on a
+    fresh loop); recreate when the running loop changes. Production is a
+    single loop for the process lifetime, so this is a no-op there.
+    """
+    loop = asyncio.get_running_loop()
+    state = getattr(_auto_build_sem, "_state", None)
+    if state is None or state[0] is not loop:
+        state = (loop, asyncio.Semaphore(2))
+        _auto_build_sem._state = state  # type: ignore[attr-defined]
+    return state[1]
 
 # Skip giant / minified / generated files outright. graphify's SQL extractor
 # is an AST walk, not our old streaming parser: a spike-measured 6.9MB /
@@ -499,15 +540,119 @@ async def _build_repo_graph_locked(
     return summary
 
 
+def auto_build_files_in_progress(kg_dir: Path) -> int | None:
+    """Candidate count while a background build runs for kg_dir, else None."""
+    entry = _AUTO_BUILDS.get(str(kg_dir))
+    return entry.files if entry is not None else None
+
+
+def enqueue_auto_build(repo: Path, project_fs_path: str, repo_name: str, files: int) -> dict[str, Any]:
+    """Queue a background auto-build; O(1), never awaits the build itself.
+
+    One live task per kg_dir: a git op landing mid-build sets `rerun` so the
+    worker runs one more pass instead of stacking tasks (the extra pass hits
+    the fast path when nothing changed). Returns the summary dict the git op
+    attaches to its result.
+    """
+    key = str(repo_graph_dir(project_fs_path, repo_name))
+    existing = _AUTO_BUILDS.get(key)
+    if existing is not None:
+        existing.rerun = True
+    else:
+        task = asyncio.create_task(
+            _auto_build_worker(repo, project_fs_path, repo_name, key)
+        )
+        entry = _AutoBuild(task, files, repo, project_fs_path, repo_name)
+        _AUTO_BUILDS[key] = entry
+        task.add_done_callback(lambda t, k=key, e=entry: _auto_build_done(t, k, e))
+    return {
+        "status": "queued",
+        "reason": "background_build",
+        "files": files,
+        "hint": (
+            f"Repo has {files} source files; building the knowledge graph in "
+            "the background — run repo_graph query shortly "
+            "(repo_graph build forces a synchronous rebuild)."
+        ),
+    }
+
+
+def _auto_build_done(task: asyncio.Task, key: str, entry: _AutoBuild) -> None:
+    # Pop only if this task is still the registered one (never replaced).
+    if _AUTO_BUILDS.get(key) is entry:
+        del _AUTO_BUILDS[key]
+    if task.cancelled():
+        _log.warning("background repo graph build cancelled for %s", key)
+        return
+    exc = task.exception()  # consume; the worker already logged failures
+    if exc is not None:
+        _log.error("background repo graph build crashed for %s: %s", key, exc)
+        return
+    if entry.rerun:
+        # A git op landed between the worker's final rerun-check and this
+        # callback — the worker never saw it. Start a fresh task rather than
+        # dropping the rebuild request.
+        enqueue_auto_build(entry.repo, entry.project_fs_path, entry.repo_name, entry.files)
+
+
+async def _auto_build_worker(
+    repo: Path, project_fs_path: str, repo_name: str, key: str
+) -> None:
+    entry = _AUTO_BUILDS[key]
+    while True:
+        entry.rerun = False  # a git op after this point sets it again
+        async with _auto_build_sem():
+            try:
+                summary = await build_repo_graph(
+                    repo, repo_graph_dir(project_fs_path, repo_name), force=False
+                )
+            except Exception as exc:
+                _log.exception("background auto repo graph build failed for %s", repo_name)
+                summary = {"status": "failed", "reason": str(exc)}
+        entry.last = summary
+        _log.info(
+            "background repo graph build for %s: %s", repo_name, summary.get("status")
+        )
+        # No await from here through the task returning: on a single event
+        # loop that segment is atomic, so a rerun set by enqueue_auto_build
+        # either lands before this check (rebuild) or after the done-callback
+        # pop (fresh task) — never in between and lost.
+        if not entry.rerun:
+            break
+
+
+async def wait_pending_auto_builds() -> list[dict[str, Any]]:
+    """Await in-flight background builds (tests / graceful drain).
+
+    Tasks bound to a dead loop (pytest-asyncio rotates loops per test) are
+    dropped rather than awaited — awaiting across loops raises.
+    """
+    summaries: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    for _ in range(10):  # bounded: a rerun keeps its task alive across gather
+        for key, entry in list(_AUTO_BUILDS.items()):
+            if entry.task.get_loop() is not loop:
+                _log.warning("dropping stale background build from another loop: %s", key)
+                del _AUTO_BUILDS[key]
+        live = [e for e in _AUTO_BUILDS.values() if e.task.get_loop() is loop]
+        if not live:
+            break
+        await asyncio.gather(*(e.task for e in live), return_exceptions=True)
+        summaries.extend(e.last for e in live if e.last is not None)
+    return summaries
+
+
 async def maybe_build_auto(
     repo: Path, project_fs_path: str, repo_name: str, force: bool = False
 ) -> dict[str, Any] | None:
-    """Best-effort auto-build on git ops; never raises, never blocks the result.
+    """Best-effort auto-build on git ops; never raises, never fails the git op.
 
-    Guard rails: requires a plain .git dir; skips repos over
-    AUTO_BUILD_MAX_FILES with a hint; one build at a time per kg_dir (the
-    lock is taken inside build_repo_graph, so every entry point serializes
-    the same way).
+    Guard rails: requires a plain .git dir; builds inline up to
+    AUTO_BUILD_MAX_FILES (the clone result carries a fresh compact map),
+    queues a background build up to MAX_BUILD_FILES (the turn must not wait
+    on thousands of files), refuses larger trees with a hint; one build at a
+    time per kg_dir (the lock is taken inside build_repo_graph, so every
+    entry point serializes identically).
     """
     if not (repo / ".git").is_dir():
         return None
@@ -516,12 +661,14 @@ async def maybe_build_auto(
         tracked = await asyncio.to_thread(_walk_files, repo)
     candidate_count = len(await asyncio.to_thread(_candidate_files, tracked))
     if candidate_count > AUTO_BUILD_MAX_FILES:
-        return {
-            "status": "skipped",
-            "reason": "too_many_files",
-            "files": candidate_count,
-            "hint": f"Repo has {candidate_count} source files; run repo_graph build to force.",
-        }
+        if candidate_count > MAX_BUILD_FILES:
+            return {
+                "status": "skipped",
+                "reason": "too_many_files",
+                "files": candidate_count,
+                "hint": f"Repo has {candidate_count} source files; run repo_graph build to force.",
+            }
+        return enqueue_auto_build(repo, project_fs_path, repo_name, candidate_count)
     kg_dir = repo_graph_dir(project_fs_path, repo_name)
     try:
         return await build_repo_graph(repo, kg_dir, force=force)

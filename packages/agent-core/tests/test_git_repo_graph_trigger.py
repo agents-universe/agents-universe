@@ -5,6 +5,7 @@ Clone is the only op that needs auth; it is patched to the bare remote path.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -147,12 +148,112 @@ async def test_pull_rebuilds_only_on_change(clone_ctx, grammars):
 async def test_too_many_files_skips_with_hint(clone_ctx, monkeypatch):
     tool, ctx, _, _ = clone_ctx
     monkeypatch.setattr(_builder_mod, "AUTO_BUILD_MAX_FILES", 1)
+    monkeypatch.setattr(_builder_mod, "MAX_BUILD_FILES", 1)
     result = await tool.execute({"operation": "clone", "repository": "org/repo"}, ctx)
     assert result["status"] == "cloned"
     graph = result.get("graph")
     assert graph is not None and graph["status"] == "skipped"
     assert graph["reason"] == "too_many_files"
     assert "hint" in graph
+
+
+@pytest.mark.asyncio
+async def test_large_repo_queues_background_build(clone_ctx, grammars, monkeypatch):
+    """Between the two caps a clone returns immediately and builds off-turn."""
+    tool, ctx, workspace, _ = clone_ctx
+    monkeypatch.setattr(_builder_mod, "AUTO_BUILD_MAX_FILES", 1)
+    result = await tool.execute({"operation": "clone", "repository": "org/repo"}, ctx)
+    assert result["status"] == "cloned"
+    graph = result.get("graph")
+    # not "built": the turn must not have waited for the parse
+    assert graph is not None and graph["status"] == "queued"
+    assert graph["reason"] == "background_build"
+    assert "background" in graph["hint"]
+
+    await _builder_mod.wait_pending_auto_builds()
+    kg = Path(workspace) / ".tmp" / "repo_graph" / "repo"
+    assert (kg / "graph.json").is_file()
+    found = await RepoGraphTool().execute(
+        {"operation": "query", "repository": "repo", "query": "hello"}, ctx)
+    assert any(m["name"] == "hello" for m in found["matches"])
+
+
+@pytest.mark.asyncio
+async def test_query_reports_running_build(clone_ctx, monkeypatch):
+    """While the background build runs, query says so instead of 'run build'."""
+    tool, ctx, _, _ = clone_ctx
+    monkeypatch.setattr(_builder_mod, "AUTO_BUILD_MAX_FILES", 1)
+
+    release = asyncio.Event()
+    calls: list[int] = []
+    real_build = _builder_mod.build_repo_graph
+
+    async def blocking_build(*args, **kwargs):
+        calls.append(1)
+        await release.wait()
+        return await real_build(*args, **kwargs)
+
+    monkeypatch.setattr(_builder_mod, "build_repo_graph", blocking_build)
+
+    result = await tool.execute({"operation": "clone", "repository": "org/repo"}, ctx)
+    assert result["graph"]["status"] == "queued"
+    for _ in range(200):  # worker reaches the blocking build
+        if calls:
+            break
+        await asyncio.sleep(0.01)
+    assert calls, "background worker never started the build"
+
+    found = await RepoGraphTool().execute(
+        {"operation": "query", "repository": "repo", "query": "hello"}, ctx)
+    assert "Background build in progress" in found.get("hint", "")
+
+    release.set()
+    await _builder_mod.wait_pending_auto_builds()
+    found = await RepoGraphTool().execute(
+        {"operation": "query", "repository": "repo", "query": "hello"}, ctx)
+    assert any(m["name"] == "hello" for m in found["matches"])
+
+
+@pytest.mark.asyncio
+async def test_enqueue_coalesces_rerun(clone_ctx, monkeypatch):
+    """Git ops during a background build coalesce into one extra pass."""
+    tool, ctx, workspace, _ = clone_ctx
+    monkeypatch.setattr(_builder_mod, "AUTO_BUILD_MAX_FILES", 1)
+
+    release = asyncio.Event()
+    calls: list[int] = []
+    real_build = _builder_mod.build_repo_graph
+
+    async def counting_build(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            await release.wait()  # only the first pass blocks
+        return await real_build(*args, **kwargs)
+
+    monkeypatch.setattr(_builder_mod, "build_repo_graph", counting_build)
+
+    result = await tool.execute({"operation": "clone", "repository": "org/repo"}, ctx)
+    assert result["graph"]["status"] == "queued"
+    for _ in range(200):
+        if calls:
+            break
+        await asyncio.sleep(0.01)
+    assert calls == [1], "background worker never reached the first build"
+
+    # two more auto-build triggers while the first pass is in flight →
+    # one live task, one rerun flag (not two extra builds)
+    repo_path = Path(workspace) / "repos" / "repo"
+    for _ in range(2):
+        summary = await _builder_mod.maybe_build_auto(repo_path, str(workspace), "repo")
+        assert summary["status"] == "queued"
+    assert len(_builder_mod._AUTO_BUILDS) == 1
+
+    release.set()
+    await _builder_mod.wait_pending_auto_builds()
+    assert len(calls) == 2, f"expected first pass + one coalesced rerun, got {calls}"
+    assert not _builder_mod._AUTO_BUILDS
+    kg = Path(workspace) / ".tmp" / "repo_graph" / "repo"
+    assert (kg / "graph.json").is_file()
 
 
 @pytest.mark.asyncio

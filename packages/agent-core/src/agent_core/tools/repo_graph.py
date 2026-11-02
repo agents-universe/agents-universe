@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..knowledge.graph.builder import build_repo_graph
+from ..knowledge.graph.builder import auto_build_files_in_progress, build_repo_graph
 from ..knowledge.graph import queries
 from ..knowledge.graph.model import repo_graph_dir
 from ..knowledge.graph.report import REPORT_FILE, compact_map
@@ -121,6 +121,17 @@ class RepoGraphTool(Tool):
     @staticmethod
     def _no_graph_hint(repo: Path, context: ToolContext) -> dict[str, Any]:
         kg_dir = repo_graph_dir(context.project_fs_path, repo.name)
+        files = auto_build_files_in_progress(kg_dir)
+        if files is not None:
+            return {
+                "error": f"No graph for {repo.name!r} yet",
+                "hint": (
+                    f"Background build in progress ({files} files) — retry "
+                    "repo_graph query shortly; repo_graph build rebuilds "
+                    "synchronously."
+                ),
+                "graph_path": str(kg_dir),
+            }
         return {
             "error": f"No graph for {repo.name!r} yet",
             "hint": "Run repo_graph build (clone/checkout/pull via git_repo auto-builds).",

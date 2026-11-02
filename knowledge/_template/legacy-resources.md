@@ -2,7 +2,7 @@
 category: technical
 slug: technical/legacy-resources
 tags: [legacy, resources, repos, integration]
-template_words: 133
+template_words: 134
 title: 旧系统资源
 ---
 
@@ -22,7 +22,7 @@ title: 旧系统资源
 |------|----------------|----------|----------|----------|------|
 | (to be filled) | (to be filled: Settings→Integrations 的 git 服务) | (to be filled: → `repos/{name}`) | (to be filled) | (to be filled) | (to be filled) |
 
-- 接入方式写法：git 仓库 → `git_repo operation=clone`，克隆后自动构建代码图谱（`repo_graph`）；超大仓（>3000 源文件）需手动 `repo_graph build`
+- 接入方式写法：git 仓库 → `git_repo operation=clone`，克隆后自动构建代码图谱（`repo_graph`）；大仓（3001–10000 源文件）自动后台构建、完成后即可 query；>10000 手动构建同样拒绝，改用 search/read
 - 非 git 源码树：文件放入工作区后 shell `git init/add/commit`，再 `repo_graph build`（`repository_path` 指向该目录）
 - 长期依赖的仓库按 git-repo-reader skill 约定另建 `technical/repo-{name}` 明细条目；本表保持索引
 

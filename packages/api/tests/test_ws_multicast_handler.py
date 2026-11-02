@@ -6,14 +6,15 @@ conversation kicked each other in a ~1s reconnect loop (the frontend resets
 its backoff on every successful open). These tests drive the real
 ``conversation_ws`` endpoint with two fake sockets and pin the multicast
 semantics: both tabs stay open, both receive every frame, and one tab
-leaving never interrupts the other.
+leaving never interrupts the other. Also covers the 4001 auth denial, which
+must ACCEPT before closing so the browser actually sees the code.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 
-from api.websocket.handlers import conversation_ws
+from api.websocket.handlers import _deny_unauthenticated, conversation_ws
 from api.websocket.manager import manager
 
 
@@ -124,3 +125,16 @@ async def test_one_tab_leaving_never_interrupts_the_other(db, make_project):
         assert conv_id not in manager._connections or ws1 not in manager._connections[conv_id]
     finally:
         await _cleanup(conv_id, [ws1, ws2], tasks)
+
+
+async def test_deny_unauthenticated_accepts_then_closes_with_4001():
+    """Pre-accept close(4001) is answered by uvicorn as HTTP 403 — the
+    browser only sees 1006 and keeps retrying forever. The denial must
+    accept first, emit an error frame, then close with 4001."""
+    ws = _FakeSocket()
+
+    await _deny_unauthenticated(ws)
+
+    assert ws.accepted is True
+    assert ws.sent and ws.sent[0]["code"] == "WS_UNAUTHENTICATED"
+    assert ws.closed_with == [4001]

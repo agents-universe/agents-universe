@@ -90,6 +90,27 @@ async def _check_project_access(conversation_id: str, user_id: str) -> bool:
         return await has_project_access(db, project, user_id)
 
 
+async def _deny_unauthenticated(ws: WebSocket) -> None:
+    """Reject a socket with no valid session (code 4001).
+
+    Must ACCEPT first: a close before accept is answered by uvicorn with
+    HTTP 403 and the browser only ever sees 1006 (see the module docstring
+    of tests/test_script_run_ws.py), so the client could not tell
+    "session expired — stop retrying and log in again" from a network blip.
+    Structurally identical to the 4403 denial path below.
+    """
+    try:
+        await ws.accept()
+        await ws.send_json({
+            "type": "error",
+            "code": "WS_UNAUTHENTICATED",
+            "message": "Session expired",
+        })
+        await ws.close(code=4001)
+    except Exception:
+        pass
+
+
 @router.websocket("/ws/conversations/{conversation_id}")
 async def conversation_ws(conversation_id: str, ws: WebSocket):
     """WebSocket endpoint for a conversation.
@@ -122,17 +143,17 @@ async def conversation_ws(conversation_id: str, ws: WebSocket):
     else:
         session_id = ws.cookies.get(settings.auth_cookie_name)
         if not session_id:
-            await ws.close(code=4001)
+            await _deny_unauthenticated(ws)
             return
         try:
             redis = _get_pool()
             session_data = await get_session(redis, session_id)
         except Exception:
             _log.warning("WebSocket session auth failed for conversation %s", conversation_id, exc_info=True)
-            await ws.close(code=4001)
+            await _deny_unauthenticated(ws)
             return
         if not session_data or "user_id" not in session_data:
-            await ws.close(code=4001)
+            await _deny_unauthenticated(ws)
             return
         user_id = session_data["user_id"]
 

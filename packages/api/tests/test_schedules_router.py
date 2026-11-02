@@ -240,6 +240,54 @@ class TestCreate:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_create_snapshots_owner_identity(self, client, db, make_project, as_user):
+        """Owner fields flow through every _task_dict exit: create, get, list."""
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+
+        async with as_user("owner-1", display_name="张三"):
+            created = (
+                await client.post(
+                    f"/api/projects/{project.project_id}/schedules",
+                    json=_body(project, script_id=str(script.script_id)),
+                )
+            ).json()
+            assert created["created_by"] == "owner-1"
+            assert created["created_by_name"] == "张三"
+
+            resp = await client.get(f"/api/schedules/{created['schedule_id']}")
+            assert resp.status_code == 200
+            assert resp.json()["created_by"] == "owner-1"
+            assert resp.json()["created_by_name"] == "张三"
+
+            resp = await client.get(f"/api/projects/{project.project_id}/schedules")
+            assert resp.status_code == 200
+            rows = [t for t in resp.json() if t["schedule_id"] == created["schedule_id"]]
+            assert rows and rows[0]["created_by"] == "owner-1"
+            assert rows[0]["created_by_name"] == "张三"
+
+    async def test_legacy_row_without_name_serializes_null(self, client, db, make_project):
+        """Pre-migration / tool-created rows have no display-name snapshot;
+        the API must emit created_by_name: null (frontend falls back to id)."""
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+        task = ScheduledTask(
+            project_id=str(project.project_id),
+            name="legacy",
+            target_type="script",
+            script_id=str(script.script_id),
+            cron_expr="0 9 * * *",
+            created_by="u-old",
+        )
+        db.add(task)
+        await db.commit()
+
+        resp = await client.get(f"/api/projects/{project.project_id}/schedules")
+        assert resp.status_code == 200
+        row = next(t for t in resp.json() if t["name"] == "legacy")
+        assert row["created_by"] == "u-old"
+        assert row["created_by_name"] is None
+
 
 class TestUpdate:
     async def test_patch_cron_recomputes_next_run(self, client, db, make_project):
@@ -409,6 +457,33 @@ class TestUpdate:
             json={"conversation_id": str(foreign.conversation_id)},
         )
         assert resp.status_code == 422, resp.text
+
+    async def test_patch_by_teammate_keeps_owner_unchanged(
+        self, client, db, make_project, as_user
+    ):
+        """Ownership is create-time-only: a teammate PATCH may edit the task
+        (shared-edit policy) but must not rewrite created_by/created_by_name."""
+        project = await make_project()
+        script = await _make_script(db, str(project.project_id))
+
+        async with as_user("owner-1", display_name="张三"):
+            created = (
+                await client.post(
+                    f"/api/projects/{project.project_id}/schedules",
+                    json=_body(project, script_id=str(script.script_id)),
+                )
+            ).json()
+
+        async with as_user("teammate"):
+            resp = await client.patch(
+                f"/api/schedules/{created['schedule_id']}",
+                json={"name": "renamed-by-teammate"},
+            )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"] == "renamed-by-teammate"
+        assert data["created_by"] == "owner-1"
+        assert data["created_by_name"] == "张三"
 
 
 class TestDeleteAndRuns:

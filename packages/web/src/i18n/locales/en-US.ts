@@ -705,6 +705,7 @@ export default {
     disable: 'Disable',
     nextRun: 'Next run',
     lastRun: 'Last run',
+    owner: 'Owner',
     notScheduled: 'not scheduled',
     runNow: 'Run now',
     runs: 'Run history',

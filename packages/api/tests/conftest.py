@@ -184,9 +184,9 @@ def as_user():
     from api.dependencies.auth import UserInfo, get_current_user
 
     @asynccontextmanager
-    async def _as(user_id: str):
+    async def _as(user_id: str, display_name: str | None = None):
         app.dependency_overrides[get_current_user] = lambda: UserInfo(
-            user_id=user_id, display_name=user_id
+            user_id=user_id, display_name=display_name or user_id
         )
         try:
             yield

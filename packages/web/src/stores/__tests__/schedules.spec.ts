@@ -38,6 +38,8 @@ function task(id: string): ScheduledTask {
     next_run_at: null,
     last_run_at: null,
     last_status: null,
+    created_by: 'u-1',
+    created_by_name: '张三',
     created_at: null,
   }
 }

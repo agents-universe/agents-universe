@@ -56,3 +56,16 @@ async def test_tier_column_matches_model_width(db):
         }
     )
     assert cols["tier"]["type"].length == 50
+
+
+async def test_scheduled_tasks_created_by_name_in_migrated_schema(db):
+    """scheduled_tasks.created_by_name must reach the migrated schema as a
+    nullable Unicode(255) — the owner display snapshot written at create time."""
+    cols = await db.run_sync(
+        lambda s: {
+            c["name"]: c for c in inspect(s.connection()).get_columns("scheduled_tasks")
+        }
+    )
+    assert "created_by_name" in cols
+    assert cols["created_by_name"]["type"].length == 255
+    assert cols["created_by_name"]["nullable"] is True

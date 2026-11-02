@@ -408,3 +408,103 @@ class TestAgentTargetOutcome:
         # Exactly one release — the kernel's. A second entry would mean the
         # caller dropped the re-taken claim.
         assert manager_calls["release"] == [str(conv.conversation_id)]
+
+    async def test_agent_fire_runs_as_task_creator(
+        self, db, make_project, monkeypatch, manager_calls
+    ):
+        """run_turn must receive the task creator as both identities.
+
+        user_id is what ToolContext.user_id becomes, so it is the only handle
+        user_tokens resolution (_auth.get_token) has — a wrong id here would
+        leak another user's keys into the scheduled turn.
+        """
+        project = await make_project()
+        conv = await _conversation(db, project, user_id="someone-else")
+        target = await _target(
+            db, project, conversation_id=str(conv.conversation_id),
+            created_by="someone-else",
+        )
+        captured: dict = {}
+
+        async def fake_run_turn(conversation_id, **kwargs):
+            captured.update(kwargs)
+
+        self._patch_run(monkeypatch, fake_run_turn)
+        outcome = await scheduled_runs._run_agent_target(None, target)
+
+        assert captured["user_id"] == "someone-else"
+        assert captured["actor_user_id"] == "someone-else"
+        # The fake persisted no reply, so the run itself scores failed —
+        # only the identity passed in matters here.
+        assert outcome.status == "failed"
+
+    async def test_agent_fire_refuses_conversation_of_another_user(
+        self, db, make_project, monkeypatch
+    ):
+        """A task bound to a conversation of a different user must fail
+        closed: never start a turn under someone else's identity."""
+        project = await make_project()
+        conv = await _conversation(db, project, user_id="someone-else")
+        target = await _target(
+            db, project, conversation_id=str(conv.conversation_id),
+            created_by="test-user",
+        )
+        called: list = []
+
+        async def fake_run_turn(conversation_id, **kwargs):
+            called.append(conversation_id)
+
+        self._patch_run(monkeypatch, fake_run_turn)
+        outcome = await scheduled_runs._run_agent_target(None, target)
+
+        assert outcome.status == "failed"
+        assert outcome.error == "Target conversation is unavailable"
+        assert called == []
+
+
+class TestScriptTargetIdentity:
+    async def test_script_fire_runs_as_task_creator(
+        self, db, make_project, monkeypatch
+    ):
+        """ScriptRun.triggered_by must be the task creator — it is the id the
+        live-log WS ownership check and script history attribute runs to."""
+        from api.models.script import AutomationScript, ScriptRun
+
+        project = await make_project()
+        script = AutomationScript(
+            project_id=str(project.project_id),
+            name="nightly",
+            script_type="python",
+            content="print('hi')",
+        )
+        db.add(script)
+        await db.commit()
+        await db.refresh(script)
+        task = ScheduledTask(
+            project_id=str(project.project_id),
+            name="nightly",
+            target_type="script",
+            script_id=str(script.script_id),
+            cron_expr="0 9 * * *",
+            created_by="someone-else",
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+
+        seen: dict = {}
+
+        async def fake_execute(run_id, content, script_type, user_id, project_fs):
+            seen["user_id"] = user_id
+
+        monkeypatch.setattr(scheduled_runs, "execute_script", fake_execute)
+        await scheduled_runs._run_script_target(_Target(task))
+
+        assert seen["user_id"] == "someone-else"
+        runs = (
+            (await db.execute(
+                select(ScriptRun).where(ScriptRun.script_id == str(script.script_id))
+            )).scalars().all()
+        )
+        assert len(runs) == 1
+        assert runs[0].triggered_by == "someone-else"

@@ -66,6 +66,9 @@ class ScheduledTask(Base):
     # Owning user: result messages are attributed to them, and their id is what
     # script runs record in ``triggered_by`` so the live-log WS ownership check passes.
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Display-name snapshot at creation time; NULL for tool-created rows
+    # (ToolContext carries no display name) and pre-migration rows.
+    created_by_name: Mapped[str | None] = mapped_column(Unicode(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

@@ -78,6 +78,10 @@
                 <Link2 :size="12" />
                 {{ targetDetail(task) }}
               </span>
+              <span class="schedule-meta-chip" :title="task.created_by">
+                <User :size="12" />
+                {{ t('scheduledTasks.owner') }}: {{ task.created_by_name || task.created_by }}
+              </span>
             </div>
           </div>
 
@@ -330,7 +334,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   CalendarClock, Plus, Loader2, Play, Pencil, Trash2, Terminal, ChevronDown,
-  Clock, Globe, Repeat, Link2, ListChecks, Bot, FlaskConical, X, History,
+  Clock, Globe, Repeat, Link2, ListChecks, Bot, FlaskConical, X, History, User,
 } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
 import { schedulesApi, type ScheduledTask, type ScheduledTaskRun, type ScheduleTargetType } from '@/api/schedules'

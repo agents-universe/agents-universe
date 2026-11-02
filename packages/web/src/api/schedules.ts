@@ -26,6 +26,9 @@ export interface ScheduledTask {
   next_run_at: string | null
   last_run_at: string | null
   last_status: string | null
+  created_by: string
+  /** Display-name snapshot at creation; absent/NULL for tool-created or legacy rows. */
+  created_by_name?: string | null
   created_at: string | null
 }
 

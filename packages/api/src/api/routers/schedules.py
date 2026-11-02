@@ -87,6 +87,8 @@ def _task_dict(task: ScheduledTask) -> dict:
         "next_run_at": task.next_run_at.isoformat() if task.next_run_at else None,
         "last_run_at": task.last_run_at.isoformat() if task.last_run_at else None,
         "last_status": task.last_status,
+        "created_by": task.created_by,
+        "created_by_name": task.created_by_name,
         "created_at": task.created_at.isoformat() if task.created_at else None,
     }
 
@@ -334,6 +336,7 @@ async def create_schedule(
         enabled=body.enabled,
         next_run_at=_upcoming(body.cron_expr, body.timezone, enabled=body.enabled),
         created_by=current_user.user_id,
+        created_by_name=current_user.display_name or None,
     )
     db.add(task)
     await db.commit()

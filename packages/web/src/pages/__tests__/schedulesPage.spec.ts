@@ -73,6 +73,8 @@ function makeTask(over: Partial<ScheduledTask> = {}): ScheduledTask {
     next_run_at: '2026-09-10T01:00:00+00:00',
     last_run_at: null,
     last_status: null,
+    created_by: 'u-1',
+    created_by_name: '张三',
     created_at: '2026-09-09T00:00:00+00:00',
     ...over,
   }
@@ -122,6 +124,29 @@ describe('SchedulesPage', () => {
     expect(cards[0].text()).toContain('每日数据汇总')
     expect(cards[0].text()).toContain('at 09:00 every day')
     expect(cards[1].text()).toContain('login-flow')
+  })
+
+  it('shows the owner chip on the card', async () => {
+    schedulesApi.list.mockResolvedValue([makeTask()])
+    const wrapper = mount(SchedulesPage)
+    await flushPromises()
+
+    const card = wrapper.findAll('.schedule-card')[0]
+    expect(card.text()).toContain('所有者')
+    expect(card.text()).toContain('张三')
+    expect(card.find('.schedule-meta-chip[title="u-1"]').exists()).toBe(true)
+  })
+
+  it('falls back to the user id when no display name snapshot exists', async () => {
+    schedulesApi.list.mockResolvedValue([
+      makeTask({ created_by_name: null }),
+    ])
+    const wrapper = mount(SchedulesPage)
+    await flushPromises()
+
+    const text = wrapper.findAll('.schedule-card')[0].text()
+    expect(text).toContain('u-1')
+    expect(text).not.toContain('undefined')
   })
 
   it('shows the empty state when the project has no tasks', async () => {

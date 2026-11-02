@@ -704,6 +704,7 @@ export default {
     disable: '停用',
     nextRun: '下次运行',
     lastRun: '上次运行',
+    owner: '所有者',
     notScheduled: '未排期',
     runNow: '立即运行',
     runs: '运行历史',

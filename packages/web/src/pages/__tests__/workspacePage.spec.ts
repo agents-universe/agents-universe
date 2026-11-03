@@ -150,7 +150,60 @@ function defaultApi() {
       return { path: 'notes.md', content: '# Hello\n\nSee [[global-rules]]', size_bytes: 9 }
     }
     if (url.startsWith('/api/projects/p1/scripts')) {
-      return [{ script_id: 's1', name: 'hello', script_type: 'python' }]
+      return [{
+        script_id: 's1',
+        name: 'hello',
+        script_type: 'python',
+        secrets: ['jira'],
+        tools: ['filesystem'],
+        created_by: 'alice',
+      }]
+    }
+    if (url === '/api/scripts/tool-catalog?project_id=p1') {
+      return {
+        tools: ['filesystem', 'github'],
+        deny: ['shell'],
+        mcp_servers: ['demo'],
+        usage: 'bash: agent-tool call <tool> <<EOF ... EOF',
+      }
+    }
+    if (url === '/api/scripts/s1' && options?.method === 'PATCH') {
+      const body = JSON.parse(String(options.body))
+      return { script_id: 's1', ...body }
+    }
+    if (url === '/api/scripts/s1') {
+      return {
+        script_id: 's1',
+        project_id: 'p1',
+        name: 'hello',
+        description: null,
+        script_type: 'python',
+        content: 'print(1)\n',
+        secrets: ['jira'],
+        tools: ['filesystem'],
+        created_by: 'alice',
+      }
+    }
+    if (url === '/api/tokens') {
+      return [{
+        service_key: 'git',
+        display_name: null,
+        key_hint: 'ghp…',
+        base_url: null,
+        model_id: null,
+      }]
+    }
+    if (url === '/api/projects/p1/secrets') {
+      return [{
+        secret_id: 'sec1',
+        service_key: 'jira',
+        environment: null,
+        secret_name: 'default',
+        display_name: null,
+        key_hint: 'abc…',
+        created_by: 'u1',
+        updated_at: null,
+      }]
     }
     if (url.startsWith('/api/projects/p1/playwright/specs') && !url.includes('/run')) {
       return [{ slug: 'proj-1', title: 'Login flow', file: 'tests/generated/proj-1.spec.ts' }]
@@ -175,9 +228,10 @@ function defaultApi() {
   })
 }
 
-function mountPage() {
+function mountPage(options: { attachTo?: HTMLElement } = {}) {
   return mount(WorkspacePage, {
     global: { plugins: [createPinia()] },
+    ...(options.attachTo ? { attachTo: options.attachTo } : {}),
   })
 }
 
@@ -454,6 +508,86 @@ describe('WorkspacePage', () => {
 
     expect(apiFetchMock).toHaveBeenCalledWith('/api/projects/p1/knowledge/global-rules')
     expect(wrapper.find('.workspace-md-body').text()).toContain('Global')
+  })
+
+  it('shows declaration badges and the owner identity on a script', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('hello'))!.trigger('click')
+    await flushPromises()
+
+    const meta = wrapper.find('.script-meta-row')
+    expect(meta.exists()).toBe(true)
+    expect(meta.text()).toContain('密钥 ×1')
+    expect(meta.text()).toContain('工具 ×1')
+    expect(meta.text()).toContain('创建者 alice')
+    // Identity hint: scheduled runs follow the task creator, manual runs the clicker.
+    expect(meta.text()).toContain('执行身份')
+  })
+
+  it('opens script settings, lists vault and catalog options, saves via PATCH', async () => {
+    const wrapper = mountPage({ attachTo: document.body })
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('hello'))!.trigger('click')
+    await flushPromises()
+
+    await wrapper.find('.workspace-content-actions .btn-ghost').trigger('click')
+    await flushPromises()
+
+    // Teleported to body — query the document, not the wrapper.
+    const dialog = document.querySelector('.script-settings-modal')!
+    expect(dialog).toBeTruthy()
+    expect(dialog.textContent).toContain('项目 · jira')
+    expect(dialog.textContent).toContain('个人 · git')
+    expect(dialog.textContent).toContain('filesystem')
+    expect(dialog.textContent).toContain('mcp:demo')
+    // The deny list stays out of the offer even though the catalog reports it.
+    expect(dialog.textContent).not.toContain('shell')
+
+    // Tick the github tool option alongside the pre-checked filesystem.
+    const github = [...dialog.querySelectorAll<HTMLInputElement>('input[type=checkbox]')]
+      .find((b) => b.parentElement?.textContent?.includes('github'))!
+    github.click()
+    await flushPromises()
+
+    const saveBtn = [...dialog.querySelectorAll('button')]
+      .find((b) => b.textContent?.includes('保存'))!
+    saveBtn.click()
+    await flushPromises()
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/scripts/s1', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ secrets: ['jira'], tools: ['filesystem', 'github'] }),
+    }))
+    // Badge count follows the saved declarations without a refetch.
+    expect(wrapper.find('.script-meta-row').text()).toContain('工具 ×2')
+    expect(document.querySelector('.script-settings-modal')).toBe(null)
+  })
+
+  it('degrades to read-only badges when the script detail endpoint fails', async () => {
+    const base = apiFetchMock.getMockImplementation()!
+    apiFetchMock.mockImplementation((url: string, options?: RequestInit) =>
+      url === '/api/scripts/s1' && options?.method !== 'PATCH'
+        ? Promise.reject(new Error('404 Not Found'))
+        : base(url, options))
+
+    const wrapper = mountPage({ attachTo: document.body })
+    await flushPromises()
+    await wrapper.findAll('.file-tree-row').find((n) => n.text().includes('hello'))!.trigger('click')
+    await flushPromises()
+
+    // The list payload still carries declarations, so the badges survive.
+    expect(wrapper.find('.script-meta-row').text()).toContain('密钥 ×1')
+
+    await wrapper.find('.workspace-content-actions .btn-ghost').trigger('click')
+    await flushPromises()
+
+    const dialog = document.querySelector('.script-settings-modal')!
+    expect(dialog.querySelector('.script-settings-error')).toBeTruthy()
+    const saveBtn = [...dialog.querySelectorAll('button')]
+      .find((b) => b.textContent?.includes('保存'))!
+    expect(saveBtn.disabled).toBe(true)
   })
 
   it('switching the tree selection closes the previous run log', async () => {

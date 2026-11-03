@@ -71,10 +71,31 @@
               :placeholder="t('workspace.baseUrlPlaceholder')"
               :title="t('workspace.baseUrlHint')"
             />
+            <button
+              v-if="scriptSelection.kind === 'script'"
+              class="btn-ghost"
+              @click="openScriptSettings"
+            >
+              <Settings :size="13" /> {{ t('workspace.scriptSettings') }}
+            </button>
             <button class="btn-primary" :disabled="running" @click="runSelection">
               <Play :size="13" /> {{ running ? t('workspace.running') : t('workspace.run') }}
             </button>
           </div>
+        </div>
+        <!-- Declarative privileges: what this script may decrypt and call, and
+             whose identity the run executes under (owner = the trigger). -->
+        <div v-if="scriptSelection.kind === 'script'" class="script-meta-row">
+          <span v-if="currentScript?.secrets?.length" class="badge badge--amber">
+            {{ t('workspace.secretsBadge', { n: currentScript.secrets.length }) }}
+          </span>
+          <span v-if="currentScript?.tools?.length" class="badge badge--violet">
+            {{ t('workspace.toolsBadge', { n: currentScript.tools.length }) }}
+          </span>
+          <span v-if="currentScript?.created_by" class="badge badge--muted">
+            {{ t('workspace.ownerBadge', { name: currentScript.created_by }) }}
+          </span>
+          <span class="script-meta-hint">{{ t('workspace.identityHint') }}</span>
         </div>
         <div class="workspace-run-panel">
           <div v-if="runError" class="script-run-error">{{ runError }}</div>
@@ -121,6 +142,82 @@
         <span>{{ t('workspace.selectHint') }}</span>
       </div>
     </div>
+
+    <!-- Script settings: declarative secrets + tool allowlist -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showScriptSettings" class="modal-overlay" @click.self="closeScriptSettings">
+          <div class="modal-dialog script-settings-modal">
+            <div class="modal-header">
+              <div class="modal-header-left">
+                <span class="modal-header-icon"><Settings :size="18" /></span>
+                <h2 class="modal-title">{{ t('workspace.settingsTitle') }}</h2>
+              </div>
+              <button class="modal-close" :title="t('common.close')" @click="closeScriptSettings">
+                <X :size="16" />
+              </button>
+            </div>
+
+            <div class="script-settings-body">
+              <div v-if="settingsLoading" class="script-settings-loading">
+                <Loader2 :size="16" class="spin" /> {{ t('common.loading') }}
+              </div>
+              <div v-else-if="settingsError" class="script-settings-error">{{ settingsError }}</div>
+              <template v-else>
+                <div class="script-settings-section">
+                  <div class="script-settings-label">{{ t('workspace.settingsSecretsLabel') }}</div>
+                  <div class="script-settings-hint">{{ t('workspace.settingsSecretsHint') }}</div>
+                  <label
+                    v-for="opt in vaultOptions"
+                    :key="opt.key"
+                    class="script-settings-option"
+                  >
+                    <input v-model="settingsSecrets" type="checkbox" :value="opt.key" />
+                    <span>{{ opt.label }}</span>
+                  </label>
+                  <div v-if="!vaultOptions.length" class="script-settings-empty">
+                    {{ t('workspace.settingsVaultEmpty') }}
+                  </div>
+                </div>
+
+                <div class="script-settings-section">
+                  <div class="script-settings-label">{{ t('workspace.settingsToolsLabel') }}</div>
+                  <div class="script-settings-hint">{{ t('workspace.settingsToolsHint') }}</div>
+                  <label
+                    v-for="name in toolOptions"
+                    :key="name"
+                    class="script-settings-option"
+                  >
+                    <input v-model="settingsTools" type="checkbox" :value="name" />
+                    <span>{{ name }}</span>
+                  </label>
+                  <div v-if="!toolOptions.length" class="script-settings-empty">
+                    {{ t('workspace.settingsCatalogEmpty') }}
+                  </div>
+                </div>
+
+                <div v-if="toolCatalog?.usage" class="script-settings-usage">
+                  {{ toolCatalog.usage }}
+                </div>
+              </template>
+            </div>
+
+            <div class="script-settings-actions">
+              <button class="btn-ghost" :disabled="settingsSaving" @click="closeScriptSettings">
+                {{ t('common.cancel') }}
+              </button>
+              <button
+                class="btn-primary"
+                :disabled="settingsLoading || settingsSaving || !!settingsError"
+                @click="saveScriptSettings"
+              >
+                {{ settingsSaving ? t('common.saving') : t('common.save') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -128,21 +225,34 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { FileText, FolderTree, Loader2, Pencil, Play, RefreshCw, Terminal, FlaskConical } from 'lucide-vue-next'
+import { FileText, FolderTree, Loader2, Pencil, Play, RefreshCw, Settings, Terminal, FlaskConical, X } from 'lucide-vue-next'
 import { apiFetch } from '@/api/client'
-import { scriptsApi } from '@/api/scripts'
+import { scriptsApi, type ScriptToolCatalog } from '@/api/scripts'
+import { userTokensApi } from '@/api/userTokens'
+import { listProjectSecrets } from '@/api/projectSecrets'
 import { workspaceApi } from '@/api/workspace'
 import { knowledgeApi } from '@/api/knowledge'
 import { renderKnowledgeMarkdown } from '@/utils/markdown'
 import { useScriptRunLog } from '@/composables/useScriptRunLog'
 import { useScriptRunResult } from '@/composables/useScriptRunResult'
 import type { WorkspaceTreeNode, WorkspaceNodeKind } from '@/types/workspace'
+import type { UserTokenEntry, ProjectSecret } from '@/types'
 import FileTree from '@/components/workspace/FileTree.vue'
 import RunResultCard from '@/components/workspace/RunResultCard.vue'
 import RunArtifactGallery from '@/components/workspace/RunArtifactGallery.vue'
 import RunHistoryList from '@/components/workspace/RunHistoryList.vue'
 
-interface ScriptItem { script_id: string; run_id?: string; name: string; status: string; script_type: string }
+interface ScriptItem {
+  script_id: string
+  run_id?: string
+  name: string
+  status: string
+  script_type: string
+  /** Declarative privileges — absent on older payloads, treated as none. */
+  secrets?: string[]
+  tools?: string[]
+  created_by?: string | null
+}
 interface SpecItem { slug: string; run_id?: string; title: string; file: string; status: string }
 
 const route = useRoute()
@@ -218,6 +328,103 @@ const baseUrl = ref('')
 const baseUrlKey = (pid: string) => `pw-base-url:${pid}`
 function persistBaseUrl(pid: string) {
   localStorage.setItem(baseUrlKey(pid), baseUrl.value)
+}
+
+// ── Script settings (declarative secrets + tools) ────────────────
+const showScriptSettings = ref(false)
+const settingsLoading = ref(false)
+const settingsSaving = ref(false)
+const settingsError = ref<string | null>(null)
+const settingsSecrets = ref<string[]>([])
+const settingsTools = ref<string[]>([])
+const vaultOptions = ref<{ key: string; label: string }[]>([])
+const toolCatalog = ref<ScriptToolCatalog | null>(null)
+
+/** The tree's script entry — badges read its declarations. */
+const currentScript = computed(() => {
+  const sel = scriptSelection.value
+  if (sel?.kind !== 'script' || !sel.scriptId) return null
+  return scripts.value.find((s) => s.script_id === sel.scriptId) ?? null
+})
+
+/** Catalog tools plus per-server MCP markers (mcp:<slug>). */
+const toolOptions = computed(() => {
+  const cat = toolCatalog.value
+  if (!cat) return []
+  return [...cat.tools, ...cat.mcp_servers.map((slug) => `mcp:${slug}`)]
+})
+
+async function openScriptSettings() {
+  const scriptId = scriptSelection.value?.scriptId
+  if (!scriptId) return
+  showScriptSettings.value = true
+  settingsLoading.value = true
+  settingsError.value = null
+  try {
+    const [detail, catalog, userTokens, projectSecrets] = await Promise.all([
+      scriptsApi.getScript(scriptId),
+      scriptsApi.getToolCatalog(projectId.value),
+      userTokensApi.list().catch(() => [] as UserTokenEntry[]),
+      listProjectSecrets(projectId.value).catch(() => [] as ProjectSecret[]),
+    ])
+    settingsSecrets.value = [...detail.secrets]
+    settingsTools.value = [...detail.tools]
+    toolCatalog.value = catalog
+    // One option per service_key: project vault first (a project secret wins
+    // at resolve time), then the owner's personal vault — same fallback the
+    // runner uses. Scope prefix + key_hint identify the entry; never a value.
+    const merged = new Map<string, string>()
+    for (const s of projectSecrets) {
+      merged.set(s.service_key, t('workspace.vaultProject', { key: s.service_key, hint: s.key_hint || '—' }))
+    }
+    for (const u of userTokens) {
+      if (!merged.has(u.service_key)) {
+        merged.set(u.service_key, t('workspace.vaultUser', { key: u.service_key, hint: u.key_hint || '—' }))
+      }
+    }
+    vaultOptions.value = [...merged].map(([key, label]) => ({ key, label }))
+    // Keep the tree badges in sync with the authoritative row.
+    const sc = scripts.value.find((s) => s.script_id === scriptId)
+    if (sc) {
+      sc.secrets = detail.secrets
+      sc.tools = detail.tools
+      sc.created_by = detail.created_by
+    }
+  } catch (e) {
+    // Older backend without the declarations endpoints: badges stay read-only
+    // from the list payload; the modal explains why editing is unavailable.
+    settingsError.value = e instanceof Error ? e.message : t('workspace.settingsLoadFailed')
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+function closeScriptSettings() {
+  showScriptSettings.value = false
+  settingsError.value = null
+}
+
+async function saveScriptSettings() {
+  const scriptId = scriptSelection.value?.scriptId
+  if (!scriptId) return
+  settingsSaving.value = true
+  settingsError.value = null
+  try {
+    const res = await scriptsApi.updateScript(scriptId, {
+      secrets: settingsSecrets.value,
+      tools: settingsTools.value,
+    })
+    const sc = scripts.value.find((s) => s.script_id === scriptId)
+    if (sc) {
+      sc.secrets = res.secrets
+      sc.tools = res.tools
+    }
+    closeScriptSettings()
+  } catch (e) {
+    settingsError.value = e instanceof Error ? e.message : t('workspace.settingsSaveFailed')
+  } finally {
+    settingsSaving.value = false
+  }
 }
 
 // ── Tree building ────────────────────────────────────────────────
@@ -634,6 +841,11 @@ watch(projectId, (pid) => {
   editing.value = false
   running.value = false
   baseUrl.value = pid ? localStorage.getItem(baseUrlKey(pid)) ?? '' : ''
+  closeScriptSettings()
+  settingsSecrets.value = []
+  settingsTools.value = []
+  vaultOptions.value = []
+  toolCatalog.value = null
   loadTree()
 })
 </script>

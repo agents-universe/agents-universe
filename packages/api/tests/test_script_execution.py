@@ -81,7 +81,7 @@ async def test_execute_script_recovers_from_a_failed_flush(
 
     from api.paths import PROJECTS_ROOT
 
-    async def poisoned_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None):
+    async def poisoned_stream(db_, run_, log_acc, cmd, cwd, env, timeout, tail_acc=None, redact=()):
         # An unsupported bind type fails the next commit at the driver and
         # leaves the session pending-rollback.
         run_.status = object()

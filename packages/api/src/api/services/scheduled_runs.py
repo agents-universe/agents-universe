@@ -391,6 +391,10 @@ async def _run_script_target(target: _Target) -> _Outcome:
             if script.script_type == "playwright":
                 return _Outcome("failed", None, "Playwright specs are scheduled as target_type=playwright")
             content, script_type = script.content, script.script_type
+            from agent_core.scripts.declarations import parse_secrets_json, parse_tools_json
+
+            declared_secrets = parse_secrets_json(script.secrets_json)
+            declared_tools = parse_tools_json(script.tools_json)
 
             # Resolve the workspace BEFORE the run row exists. A row created
             # and then abandoned at "pending" never reaches a terminal state
@@ -413,7 +417,10 @@ async def _run_script_target(target: _Target) -> _Outcome:
             script_run_id = str(run.run_id)
 
         await execute_script(
-            script_run_id, content, script_type, target.created_by, project_fs
+            script_run_id, content, script_type, target.created_by, project_fs,
+            project_id=target.project_id,
+            declared_secrets=declared_secrets,
+            declared_tools=declared_tools,
         )
 
         async with AsyncSessionLocal() as db:

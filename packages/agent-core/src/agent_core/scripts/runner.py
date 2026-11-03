@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -86,6 +87,30 @@ def new_log_tail() -> deque[str]:
     return deque(maxlen=TAIL_LINES)
 
 
+def _bash_binary() -> str:
+    """Bash executable that actually inherits the env we hand it.
+
+    On Windows, CreateProcess (and ``shutil.which`` on a default PATH) resolve
+    a bare ``bash`` to ``System32\\bash.exe`` — the WSL launcher, which starts
+    the distro with its own environment and silently drops every variable
+    injected for the run (AGENT_SECRET_*, AGENT_TOOL_BRIDGE/PIN/...). Scan
+    PATH ourselves and skip System32 so Git Bash (or any other bash) wins;
+    bare ``bash`` keeps Linux behavior unchanged.
+    """
+    if os.name != "nt":
+        return "bash"
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    system32 = os.path.normcase(os.path.join(system_root, "System32"))
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or os.path.normcase(os.path.normpath(entry)) == system32:
+            continue
+        for cand in ("bash.exe", "bash"):
+            candidate = os.path.join(entry, cand)
+            if os.path.isfile(candidate):
+                return candidate
+    return "bash"
+
+
 def script_slot_guard() -> asyncio.Semaphore:
     """Lazily create the slot semaphore for script runs."""
     global _script_semaphore
@@ -126,9 +151,21 @@ def persist_run_log(run, log_acc: list[str]) -> None:
     run.stdout_log = "".join(log_acc)[:LOG_CAP]
 
 
+def _redact(text: str, redact: tuple[str, ...]) -> str:
+    """Replace plaintext secrets in log text with [REDACTED].
+
+    Values shorter than 6 chars are skipped: a tiny needle would mangle
+    unrelated output for no real protection (vault secrets are long)."""
+    for value in redact:
+        if len(value) >= 6:
+            text = text.replace(value, "[REDACTED]")
+    return text
+
+
 async def drain_stream(
     stream, log_acc: list[str], budget: list[int],
     tail_acc: deque[str] | None = None,
+    redact: tuple[str, ...] = (),
 ) -> None:
     """Append output lines to log_acc in arrival order, up to the log cap.
 
@@ -136,7 +173,9 @@ async def drain_stream(
     zero a truncation marker is emitted and further output is dropped.
     tail_acc, when given, keeps the last lines *regardless* of the cap - the
     verdict of a test run is printed last, i.e. exactly what a head-capped log
-    loses first."""
+    loses first. redact holds plaintext values (injected secrets, the bridge
+    PIN) that must never reach the stored log - a script echoing
+    $AGENT_SECRET_* would otherwise write the credential into stdout_log."""
     while True:
         line = await stream.readline()
         if not line:
@@ -146,9 +185,9 @@ async def drain_stream(
                 log_acc.append("[executor] output truncated (log cap reached)\n")
                 budget[0] = -1
             if tail_acc is not None:
-                tail_acc.append(line.decode(errors="replace"))
+                tail_acc.append(_redact(line.decode(errors="replace"), redact))
             continue
-        text = line.decode(errors="replace")
+        text = _redact(line.decode(errors="replace"), redact)
         budget[0] -= len(text)
         if budget[0] < 0:
             # A single line can overshoot the cap, and the marker above only
@@ -163,6 +202,7 @@ async def stream_subprocess(
     db: AsyncSession, run, log_acc: list[str],
     cmd: list[str], cwd: str, env: dict[str, str], timeout: float,
     tail_acc: deque[str] | None = None,
+    redact: tuple[str, ...] = (),
 ) -> int:
     """Run a subprocess and stream its output into the run row every ~2s.
 
@@ -174,7 +214,8 @@ async def stream_subprocess(
     after cleanup.
 
     tail_acc (see drain_stream) survives the log cap so the caller can parse a
-    verdict out of output the stored log had to drop."""
+    verdict out of output the stored log had to drop. redact (see drain_stream)
+    scrubs plaintext secrets from everything that lands in the log."""
     from agent_core.sandbox import spawn_in_new_session, terminate_process_tree
 
     proc = await asyncio.create_subprocess_exec(
@@ -188,8 +229,8 @@ async def stream_subprocess(
     )
     budget = [LOG_CAP - sum(len(s) for s in log_acc)]
     readers = [
-        asyncio.create_task(drain_stream(proc.stdout, log_acc, budget, tail_acc)),
-        asyncio.create_task(drain_stream(proc.stderr, log_acc, budget, tail_acc)),
+        asyncio.create_task(drain_stream(proc.stdout, log_acc, budget, tail_acc, redact)),
+        asyncio.create_task(drain_stream(proc.stderr, log_acc, budget, tail_acc, redact)),
     ]
     # A stop event (not task cancellation) ends the flusher: cancelling it
     # mid-commit could poison the session for the terminal-state write that
@@ -224,9 +265,103 @@ async def stream_subprocess(
     return proc.returncode
 
 
+def _api_secret_key() -> str:
+    """The vault master key, when running inside the API package."""
+    try:
+        from api.config import get_settings
+
+        return get_settings().secret_key
+    except Exception:  # noqa: BLE001 - standalone agent-core has no vault
+        return ""
+
+
+async def _resolve_secret_env(
+    run, project_id: str, project_fs: str, declared: list[str],
+    session_factory: Callable[[], AsyncSession],
+    secret_key: str,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Decrypt the run owner's vault entries into AGENT_SECRET_* env vars.
+
+    Owner = run.triggered_by (schedule creator for scheduled runs, clicking
+    user for manual runs). Resolution follows _auth.get_secret: project_secrets
+    first, user_tokens fallback. Missing keys raise ToolAuthError whose message
+    carries only the key name — the failure path stores that message, never a
+    value. Returns (env dict, plaintext values for log redaction).
+    """
+    from ..tools._auth import get_secret
+    from ..tools.base import ToolContext
+
+    owner = (run.triggered_by or "").strip()
+    if not owner:
+        raise RuntimeError(
+            "Script declares secrets but the run has no owner (triggered_by is empty)"
+        )
+    if not project_id:
+        raise RuntimeError("Script declares secrets but the run has no project_id")
+
+    ctx = ToolContext(
+        project_id=project_id,
+        project_fs_path=project_fs,
+        conversation_id=f"script-run:{run.run_id}",
+        user_id=owner,
+        secret_key=secret_key,
+    )
+    env: dict[str, str] = {}
+    values: list[str] = []
+    async with session_factory() as db:
+        ctx.db_session = db
+        for key in declared:
+            value = await get_secret(ctx, key)
+            # Prefix keeps an odd service_key from colliding with PATH/HOME;
+            # injection happens AFTER sandbox_env() (see execute_script), so
+            # the credential deny lists never see these names.
+            env[f"AGENT_SECRET_{key.upper()}"] = value
+            values.append(value)
+    return env, tuple(values)
+
+
+# The bridge client module ships beside every script: python imports it via
+# sys.path[0] (the per-run dir); the bash CLI execs tool_call.py, which is a
+# thin stdin/stdout shell over the same code.
+_CLIENT_HELPER_SRC = Path(__file__).with_name("agent_script_tools.py")
+
+_BASH_CLI = (
+    "#!/usr/bin/env bash\n"
+    'exec "${AGENT_TOOL_PYTHON:?}" "${AGENT_TOOL_HELPER:?}" "$@"\n'
+)
+
+_TOOL_CALL_MAIN = (
+    "import sys\n"
+    "from agent_script_tools import main\n"
+    "sys.exit(main())\n"
+)
+
+
+def _write_helpers(run_dir: Path, env: dict[str, str], with_cli: bool) -> None:
+    """Drop the bridge client into the run dir; with_cli also builds bin/agent-tool."""
+    shutil.copyfile(_CLIENT_HELPER_SRC, run_dir / "agent_script_tools.py")
+    if not with_cli:
+        return
+    (run_dir / "tool_call.py").write_text(_TOOL_CALL_MAIN, encoding="utf-8", newline="\n")
+    bin_dir = run_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    wrapper = bin_dir / "agent-tool"
+    # LF only: a CRLF shebang makes `env` look for an executable named `bash\r`.
+    wrapper.write_text(_BASH_CLI, encoding="utf-8", newline="\n")
+    wrapper.chmod(0o755)
+    env["AGENT_TOOL_PYTHON"] = sys.executable
+    env["AGENT_TOOL_HELPER"] = str(run_dir / "tool_call.py")
+    # PATH prepend (not append): an existing agent-tool on the server PATH
+    # must not shadow the per-run one. runner-generated, never validated by
+    # _validate_bash — that only ever sees user content.
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+
 async def execute_script(
     run_id: str, content: str, script_type: str, triggered_by: str = "",
     project_fs: str = "", session_factory: Callable[[], AsyncSession] | None = None,
+    project_id: str = "", declared_secrets: list[str] | None = None,
+    declared_tools: list[str] | None = None,
 ) -> None:
     """Run a script sandboxed the same way agent-core's code_executor runs code.
 
@@ -242,6 +377,22 @@ async def execute_script(
       use the framework's blocked commands (curl/wget/node/python3/ssh/...),
       which would otherwise reach the API itself, Redis, or the metadata
       endpoint.
+
+    Two declarations widen that sandbox on purpose, both scoped to the run's
+    owner (triggered_by) and both fail-closed:
+    - declared_secrets: vault service_keys resolved via _auth.get_secret
+      (project -> user) and injected as AGENT_SECRET_* env vars. Injected
+      AFTER sandbox_env() strips credential names — that ordering is what
+      lets the declared keys through while everything else stays scrubbed.
+      Plaintext is redacted from the stored log and never written anywhere
+      else. Owner is the schedule creator for scheduled runs, the clicking
+      user for manual runs.
+    - declared_tools: starts a per-run loopback ToolBridge so the script can
+      call those agent tools in the service process (sandboxed subprocesses
+      cannot reach them otherwise). Undeclared tools answer tool_not_allowed;
+      confirmation gates run headless (interactive=False, no session) and
+      fail closed. No declarations means neither bridge nor env injection —
+      behavior identical to a plain run.
 
     The session factory is parameterized so callers with their own DB wiring
     (the script_writer tool passes the conversation's session factory) reuse
@@ -285,19 +436,30 @@ async def execute_script(
             return
 
         script_path = None
+        run_dir: Path | None = None
+        bridge = None
         log_acc: list[str] = []
         try:
             from agent_core.sandbox import python_guard_env
             from agent_core.tools.code_executor import CodeExecutorTool
 
+            from .declarations import filter_runtime_tools, validate_declarations
+
             project_root = Path(project_fs)
-            # Script file lives inside the project (.tmp/work/scripts/) so the
-            # Python file-access guard can read it; cwd is the project root.
+            # Per-run directory inside the project (.tmp/work/scripts/{run_id}/)
+            # so the Python file-access guard can read it; cwd is the project
+            # root. Holds the script plus the bridge client files, and is
+            # removed as a whole when the run ends.
             work_dir = project_root / ".tmp" / "work" / "scripts"
             work_dir.mkdir(parents=True, exist_ok=True)
+            run_dir = work_dir / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
             ext = ".py" if script_type == "python" else ".sh"
-            script_path = work_dir / f"{run_id}{ext}"
-            script_path.write_text(content, encoding="utf-8")
+            script_path = run_dir / f"main{ext}"
+            # newline="\n": default translation writes CRLF on Windows, and
+            # bash chokes on it (shebang becomes `bash\r`, command words gain
+            # a trailing CR). Scripts are POSIX text.
+            script_path.write_text(content, encoding="utf-8", newline="\n")
 
             if script_type == "bash":
                 # Same gates as code_executor's bash mode: blocked external
@@ -333,7 +495,40 @@ async def execute_script(
                 if reason:
                     raise RuntimeError(reason)
 
+            # Declarations: re-validated here (not only at save time) so a row
+            # written before a rule existed still fails closed at run time.
+            clean_secrets, _ = validate_declarations(declared_secrets or [], [])
+            clean_tools = filter_runtime_tools(list(declared_tools or []))
+
+            secret_env: dict[str, str] = {}
+            secret_values: tuple[str, ...] = ()
+            if clean_secrets:
+                secret_env, secret_values = await _resolve_secret_env(
+                    run, project_id, project_fs, clean_secrets,
+                    session_factory, _api_secret_key(),
+                )
+
+            if clean_tools:
+                from .tool_bridge import ToolBridge
+
+                bridge = await ToolBridge.start(
+                    project_id=project_id,
+                    project_fs_path=project_fs,
+                    user_id=(run.triggered_by or ""),
+                    run_id=run_id,
+                    declared_tools=clean_tools,
+                    db_session_factory=session_factory,
+                    secret_key=_api_secret_key(),
+                )
+
             env = sandbox_env()
+            # Injection MUST stay after sandbox_env(): it strips credential-
+            # like names (…_TOKEN, …_SECRET, …_KEY) and would otherwise eat
+            # exactly the keys we just decrypted. Only declared keys land here,
+            # only in this run's env dict, only for this process.
+            env.update(secret_env)
+            if bridge is not None:
+                env.update(bridge.env_vars())
 
             if script_type == "python":
                 cmd = [sys.executable, str(script_path)]
@@ -345,13 +540,27 @@ async def execute_script(
                 # inheriting the server user's HOME would whitelist their real
                 # caches as readable — the same reason code_executor points
                 # HOME at its scratch dir.
-                env["HOME"] = str(work_dir)
+                env["HOME"] = str(run_dir)
                 env.update(python_guard_env(project_root, strict=True))
+                # Helper always present so `from agent_script_tools import
+                # call_tool` without a tools declaration raises the bridge's
+                # own "not available" error instead of ModuleNotFoundError.
+                _write_helpers(run_dir, env, with_cli=False)
             else:
-                cmd = ["bash", str(script_path)]
+                # Relative posix path (code_executor's pattern): bash treats a
+                # Windows absolute path's backslashes as escapes and then fails
+                # to find the script; cwd is already the project root.
+                cmd = [_bash_binary(), script_path.relative_to(project_root).as_posix()]
+                if bridge is not None:
+                    _write_helpers(run_dir, env, with_cli=True)
+
+            # Scrub every plaintext the child could echo — injected secrets
+            # and the bridge PIN alike — before anything reaches the log.
+            redact = secret_values + ((bridge.pin,) if bridge is not None else ())
 
             exit_code = await stream_subprocess(
                 db, run, log_acc, cmd, str(project_root), env, SCRIPT_TIMEOUT,
+                redact=redact,
             )
             run.exit_code = exit_code
             run.status = "completed" if exit_code == 0 else "failed"
@@ -383,7 +592,15 @@ async def execute_script(
             run.stderr_log = str(e)[:STDERR_CAP]
             run.exit_code = -1
         finally:
-            if script_path is not None:
+            if bridge is not None:
+                try:
+                    await bridge.close()
+                except Exception:  # noqa: BLE001 - teardown must not mask the run result
+                    _log.debug("tool bridge close failed for run %s", run_id, exc_info=True)
+            if run_dir is not None:
+                # Removes the script, the bridge client copies and bin/ together.
+                shutil.rmtree(run_dir, ignore_errors=True)
+            elif script_path is not None:
                 try:
                     script_path.unlink()
                 except OSError:

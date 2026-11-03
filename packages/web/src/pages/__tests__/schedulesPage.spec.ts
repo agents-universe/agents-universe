@@ -203,6 +203,34 @@ describe('SchedulesPage', () => {
     wrapper.unmount()
   })
 
+  it('annotates the script option with declarations and shows the identity hint', async () => {
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/projects/p-1/scripts')) {
+        return [{
+          script_id: 'sc-1',
+          name: '每日汇总',
+          script_type: 'python',
+          secrets: ['jira', 'git'],
+          tools: ['filesystem'],
+        }]
+      }
+      return []
+    })
+    const wrapper = mount(SchedulesPage, { attachTo: document.body })
+    await flushPromises()
+
+    await wrapper.find('.schedules-new').trigger('click')
+    await flushPromises()
+
+    const form = document.querySelector('.schedule-form') as HTMLElement
+    // selects: [0] target type, [1] target (script), ...
+    const scriptSelect = form.querySelectorAll('select.input')[1]
+    expect(scriptSelect.textContent).toContain('每日汇总 (密钥 2 · 工具 1)')
+    // Runs execute as the task creator — their vault and identity back the run.
+    expect(form.querySelector('.schedule-field-hint')?.textContent).toContain('定时执行以任务创建者')
+    wrapper.unmount()
+  })
+
   it('toggles a task through the API and reloads the list', async () => {
     schedulesApi.list.mockResolvedValue([makeTask()])
     schedulesApi.update.mockResolvedValue(makeTask({ enabled: false }))

@@ -11,6 +11,13 @@ from ._compat import UTCDateTime, new_uuid as _new_uuid, now_utc as _now_utc
 
 
 class AutomationScript(Base):
+    """A reusable automation script.
+
+    Ownership is execution identity, not a column: the run's ``triggered_by``
+    (schedule creator for scheduled runs, clicking user for manual runs) is
+    the owner whose key vault secrets are injected and on whose behalf the
+    script's declared tools execute. ``created_by`` is display-only.
+    """
     __tablename__ = "automation_scripts"
 
     script_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -19,6 +26,12 @@ class AutomationScript(Base):
     description: Mapped[str | None] = mapped_column(Unicode(2000))
     script_type: Mapped[str] = mapped_column(String(50), default="python")  # workflow|python|bash|playwright
     content: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    # JSON array of key-vault service_keys to decrypt and inject into the run
+    # as AGENT_SECRET_* env vars (owner's vault, project -> user fallback).
+    secrets_json: Mapped[str | None] = mapped_column(Unicode(2000))
+    # JSON array of agent tool names (or mcp:/mcp markers) the run may call
+    # through the per-run tool bridge; anything else is refused at runtime.
+    tools_json: Mapped[str | None] = mapped_column(Unicode(2000))
     created_by: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

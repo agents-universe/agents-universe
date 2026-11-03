@@ -48,6 +48,8 @@ class AutomationScript(_StubBase):
     description: Mapped[str | None] = mapped_column(Unicode(2000), nullable=True)
     script_type: Mapped[str] = mapped_column(String(50), default="python")
     content: Mapped[str] = mapped_column(UnicodeText)
+    secrets_json: Mapped[str | None] = mapped_column(Unicode(2000), nullable=True)
+    tools_json: Mapped[str | None] = mapped_column(Unicode(2000), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

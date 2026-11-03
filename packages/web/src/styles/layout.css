@@ -5211,6 +5211,96 @@ textarea:focus-visible {
   flex-shrink: 0;
 }
 
+/* Script declaration badges + owner hint (execution identity = the trigger) */
+.script-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.script-meta-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* Script settings modal: declarative secrets + tool allowlist */
+.script-settings-modal {
+  width: min(560px, 95vw);
+}
+.script-settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 0 12px;
+}
+.script-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.script-settings-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.script-settings-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.script-settings-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 3px 2px;
+}
+.script-settings-option input {
+  accent-color: var(--accent, #6b9fff);
+}
+.script-settings-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.script-settings-loading,
+.script-settings-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.script-settings-error {
+  color: var(--color-error, #f38ba8);
+}
+.script-settings-usage {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+.script-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
 .workspace-content-loading {
   display: flex;
   align-items: center;

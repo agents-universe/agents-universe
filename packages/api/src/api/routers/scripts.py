@@ -15,6 +15,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent_core.scripts.declarations import (
+    SCRIPT_TOOL_DENY,
+    parse_secrets_json,
+    parse_tools_json,
+    serialize,
+    validate_declarations,
+)
 from agent_core.scripts.runner import (
     LOG_CAP,
     RUN_POLL_INTERVAL,
@@ -143,6 +150,9 @@ async def list_scripts(
             "name": s.name,
             "script_type": s.script_type,
             "description": s.description,
+            "secrets": parse_secrets_json(s.secrets_json),
+            "tools": parse_tools_json(s.tools_json),
+            "created_by": s.created_by,
         }
         for s in scripts
     ]
@@ -162,10 +172,110 @@ async def create_script(
         description=body.description,
         script_type=body.script_type,
         content=body.content,
+        # Display-only: the execution owner is always the run's triggered_by
+        # (schedule creator or clicking user), not this creation stamp.
+        created_by=current_user.user_id,
     )
     db.add(script)
     await db.commit()
     return {"script_id": str(script.script_id), "name": script.name}
+
+
+class ScriptUpdate(BaseModel):
+    """Declarations only — content/name edits go through the normal create path."""
+    secrets: list[str] | None = None
+    tools: list[str] | None = None
+
+
+@router.get("/scripts/tool-catalog")
+async def get_tool_catalog(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+    project: Project = Depends(authorize_project),
+):
+    """Tools a script may declare: registry names minus the script deny list,
+    plus the project's enabled MCP server slugs (mcp / mcp:<slug> markers)."""
+    from agent_core.tools.registry import known_static_tool_names
+
+    from api.models.mcp_server import MCPServer
+
+    result = await db.execute(
+        select(MCPServer.slug).where(
+            MCPServer.enabled.is_(True),
+            (MCPServer.project_id.is_(None)) | (MCPServer.project_id == project_id),
+        ).order_by(MCPServer.slug)
+    )
+    mcp_slugs = [row[0] for row in result]
+    return {
+        "tools": sorted(known_static_tool_names() - SCRIPT_TOOL_DENY),
+        "deny": sorted(SCRIPT_TOOL_DENY),
+        "mcp_servers": mcp_slugs,
+        "usage": (
+            "bash 脚本调用工具请用 heredoc 传参：agent-tool call <tool> <<'EOF' "
+            "{\"op\": \"...\"} EOF（退出码 0=成功，1=工具错误，2=工具桥不可用）。"
+            "python 脚本用 from agent_script_tools import call_tool。"
+            "确认类操作在脚本上下文中一律拒绝（无交互会话），写操作请改用专用工具。"
+        ),
+    }
+
+
+async def _load_script_for_update(
+    script_id: str, db: AsyncSession, current_user: UserInfo
+) -> AutomationScript:
+    result = await db.execute(
+        select(AutomationScript).where(AutomationScript.script_id == script_id)
+    )
+    script = result.scalar_one_or_none()
+    if not script:
+        raise api_error(404, "SCRIPT_NOT_FOUND", "Script not found")
+    await authorize_project(str(script.project_id), db, current_user)
+    return script
+
+
+@router.get("/scripts/{script_id}")
+async def get_script(
+    script_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+):
+    script = await _load_script_for_update(script_id, db, current_user)
+    return {
+        "script_id": str(script.script_id),
+        "project_id": str(script.project_id),
+        "name": script.name,
+        "description": script.description,
+        "script_type": script.script_type,
+        "content": script.content,
+        "secrets": parse_secrets_json(script.secrets_json),
+        "tools": parse_tools_json(script.tools_json),
+        "created_by": script.created_by,
+    }
+
+
+@router.patch("/scripts/{script_id}")
+async def update_script(
+    script_id: str,
+    body: ScriptUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+):
+    script = await _load_script_for_update(script_id, db, current_user)
+    if script.script_type == "playwright":
+        raise api_error(400, "SCRIPT_PLAYWRIGHT_ANCHOR", "Playwright specs have no declarations")
+    # Validate against the merged view so a partial PATCH cannot leave an
+    # inconsistent pair behind; ValueError messages name only keys/tools.
+    secrets = parse_secrets_json(script.secrets_json) if body.secrets is None else body.secrets
+    tools = parse_tools_json(script.tools_json) if body.tools is None else body.tools
+    try:
+        secrets, tools = validate_declarations(secrets, tools)
+    except ValueError as exc:
+        raise api_error(400, "SCRIPT_DECLARATIONS_INVALID", str(exc))
+    script.secrets_json = serialize(secrets)
+    script.tools_json = serialize(tools)
+    script.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"script_id": str(script.script_id), "secrets": secrets, "tools": tools}
 
 
 async def _spawn_script_run(
@@ -257,7 +367,12 @@ async def run_script(
             raise api_error(404, "SCRIPT_PLAYWRANCH_ANCHOR", "Playwright specs are run via the specs endpoint")
 
         def build(run_id: str, project_fs: str):
-            return _execute_script(run_id, script.content, script.script_type, current_user.user_id, project_fs)
+            return _execute_script(
+                run_id, script.content, script.script_type, current_user.user_id, project_fs,
+                project_id=str(script.project_id),
+                declared_secrets=parse_secrets_json(script.secrets_json),
+                declared_tools=parse_tools_json(script.tools_json),
+            )
 
         return script, build
 

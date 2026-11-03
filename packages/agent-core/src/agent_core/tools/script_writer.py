@@ -101,6 +101,26 @@ class ScriptWriterTool(Tool):
                 "type": "string",
                 "description": "Full script source code (create/update)",
             },
+            "secrets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Key-vault service_keys to inject into runs as AGENT_SECRET_* "
+                    "env vars (resolved from the run owner's vault: project secrets "
+                    "first, user tokens as fallback). create optional; update "
+                    "replaces the whole list (pass [] to clear)."
+                ),
+            },
+            "tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Agent tools the script may call through the per-run bridge "
+                    "(e.g. github, api_request, web_fetch, or mcp / mcp:<slug>). "
+                    "create optional; update replaces the whole list (pass [] to "
+                    "clear). Confirmation-dependent tools are unavailable to scripts."
+                ),
+            },
         },
         "required": ["operation"],
     }
@@ -163,6 +183,15 @@ class ScriptWriterTool(Tool):
         if description and len(description) > _DESCRIPTION_MAX:
             return {"error": f"description must be at most {_DESCRIPTION_MAX} characters"}
 
+        from ..scripts.declarations import serialize, validate_declarations
+
+        try:
+            secrets, tools = validate_declarations(
+                params.get("secrets") or [], params.get("tools") or []
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
         row = AutomationScript(
             project_id=context.project_id,
             name=name,
@@ -170,6 +199,8 @@ class ScriptWriterTool(Tool):
             script_type=script_type,
             content=content,
             created_by=context.user_id,
+            secrets_json=serialize(secrets),
+            tools_json=serialize(tools),
         )
         context.db_session.add(row)
         await context.db_session.commit()
@@ -178,6 +209,8 @@ class ScriptWriterTool(Tool):
             "script_id": str(row.script_id),
             "name": row.name,
             "script_type": row.script_type,
+            "secrets": secrets,
+            "tools": tools,
         }
 
     async def _op_list(self, context: ToolContext, AutomationScript) -> dict[str, Any]:
@@ -190,6 +223,8 @@ class ScriptWriterTool(Tool):
             .order_by(AutomationScript.created_at.desc())
         )
         scripts = result.scalars().all()
+        from ..scripts.declarations import parse_secrets_json, parse_tools_json
+
         return {
             "scripts": [
                 {
@@ -197,6 +232,8 @@ class ScriptWriterTool(Tool):
                     "name": s.name,
                     "script_type": s.script_type,
                     "description": s.description,
+                    "secrets": parse_secrets_json(s.secrets_json),
+                    "tools": parse_tools_json(s.tools_json),
                 }
                 for s in scripts
             ],
@@ -210,21 +247,29 @@ class ScriptWriterTool(Tool):
         row = await self._find_script(context, script_id, AutomationScript)
         if row is None:
             return {"error": "Script not found in this project"}
+        from ..scripts.declarations import parse_secrets_json, parse_tools_json
+
         return {
             "script_id": str(row.script_id),
             "name": row.name,
             "script_type": row.script_type,
             "description": row.description,
             "content": row.content,
+            "secrets": parse_secrets_json(row.secrets_json),
+            "tools": parse_tools_json(row.tools_json),
         }
 
     async def _op_update(self, params: dict[str, Any], context: ToolContext, AutomationScript) -> dict[str, Any]:
         script_id = params.get("script_id")
         if not script_id:
             return {"error": "script_id is required"}
-        fields = {key: params[key] for key in ("name", "description", "script_type", "content") if params.get(key) is not None}
+        fields = {
+            key: params[key]
+            for key in ("name", "description", "script_type", "content", "secrets", "tools")
+            if params.get(key) is not None
+        }
         if not fields:
-            return {"error": "Nothing to update — provide name, description, script_type or content"}
+            return {"error": "Nothing to update — provide name, description, script_type, content, secrets or tools"}
 
         row = await self._find_script(context, script_id, AutomationScript)
         if row is None:
@@ -250,6 +295,22 @@ class ScriptWriterTool(Tool):
             script_type = fields["script_type"]
             if script_type not in ("python", "bash"):
                 return {"error": f"script_type must be 'python' or 'bash', got {script_type!r}"}
+        from ..scripts.declarations import serialize, validate_declarations
+
+        secrets_json = None
+        tools_json = None
+        if "secrets" in fields or "tools" in fields:
+            try:
+                secrets, tools = validate_declarations(
+                    fields.get("secrets") if "secrets" in fields else [],
+                    fields.get("tools") if "tools" in fields else [],
+                )
+            except ValueError as exc:
+                return {"error": str(exc)}
+            if "secrets" in fields:
+                secrets_json = serialize(secrets)
+            if "tools" in fields:
+                tools_json = serialize(tools)
 
         if name is not None:
             row.name = name
@@ -259,6 +320,11 @@ class ScriptWriterTool(Tool):
             row.script_type = script_type
         if "content" in fields:
             row.content = fields["content"]
+        if secrets_json is not None or "secrets" in fields:
+            # serialize([]) is None — an explicit [] clears the column.
+            row.secrets_json = secrets_json
+        if tools_json is not None or "tools" in fields:
+            row.tools_json = tools_json
 
         row.updated_at = datetime.now(timezone.utc)
         await context.db_session.commit()
@@ -319,10 +385,15 @@ class ScriptWriterTool(Tool):
             sem.release()
             return {"error": f"Could not start the run: {exc}"}
 
+        from ..scripts.declarations import parse_secrets_json, parse_tools_json
+
         task = asyncio.create_task(
             execute_script(
                 run_id, row.content, row.script_type,
                 context.user_id, context.project_fs_path, context.db_session_factory,
+                project_id=context.project_id,
+                declared_secrets=parse_secrets_json(row.secrets_json),
+                declared_tools=parse_tools_json(row.tools_json),
             )
         )
         task.add_done_callback(_log_task_error)

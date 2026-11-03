@@ -86,11 +86,48 @@ export function artifactPath(runId: string, relPath: string): string {
   return `/api/scripts/runs/${enc(runId)}/artifacts/${segments.join('/')}`
 }
 
+/** Declarations + owner stamp of one script (GET / PATCH /scripts/{id}). */
+export interface ScriptDetail {
+  script_id: string
+  project_id: string
+  name: string
+  description: string | null
+  script_type: string
+  content: string
+  secrets: string[]
+  tools: string[]
+  created_by: string | null
+}
+
+/** Tools a script may declare: static names minus the deny list, plus the
+ *  project's enabled MCP slugs (declared as mcp:<slug>). */
+export interface ScriptToolCatalog {
+  tools: string[]
+  deny: string[]
+  mcp_servers: string[]
+  usage: string
+}
+
 export const scriptsApi = {
   runScript: (scriptId: string) =>
     apiFetch<{ run_id: string; status: string }>(
       `/api/scripts/${enc(scriptId)}/run`,
       { method: 'POST' },
+    ),
+
+  getScript: (scriptId: string) =>
+    apiFetch<ScriptDetail>(`/api/scripts/${enc(scriptId)}`),
+
+  /** Declarations only — content/name edits go through the script content. */
+  updateScript: (scriptId: string, body: { secrets?: string[]; tools?: string[] }) =>
+    apiFetch<{ script_id: string; secrets: string[]; tools: string[] }>(
+      `/api/scripts/${enc(scriptId)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+
+  getToolCatalog: (projectId: string) =>
+    apiFetch<ScriptToolCatalog>(
+      `/api/scripts/tool-catalog?project_id=${enc(projectId)}`,
     ),
 
   runSpec: (projectId: string, slug: string, env: Record<string, string>) =>

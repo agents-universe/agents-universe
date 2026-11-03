@@ -494,13 +494,18 @@ class TestScriptTargetIdentity:
 
         seen: dict = {}
 
-        async def fake_execute(run_id, content, script_type, user_id, project_fs):
+        async def fake_execute(run_id, content, script_type, user_id, project_fs, **kwargs):
             seen["user_id"] = user_id
+            seen.update(kwargs)
 
         monkeypatch.setattr(scheduled_runs, "execute_script", fake_execute)
         await scheduled_runs._run_script_target(_Target(task))
 
         assert seen["user_id"] == "someone-else"
+        # Declarations + project scope ride along so the run can resolve the
+        # owner's vault and the project's secrets (empty lists: none declared).
+        assert seen["project_id"] == str(project.project_id)
+        assert seen["declared_secrets"] == [] and seen["declared_tools"] == []
         runs = (
             (await db.execute(
                 select(ScriptRun).where(ScriptRun.script_id == str(script.script_id))

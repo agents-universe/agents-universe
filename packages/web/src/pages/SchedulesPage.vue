@@ -189,8 +189,11 @@
               <span class="schedule-field-label">{{ t('scheduledTasks.script') }}</span>
               <select v-model="form.script_id" class="input">
                 <option value="" disabled>{{ t('scheduledTasks.chooseScript') }}</option>
-                <option v-for="s in scripts" :key="s.script_id" :value="s.script_id">{{ s.name }}</option>
+                <option v-for="s in scripts" :key="s.script_id" :value="s.script_id">
+                  {{ scriptOptionLabel(s) }}
+                </option>
               </select>
+              <span class="schedule-field-hint">{{ t('scheduledTasks.scriptIdentityHint') }}</span>
             </label>
 
             <label v-else-if="form.target_type === 'playwright'" class="schedule-field">
@@ -346,7 +349,15 @@ import { useScriptRunResult } from '@/composables/useScriptRunResult'
 import RunResultCard from '@/components/workspace/RunResultCard.vue'
 import RunArtifactGallery from '@/components/workspace/RunArtifactGallery.vue'
 
-interface ScriptItem { script_id: string; name: string; script_type: string }
+interface ScriptItem {
+  script_id: string
+  name: string
+  script_type: string
+  /** Declarative privileges — annotated on the option so the operator can
+   *  see what the scheduled run will be able to decrypt and call. */
+  secrets?: string[]
+  tools?: string[]
+}
 interface SpecItem { slug: string; title: string; file: string }
 
 const route = useRoute()
@@ -393,6 +404,16 @@ async function loadReferenceData() {
   scripts.value = scriptList.filter((s) => s.script_type !== 'playwright')
   specs.value = specList
   conversations.value = convList.map((c) => ({ conversation_id: c.conversation_id, title: c.title }))
+}
+
+/** Option label with declaration counts, so the operator sees what a
+ *  scheduled run of this script will inherit before picking it. */
+function scriptOptionLabel(s: ScriptItem): string {
+  const meta: string[] = []
+  if (s.secrets?.length) meta.push(t('scheduledTasks.scriptOptionSecrets', { n: s.secrets.length }))
+  if (s.tools?.length) meta.push(t('scheduledTasks.scriptOptionTools', { n: s.tools.length }))
+  if (!meta.length) return s.name
+  return t('scheduledTasks.scriptOptionWithMeta', { name: s.name, meta: meta.join(' · ') })
 }
 
 /* ── List state ───────────────────────────────────────────────── */

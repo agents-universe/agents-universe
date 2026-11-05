@@ -236,7 +236,7 @@ The default single-card automation closed loop, release regression flow, phase-t
 For Jira test design, automation generation, execution verification, or Jira writeback:
 
 1. First read `workflows/automation-workflow-playbook.workflow.md`.
-2. Trim phases to user scope; skip the default closed loop only when the user explicitly says local-only, no-Jira, or one slice.
+2. Trim phases to user scope; skip the default closed loop only when the user explicitly says local-only, no-Jira, or one slice. **Default = Steps 1–9 end to end; Step 7 is mandatory and unconditional: at Step 7 load `agents/skills/generation/playwright-generator.md` and call `test_generator` — no self-assessed "generate-spec stage" is required for the skill to apply.** Skipping Step 7 is legal only for an explicit user trim or the playbook §6 endings (zero automatable cases / pure API-kind card), and the final reply must name the skip and its reason. A `test_generator` `error` is fixed and retried, or reported verbatim — never swallowed into a "completed" summary.
 3. Single card → the "single-card standard closed loop"; Jira release/version links → the "Release regression flow".
 4. Per-phase execution rules come from the corresponding skill; do not restate the full workflow here.
 5. GitHub PR review, approval, and merge remain out of scope — route to `tech-lead`.
@@ -259,7 +259,7 @@ Capabilities are extended through skill files — read the skill at the correspo
 | test-data-setup | `agents/skills/testing/test-data-setup.md` | Step 5 - before designing or executing any case that needs pre-existing data: reuse a verified recipe, or discover once and write it back |
 | jira-test-case-manager | `agents/skills/testing/jira-test-case-manager.md` | Step 6/8 - test cards, result writeback, card completion |
 | release-regression-manager | `agents/skills/testing/release-regression-manager.md` | Release/version link input; release-level test cards + regression design |
-| playwright-generator | `agents/skills/generation/playwright-generator.md` | Step 7 - generating scripts |
+| playwright-generator | `agents/skills/generation/playwright-generator.md` | Step 7 — load **unconditionally** on every single-card run and call `test_generator` (not gated on any stage label) |
 | screenshot-annotator | `agents/skills/testing/screenshot-annotator.md` | Step 8 - annotated focus areas on screenshots |
 | knowledge-manager | `agents/skills/knowledge/knowledge-manager.md` | Step 1/9 - managing knowledge |
 | github-pages-publisher | `agents/skills/integration/github-pages-publisher.md` | GitHub Pages publishing maintenance or self-hosted runner switch |
@@ -300,12 +300,12 @@ Scoping rules:
 
 Users describe needs in natural language in the chat panel. Typical conversations:
 
-- `帮我对 QA-123 这张卡生成自动化测试` -> Execute the full flow
+- `帮我对 QA-123 这张卡生成自动化测试` -> Execute the full flow (Steps 1–9, **including Step 7 script generation**)
 - `帮我 review 这个 PR / 批量 approve / merge PR` -> Delegate to `tech-lead`, then report its conclusion
 - `先把 Confluence 页面 12345 的知识拉下来` -> Execute Step 2 only
 - `看下 myproject 目前积累了哪些知识` -> Execute Step 1 only
 - `帮我设计 QA-456 的测试用例，先不生成代码` -> Stop after Step 5
-- `帮我把这张卡的测试设计落成测试卡并关联` -> Execute at least through Step 6
+- `帮我把这张卡的测试设计落成测试卡并关联` -> Explicit trim: stop after Step 6 **and state that Step 7+ was not requested**
 - `执行生成好的测试` -> Run tests, continue through Step 8, write back the result, complete the test card on success
 - `给你一个 release 链接，创建测试卡并设计回归` -> Release regression flow: fetch release scope first, create a release-level test card, split into card / main-flow regression
 - `为整个系统设计一份测试计划` -> Whole-system test planning workflow; deliverable `tests/test-plan.md`

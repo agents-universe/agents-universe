@@ -11,8 +11,8 @@ If `workflows/test-artifact-and-jira-conventions.workflow.md` is not loaded for 
 
 ## Triggers
 
-- The orchestration flow enters the `generate-spec` stage.
-- A structured test design (test cases with title, steps, expected results) already exists.
+- The QA agent reaches Step 7 of `workflows/automation-workflow-playbook.workflow.md` (single-issue closed loop). Load this skill **unconditionally at Step 7** — "entering a `generate-spec` stage" is not a precondition; the step number is.
+- A structured test design (test cases with title, steps, expected results) exists or is being finalized from the design comment / test card.
 
 ## Generation
 
@@ -34,6 +34,12 @@ The tool performs the following automatically:
 4. Generates a **self-contained** spec: imports only `@playwright/test`, groups cases with `test.describe('{issue_key}')`, and renders each case as a `test(...)` block with step actions and assertions. There is no framework runtime wrapper — do not import anything from `src/orchestration` or call functions like `runGeneratedCase`; they do not exist.
 
 Never hand-write a `.spec.ts` — the generator is the only way to create one. Editing selectors or resolving TODOs in a generated file is fine; structural changes mean regenerating with new test cases.
+
+## Completion Contract — Step 7 Is Done Only When
+
+1. **First run vs re-run.** `tests/generated/{issue-key slug}.spec.ts` missing → first run; generation is mandatory unless the playbook §6 exceptions apply (user-trimmed scope, zero automatable cases, pure API-kind card — each of which must be declared in the reply). File present → re-run: reuse it as-is when the design is unchanged; delete the file first and regenerate when the design changed or `scaffold_updates` reported an upgrade — the tool hard-refuses to overwrite (returns `error: Spec file already exists and was not overwritten`), and that refusal means "apply the re-run decision", not "generation failed".
+2. **`error` responses are never silent.** On any `{"error": ...}`: do not execute, do not write back, do not report success. `issue_key`/`test_cases`/stringified-case/`Invalid output_dir` errors → correct the input and retry at least once. An error that survives the retry → quote it verbatim in the final reply and mark Step 7 failed.
+3. **Done check.** Before reporting Step 7 complete: the response contains `file_path`, the file exists (`filesystem`), and the user-facing summary names the relative path (`tests/generated/<slug>.spec.ts`).
 
 ## Run Shape
 

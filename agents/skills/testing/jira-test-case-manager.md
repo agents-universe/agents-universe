@@ -124,5 +124,6 @@ jira(operation="add_comment", issue_key="<TEST-KEY>", comment_body="<execution r
 
 ## Integration With Script Generation
 
+- **The spec question must be resolved before any "completed" writeback**: a UI-kind run names the spec path (`tests/generated/{slug}.spec.ts` — existing on re-run, freshly generated on first run); an API-kind run, an explicitly trimmed run, or a zero-automatable design instead carries an explicit `no spec, because …` line. A result comment or transition to `Task Done` that names neither is incomplete — do not transition on it.
 - Input to `playwright-generator` should come primarily from the test-card description and the target issue's test-design comment.
 - If the comment is updated after the test card has been created, compare the differences and decide whether to update the test card or regenerate the script.

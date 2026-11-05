@@ -1,5 +1,11 @@
 <template>
-  <div ref="containerEl" class="graph-canvas" />
+  <div class="graph-canvas">
+    <div ref="containerEl" class="graph-canvas-el" />
+    <div v-if="!ready" class="graph-canvas-loading">
+      <Loader2 :size="18" class="spin" />
+      <span>{{ t('graphPage.loading') }}</span>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -8,8 +14,12 @@
 // the chat/workspace bundles never pay for it (the graph route is lazy too,
 // but a second-level split keeps even graph-page navigations cheap).
 import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { Loader2 } from 'lucide-vue-next'
 import type cytoscape from 'cytoscape'
 import type { GraphEdgeDto, GraphNodeDto } from '@/api/projectGraph'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   nodes: GraphNodeDto[]
@@ -30,6 +40,9 @@ const containerEl = ref<HTMLElement | null>(null)
 let cy: cytoscape.Core | null = null
 let layoutReady = false
 let fcoseReady: Promise<void> | null = null
+// Covers the blank window while the cytoscape/fcose chunks load; hidden only
+// after the first fcose layout has run, since the container stays empty until then.
+const ready = ref(false)
 
 function ensureFcose(cytoscapeLib: typeof cytoscape): Promise<void> {
   if (!fcoseReady) {
@@ -296,6 +309,7 @@ onMounted(async () => {
   await ensureFcose(cytoscapeLib)
   layoutReady = true
   rebuild()
+  ready.value = true
 })
 
 onUnmounted(() => {
@@ -336,9 +350,28 @@ defineExpose({
 
 <style scoped>
 .graph-canvas {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 320px;
   background: var(--bg-secondary, #0b1020);
+}
+/* Cytoscape needs a sized container; absolute fill keeps it exact inside
+   the relative root. */
+.graph-canvas-el {
+  position: absolute;
+  inset: 0;
+}
+.graph-canvas-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-secondary, #0b1020);
+  color: var(--text-secondary, #9ca3af);
+  font-size: 13px;
 }
 </style>

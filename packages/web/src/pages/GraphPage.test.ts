@@ -191,4 +191,48 @@ describe('GraphPage', () => {
     await flushPromises()
     expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', undefined)
   })
+
+  it('shows the loading state while the first graph request is pending', async () => {
+    let resolveGraph!: (value: unknown) => void
+    projectGraphApi.getGraph.mockReturnValue(
+      new Promise((resolve) => {
+        resolveGraph = resolve
+      }),
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.find('.graph-state').exists()).toBe(true)
+    expect(wrapper.text()).toContain('加载图谱…')
+    expect(wrapper.find('.graph-canvas-stub').exists()).toBe(false)
+
+    resolveGraph(graphPayload())
+    await flushPromises()
+    expect(wrapper.find('.graph-state').exists()).toBe(false)
+    expect(wrapper.find('.graph-canvas-stub').exists()).toBe(true)
+  })
+
+  it('shows a reload overlay and spins the refresh button when re-fetching', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    const wrapper = mountPage()
+    await flushPromises()
+
+    let resolveReload!: (value: unknown) => void
+    projectGraphApi.getGraph.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReload = resolve
+      }),
+    )
+    await wrapper.find('button.btn-sm.secondary').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.graph-reload-overlay').exists()).toBe(true)
+    expect(wrapper.find('.graph-header-actions .graph-spin').exists()).toBe(true)
+    // Old graph stays mounted under the overlay.
+    expect(wrapper.find('.graph-canvas-stub').exists()).toBe(true)
+
+    resolveReload(graphPayload())
+    await flushPromises()
+    expect(wrapper.find('.graph-reload-overlay').exists()).toBe(false)
+    expect(wrapper.find('.graph-header-actions .graph-spin').exists()).toBe(false)
+  })
 })

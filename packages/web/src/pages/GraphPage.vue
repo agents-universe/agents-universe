@@ -16,7 +16,7 @@
       </div>
       <div class="graph-header-actions">
         <button class="btn-sm secondary" :disabled="loading || !graph" @click="() => load()">
-          <RefreshCw :size="13" />
+          <RefreshCw :size="13" :class="{ 'graph-spin': loading }" />
           {{ t('graphPage.refresh') }}
         </button>
         <button
@@ -149,6 +149,11 @@
           @close="clearSelection"
           @focus="focusNode = $event"
         />
+
+        <div v-if="loading" class="graph-reload-overlay">
+          <Loader2 :size="18" class="graph-spin" />
+          <span>{{ t('graphPage.loading') }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -576,12 +581,26 @@ onMounted(() => {
 }
 
 .graph-main {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
   border: 1px solid var(--border-color, #1f2937);
   border-radius: 12px;
   overflow: hidden;
+}
+
+.graph-reload-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text-secondary, #9ca3af);
+  font-size: 13px;
 }
 
 .graph-main > :first-child {

@@ -106,6 +106,231 @@ async def test_create_test_issue_requires_project_key():
     client.create_issue.assert_not_awaited()
 
 
+def _dedup_ctx(**over) -> ToolContext:
+    ctx = _ctx(**over)
+    ctx.integration_settings = {
+        "JIRA_PROJECT_KEY": "DDM",
+        "JIRA_TEST_ISSUE_TYPE": "Test",
+        "JIRA_TEST_LINK_TYPE": "Tests",
+    }
+    return ctx
+
+
+def _search_hit(key: str, summary: str, status: str = "Done") -> dict:
+    return {
+        "key": key,
+        "fields": {
+            "summary": summary,
+            "status": {"name": status},
+            "issuetype": {"name": "Test"},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_returns_existing_as_already_exists():
+    """同一 target + kind 的重测必须拿回已存在的卡，而不是再建一张。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[
+        _search_hit("DDM-9", "[AI test][UI][DDM-7] Verify the fix"),
+    ])
+
+    result = await tool._op_create_test_issue(
+        {
+            "target_issue_key": "DDM-7",
+            "summary": "[AI test][UI][DDM-7] Verify the fix",
+            "labels": ["AITest"],
+        },
+        client,
+        _dedup_ctx(),
+    )
+
+    assert result["status"] == "already_exists"
+    assert result["key"] == "DDM-9"
+    assert result["issue_status"] == "Done"
+    client.create_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_jql_uses_bare_key_and_label():
+    """方括号绝不进 JQL —— 裸键预筛 + 客户端精确 [KEY] 过滤定夺。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[])
+
+    await tool._op_create_test_issue(
+        {
+            "target_issue_key": "DDM-7",
+            "summary": "[AI test][UI][DDM-7] Verify",
+            "labels": ["AITest"],
+        },
+        client,
+        _dedup_ctx(),
+    )
+
+    jql = client.search.await_args.args[0]
+    assert jql == 'labels = "AITest" AND summary ~ "DDM-7" AND issuetype = "Test" ORDER BY updated DESC'
+    assert "[" not in jql
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_kind_mismatch_creates():
+    """API 卡不能吞掉 UI 重测 —— kind 属于去重键。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[
+        _search_hit("DDM-9", "[AI test][API][DDM-7] Verify via API"),
+    ])
+    client.create_issue = AsyncMock(return_value={"key": "DDM-10", "id": "10010"})
+    client.link_issues = AsyncMock(return_value={})
+
+    result = await tool._op_create_test_issue(
+        {
+            "target_issue_key": "DDM-7",
+            "summary": "[AI test][UI][DDM-7] Verify via UI",
+            "labels": ["AITest"],
+            "test_kind": "ui",
+        },
+        client,
+        _dedup_ctx(),
+    )
+
+    assert result["status"] == "created"
+    assert result["key"] == "DDM-10"
+    client.create_issue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_subtask_summary_skips_dedup():
+    """playbook 的子任务也走 create_test_issue —— 无 [AI test] 标记时不得查重。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[])
+    client.create_issue = AsyncMock(return_value={"key": "DDM-11", "id": "10011"})
+    client.link_issues = AsyncMock(return_value={})
+
+    result = await tool._op_create_test_issue(
+        {"target_issue_key": "DDM-7", "summary": "automation-development", "labels": []},
+        client,
+        _dedup_ctx(),
+    )
+
+    client.search.assert_not_awaited()
+    assert result["status"] == "created"
+    client.create_issue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_multiple_matches_surfaces_duplicates():
+    """历史重复卡：取最新并上报 duplicate_keys，绝不静默二选一。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[
+        _search_hit("DDM-12", "[AI test][UI][DDM-7] Verify (newer)"),
+        _search_hit("DDM-9", "[AI test][UI][DDM-7] Verify (older)"),
+    ])
+
+    result = await tool._op_create_test_issue(
+        {
+            "target_issue_key": "DDM-7",
+            "summary": "[AI test][UI][DDM-7] Verify",
+            "labels": ["AITest"],
+        },
+        client,
+        _dedup_ctx(),
+    )
+
+    assert result["status"] == "already_exists"
+    assert result["key"] == "DDM-12"
+    assert result["duplicate_keys"] == ["DDM-9"]
+    client.create_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_search_failure_fails_closed():
+    """查重失败必须报错而非落入 create —— 否则静默造出重复卡。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(side_effect=ValueError("boom"))
+    client.create_issue = AsyncMock(return_value={"key": "DDM-13", "id": "10013"})
+
+    with pytest.raises(ValueError):
+        await tool._op_create_test_issue(
+            {
+                "target_issue_key": "DDM-7",
+                "summary": "[AI test][UI][DDM-7] Verify",
+                "labels": ["AITest"],
+            },
+            client,
+            _dedup_ctx(),
+        )
+    client.create_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_test_issue_exact_key_filter_rejects_prefix_twin():
+    """summary ~ 会把 DDM-1 匹配到 DDM-12 —— 精确 [KEY] 过滤必须排除。"""
+    tool = JiraTool()
+    client = AsyncMock()
+    client.base_url = "https://jira.example.com"
+    client.search = AsyncMock(return_value=[
+        _search_hit("DDM-20", "[AI test][UI][DDM-12] Verify"),
+    ])
+    client.create_issue = AsyncMock(return_value={"key": "DDM-21", "id": "10021"})
+    client.link_issues = AsyncMock(return_value={})
+
+    result = await tool._op_create_test_issue(
+        {
+            "target_issue_key": "DDM-1",
+            "summary": "[AI test][UI][DDM-1] Verify",
+            "labels": ["AITest"],
+        },
+        client,
+        _dedup_ctx(),
+    )
+
+    assert result["status"] == "created"
+    client.create_issue.assert_awaited_once()
+
+
+def test_project_issue_includes_issuelinks():
+    """首读必须能看到已关联的测试卡，否则重测无从发现要更新的那张卡。"""
+    from agent_core.tools.jira import _project_issue
+
+    data = {
+        "key": "DDM-7",
+        "fields": {
+            "summary": "Requirement",
+            "status": {"name": "In Progress"},
+            "issuetype": {"name": "Story"},
+            "labels": [],
+            "issuelinks": [
+                {"type": {"name": "Tests"},
+                 "inwardIssue": {"key": "DDM-9", "summary": "[AI test][UI][DDM-7] Verify"}},
+                {"type": {"name": "Relates"},
+                 "outwardIssue": {"key": "DDM-8", "summary": "Other"}},
+            ],
+        },
+    }
+
+    projected = _project_issue(data, "https://jira.example.com")
+
+    links = projected["issuelinks"]
+    assert links[0] == {
+        "type": "Tests", "direction": "inward",
+        "key": "DDM-9", "summary": "[AI test][UI][DDM-7] Verify",
+    }
+    assert links[1]["direction"] == "outward"
+    assert links[1]["key"] == "DDM-8"
+
+
 @pytest.mark.asyncio
 async def test_add_comment_posts_wiki_markup_not_markdown():
     """Jira's v2 API renders a string body as wiki markup — a Markdown

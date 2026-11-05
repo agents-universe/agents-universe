@@ -29,6 +29,7 @@ This common document is a cross-project convention set. Whenever a task involves
 - For automation on a single Jira requirement card, the standard closed loop is fixed as: structured design comment on the target issue -> linked `[AI test]` test card -> automated execution -> result writeback on the test card -> optional summary comment on the target issue.
 - If the user does not explicitly request local-only or no-Jira, writing execution results only to the target requirement card without creating or updating a test card does not count as a completed workflow.
 - The execution comment on the target requirement card is only a summary or backlink supplement. It cannot replace the complete step, result, and evidence archive on the test card.
+- One test card per target issue and test kind (UI/API): a re-run updates the existing card — description only when scope changed, each run's results as new comments — and never creates a second card of the same kind. Duplicates discovered on sight are reported (`duplicate_keys`), not silently chosen between.
 
 ## 0.6 Whole-System Test Plan Artifact
 

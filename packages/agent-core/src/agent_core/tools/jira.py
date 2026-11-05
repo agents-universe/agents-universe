@@ -112,6 +112,19 @@ def _jql_literal(value: Any) -> str:
     return f'"{text}"'
 
 
+def _test_kind_of(summary: str) -> str | None:
+    """Parse the kind marker out of a test-card title, or None if absent.
+
+    ``[AI test][API][KEY] …`` → api, ``[AI test][UI][KEY] …`` → ui, a title
+    without a kind marker → None (matches any kind during dedup).
+    """
+    if "[AI test][API]" in summary:
+        return "api"
+    if "[AI test][UI]" in summary:
+        return "ui"
+    return None
+
+
 # The three card reads below share their projections with get_issue_context so
 # the caps (description 20000, comment body 2000) cannot drift apart between
 # the single and the aggregate call.
@@ -128,8 +141,27 @@ def _project_issue(data: dict, base_url: str) -> dict:
         # Cap the description — a giant body must not flood the LLM context.
         "description": (fields.get("description", "") or "")[:20000],
         "acceptance_criteria": fields.get("customfield_10028", ""),
+        # Linked test cards are the discovery surface for the one-card-per-
+        # target rule; without it the mandated card-first read never shows
+        # the card a re-run is supposed to update.
+        "issuelinks": _project_issuelinks(fields.get("issuelinks", [])),
         "url": f"{base_url}/browse/{data.get('key')}",
     }
+
+
+def _project_issuelinks(links: list, cap: int = 20) -> list[dict]:
+    out = []
+    for link in links[:cap]:
+        inward = link.get("inwardIssue") or {}
+        outward = link.get("outwardIssue") or {}
+        other = inward or outward
+        out.append({
+            "type": (link.get("type") or {}).get("name"),
+            "direction": "inward" if inward else "outward",
+            "key": other.get("key"),
+            "summary": other.get("summary"),
+        })
+    return out
 
 
 # A single-comment read costs one comment of context, so it can afford a bigger
@@ -224,6 +256,13 @@ class JiraTool(Tool):
             "cycle_name": {"type": "string"},
             "cycle_project_id": {"type": "string"},
             "test_kind": {"type": "string", "enum": ["api", "ui"]},
+            "dedup": {
+                "type": "boolean",
+                "description": (
+                    "create_test_issue only: skip the existing-card lookup "
+                    "(default true when the summary carries the [AI test] marker)"
+                ),
+            },
             "max_results": {"type": "integer", "default": 50},
         },
         "required": ["operation"],
@@ -408,6 +447,14 @@ class JiraTool(Tool):
         issue_type = ctx.cfg("JIRA_TEST_ISSUE_TYPE", "Test")
         link_type = params.get("link_type") or ctx.cfg("JIRA_TEST_LINK_TYPE", "Tests")
 
+        # One card per (target, kind): a re-run must update the card the first
+        # run created, not append a sibling. The gate on the [AI test] marker
+        # keeps playbook subtasks (also created through this op) out of dedup.
+        if params.get("dedup", True) is not False and "[AI test]" in summary:
+            existing = await self._find_existing_test_card(params, client, ctx, issue_type, link_type)
+            if existing:
+                return existing
+
         result = await client.create_issue(
             project_key=project_key,
             summary=summary,
@@ -418,8 +465,65 @@ class JiraTool(Tool):
         new_key = result.get("key", "")
         if new_key and target:
             await client.link_issues(new_key, target, link_type)
-        return {"key": new_key, "linked_to": target, "link_type": link_type,
+        return {"status": "created", "key": new_key, "linked_to": target,
+                "link_type": link_type,
                 "url": f"{client.base_url}/browse/{new_key}"}
+
+    async def _find_existing_test_card(
+        self, params: dict, client: "_JiraClient", ctx: ToolContext,
+        issue_type: str, link_type: str,
+    ) -> dict | None:
+        """Return the existing test card for (target, kind), or None to create.
+
+        JQL only pre-filters on the bare target key — brackets never enter the
+        query, so no escaping games; the exact ``[<KEY>]`` match decides
+        client-side and kills ``~`` token false positives (DDM-1 vs DDM-12).
+        A search failure propagates: falling through to create would silently
+        duplicate the very card this lookup exists to prevent.
+        """
+        target = params["target_issue_key"]
+        summary = params.get("summary", "")
+        labels = params.get("labels") or []
+        label = labels[0] if labels else "AITest"
+        jql = (
+            f"labels = {_jql_literal(label)} AND summary ~ {_jql_literal(target)}"
+            f" AND issuetype = {_jql_literal(issue_type)} ORDER BY updated DESC"
+        )
+        issues = await client.search(jql, max_results=20)
+        want_kind = params.get("test_kind") or _test_kind_of(summary)
+        marker = f"[{target}]"
+        matches = []
+        for issue in issues:
+            fields = issue.get("fields") or {}
+            cand_summary = fields.get("summary") or ""
+            if marker not in cand_summary:
+                continue
+            if fields.get("issuetype", {}).get("name") not in (None, issue_type):
+                continue
+            cand_kind = _test_kind_of(cand_summary)
+            # A card with no kind marker still matches — title drift must not
+            # defeat dedup into a fresh duplicate.
+            if cand_kind is not None and want_kind is not None and cand_kind != want_kind:
+                continue
+            matches.append(issue)
+        if not matches:
+            return None
+        first = matches[0]
+        key = first.get("key", "")
+        out = {
+            "status": "already_exists",
+            "key": key,
+            "summary": first.get("fields", {}).get("summary"),
+            "issue_status": first.get("fields", {}).get("status", {}).get("name"),
+            "url": f"{client.base_url}/browse/{key}",
+            "linked_to": target,
+            "link_type": link_type,
+        }
+        if len(matches) > 1:
+            # Surface drift instead of silently picking between historical
+            # duplicates; consolidation is a human call, never an auto-delete.
+            out["duplicate_keys"] = [m.get("key", "") for m in matches[1:]]
+        return out
 
     async def _op_create_test_cycle(self, params: dict, client: "_JiraClient", ctx: ToolContext) -> dict:
         name = params.get("cycle_name", "")
@@ -526,7 +630,8 @@ class JiraTool(Tool):
         return {"total": len(issues), "issues": [
             {"key": i["key"], "summary": i["fields"]["summary"],
              "status": i["fields"].get("status", {}).get("name"),
-             "type": i["fields"].get("issuetype", {}).get("name")}
+             "type": i["fields"].get("issuetype", {}).get("name"),
+             "labels": i["fields"].get("labels", [])}
             for i in issues
         ]}
 

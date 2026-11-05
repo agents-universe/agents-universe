@@ -46,6 +46,7 @@ Based on a Jira release link, produce one release-level summary test card and on
 ## Output Constraints
 
 - The release-level summary test card is a summary card; the test cycle is the execution container. By default, do not create a separate Jira test card per release issue unless the user explicitly asks.
+- Release summary cards are keyed by release (`[AI test][Release …]`), not by issue kind — the per-issue `create_test_issue` dedup does not apply to them.
 - Each testable card gets at least one cycle-ready entry that includes both `测试步骤` and `执行步骤`.
 - `Card Regression Coverage` covers all testable cards; `Untestable Cards` covers all untestable ones; together they equal the release issue list.
 - Summary card description stays stable and concise: release scope, business regression scenarios, expected outcomes, coverage, and links to the test cycle and assets; the test cycle carries the complete per-card execution entries. Comments use Business Summary + Minimal Execution Contract: status, business result, impact, evidence, Bug, next action — not full technical execution output.

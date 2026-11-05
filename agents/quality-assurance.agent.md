@@ -172,8 +172,8 @@ jira(operation="update_assignee", issue_key="<KEY>", assignee_account_id="<ACCOU
 // Append a comment in Jira
 jira(operation="add_comment", issue_key="<KEY>", comment_body="<markdown or text>")
 
-// Create and link a test card
-jira(operation="create_test_issue", target_issue_key="<KEY>", summary="[<KEY>] <title>", description="<desc>", labels=["AITest"])
+// Create and link a test card — reuses the existing card for the same target and kind (returns status "already_exists" with its key)
+jira(operation="create_test_issue", target_issue_key="<KEY>", summary="[AI test][UI][<KEY>] <title>", description="<desc>", labels=["AITest"], test_kind="ui")
 
 // Manually link two Jira issues
 jira(operation="link_issues", from_key="<TEST-KEY>", to_key="<TARGET-KEY>", link_type="<LINK-TYPE>")
@@ -198,7 +198,7 @@ jira(operation="add_attachment", issue_key="<TEST-KEY>", file_path="tests/genera
 
 Default conventions:
 
-- Test card titles start with `[AI test][UI]` or `[AI test][API]`; use `test_kind="api"` for pure API cases, UI for everything else.
+- Test card titles start with `[AI test][UI]` or `[AI test][API]`; use `test_kind="api"` for pure API cases, UI for everything else. One card per target + kind: re-runs update the existing card; `create_test_issue` returns `status: "already_exists"` instead of duplicating.
 - Playwright tests record video by default; Jira writeback uploads both screenshot and video evidence by default. Every executed UI scenario's recording goes to its own test card: a spec run only keeps `tests/test-results/**/video.webm` for **failed** cases (`retain-on-failure`), so for a passing scenario record it with `browser_playwright(operation="record_start" / "record_stop")`. Name it at record time (`record_stop(filename="<case-id>-<scenario-slug>")`) — nothing downstream can rename the file, and an unstopped recording is discarded at turn end.
 - Upload scenarios: the payload may be a project file (`source="path"`), a conversation attachment (`source="attachment"`), or generated in memory (`source="inline"` / a spec's `Buffer.from(...)`). Attach the exact input bytes to the test card — when the payload only ever existed in memory, write it to a scenario-named file first. Multipart API scenarios are evidenced the same way, with the file parts plus the form contract.
 - Self-adapt DB access steps in a Jira description/comment body → prefix those lines with `[SELF-ADAPT-DB]`.

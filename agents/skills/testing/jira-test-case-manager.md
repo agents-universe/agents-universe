@@ -27,12 +27,16 @@ Convert the test design in the target issue comment into a Jira test card, autom
 
 1. If the target issue has no structured test-design comment yet, write one first. Then read back **that comment** by the id `add_comment` returned (`jira(operation="get_comment", issue_key="<KEY>", comment_id="<id>")`), confirm its body and structure, and treat it as the sole input source for the downstream flow. Read the whole comment list only when you actually need an older comment. The read-back stays mandatory — the write response proves the comment landed, the read-back proves the body survived Jira's wiki conversion; only its breadth shrinks. Enter the test-card flow only after readback verification.
 2. Generate the test-card title. Default recommended format: `[AI test][UI][<TARGET-KEY>] <summary>`. For pure API scenarios use `[AI test][API][<TARGET-KEY>] <summary>` and pass `test_kind="api"` to `jira(operation="create_test_issue", ...)`.
-3. Create the Jira test card:
-  - Issue type: the system injects `JIRA_TEST_ISSUE_TYPE` from integration settings / environment variables; when unset the tool defaults to `Test`. Do not read it from knowledge files or invent a value.
-  - Description = stable, concise execution contract: target issue and link, business test scope, reusable actions and expected outcome, data dependencies, pointers to the generated test assets. Detailed UI/API/DB parameters, scripts, assertions, and evidence stay in the structured test design and generated artifacts; a specific technical detail enters Jira only when needed to reproduce or explain a defect.
-  - Steps written as requests or actions; the main execution-result body does not go into the description.
-  - Self-adapt DB service steps: prefix the source line with `[SELF-ADAPT-DB]` so the framework renders it in red in Jira.
-4. Link the test card to the target issue. The system injects `JIRA_TEST_LINK_TYPE` from integration settings / environment variables; when unset the tool defaults to `Tests`. Do not read it from knowledge files.
+3. Discover before creating — one test card per target issue and test kind (UI/API), across every run:
+  - The card-first read already lists the target's linked test cards under `issuelinks`; also run `jira(operation="search", jql="labels = \"AITest\" AND summary ~ \"<TARGET-KEY>\"")` when the link may be missing.
+  - If a card whose summary contains `[AI test][UI|API][<TARGET-KEY>]` for **this run's kind** already exists, **update that card**: refresh the description only when the confirmed scope changed (`update_description`), always append this run's execution-result comment — never create a second card of the same kind for the same target.
+  - `jira(operation="create_test_issue", ...)` performs the same check itself: it returns `status: "already_exists"` with the existing card's `key` (plus `issue_status`, and `duplicate_keys` when drifted duplicates exist) instead of creating a duplicate — treat that as the update path above, not as a failure.
+  - Create only when no matching card exists:
+    - Issue type: the system injects `JIRA_TEST_ISSUE_TYPE` from integration settings / environment variables; when unset the tool defaults to `Test`. Do not read it from knowledge files or invent a value.
+    - Description = stable, concise execution contract: target issue and link, business test scope, reusable actions and expected outcome, data dependencies, pointers to the generated test assets. Detailed UI/API/DB parameters, scripts, assertions, and evidence stay in the structured test design and generated artifacts; a specific technical detail enters Jira only when needed to reproduce or explain a defect.
+    - Steps written as requests or actions; the main execution-result body does not go into the description.
+    - Self-adapt DB service steps: prefix the source line with `[SELF-ADAPT-DB]` so the framework renders it in red in Jira.
+4. Link the test card to the target issue. The system injects `JIRA_TEST_LINK_TYPE` from integration settings / environment variables; when unset the tool defaults to `Tests`. Do not read it from knowledge files. When reusing an existing card (`already_exists`), ensure the link exists via the target's `issuelinks`; skip `link_issues` if it is already there.
 5. Minimal technical anchors or artifact pointers may be written back into the description or comment; the complete execution result lives in the structured test design, execution artifact, or generated assets.
 6. Evidence handling:
   - Upload real system UI screenshots or other key visual evidence from an actual product page/dialog to the test card, always via `jira(operation="add_attachment", ...)`, one file per request, and explain in the comment which case or scenario each belongs to.
@@ -40,6 +44,7 @@ Convert the test design in the target issue comment into a Jira test card, autom
   - File cases: upload the exact original input file used by the test. JSON API cases: save the exact JSON request body as a `.json` file and upload it (no secrets in the saved request evidence). File or JSON response results: upload the output/result file, saving JSON responses as `.json`.
 7. If one screenshot contains multiple assertion points, state points, or error points, first use the `screenshot-annotator` skill to generate a focus template and an annotated screenshot, then upload the annotated screenshot so reviewers can read it unambiguously.
 8. After a successful run: write the execution summary to a test-card comment and transition the card to done with `jira(operation="transition_issue", issue_key="...", transition_name="Task Done")`. The recommended transition name is `Task Done` — first call `jira(operation="get_transitions", ...)` if the exact name for your Jira instance is uncertain.
+  - Re-run against an already-done card: call `get_transitions` first; when a reopen-type transition exists (e.g. `Reopen`, `In Progress`, `To Do`), transition back before executing and transition to `Task Done` again after a successful run. When no such transition exists, keep the status, update in place, and state in the result comment that the card remains done from the earlier run.
 9. After a failed run: also create or update the corresponding Bug — title starts with `[AI bug]`, by default assigned to the target requirement card's assignee, and containing at least the failed scenario, detailed reproduction steps, related APIs and parameters, expected result, actual result, evidence links, and links back to the target requirement card and the test card.
 10. An execution-summary comment on the target requirement card may only summarize or backlink to the test-card result; it cannot replace the complete execution record and evidence on the test card.
 
@@ -103,8 +108,9 @@ Current implementation notes:
 
 ```json
 jira(operation="get_comments", issue_key="<JIRA-KEY>")
+jira(operation="search", jql="labels = \"AITest\" AND summary ~ \"<JIRA-KEY>\"")
 jira(operation="get_transitions", issue_key="<TEST-ISSUE-KEY>")
-jira(operation="create_test_issue", target_issue_key="<JIRA-KEY>", summary="[<JIRA-KEY>] <title>", description="<content>", labels=["AITest"])
+jira(operation="create_test_issue", target_issue_key="<JIRA-KEY>", summary="[AI test][UI][<JIRA-KEY>] <title>", description="<content>", labels=["AITest"], test_kind="ui")
 jira(operation="link_issues", from_key="<TEST-KEY>", to_key="<JIRA-KEY>", link_type="<LINK-TYPE>")
 jira(operation="update_assignee", issue_key="<JIRA-KEY>", assignee_account_id="<ID>")
 focus_template(image_path="tests/generated/artifacts/example.png", count=2, units="percent")
@@ -113,6 +119,8 @@ jira(operation="add_attachment", issue_key="<TEST-KEY>", file_path="tests/genera
 jira(operation="transition_issue", issue_key="<TEST-KEY>", transition_name="Task Done")
 jira(operation="add_comment", issue_key="<TEST-KEY>", comment_body="<execution result summary>")
 ```
+
+`create_test_issue` returns `status: "already_exists"` when the same target + kind card exists → update that card, do not create another.
 
 ## Integration With Script Generation
 

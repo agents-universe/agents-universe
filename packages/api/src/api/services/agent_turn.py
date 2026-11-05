@@ -1272,6 +1272,84 @@ async def run_turn(
                             exc_info=True,
                         )
 
+                # The queue is drained (session closed): deliverables that landed
+                # AFTER the last stream_end — task-run output racing the main
+                # snapshot — are still buffered with no persist trigger left, the
+                # task-scoped stream_end that follows is skipped by the task_id
+                # guard above. Fold them into the turn's final row (or open one)
+                # so the download chips survive history reloads instead of living
+                # only in the client's residual bubble.
+                if _files_buf or _images_buf:
+                    try:
+                        from sqlalchemy import select as _sa_select
+                        from api.json_utils import dumps as _json_dumps
+                        from api.models.conversation import Message as _DbMessage
+
+                        _row = None
+                        if _final_msg_id:
+                            _row = (
+                                await event_db.execute(
+                                    _sa_select(_DbMessage).where(
+                                        _DbMessage.message_id == _final_msg_id
+                                    )
+                                )
+                            ).scalar_one_or_none()
+                        if _row is not None:
+                            try:
+                                _refs = json.loads(_row.knowledge_refs) if _row.knowledge_refs else {}
+                                if not isinstance(_refs, dict):
+                                    _refs = {}
+                            except (ValueError, TypeError):
+                                _refs = {}
+                            if _files_buf:
+                                _existing = _refs.get("attachments") or []
+                                _upsert_file_records(_existing, _files_buf)
+                                _refs["attachments"] = _existing
+                            if _images_buf:
+                                _existing_imgs = [
+                                    img for img in (_refs.get("images") or [])
+                                    if isinstance(img, dict)
+                                ]
+                                for _img in _images_buf:
+                                    if not isinstance(_img, dict):
+                                        continue
+                                    _key = _img.get("id") or _img.get("url")
+                                    for _i, _old in enumerate(_existing_imgs):
+                                        if _key and (_old.get("id") or _old.get("url")) == _key:
+                                            _existing_imgs[_i] = _img
+                                            break
+                                    else:
+                                        _existing_imgs.append(_img)
+                                _refs["images"] = _existing_imgs
+                            _row.knowledge_refs = _json_dumps(_refs)
+                            await event_db.commit()
+                        else:
+                            # No row survived (the turn died before its first
+                            # stream_end) — open one so the buffered output is
+                            # not lost with the buffers.
+                            await _persist_assistant_message(
+                                event_db, conversation_id,
+                                _text_buf, _tool_calls_buf, None,
+                                images=_images_buf if _images_buf else None,
+                                files=_files_buf if _files_buf else None,
+                                agent_slug=agent_config.slug,
+                                model_name=_model_name,
+                                thinking=_cap_thinking(_thinking_buf),
+                            )
+                        _log.info(
+                            "Flushed residual media after stream end: conversation=%s message_id=%s files=%d images=%d",
+                            conversation_id, _final_msg_id, len(_files_buf), len(_images_buf),
+                        )
+                        _files_buf = []
+                        _images_buf = []
+                    except Exception:
+                        await event_db.rollback()
+                        _log.warning(
+                            "Residual media flush failed: conversation=%s files=%d images=%d",
+                            conversation_id, len(_files_buf), len(_images_buf),
+                            exc_info=True,
+                        )
+
             agent_task = asyncio.create_task(run_agent())
             forward_task = asyncio.create_task(forward_events())
 

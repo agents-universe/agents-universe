@@ -496,6 +496,21 @@ export const useConversationStore = defineStore('conversation', () => {
         timestamp: new Date(m.created_at).getTime(),
       }))
 
+    // Deliverables whose DB row was never written (late file_output folded
+    // into a client-only `final-`/`abort-` bubble) exist only locally, and
+    // their timestamp may predate the last history row — the age filters
+    // below must not drop a local message whose attachments/images are not
+    // already covered by a history row, or the download chips vanish on
+    // switch-back. Cover keys: attachment name, image id-or-url.
+    const coveredMedia = new Set<string>()
+    for (const h of history) {
+      for (const att of h.attachments ?? []) coveredMedia.add(`a:${att.name}`)
+      for (const img of h.images ?? []) coveredMedia.add(`i:${img.id || img.url}`)
+    }
+    const mediaCovered = (m: { attachments?: Message['attachments']; images?: Message['images'] }) =>
+      (m.attachments ?? []).every((att) => coveredMedia.has(`a:${att.name}`))
+      && (m.images ?? []).every((img) => coveredMedia.has(`i:${img.id || img.url}`))
+
     // Do not let a delayed history request erase the optimistic user message or
     // the in-flight assistant response for this same conversation.
     if (rt.isThinking || rt.isStreaming) {
@@ -528,8 +543,10 @@ export const useConversationStore = defineStore('conversation', () => {
         // Server-side compression hard-deletes the rows it replaces, so their
         // ids vanish from a mid-turn history fetch while the local copies
         // remain — keeping them would re-append the whole conversation after
-        // the summary row. Same age rule as the non-streaming branch.
-        if (!pendingIds.has(message.id) && message.timestamp < lastTs) return false
+        // the summary row. Same age rule as the non-streaming branch — except
+        // a local message carrying media no history row covers (client-only
+        // residual bubble) must survive, or its download chips disappear.
+        if (!pendingIds.has(message.id) && message.timestamp < lastTs && mediaCovered(message)) return false
         return true
       })]
       return
@@ -596,6 +613,11 @@ export const useConversationStore = defineStore('conversation', () => {
       // very duplicate the filter just removed.
       if (droppedDuplicates.has(m.id)) continue
       if (m.timestamp >= lastTs) rt.messages.push(m)
+      // Older than the last history row but carrying media no row covers —
+      // a client-only residual bubble whose download chips would otherwise
+      // be lost on switch-back. Covered media keeps the age rule (no chips
+      // duplicated next to the persisted row it came from).
+      else if (!mediaCovered(m)) rt.messages.push(m)
     }
     // History replaced — a previous turn's abort snapshot is stale.
     rt.abortSnapshotted = false

@@ -752,6 +752,128 @@ describe('conversation store - per-conversation runtime', () => {
     expect(store.messages.map((m) => m.id)).toEqual(['h1', 'live-final'])
   })
 
+  it('switch away and back restores attachment chips from history', () => {
+    // The plain repro: a finished turn's file chips must reappear after the
+    // conversation is reloaded from the server on switch-back.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.appendDelta('report ready', undefined, 'conv-a')
+    store.addStreamingFiles([{
+      id: 'f1',
+      url: '/api/media/p/c/report.csv',
+      name: 'report.csv',
+      media_type: 'text/csv',
+      size: 42,
+    }], 'conv-a')
+    store.pushStreamingMessage('srv-1', undefined, false, 'conv-a')
+    expect(store.messages[0].attachments).toHaveLength(1)
+
+    store.startConversation('conv-b')
+    store.startConversation('conv-a')
+
+    const att = {
+      id: 'f1',
+      url: '/api/media/p/c/report.csv',
+      name: 'report.csv',
+      media_type: 'text/csv',
+      size: 42,
+    }
+    store.loadHistory([
+      makeDbMessage({
+        message_id: 'u1', role: 'user', content: 'make a report',
+        created_at: '2026-01-01T00:00:00Z',
+      }),
+      makeDbMessage({
+        message_id: 'srv-1', role: 'assistant', content: 'report ready',
+        created_at: '2026-01-01T00:00:01Z',
+        attachments: [att],
+      }),
+    ], 'conv-a')
+
+    const final = store.messages.find((m) => m.id === 'srv-1')
+    expect(final?.attachments).toHaveLength(1)
+    expect(final?.attachments?.[0].name).toBe('report.csv')
+  })
+
+  it('loadHistory keeps a local attachment message history does not cover', () => {
+    // Late deliverable: file_output landed AFTER the turn's terminal
+    // stream_end, so the server never persisted it — the frontend folded it
+    // into a client-only `final-` bubble. The age-based straggler rule would
+    // drop it (its timestamp predates the last history row when the server
+    // clock leads), silently taking the download chips with it. A local
+    // message carrying attachments the history rows lack must survive.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({
+      id: 'final-1',
+      role: 'assistant',
+      content: '',
+      timestamp: Date.parse('2026-01-01T00:00:01Z') - 500, // older than lastTs
+      attachments: [{
+        id: 'f1',
+        url: '/api/media/p/c/report.csv',
+        name: 'report.csv',
+        media_type: 'text/csv',
+        size: 42,
+      }],
+    })
+
+    store.loadHistory([
+      makeDbMessage({
+        message_id: 'u1', role: 'user', content: 'make a report',
+        created_at: '2026-01-01T00:00:00Z',
+      }),
+      makeDbMessage({
+        message_id: 'srv-1', role: 'assistant', content: 'done',
+        created_at: '2026-01-01T00:00:01Z',
+      }),
+    ], 'conv-a')
+
+    expect(store.messages.map((m) => m.id)).toEqual(['u1', 'srv-1', 'final-1'])
+    expect(store.messages[2].attachments).toHaveLength(1)
+  })
+
+  it('loadHistory drops a local attachment message already covered by history', () => {
+    // Same late-deliverable bubble, but the server DID persist the files
+    // (they landed before the final stream_end, or a teardown merge caught
+    // them). Keeping both would render the same chip twice.
+    const store = useConversationStore()
+    store.startConversation('conv-a')
+    store.addMessage({
+      id: 'final-1',
+      role: 'assistant',
+      content: '',
+      timestamp: Date.parse('2026-01-01T00:00:01Z') - 500,
+      attachments: [{
+        id: 'f1',
+        url: '/api/media/p/c/report.csv',
+        name: 'report.csv',
+        media_type: 'text/csv',
+        size: 42,
+      }],
+    })
+
+    store.loadHistory([
+      makeDbMessage({
+        message_id: 'u1', role: 'user', content: 'make a report',
+        created_at: '2026-01-01T00:00:00Z',
+      }),
+      makeDbMessage({
+        message_id: 'srv-1', role: 'assistant', content: 'done',
+        created_at: '2026-01-01T00:00:01Z',
+        attachments: [{
+          id: 'f1',
+          url: '/api/media/p/c/report.csv',
+          name: 'report.csv',
+          media_type: 'text/csv',
+          size: 42,
+        }],
+      }),
+    ], 'conv-a')
+
+    expect(store.messages.map((m) => m.id)).toEqual(['u1', 'srv-1'])
+  })
+
   it('loadHistory streaming branch unregisters a deduped injection', () => {
     // A turn is live (isStreaming) and the server already persisted the
     // injected message — the content-match dedup drops the optimistic copy,

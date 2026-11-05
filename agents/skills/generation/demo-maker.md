@@ -1,8 +1,8 @@
 ---
 slug: "generation/demo-maker"
 description:
-  zh-CN: "生成单页产品演示：单个自包含 HTML 文件（CSS/JS 全内联、图片 base64/内联 SVG、系统字体、零外部请求、无运行时错误），风格仿照项目自身业务系统——复用既有演示的样式或委派 QA 调研样式；实现交 Tech Lead，运行时验证交 Quality Assurance"
-  en-US: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), styled after the project's own business system style — reuses an existing demo's style or delegates a QA style investigation; implementation goes to tech-lead, runtime verification to quality-assurance"
+  zh-CN: "生成单页产品演示：单个自包含 HTML 文件（CSS/JS 全内联、图片 base64/内联 SVG、系统字体、零外部请求、无运行时错误），优先参照项目上下文系统的现有页面，文件按 demo_<时间戳> 命名、每次会话新建不覆盖；实现交 Tech Lead，运行时验证交 Quality Assurance"
+  en-US: "Generate single-page product demos as one self-contained HTML file (all CSS/JS inlined, images base64/inline SVG, system fonts, zero external requests, no runtime errors), prioritizing the existing pages of the project-context system, named demo_<timestamp> with a new file per session and no overwrites; implementation goes to tech-lead, runtime verification to quality-assurance"
 type: "guidance"
 triggers:
   - "demo"
@@ -32,8 +32,10 @@ Boundaries: presentations → `[[office/web-slides]]`; pure charts/dashboards �
 
 ## Rule 1 - Self-Contained Single-File Contract
 
-The deliverable is exactly one file, `demos/demo.html` (ASCII filename, < 5MB). This contract is the first line of defense against broken pages — no external requests means no 404s and no dependency drift.
+The deliverable is exactly one file per demo session, `demos/demo_<YYYYMMDD_HHMMSS>.html` (ASCII filename, timestamp in local time, < 5MB). This contract is the first line of defense against broken pages — no external requests means no 404s and no dependency drift.
 
+- A **demo session** spans one demo request from clarification through delivery and its fix-loop iterations; the session's timestamped filename is fixed at session start.
+- **Never overwrite or modify a demo file from an earlier session** — always create a new `demo_<timestamp>.html`; old demo files stay in the workspace. Within the same session, iterations update the session's own file.
 - All CSS inlined in one `<style>`, all JS inlined in one `<script>`; images as base64 `data:` URIs or hand-written inline SVG.
 - **Zero external requests at view time** — no `src="http`, `href="http`, `url(http`, `@import`, `<link`, `<iframe`, `<img src="http`, no Google Fonts, no icon CDNs. The file must render offline.
 - System font stack only, with CJK fallback: `system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "Microsoft YaHei", sans-serif`.
@@ -45,23 +47,23 @@ The deliverable is exactly one file, `demos/demo.html` (ASCII filename, < 5MB). 
 
 The demo must follow the visual style of the **project's own business system** (palette, typography, component shapes) — never the platform's own UI. Three sources, in priority order:
 
-- **Path A — existing demo**: list `demos/*.html` in the workspace; extract the style baseline from their `<style>` blocks — CSS variables, all hex/hsl/rgb colors, font families/sizes/weights, radius/shadow/spacing rhythm, component styles (buttons/cards/tables/nav/tabs). "Optimize on top of it" means keep the style language (palette, fonts, component shapes, layout skeleton) and improve content/structure/function to carry the new requirement; fix contract violations in the old demo as you go.
-- **Path B — no demo**: (1) read the project's **CSS source files** first when reachable (git repo / github / web_fetch) — source variables are exact, prefer them over screenshots; (2) check `knowledge/ui-patterns.md` for the deposited **Visual Style Baseline** section; (3) otherwise delegate to QA per the workflow — QA reads CSS sources, extracts computed styles, screenshots with annotations, and returns a compact baseline list that is also deposited into `knowledge/ui-patterns.md` (marked `[verified]` when from the real system/computed styles, `[inferred]` when estimated) plus `history.md`.
-- **Greenfield fallback** — no reachable business system: derive from `context.md`/design documents with the `[[analysis/dataviz]]` fallback palette, marked `[inferred]`.
+- **Path A — existing pages of the project-context system** (highest priority): the real pages of the system the project is about. (1) Structure: read `knowledge/page-map.md` / `knowledge/ui-patterns.md` for the interaction skeleton (nav / list / detail) and the deposited **Visual Style Baseline** section; (2) style: read the system's **CSS source files** first when reachable (git repo / github / web_fetch) — source variables are exact, prefer them over screenshots; (3) otherwise delegate to QA per the workflow — QA reads CSS sources, extracts computed styles, screenshots with annotations, and returns a compact baseline list that is also deposited into `knowledge/ui-patterns.md` (marked `[verified]` when from the real system/computed styles, `[inferred]` when estimated) plus `history.md`.
+- **Path B — existing demo in the workspace**: list `demos/demo_*.html` and take the **newest timestamped file** as a secondary source; extract the style baseline from its `<style>` block — CSS variables, all hex/hsl/rgb colors, font families/sizes/weights, radius/shadow/spacing rhythm, component styles (buttons/cards/tables/nav/tabs). "Optimize on top of it" means keep the style language (palette, fonts, component shapes, layout skeleton) and improve content/structure/function to carry the new requirement; fix contract violations in the old demo as you go — but never rewrite the old file itself, only copy from it.
+- **Path C — greenfield fallback**: no reachable business system at all — derive from `context.md`/design documents with the `[[analysis/dataviz]]` fallback palette, marked `[inferred]`.
 
 ## Rule 3 - Requirements Spec
 
-Run one lightweight clarification round first (audience / core page or flow / data source or fabricated sample data / language). Then produce the spec: goal, page structure following the interaction skeleton in `knowledge/ui-patterns.md` (nav/list/detail patterns), sample data as inline JSON marked as demo data, the style baseline reference (Path A reuse or Path B baseline), and the contract reference — the implementing agent reads this skill itself, the spec never paraphrases Rule 1.
+Run one lightweight clarification round first (audience / core page or flow / data source or fabricated sample data / language). Then produce the spec: goal, page structure following the interaction skeleton in `knowledge/ui-patterns.md` (nav/list/detail patterns), sample data as inline JSON marked as demo data, the style baseline reference (Path A system-pages baseline or Path B existing-demo reuse), and the contract reference — the implementing agent reads this skill itself, the spec never paraphrases Rule 1.
 
 ## Rule 4 - Verification (the "no errors" acceptance points)
 
 Two layers; both must pass before delivery.
 
-- **Static self-check** (implementer side, read-only): a `code_executor` python script asserts: (a) `<!DOCTYPE html>` present; (b) zero external-reference patterns (`src="http`, `href="http`, `url(http`, `@import`, `<link`, `<iframe`, `<img src="http`); (c) `<script>`/`</script>` and `<style>`/`</style>` counts balanced; (d) file size < 5MB; (e) ASCII filename. **The script must not write anything — above all not to OUTPUT_DIR** (every OUTPUT_DIR write auto-delivers another download link; re-running the generation script as "verification" turns one demo into many links — same rule as `office/web-slides` Rule 6).
-- **Runtime verification** (QA side, delegated): Playwright loads `file://.../demos/demo.html` via an inline python-playwright script and asserts: no console error messages, no page errors, no failed requests, the primary interactive controls clickable with state changes, and a desktop-viewport screenshot confirms rendering. Screenshot goes to OUTPUT_DIR as auto-delivered evidence.
+- **Static self-check** (implementer side, read-only): a `code_executor` python script asserts: (a) `<!DOCTYPE html>` present; (b) zero external-reference patterns (`src="http`, `href="http`, `url(http`, `@import`, `<link`, `<iframe`, `<img src="http`); (c) `<script>`/`</script>` and `<style>`/`</style>` counts balanced; (d) file size < 5MB; (e) ASCII filename matching `demo_<digits>.html`. **The script must not write anything — above all not to OUTPUT_DIR** (every OUTPUT_DIR write auto-delivers another download link; re-running the generation script as "verification" turns one demo into many links — same rule as `office/web-slides` Rule 6).
+- **Runtime verification** (QA side, delegated): Playwright loads the session's `file://.../demos/demo_<timestamp>.html` via an inline python-playwright script and asserts: no console error messages, no page errors, no failed requests, the primary interactive controls clickable with state changes, and a desktop-viewport screenshot confirms rendering. Screenshot goes to OUTPUT_DIR as auto-delivered evidence.
 
 ## Rule 5 - Delivery & Iteration
 
-- Implementer delivers the download link — copy the **complete absolute URL** from the `code_executor` tool result verbatim (host + deployment sub-path already included; never prepend a base URL or rewrite it as a relative path) — plus the canonical file location `demos/demo.html`.
-- PO's final summary: link, page outline, style source (Path A: "reused the existing demo's style"; Path B: "based on the QA style baseline + screenshots"), verification summary (static checks + QA Playwright results), and the demo-data declaration.
-- Iteration is in-place: overwrite `demos/demo.html` and re-deliver; the workspace keeps exactly one canonical demo file, which is what Path A of Rule 2 reads for the next demo.
+- Implementer delivers the download link — copy the **complete absolute URL** from the `code_executor` tool result verbatim (host + deployment sub-path already included; never prepend a base URL or rewrite it as a relative path) — plus the session file location `demos/demo_<timestamp>.html`.
+- PO's final summary: link, page outline, style source (Path A: "based on the project system's existing pages"; Path B: "reused the existing demo's style"; Path C: "inferred from design documents"), verification summary (static checks + QA Playwright results), and the demo-data declaration.
+- Iteration within the session updates the session's own `demos/demo_<timestamp>.html` and re-delivers; a new demo request (new session) always creates a new timestamped file — previous demo files are never overwritten. Path B of Rule 2 reads the newest `demos/demo_*.html` for the next demo.

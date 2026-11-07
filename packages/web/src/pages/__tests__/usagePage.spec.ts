@@ -30,8 +30,8 @@ function makeUsage(over: Partial<UsageDashboard> = {}): UsageDashboard {
       conversation_count: 2,
     },
     top_users: [
-      { rank: 1, user_id: 'alice', tokens: 4000, run_count: 4, conversation_count: 1 },
-      { rank: 2, user_id: 'bob', tokens: 1500, run_count: 1, conversation_count: 1 },
+      { rank: 1, user_id: 'alice', display_name: 'Alice Zhang', tokens: 4000, run_count: 4, conversation_count: 1 },
+      { rank: 2, user_id: 'bob', display_name: null, tokens: 1500, run_count: 1, conversation_count: 1 },
     ],
     daily: makeDaily(30),
     ...over,
@@ -57,7 +57,12 @@ describe('UsagePage', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0].find('.usage-rank').text()).toBe('1')
     expect(rows[1].find('.usage-rank').text()).toBe('2')
-    expect(rows[0].find('.usage-user-id').text()).toBe('alice')
+    expect(rows[0].find('.usage-user-id').text()).toBe('Alice Zhang')
+    // Tooltip keeps the raw id reachable when a display name is shown.
+    expect(rows[0].attributes('title')).toContain('Alice Zhang (alice)')
+    // Unknown name → raw id, both in the row and the tooltip.
+    expect(rows[1].find('.usage-user-id').text()).toBe('bob')
+    expect(rows[1].attributes('title')).toContain('bob')
 
     // The leader fills the track; the runner-up is proportional (1500/4000).
     expect(rows[0].find('.usage-bar-fill').attributes('style')).toContain('width: 100%')

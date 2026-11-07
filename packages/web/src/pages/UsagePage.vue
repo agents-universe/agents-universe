@@ -65,14 +65,14 @@
                 :key="u.user_id"
                 class="usage-bar-row"
                 :title="t('usage.barLabel', {
-                  user: u.user_id,
+                  user: userTooltip(u),
                   tokens: u.tokens.toLocaleString(),
                   runs: u.run_count,
                 })"
               >
                 <span class="usage-rank" :class="{ podium: u.rank <= 3 }">{{ u.rank }}</span>
                 <span class="usage-bar-user">
-                  <span class="usage-user-id">{{ u.user_id }}</span>
+                  <span class="usage-user-id">{{ userLabel(u) }}</span>
                   <span class="usage-user-runs">{{ t('usage.runsUnit', { n: u.run_count }) }}</span>
                 </span>
                 <span class="usage-bar-track">
@@ -178,7 +178,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { BarChart3, Loader2 } from 'lucide-vue-next'
-import { usageApi, type UsageDashboard } from '@/api/usage'
+import { usageApi, type UsageDashboard, type UsageTopUser } from '@/api/usage'
 import { translateApiErrorWith } from '@/utils/apiError'
 
 const { t } = useI18n()
@@ -243,6 +243,18 @@ function fmtCompact(n: number): string {
 }
 
 /* ── Top-10 bars ─────────────────────────────────────────────────────── */
+
+/** Display name when the server knows one, else the raw id. */
+function userLabel(u: UsageTopUser): string {
+  return u.display_name || u.user_id
+}
+
+/** Tooltip keeps the id reachable even when the row shows a name. */
+function userTooltip(u: UsageTopUser): string {
+  return u.display_name && u.display_name !== u.user_id
+    ? `${u.display_name} (${u.user_id})`
+    : u.user_id
+}
 
 const maxTopTokens = computed(() =>
   Math.max(...(data.value?.top_users ?? []).map((u) => u.tokens), 1),

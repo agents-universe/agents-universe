@@ -123,6 +123,27 @@ async def delete_oauth_session(redis: Redis, state: str) -> None:
     await redis.delete(f"oauth_session:{state}")
 
 
+# ── User display names ─────────────────────────────────────────────────────
+
+async def record_user_display_name(redis: Redis, user_id: str, display_name: str) -> None:
+    """Cache user_id → display_name for dashboard labels.
+
+    The session is the only other place a display name lives, and it expires;
+    the usage dashboard needs names for users whose sessions have churned
+    since. No TTL: a slightly stale name beats a bare opaque id. HSET on
+    every authenticated request keeps renames picked up and the write is O(1).
+    """
+    await redis.hset("user_display_names", user_id, display_name)
+
+
+async def get_user_display_names(redis: Redis, user_ids: list[str]) -> dict[str, str]:
+    """Resolve known display names for user_ids; ids without a record are omitted."""
+    if not user_ids:
+        return {}
+    values = await redis.hmget("user_display_names", user_ids)
+    return {uid: v for uid, v in zip(user_ids, values) if v}
+
+
 # ── Active users ───────────────────────────────────────────────────────────
 
 async def track_active_user(redis: Redis, user_id: str, window: int) -> None:

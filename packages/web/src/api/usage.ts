@@ -12,6 +12,8 @@ export interface UsageSummary {
 export interface UsageTopUser {
   rank: number
   user_id: string
+  /** Human label from the server-side name mirror; null → show user_id. */
+  display_name: string | null
   tokens: number
   run_count: number
   conversation_count: number

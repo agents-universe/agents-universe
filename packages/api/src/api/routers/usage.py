@@ -10,6 +10,8 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
+import redis.exceptions
+from redis.asyncio import Redis
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,13 +21,26 @@ from api.models._compat import now_utc
 from api.models.conversation import Conversation
 from api.models.conversation_run import ConversationRun
 from api.models.project import Project
+from api.services.redis_client import get_redis, get_user_display_names
 
 router = APIRouter(prefix="/api")
 
 _TOP_N = 10
 
 
-async def _usage_payload(db: AsyncSession, project_id: str, days: int) -> dict:
+async def _display_names_for(rdb: Redis | None, user_ids: list[str]) -> dict[str, str]:
+    """Resolve dashboard labels; Redis trouble degrades to bare ids, never 500."""
+    if rdb is None or not user_ids:
+        return {}
+    try:
+        return await get_user_display_names(rdb, user_ids)
+    except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, TimeoutError):
+        return {}
+
+
+async def _usage_payload(
+    db: AsyncSession, project_id: str, days: int, rdb: Redis | None = None
+) -> dict:
     now = now_utc()
     today = now.date()
     # Calendar-aligned UTC window: `days` whole days ending today, so the
@@ -122,10 +137,16 @@ async def _usage_payload(db: AsyncSession, project_id: str, days: int) -> dict:
         users.items(),
         key=lambda kv: (-kv[1]["tokens"], -kv[1]["run_count"], kv[0]),
     )[:_TOP_N]
+    display_names = await _display_names_for(
+        rdb, [user_id for user_id, _info in ranked]
+    )
     top_users = [
         {
             "rank": i + 1,
             "user_id": user_id,
+            # Human label from the login-mirrored hash; None (unknown user)
+            # lets the frontend fall back to the raw id.
+            "display_name": display_names.get(user_id),
             "tokens": info["tokens"],
             "run_count": info["run_count"],
             "conversation_count": len(info["conversation_ids"]),
@@ -162,6 +183,7 @@ async def project_usage(
     project_id: str,
     days: int = Query(default=30, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
+    rdb: Redis = Depends(get_redis),
     current_user: UserInfo = Depends(get_current_user),
     project: Project = Depends(authorize_project),
 ):
@@ -175,5 +197,8 @@ async def project_usage(
       ledger; the next top-level run picks the usage up via the cumulative
       chain — totals converge, bucket time shifts by at most one turn.
     - Soft-deleted conversations keep counting: their tokens were consumed.
+    - display_name is whatever the user's last login/request mirrored into
+      Redis; a user who never signed in since the mirror existed shows only
+      their id.
     """
-    return await _usage_payload(db, str(project.project_id), days)
+    return await _usage_payload(db, str(project.project_id), days, rdb)

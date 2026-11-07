@@ -45,6 +45,85 @@ def _days_ago(days: int, *, hour: int = 12) -> datetime:
     ) - timedelta(days=days)
 
 
+class _FakeNameRedis:
+    """Minimal hash client backing the user_display_names mirror."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def hset(self, key: str, field: str, value: str) -> None:
+        self.store[field] = value
+
+    async def hmget(self, key: str, fields: list[str]) -> list[str | None]:
+        return [self.store.get(f) for f in fields]
+
+
+class TestTopUserDisplayName:
+    async def test_display_name_resolved_and_falls_back_to_id(
+        self, client, db, make_project
+    ):
+        from api.main import app
+        from api.services.redis_client import get_redis
+
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id), "alice-id")
+        await _seed_run(db, conv, started_at=_days_ago(1), tokens_used=500)
+
+        fake = _FakeNameRedis()
+
+        async def _fake_redis():
+            yield fake
+
+        app.dependency_overrides[get_redis] = _fake_redis
+        try:
+            # Mirror absent → null, frontend falls back to the raw id.
+            resp = await client.get(f"/api/projects/{project.project_id}/usage")
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["top_users"][0]["display_name"] is None
+
+            # After the login/request mirror writes the name, it is served.
+            await fake.hset("user_display_names", "alice-id", "Alice Zhang")
+            resp = await client.get(f"/api/projects/{project.project_id}/usage")
+            entry = resp.json()["top_users"][0]
+            assert entry["user_id"] == "alice-id"
+            assert entry["display_name"] == "Alice Zhang"
+        finally:
+            # Restore conftest's None-yielding override (never pop: popping
+            # would make later tests resolve the real, uninitialized pool).
+            async def _no_redis():
+                yield None
+
+            app.dependency_overrides[get_redis] = _no_redis
+
+    async def test_redis_outage_degrades_to_ids(self, client, db, make_project):
+        from api.main import app
+        from api.services.redis_client import get_redis
+
+        project = await make_project()
+        conv = await _make_conversation(db, str(project.project_id), "alice-id")
+        await _seed_run(db, conv, started_at=_days_ago(1), tokens_used=500)
+
+        class _DeadRedis:
+            async def hmget(self, *args, **kwargs):
+                raise TimeoutError("redis down")
+
+        async def _dead_redis():
+            yield _DeadRedis()
+
+        app.dependency_overrides[get_redis] = _dead_redis
+        try:
+            resp = await client.get(f"/api/projects/{project.project_id}/usage")
+            assert resp.status_code == 200, resp.text
+            entry = resp.json()["top_users"][0]
+            assert entry["display_name"] is None
+            assert entry["user_id"] == "alice-id"
+        finally:
+            async def _no_redis():
+                yield None
+
+            app.dependency_overrides[get_redis] = _no_redis
+
+
 class TestUsagePayload:
     async def test_empty_project(self, client, make_project):
         project = await make_project()

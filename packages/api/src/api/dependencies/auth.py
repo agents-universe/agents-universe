@@ -21,6 +21,7 @@ from api.models.project_member import ProjectMember
 from api.services.redis_client import (
     get_redis,
     get_session,
+    record_user_display_name,
     renew_session_ttl,
     track_active_user,
 )
@@ -60,6 +61,11 @@ async def get_current_user(
         # activity (e.g. loading conversation history) keeps the session alive,
         # not just WebSocket messages.
         await renew_session_ttl(redis, session_id, settings.session_ttl)
+        # Mirror the display name into a non-expiring hash so dashboards
+        # (usage top-10) can label users whose own session has since expired.
+        display_name = data.get("display_name")
+        if display_name:
+            await record_user_display_name(redis, data["user_id"], display_name)
     except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, TimeoutError) as e:
         # Best-effort tracking/renewal — a failed EXPIRE must not fail the
         # request (the session key itself is still valid until its TTL).

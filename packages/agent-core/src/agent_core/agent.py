@@ -985,6 +985,10 @@ class Agent:
 
         parts.append(self._build_tools_prompt())
 
+        roster = self._build_agents_prompt()
+        if roster:
+            parts.append(roster)
+
         parts.append(
             "\n## Incremental Execution Protocol\n"
             "For implementation or multi-step work, call `plan_task` before making changes. "
@@ -1049,6 +1053,46 @@ class Agent:
 
         self._static_prompt_cache = "\n".join(parts)
         return self._static_prompt_cache
+
+    def _build_agents_prompt(self) -> str:
+        """Compact roster for agents that declare ``delegate_agent``.
+
+        Same filesystem source and policy/chain filtering as ``list_agents``
+        (agent_core.delegation), so the snapshot agrees with what a later
+        ``delegate_agent`` call can actually load. Built with the static
+        prompt: one roster read per turn (and after knowledge-write
+        invalidations) — the section is a routing snapshot, ``list_agents``
+        stays the fresh view.
+        """
+        if "delegate_agent" not in self._config.tools:
+            return ""
+        from .delegation import list_delegation_candidates
+
+        delegation = getattr(self._tool_ctx, "delegation", None)
+        chain = tuple(getattr(delegation, "chain", ()) or ())
+        policy = tuple(getattr(delegation, "policy", ()) or ())
+        candidates = list_delegation_candidates(
+            self._tool_ctx.project_fs_path,
+            self._tool_ctx.framework_root,
+            # Chain already contains self at root; the union keeps a headless
+            # run (delegation=None, chain=()) from advertising self-delegation.
+            exclude=set(chain) | {self._config.slug},
+            allow=policy or None,
+        )
+        if not candidates:
+            return ""
+        lines = [
+            "\n## Available Agents",
+            "Delegation roster for this turn (filesystem snapshot; call "
+            "`list_agents` for a fresh or filtered view). Delegate only work you "
+            "cannot do yourself — see your routing rules.",
+        ]
+        for c in candidates:
+            desc = c.description or ""
+            if len(desc) > 160:
+                desc = desc[:159] + "…"
+            lines.append(f"- `{c.slug}` — {c.display_name} ({c.category}): {desc}")
+        return "\n".join(lines)
 
     def _build_tools_prompt(self) -> str:
         """Build the '## Available Tools & Behaviors' section from self._tools."""

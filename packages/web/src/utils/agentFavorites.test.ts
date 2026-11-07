@@ -6,12 +6,12 @@ describe('DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY', () => {
     // A typo here would silently drop one default from the sidebar of every
     // project in that category, so assert the table as a whole.
     expect(DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY).toEqual({
-      'software': ['project-owner', 'tech-lead', 'quality-assurance'],
-      'legacy-modernization': ['project-owner', 'tech-lead', 'quality-assurance'],
-      'data-analysis': ['data-analyst', 'office-assistant'],
-      'customer-service': ['customer-service', 'office-assistant'],
-      'docs': ['office-assistant', 'project-customization-expert'],
-      'other': ['project-customization-expert'],
+      'software': ['orchestrator', 'project-owner', 'tech-lead', 'quality-assurance'],
+      'legacy-modernization': ['orchestrator', 'project-owner', 'tech-lead', 'quality-assurance'],
+      'data-analysis': ['orchestrator', 'data-analyst', 'office-assistant'],
+      'customer-service': ['orchestrator', 'customer-service', 'office-assistant'],
+      'docs': ['orchestrator', 'office-assistant', 'project-customization-expert'],
+      'other': ['orchestrator', 'project-customization-expert'],
     })
   })
 })
@@ -19,7 +19,7 @@ describe('DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY', () => {
 describe('defaultFavoriteAgentSlugs', () => {
   it('returns the category defaults', () => {
     expect(defaultFavoriteAgentSlugs('software')).toEqual([
-      'project-owner', 'tech-lead', 'quality-assurance',
+      'orchestrator', 'project-owner', 'tech-lead', 'quality-assurance',
     ])
   })
 
@@ -34,6 +34,6 @@ describe('defaultFavoriteAgentSlugs', () => {
   it('returns a copy that cannot mutate the table', () => {
     const slugs = defaultFavoriteAgentSlugs('docs')
     slugs.push('pentest-expert')
-    expect(defaultFavoriteAgentSlugs('docs')).toEqual(['office-assistant', 'project-customization-expert'])
+    expect(defaultFavoriteAgentSlugs('docs')).toEqual(['orchestrator', 'office-assistant', 'project-customization-expert'])
   })
 })

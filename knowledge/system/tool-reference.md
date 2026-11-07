@@ -274,6 +274,11 @@ Output: {agents: [{slug, display_name, description, category, skills, workflows}
 The agent itself and every agent already above it in the delegation chain are excluded, as are
 slugs outside the caller's `delegates_to` allowlist. Cross-project agents never appear.
 
+An agent whose frontmatter declares `delegate_agent` also receives this roster as a compact
+`## Available Agents` section in its system prompt at turn start (same source and filtering) —
+call this tool when you need a fresh view or a `query`/`category` filtered one. The global
+`orchestrator` (超级智能体) carries the task-type → agent routing guide in its own prompt.
+
 ## delegate_agent
 
 Runs another agent on a self-contained subtask, inside the current turn, and returns what it

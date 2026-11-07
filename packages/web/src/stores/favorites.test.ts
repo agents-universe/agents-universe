@@ -34,8 +34,8 @@ function makeAgent(slug: string): AgentInfo {
   }
 }
 
-const SOFTWARE_DEFAULTS = ['project-owner', 'tech-lead', 'quality-assurance']
-const DATA_DEFAULTS = ['data-analyst', 'office-assistant']
+const SOFTWARE_DEFAULTS = ['orchestrator', 'project-owner', 'tech-lead', 'quality-assurance']
+const DATA_DEFAULTS = ['orchestrator', 'data-analyst', 'office-assistant']
 
 /** Sign in and land on a project — the scope the store keys its storage by. */
 function enterProject(userId: string, projectId: string, category = 'software') {
@@ -97,7 +97,7 @@ describe('agent favorites: overrides', () => {
     store.toggleAgentFavorite('quality-assurance')
     expect(store.removedAgentSlugs).toEqual(['quality-assurance'])
     expect(store.addedAgentSlugs).toEqual([])
-    expect(store.favoriteAgentSlugs).toEqual(['project-owner', 'tech-lead'])
+    expect(store.favoriteAgentSlugs).toEqual(['orchestrator', 'project-owner', 'tech-lead'])
   })
 
   it('clears the tombstone when the default is favorited again', () => {
@@ -125,7 +125,7 @@ describe('agent favorites: overrides', () => {
     }))
     enterProject('u-1', 'p1')
     const store = useFavoritesStore()
-    expect(store.favoriteAgentSlugs).toEqual(['project-owner', 'quality-assurance', 'pentest-expert'])
+    expect(store.favoriteAgentSlugs).toEqual(['orchestrator', 'project-owner', 'quality-assurance', 'pentest-expert'])
   })
 
   it('drops a stored addition that the defaults now cover', () => {
@@ -185,7 +185,7 @@ describe('agent favorites: isolation', () => {
 
     // p1's deviation is untouched on disk and comes back with the project
     useProjectStore().currentProject = makeProject('p1', 'software')
-    expect(store.favoriteAgentSlugs).toEqual(['tech-lead', 'quality-assurance', 'pentest-expert'])
+    expect(store.favoriteAgentSlugs).toEqual(['orchestrator', 'tech-lead', 'quality-assurance', 'pentest-expert'])
     expect(JSON.parse(localStorage.getItem(scopeKey('u-1', 'p1'))!))
       .toEqual({ added: ['pentest-expert'], removed: ['project-owner'] })
     expect(localStorage.getItem(scopeKey('u-1', 'p2'))).toBeNull()
@@ -274,7 +274,7 @@ describe('agent favorites: storage hygiene', () => {
     Storage.prototype.setItem = () => { throw new Error('quota exceeded') }
     try {
       expect(() => store.toggleAgentFavorite('project-owner')).not.toThrow()
-      expect(store.favoriteAgentSlugs).toEqual(['tech-lead', 'quality-assurance'])
+      expect(store.favoriteAgentSlugs).toEqual(['orchestrator', 'tech-lead', 'quality-assurance'])
     } finally {
       Storage.prototype.setItem = original
     }

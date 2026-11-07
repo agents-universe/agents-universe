@@ -52,7 +52,11 @@ Optional tools (lazy-loaded, enabled per agent): `browser_playwright`, `chart_re
 ### Agent Delegation (delegation.py, tools/agent_delegate.py)
 An agent that lacks a capability can hand a subtask to another agent instead of telling the
 user to switch: `list_agents` shows the project's roster, `delegate_agent` runs one of them as
-a **nested turn** and returns its summary. Delegated turns run with **isolated context** — the
+a **nested turn** and returns its summary. An agent whose frontmatter declares `delegate_agent`
+also gets a compact `## Available Agents` roster injected into its system prompt at turn start —
+same filesystem source and `delegates_to` filtering as the tool, so routing decisions need no
+discovery call; `list_agents` remains the fresh view (mid-turn project agents, query/category
+filters). Delegated turns run with **isolated context** — the
 child starts with its own system prompt, the brief and its knowledge (no conversation history
 preloaded) and receives a `load_conversation_history` tool to page prior messages on demand
 (`AGENT_DELEGATION_ISOLATED_CONTEXT=false` restores preloaded history). The parent blocks on

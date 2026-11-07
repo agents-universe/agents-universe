@@ -12,12 +12,12 @@
  * projects — except for the agents a user added or removed themselves.
  */
 export const DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY: Record<string, string[]> = {
-  'software': ['project-owner', 'tech-lead', 'quality-assurance'],
-  'legacy-modernization': ['project-owner', 'tech-lead', 'quality-assurance'],
-  'data-analysis': ['data-analyst', 'office-assistant'],
-  'customer-service': ['customer-service', 'office-assistant'],
-  'docs': ['office-assistant', 'project-customization-expert'],
-  'other': ['project-customization-expert'],
+  'software': ['orchestrator', 'project-owner', 'tech-lead', 'quality-assurance'],
+  'legacy-modernization': ['orchestrator', 'project-owner', 'tech-lead', 'quality-assurance'],
+  'data-analysis': ['orchestrator', 'data-analyst', 'office-assistant'],
+  'customer-service': ['orchestrator', 'customer-service', 'office-assistant'],
+  'docs': ['orchestrator', 'office-assistant', 'project-customization-expert'],
+  'other': ['orchestrator', 'project-customization-expert'],
 }
 
 /** Unknown or absent category → no defaults. Returns a copy, so a caller can

@@ -11,6 +11,7 @@ vi.mock('@/stores/project', () => ({ useProjectStore: () => projectStore }))
 // the real AppLayout/PublishesPage dependency graphs.
 vi.mock('@/layouts/AppLayout.vue', () => ({ default: { name: 'AppLayoutStub', template: '<div />' } }))
 vi.mock('@/pages/PublishesPage.vue', () => ({ default: { name: 'PublishesPageStub', template: '<div />' } }))
+vi.mock('@/pages/UsagePage.vue', () => ({ default: { name: 'UsagePageStub', template: '<div />' } }))
 vi.mock('@/pages/EmptyProjectPage.vue', () => ({ default: { name: 'EmptyProjectPageStub', template: '<div />' } }))
 
 import router from './index'
@@ -32,6 +33,11 @@ describe('router publish routes', () => {
   it('serves /projects/:id/publishes directly', async () => {
     await router.push('/projects/p1/publishes')
     expect(router.currentRoute.value.path).toBe('/projects/p1/publishes')
+  })
+
+  it('serves /projects/:id/usage directly', async () => {
+    await router.push('/projects/p1/usage')
+    expect(router.currentRoute.value.path).toBe('/projects/p1/usage')
   })
 
   it('redirects /settings/publishes to the current project publishes tab', async () => {

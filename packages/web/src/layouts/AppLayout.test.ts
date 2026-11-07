@@ -62,11 +62,11 @@ beforeEach(() => {
 })
 
 describe('AppLayout center topnav', () => {
-  it('renders 会话 / 工作区 / 图谱 / 发布 / 定时任务 with the publishes tab active', () => {
+  it('renders 会话 / 工作区 / 图谱 / 发布 / 定时任务 / 用量 with the publishes tab active', () => {
     routeState.path = '/projects/p-1/publishes'
     const wrapper = mount(AppLayout)
     const tabs = wrapper.findAll('.center-tab')
-    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '图谱', '发布', '定时任务'])
+    expect(tabs.map(t => t.text().trim())).toEqual(['会话', '工作区', '图谱', '发布', '定时任务', '用量'])
     expect(tabs[3].classes()).toContain('active')
     expect(tabs[0].classes()).not.toContain('active')
   })
@@ -85,6 +85,14 @@ describe('AppLayout center topnav', () => {
     const tabs = wrapper.findAll('.center-tab')
     expect(tabs[4].classes()).toContain('active')
     expect(tabs[1].classes()).not.toContain('active')
+  })
+
+  it('marks the usage tab active on the usage segment', () => {
+    routeState.path = '/projects/p-1/usage'
+    const wrapper = mount(AppLayout)
+    const tabs = wrapper.findAll('.center-tab')
+    expect(tabs[5].classes()).toContain('active')
+    expect(tabs[4].classes()).not.toContain('active')
   })
 
   it('marks the chat tab active on the chat segment', () => {

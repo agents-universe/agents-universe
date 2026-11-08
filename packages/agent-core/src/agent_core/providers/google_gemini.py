@@ -79,6 +79,12 @@ def _max_output_tokens(model: str) -> int:
     return 8_192
 
 
+# Documented dummy that skips thought-signature validation for a
+# functionCall whose real signature this provider never saw (Gemini
+# thought-signatures FAQ lists this and "context_engineering_is_the_way_to_go"
+# as accepted placeholders).
+_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
 # Finish reasons that mean the model produced content but it was blocked or
 # withheld. Masking any of these as END_TURN would end the turn silently:
 # no truncation warning, no refusal signal, the UI never learns why.
@@ -146,6 +152,15 @@ class GoogleGeminiProvider(LLMProvider):
         # OpenAI-only — accepted so the provider-agnostic cred dict never
         # TypeErrors a turn.
         self._thinking_enabled = thinking_enabled if thinking_enabled is not None else thinking_enabled_by_env()
+        # Gemini 4/3 reject a functionCall replayed without the
+        # thoughtSignature the model returned on it (400 INVALID_ARGUMENT,
+        # same-turn validation only). Signatures are captured when the call
+        # is read, keyed by the tool-call id generated at that moment, and
+        # written back in _to_gemini_contents; the Agent reuses this instance
+        # across a run's tool loop, which covers the API's current-turn
+        # window. Calls this instance never saw (model switch, resumed turn)
+        # fall back to the documented skip placeholder.
+        self._thought_signatures: dict[str, bytes] = {}
 
     def _client(self) -> genai.Client:
         """Instance-scoped client, built once — google-genai has no process
@@ -232,12 +247,22 @@ class GoogleGeminiProvider(LLMProvider):
                         args = json.loads(fn.get("arguments", "{}"))
                     except (json.JSONDecodeError, TypeError):
                         args = {}
-                    parts.append({
+                    part = {
                         "function_call": {
                             "name": fn.get("name", ""),
                             "args": args,
                         }
-                    })
+                    }
+                    # Gemini 3/4 validate thought signatures on every
+                    # functionCall in the current turn. Echo the signature
+                    # captured when this call was generated; calls this
+                    # instance never saw get the skip placeholder so a
+                    # model switch or resumed turn doesn't 400.
+                    part["thought_signature"] = (
+                        self._thought_signatures.get(tc.get("id") or "")
+                        or _SKIP_THOUGHT_SIGNATURE
+                    )
+                    parts.append(part)
                 # A delegated child's persisted reply can sit immediately
                 # before its parent's tool-using final message; merge into
                 # that model turn instead of emitting an adjacent one.
@@ -392,20 +417,31 @@ class GoogleGeminiProvider(LLMProvider):
             if getattr(part, "thought", False):
                 continue
             fc = part.function_call
+            sig = getattr(part, "thought_signature", None)
             if fc:
                 # Gemini occasionally emits a function_call part with
                 # an empty name (mirrors the stream path's continuation
                 # chunks). A nameless call would surface as "Unknown tool:"
-                # in the loop - drop it instead.
+                # in the loop - drop it instead, but keep its signature for
+                # the call it continues.
                 if not (fc.name or "").strip():
+                    if sig and tool_calls:
+                        self._thought_signatures.setdefault(tool_calls[-1]["id"], sig)
                     continue
+                call_id = f"call_{uuid.uuid4().hex[:12]}"
+                if sig:
+                    self._thought_signatures[call_id] = sig
                 tool_calls.append({
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "id": call_id,
                     "type": "function",
                     # A no-argument call reports args=None; dict(None) raises.
                     "function": {"name": fc.name, "arguments": json.dumps(dict(fc.args or {}))},
                 })
                 continue
+            # The signature can arrive on a part of its own after the call;
+            # fill it in when the functionCall part carried none.
+            if sig and tool_calls:
+                self._thought_signatures.setdefault(tool_calls[-1]["id"], sig)
             text = _part_text(part)
             if text:
                 text_parts.append(text)
@@ -479,6 +515,9 @@ class GoogleGeminiProvider(LLMProvider):
         # (see _continuation_target_index) instead of assuming the most
         # recent call - parallel calls interleave their continuation chunks.
         seen_arg_keys: dict[int, set[str]] = {}
+        # Emitted tool-call id per index, so a signature arriving on a
+        # continuation part can be stored under the right call's id.
+        tool_call_ids: dict[int, str] = {}
         async for chunk in _prepend_chunk(first_chunk, chunk_iter):
             # Capture usage BEFORE the content short-circuits below: Gemini
             # reports usage_metadata on the terminal chunk, which carries
@@ -513,11 +552,16 @@ class GoogleGeminiProvider(LLMProvider):
                     if name:
                         # First (or only) chunk of a function call.
                         seen_arg_keys[tool_call_index] = set(dict(fc.args)) if fc.args else set()
+                        call_id = f"call_{uuid.uuid4().hex[:12]}"
+                        tool_call_ids[tool_call_index] = call_id
+                        sig = getattr(part, "thought_signature", None)
+                        if sig:
+                            self._thought_signatures[call_id] = sig
                         yield StreamChunk(
                             delta="",
                             tool_call_delta={
                                 "index": tool_call_index,
-                                "id": f"call_{uuid.uuid4().hex[:12]}",
+                                "id": call_id,
                                 "function": {"name": name, "arguments": args_json},
                             },
                         )
@@ -538,6 +582,10 @@ class GoogleGeminiProvider(LLMProvider):
                         )
                         if chunk_args and target in seen_arg_keys:
                             seen_arg_keys[target] |= set(chunk_args)
+                        sig = getattr(part, "thought_signature", None)
+                        target_id = tool_call_ids.get(target)
+                        if sig and target_id:
+                            self._thought_signatures.setdefault(target_id, sig)
                         yield StreamChunk(
                             delta="",
                             tool_call_delta={
@@ -546,6 +594,14 @@ class GoogleGeminiProvider(LLMProvider):
                             },
                         )
                     continue
+                # A signature-only part after the calls (the API sometimes
+                # delivers it outside the functionCall part) — fill in only
+                # when the call itself carried none.
+                sig = getattr(part, "thought_signature", None)
+                if sig and tool_call_ids:
+                    self._thought_signatures.setdefault(
+                        tool_call_ids[tool_call_index - 1], sig,
+                    )
                 text = _part_text(part)
                 if text:
                     yield StreamChunk(delta=text)

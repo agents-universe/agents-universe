@@ -130,6 +130,7 @@
           :visible-repos="visibleRepos"
           :search="search"
           :focus-node="focusNode"
+          :selected-id="selectedId"
           @select="onSelect"
         />
         <div v-else class="graph-state graph-empty">

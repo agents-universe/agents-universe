@@ -17,7 +17,7 @@ vi.mock('@/api/projectGraph', () => ({ projectGraphApi }))
 
 const GraphCanvasStub = vi.hoisted(() => ({
   name: 'GraphCanvasStub',
-  props: ['nodes', 'edges', 'visibleTypes', 'visibleRepos', 'search', 'focusNode'],
+  props: ['nodes', 'edges', 'visibleTypes', 'visibleRepos', 'search', 'focusNode', 'selectedId'],
   emits: ['select'],
   template: '<div class="graph-canvas-stub" />',
 }))

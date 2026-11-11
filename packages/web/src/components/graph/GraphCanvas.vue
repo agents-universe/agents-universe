@@ -32,6 +32,8 @@ const props = defineProps<{
   search: string
   /** Re-centers the canvas on this node when it changes (detail-panel click). */
   focusNode: string | null
+  /** Page-owned selection; restored after any rebuild so classes survive merges. */
+  selectedId: string | null
 }>()
 
 const emit = defineEmits<{ select: [nodeId: string | null] }>()
@@ -225,25 +227,41 @@ function applyFilters(): void {
   }
 }
 
-function rebuild(): void {
-  // layoutReady guards the window where cy exists but the fcose import has
-  // not landed: layout('fcose') would throw. onMounted re-runs rebuild after
-  // registration, so nothing is lost.
-  if (!cy || !layoutReady) return
-  const elements: cytoscape.ElementsDefinition = {
-    nodes: props.nodes.map((node) => ({
-      data: { ...node },
-      classes: isSymbolType(node.type) ? 'symbol' : '',
-    })),
-    edges: props.edges.map((edge, index) => ({
-      // cytoscape addresses edges by source/target; keep src/dst out of data
-      // so no consumer confuses the two conventions.
-      data: { id: `e${index}`, source: edge.src, target: edge.dst, type: edge.type },
-      classes: '',
-    })),
+/** Stable edge identity — cytoscape's data.id must not use array index
+ * (indices shift when GraphPage appends neighbor-merge edges). Node ids are
+ * `repo:…` / `d:…` and never contain `|`. */
+function edgeKey(src: string, dst: string, type: string): string {
+  return `${src}|${dst}|${type}`
+}
+
+/** Deterministic grid position from payload order (pure function of the list). */
+function gridPosition(index: number, count: number): { x: number; y: number } {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(count)))
+  return { x: (index % cols) * 80, y: Math.floor(index / cols) * 80 }
+}
+
+type FixedNode = { nodeId: string; position: { x: number; y: number } }
+
+/** randomize:false skips fcose's Math.random spectral phase; quality default
+ * still applies positions (see cytoscape-fcose index.js). Expansion keeps the
+ * viewport (`fit: false` + pinned survivors); first paint fits the frame. */
+function runLayout(opts?: { fixed?: FixedNode[]; fit?: boolean }): void {
+  if (!cy) return
+  const fit = opts?.fit ?? true
+  const options: Record<string, unknown> = {
+    name: 'fcose',
+    animate: false,
+    fit,
+    randomize: false,
+    quality: 'default',
   }
-  cy.elements().remove()
-  cy.add(elements)
+  if (opts?.fixed && opts.fixed.length > 0) options.fixedNodeConstraint = opts.fixed
+  cy.layout(options as unknown as cytoscape.LayoutOptions).run()
+  if (fit) cy.fit(undefined, 40)
+}
+
+function styleEdges(): void {
+  if (!cy) return
   // Edge styling by type — cytoscape stylesheet selectors cannot match on
   // arbitrary data values portably, so paint in a batch instead.
   cy.batch(() => {
@@ -255,33 +273,155 @@ function rebuild(): void {
       if (style.lineStyle) edge.style('line-style', style.lineStyle)
     })
   })
-  applyFilters()
-  if (props.nodes.length > 0) {
-    // Fresh elements have no positions — run the layout, then frame them.
-    cy.layout({
-      name: 'fcose',
-      animate: false,
-      fit: true,
-      randomize: true,
-      quality: 'default',
-    } as cytoscape.LayoutOptions).run()
-    cy.fit(undefined, 40)
+}
+
+/** Re-apply page-owned selection after wipe/merge. Optional `id` covers the
+ * tap path where props.selectedId has not flushed yet. */
+function applySelection(id: string | null = props.selectedId): void {
+  if (!cy) return
+  cy.elements().removeClass('selected dimmed')
+  if (!id) return
+  const node = cy.getElementById(id)
+  if (node.empty()) return
+  node.addClass('selected')
+  cy.elements().not(node.closedNeighborhood()).addClass('dimmed')
+}
+
+function rebuild(): void {
+  // layoutReady guards the window where cy exists but the fcose import has
+  // not landed: layout('fcose') would throw. onMounted re-runs rebuild after
+  // registration, so nothing is lost.
+  if (!cy || !layoutReady) return
+
+  const prevNodeIds = new Set(cy.nodes().map((n) => n.id()))
+  const prevEdgeKeys = new Set(
+    cy.edges().map((e) => edgeKey(e.source().id(), e.target().id(), e.data('type') as string)),
+  )
+  const nextNodeIds = new Set(props.nodes.map((n) => n.id))
+  const nextEdgeKeys = new Set(props.edges.map((e) => edgeKey(e.src, e.dst, e.type)))
+
+  const nodesToAdd = props.nodes.filter((n) => !prevNodeIds.has(n.id))
+  const edgesToAdd = props.edges.filter((e) => !prevEdgeKeys.has(edgeKey(e.src, e.dst, e.type)))
+  const nodesToRemove = cy.nodes().filter((n) => !nextNodeIds.has(n.id()))
+  const edgesToRemove = cy.edges().filter(
+    (e) => !nextEdgeKeys.has(edgeKey(e.source().id(), e.target().id(), e.data('type') as string)),
+  )
+
+  const emptyCanvas = prevNodeIds.size === 0
+
+  if (emptyCanvas) {
+    if (props.nodes.length > 0) {
+      const total = props.nodes.length
+      cy.add({
+        nodes: props.nodes.map((node, index) => ({
+          data: { ...node },
+          position: gridPosition(index, total),
+          classes: isSymbolType(node.type) ? 'symbol' : '',
+        })),
+        edges: props.edges.map((edge) => ({
+          data: {
+            id: edgeKey(edge.src, edge.dst, edge.type),
+            source: edge.src,
+            target: edge.dst,
+            type: edge.type,
+          },
+          classes: '',
+        })),
+      })
+      styleEdges()
+      applyFilters()
+      runLayout({ fit: true })
+    }
+    applySelection()
+    return
   }
+
+  // Removals / identical set: keep surviving positions; only additions re-layout.
+  if (edgesToRemove.length > 0) edgesToRemove.remove()
+  if (nodesToRemove.length > 0) nodesToRemove.remove()
+
+  const survivors: FixedNode[] = []
+  cy.nodes().forEach((n) => {
+    if (!nextNodeIds.has(n.id())) return
+    const p = n.position()
+    survivors.push({ nodeId: n.id(), position: { x: p.x, y: p.y } })
+  })
+
+  // Refresh survivor DTO fields (labels/types) without touching positions.
+  if (survivors.length > 0) {
+    const byId = new Map(props.nodes.map((n) => [n.id, n]))
+    cy.batch(() => {
+      cy!.nodes().forEach((n) => {
+        const dto = byId.get(n.id())
+        if (dto) n.data({ ...dto })
+      })
+    })
+  }
+
+  if (nodesToAdd.length > 0 || edgesToAdd.length > 0) {
+    const total = props.nodes.length
+    const newIds = new Set(nodesToAdd.map((n) => n.id))
+    // Seed new nodes from payload order, then snap onto neighbor means when
+    // an incident edge already has a positioned endpoint on the canvas.
+    const seeded = new Map<string, { x: number; y: number }>()
+    props.nodes.forEach((n, index) => {
+      if (newIds.has(n.id)) seeded.set(n.id, gridPosition(index, total))
+    })
+    for (const edge of props.edges) {
+      if (!newIds.has(edge.src) || newIds.has(edge.dst)) continue
+      const anchor = cy.getElementById(edge.dst)
+      if (anchor.empty()) continue
+      const p = anchor.position()
+      const base = seeded.get(edge.src)!
+      seeded.set(edge.src, { x: (base.x + p.x) / 2, y: (base.y + p.y) / 2 })
+    }
+    for (const edge of props.edges) {
+      if (!newIds.has(edge.dst) || newIds.has(edge.src)) continue
+      const anchor = cy.getElementById(edge.src)
+      if (anchor.empty()) continue
+      const p = anchor.position()
+      const base = seeded.get(edge.dst)!
+      seeded.set(edge.dst, { x: (base.x + p.x) / 2, y: (base.y + p.y) / 2 })
+    }
+
+    cy.add({
+      nodes: nodesToAdd.map((node) => ({
+        data: { ...node },
+        position: seeded.get(node.id) ?? gridPosition(0, 1),
+        classes: isSymbolType(node.type) ? 'symbol' : '',
+      })),
+      edges: edgesToAdd.map((edge) => ({
+        data: {
+          id: edgeKey(edge.src, edge.dst, edge.type),
+          source: edge.src,
+          target: edge.dst,
+          type: edge.type,
+        },
+        classes: '',
+      })),
+    })
+    styleEdges()
+    applyFilters()
+    // Pin survivors; keep viewport — only new nodes settle.
+    runLayout({ fixed: survivors, fit: false })
+  } else {
+    // Removal-only or same set: no layout — holes stay put, refresh is a no-op.
+    styleEdges()
+    applyFilters()
+  }
+  applySelection()
 }
 
 function onSelect(target: cytoscape.EventObject): void {
   if (!cy) return
   const node = target.target as cytoscape.NodeSingular
   if (node.empty?.()) {
-    cy.elements().removeClass('selected dimmed')
     emit('select', null)
+    applySelection(null)
     return
   }
-  cy.elements().removeClass('selected dimmed')
-  node.addClass('selected')
-  const hood = node.closedNeighborhood()
-  cy.elements().not(hood).addClass('dimmed')
   emit('select', node.id())
+  applySelection(node.id())
 }
 
 onMounted(async () => {
@@ -322,6 +462,7 @@ watch(
   () => [props.visibleTypes, props.visibleRepos, props.search],
   applyFilters,
 )
+watch(() => props.selectedId, applySelection)
 watch(
   () => props.focusNode,
   (nodeId) => {
@@ -334,16 +475,10 @@ watch(
 )
 
 defineExpose({
-  /** Re-runs the fcose layout over currently visible elements. */
+  /** Re-runs fcose from current positions (never re-randomizes). */
   relayout() {
     if (!cy || !layoutReady) return
-    cy.layout({
-      name: 'fcose',
-      animate: false,
-      fit: true,
-      randomize: true,
-      quality: 'default',
-    } as cytoscape.LayoutOptions).run()
+    runLayout()
   },
 })
 </script>

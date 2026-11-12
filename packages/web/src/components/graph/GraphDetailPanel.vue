@@ -52,10 +52,16 @@
         </p>
         <ul v-else class="graph-neighbor-list">
           <li v-for="neighbor in neighbors" :key="neighbor.id">
-            <button type="button" :title="neighbor.via ?? ''" @click="emit('focus', neighbor.id)">
+            <button
+              type="button"
+              :title="neighbor.via ? viaLabel(neighbor.via) : ''"
+              @click="emit('focus', neighbor.id)"
+            >
               <span class="graph-neighbor-dot" :style="{ background: dotColor(neighbor.type) }" />
               <span class="graph-neighbor-name">{{ neighbor.name }}</span>
-              <span v-if="neighbor.via" class="graph-neighbor-via">{{ neighbor.via }}</span>
+              <span v-if="neighbor.via" class="graph-neighbor-via">{{
+                viaLabel(neighbor.via)
+              }}</span>
             </button>
           </li>
         </ul>
@@ -68,6 +74,7 @@
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
 import type { GraphNodeDto } from '@/api/projectGraph'
+import { EDGE_I18N } from './edgeStyle'
 
 defineProps<{
   node: GraphNodeDto | null
@@ -97,6 +104,12 @@ const TYPE_I18N: Record<string, string> = {
 function typeLabel(type: string): string {
   const key = TYPE_I18N[type]
   return key ? t(key) : type
+}
+
+/** Relation name of a neighbor row (`via`); raw value when unmapped. */
+function viaLabel(via: string): string {
+  const key = EDGE_I18N[via]
+  return key ? t(key) : via
 }
 
 const DOT_COLOR: Record<string, string> = {

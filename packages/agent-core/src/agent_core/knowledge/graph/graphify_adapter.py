@@ -2,7 +2,7 @@
 
 Every graphify call in agent-core goes through this module so upstream API
 churn is confined to one file. The builder orchestrates it; model/store/
-queries keep our own schema-v2 contract and never see graphify types.
+queries keep our own schema-v3 contract and never see graphify types.
 
 Three upstream constraints shape everything here (verified against v0.9.100):
 
@@ -28,18 +28,27 @@ from typing import Any
 
 from .model import (
     EDGE_CALLS,
+    EDGE_CASE_OF,
+    EDGE_DEFINES,
+    EDGE_EXECUTES,
     EDGE_FOREIGN_KEY,
+    EDGE_IMPLEMENTS,
     EDGE_IMPORTS,
+    EDGE_INDEXES,
     EDGE_INHERITS,
+    EDGE_LISTENED_BY,
     EDGE_PRIMARY_KEY,
     EDGE_READS,
     EDGE_REFERENCES,
+    EDGE_TRIGGERS,
     EDGE_WRITES,
     NODE_CLASS,
     NODE_FILE,
     NODE_FUNCTION,
+    NODE_PROCEDURE,
     NODE_SYMBOL,
     NODE_TABLE,
+    NODE_TRIGGER,
     GraphEdge,
     GraphNode,
     RepoGraph,
@@ -57,25 +66,44 @@ _log = logging.getLogger(__name__)
 # never touches the event loop.
 _GRAPHIFY_LOCK = threading.RLock()
 
-# graphify relations we do not translate into schema-v2 edges: containment is
+# graphify relations we do not translate into schema-v3 edges: containment is
 # derived from our node ids, never stored as edges (model.py).
 _SKIP_RELATIONS = frozenset({"contains", "method"})
 
-# graphify relation -> schema-v2 edge type. Unknown relations degrade to
-# EDGE_REFERENCES so traversal (neighbors/impact/path) still crosses them.
+# graphify relation -> schema-v3 edge type. Unknown relations degrade to
+# EDGE_REFERENCES so traversal (neighbors/impact/path) still crosses them;
+# to_repo_graph logs the unseen ones once per build so an upstream graphify
+# upgrade surfaces new relations instead of silently flattening them.
+# Verified against graphifyy==0.9.100 for INDEX_EXTS languages:
+#   re_exports (extract.py barrel `export {x} from`), indirect_call,
+#   implements, case_of, defines, listened_by, triggers/executes/indexes (sql).
 _RELATION_MAP: dict[str, str] = {
+    # code
     "imports": EDGE_IMPORTS,
     "imports_from": EDGE_IMPORTS,
+    "re_exports": EDGE_IMPORTS,        # barrel re-export is still an import edge
     "calls": EDGE_CALLS,
+    "indirect_call": EDGE_CALLS,       # call through an alias is still a call
     "inherits": EDGE_INHERITS,
+    "implements": EDGE_IMPLEMENTS,
+    "references": EDGE_REFERENCES,
+    "uses": EDGE_REFERENCES,
+    "case_of": EDGE_CASE_OF,
+    "defines": EDGE_DEFINES,
+    "listened_by": EDGE_LISTENED_BY,
+    # sql
     "reads_from": EDGE_READS,
     "reads": EDGE_READS,
     "writes_to": EDGE_WRITES,
     "writes": EDGE_WRITES,
+    # graphify emits no foreign_key/primary_key relations today (the same-file
+    # SQL heuristic below writes foreign_key directly); keys stay so intent
+    # survives a graphify upgrade that starts emitting them.
     "foreign_key": EDGE_FOREIGN_KEY,
     "primary_key": EDGE_PRIMARY_KEY,
-    "references": EDGE_REFERENCES,
-    "uses": EDGE_REFERENCES,
+    "triggers": EDGE_TRIGGERS,
+    "executes": EDGE_EXECUTES,
+    "indexes": EDGE_INDEXES,
 }
 
 _SQL_SUFFIX = ".sql"
@@ -260,10 +288,18 @@ def _derive_qnames(graph: Any) -> dict[str, str]:
 
 
 def _node_type(data: dict[str, Any], rel: str) -> str:
-    """Schema-v2 node type from graphify attributes."""
+    """Schema-v3 node type from graphify attributes."""
     if rel.endswith(_SQL_SUFFIX):
-        # graphify's SQL extractor does not distinguish tables from views or
-        # emit column nodes; tables are the common case.
+        # graphify's SQL extractor labels recovered routines ``name()`` and
+        # triggers with a plain label (sql.py recovery scan); views carry no
+        # distinguishable signal without re-parsing the DDL, and no column
+        # nodes are emitted — those stay tables.
+        label = str(data.get("label") or "")
+        if label.endswith("()"):
+            # SQL procedure *or* function (graphify cannot tell them apart);
+            # procedure is the SQL-routine type kept in the overview filter,
+            # so typing these `function` would hide every routine there.
+            return NODE_PROCEDURE
         return NODE_TABLE
     if data.get("_callable_class"):
         return NODE_CLASS
@@ -295,7 +331,7 @@ def to_repo_graph(
     langs: list[str],
     extra_stats: dict[str, Any] | None = None,
 ) -> RepoGraph:
-    """Convert a graphify nx.Graph into our schema-v2 RepoGraph.
+    """Convert a graphify nx.Graph into our schema-v3 RepoGraph.
 
     Direction comes from the ``_src``/``_tgt`` arc markers, never from the
     undirected (u, v) ordering. Edges touching a skipped or unmapped node
@@ -339,6 +375,8 @@ def to_repo_graph(
         files_with_symbols.add(rel)
 
     unresolved = 0
+    unresolved_refs = 0
+    unknown_relations: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
     for u, v, data in graph.edges(data=True):
         relation = str(data.get("relation") or "")
@@ -349,8 +387,15 @@ def to_repo_graph(
         src = id_map.get(str(data.get("_src", u)))
         dst = id_map.get(str(data.get("_tgt", v)))
         if src is None or dst is None:
-            unresolved += 1
+            # call-like drops count as unresolved_calls; the rest (sql reads/
+            # writes/fk/pk and the new typed edges) as unresolved_refs.
+            if _RELATION_MAP.get(relation, EDGE_REFERENCES) in (EDGE_CALLS, EDGE_IMPORTS, EDGE_INHERITS, EDGE_IMPLEMENTS):
+                unresolved += 1
+            else:
+                unresolved_refs += 1
             continue
+        if relation not in _RELATION_MAP and relation not in unknown_relations:
+            unknown_relations.add(relation)
         edge_type = _RELATION_MAP.get(relation, EDGE_REFERENCES)
         if edge_type == EDGE_REFERENCES and relation == "references":
             src_rel = parse_rel(src)
@@ -363,6 +408,22 @@ def to_repo_graph(
             continue
         seen_edges.add(key)
         edges.append(GraphEdge(src=src, dst=dst, type=edge_type))
+
+    if unknown_relations:
+        # Unmapped relations degrade to `references`; surface them so a
+        # graphify upgrade that adds relations is visible in the build log.
+        _log.debug(
+            "unmapped graphify relations degraded to %s: %s",
+            EDGE_REFERENCES, ", ".join(sorted(unknown_relations)),
+        )
+
+    # sql.py stamps `triggers` with the trigger object as source but emits no
+    # node-type signal for it; retype those sources out of the table default.
+    trigger_srcs = {e.src for e in edges if e.type == EDGE_TRIGGERS}
+    if trigger_srcs:
+        for node in nodes:
+            if node.id in trigger_srcs and node.type == NODE_TABLE:
+                node.type = NODE_TRIGGER
 
     lang_coverage: dict[str, dict[str, int]] = {}
     for rel in candidates:
@@ -380,6 +441,7 @@ def to_repo_graph(
         "reused": result.reused,
         "failed": len(result.failed_sources),
         "unresolved_calls": unresolved,
+        "unresolved_refs": unresolved_refs,
         "with_symbols": len(files_with_symbols),
         "lang_coverage": lang_coverage,
     }
@@ -400,7 +462,7 @@ def to_repo_graph(
 
 
 def parse_rel(node_id: str) -> str | None:
-    """Repo-relative path carried by a schema-v2 node id (None for symbols
+    """Repo-relative path carried by a schema-v3 node id (None for symbols
     whose qname contains no path separator pattern we trust)."""
     if node_id.startswith("f:"):
         return node_id[2:]

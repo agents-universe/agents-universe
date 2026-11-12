@@ -18,6 +18,7 @@ import { useI18n } from 'vue-i18n'
 import { Loader2 } from 'lucide-vue-next'
 import type cytoscape from 'cytoscape'
 import type { GraphEdgeDto, GraphNodeDto } from '@/api/projectGraph'
+import { EDGE_I18N, EDGE_STYLE } from './edgeStyle'
 
 const { t } = useI18n()
 
@@ -26,6 +27,8 @@ const props = defineProps<{
   edges: GraphEdgeDto[]
   /** Hide nodes whose type is not in this set (empty = show all). */
   visibleTypes: Set<string>
+  /** Hide edges whose type is not in this set (empty = show all). */
+  visibleEdgeTypes: Set<string>
   /** Hide nodes outside these repos (empty = all). */
   visibleRepos: Set<string>
   /** Case-insensitive substring match on node name (empty = all). */
@@ -36,7 +39,11 @@ const props = defineProps<{
   selectedId: string | null
 }>()
 
-const emit = defineEmits<{ select: [nodeId: string | null] }>()
+const emit = defineEmits<{
+  select: [nodeId: string | null]
+  /** Edge tapped — the page drills into the symbol-level edges behind it. */
+  edgeSelect: [payload: { src: string; dst: string; type: string }]
+}>()
 
 const containerEl = ref<HTMLElement | null>(null)
 let cy: cytoscape.Core | null = null
@@ -74,16 +81,7 @@ const TYPE_FILL: Record<string, string> = {
   module: '#3b2a63',
 }
 
-const EDGE_STYLE: Record<string, { color: string; lineStyle?: string }> = {
-  imports: { color: '#4b5563' },
-  calls: { color: '#3b82f6' },
-  inherits: { color: '#8b5cf6' },
-  reads: { color: '#f59e0b' },
-  writes: { color: '#f59e0b' },
-  foreign_key: { color: '#f59e0b' },
-  primary_key: { color: '#f59e0b' },
-  references: { color: '#22c55e', lineStyle: 'dashed' },
-}
+const EDGE_STYLE_FALLBACK = { color: '#4b5563' }
 
 function stylesheet(): cytoscape.StylesheetJsonBlock[] {
   const sheets: cytoscape.StylesheetJsonBlock[] = [
@@ -193,6 +191,10 @@ function stylesheet(): cytoscape.StylesheetJsonBlock[] {
         'background-color': '#0ea5e9',
       },
     },
+    {
+      selector: '.selected-edge',
+      style: { width: 2, opacity: 1 },
+    },
   ]
   return sheets
 }
@@ -214,11 +216,15 @@ function applyFilters(): void {
         !q || data.name.toLowerCase().includes(q) || (data.slug ?? '').toLowerCase().includes(q)
       node.style('display', typeOk && repoOk && searchOk ? 'element' : 'none')
     })
-    // Edges to hidden endpoints would dangle — hide them too.
+    // Edges to hidden endpoints would dangle — hide them too; the edge-type
+    // chip set cuts by relation (empty = all types).
     cy!.edges().forEach((edge) => {
-      const visible =
+      const endpointsVisible =
         edge.source().style('display') !== 'none' && edge.target().style('display') !== 'none'
-      edge.style('display', visible ? 'element' : 'none')
+      const typeOk =
+        props.visibleEdgeTypes.size === 0 ||
+        props.visibleEdgeTypes.has(edge.data('type') as string)
+      edge.style('display', endpointsVisible && typeOk ? 'element' : 'none')
     })
   })
   if (q) {
@@ -266,12 +272,48 @@ function styleEdges(): void {
   // arbitrary data values portably, so paint in a batch instead.
   cy.batch(() => {
     cy!.edges().forEach((edge) => {
-      const style = EDGE_STYLE[edge.data('type') as string]
-      if (!style) return
+      const style = EDGE_STYLE[edge.data('type') as string] ?? EDGE_STYLE_FALLBACK
       edge.style('line-color', style.color)
       edge.style('target-arrow-color', style.color)
       if (style.lineStyle) edge.style('line-style', style.lineStyle)
     })
+  })
+}
+
+/** i18n label for an edge's relation type (raw type when unmapped). */
+function edgeLabelText(type: string): string {
+  const key = EDGE_I18N[type]
+  return key ? t(key) : type
+}
+
+let selectedEdgeKey: string | null = null
+
+function clearEdgeSelection(): void {
+  if (!cy || !selectedEdgeKey) return
+  const prev = cy.getElementById(selectedEdgeKey)
+  if (!prev.empty()) {
+    prev.removeClass('selected-edge')
+    prev.style('label', '')
+  }
+  selectedEdgeKey = null
+}
+
+/** Edge tap: highlight + label the edge and let the page expand the raw
+ * symbol edges it was rolled up from (overview) — a no-op payload at full
+ * level, where the edge is already raw. */
+function onEdgeTap(target: cytoscape.EventObject): void {
+  if (!cy) return
+  const edge = target.target as cytoscape.EdgeSingular
+  if (edge.empty?.()) return
+  clearEdgeSelection()
+  const key = edgeKey(edge.source().id(), edge.target().id(), edge.data('type') as string)
+  selectedEdgeKey = key
+  edge.addClass('selected-edge')
+  edge.style('label', edgeLabelText(edge.data('type') as string))
+  emit('edgeSelect', {
+    src: edge.source().id(),
+    dst: edge.target().id(),
+    type: edge.data('type') as string,
   })
 }
 
@@ -414,6 +456,7 @@ function rebuild(): void {
 
 function onSelect(target: cytoscape.EventObject): void {
   if (!cy) return
+  clearEdgeSelection()
   const node = target.target as cytoscape.NodeSingular
   if (node.empty?.()) {
     emit('select', null)
@@ -443,8 +486,24 @@ onMounted(async () => {
     hideEdgesOnViewport: true,
   })
   cy.on('tap', 'node', onSelect)
+  cy.on('tap', 'edge', onEdgeTap)
+  // Hover label: relation names appear on demand only — labeling every edge
+  // on a thousand-node canvas would drown the layout.
+  cy.on('mouseover', 'edge', (event: cytoscape.EventObject) => {
+    const edge = event.target as cytoscape.EdgeSingular
+    if (edge.empty?.() || edge.data('id') === selectedEdgeKey) return
+    edge.style('label', edgeLabelText(edge.data('type') as string))
+  })
+  cy.on('mouseout', 'edge', (event: cytoscape.EventObject) => {
+    const edge = event.target as cytoscape.EdgeSingular
+    if (edge.empty?.() || edge.data('id') === selectedEdgeKey) return
+    edge.style('label', '')
+  })
   cy.on('tap', (event) => {
-    if (event.target === cy) onSelect(event)
+    if (event.target === cy) {
+      clearEdgeSelection()
+      onSelect(event)
+    }
   })
   await ensureFcose(cytoscapeLib)
   layoutReady = true
@@ -459,7 +518,7 @@ onUnmounted(() => {
 
 watch(() => [props.nodes, props.edges], rebuild)
 watch(
-  () => [props.visibleTypes, props.visibleRepos, props.search],
+  () => [props.visibleTypes, props.visibleEdgeTypes, props.visibleRepos, props.search],
   applyFilters,
 )
 watch(() => props.selectedId, applySelection)

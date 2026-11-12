@@ -3,7 +3,8 @@
 test_repo_graph_tool.py covers the happy-path ops; this suite pins the
 semantics that must survive any engine swap: ambiguity is reported with
 candidates (never guessed), compact_map stays inside the WS token budget,
-graph.json remains schema v2, and FK/read edges keep their direction.
+graph.json carries the current schema version (and stale versions force a
+rebuild), and FK/read edges keep their direction.
 """
 from __future__ import annotations
 
@@ -132,7 +133,7 @@ async def test_sql_fk_and_view_edges_keep_direction(project: Path, graphify_avai
 
 
 @pytest.mark.asyncio
-async def test_graph_json_is_schema_v2(project: Path, graphify_available):
+async def test_graph_json_is_current_schema(project: Path, graphify_available):
     tool = RepoGraphTool()
     ctx = _ctx(project)
     result = await tool.execute({"operation": "build"}, ctx)
@@ -147,6 +148,38 @@ async def test_graph_json_is_schema_v2(project: Path, graphify_available):
     graph = load_cached(Path(project) / ".tmp" / "repo_graph" / "mixed")
     assert graph is not None and graph.schema_version == SCHEMA_VERSION
     assert len(graph.nodes) == len(data["nodes"])
+
+
+@pytest.mark.asyncio
+async def test_stale_schema_graph_rebuilds_on_next_build(
+    project: Path, graphify_available
+):
+    """A graph.json written under an older schema (e.g. v2, whose relations
+    collapsed into `references`) must bypass the head_sha fast path and be
+    rewritten, even with an unchanged HEAD and file set."""
+    tool = RepoGraphTool()
+    ctx = _ctx(project)
+    first = await tool.execute({"operation": "build"}, ctx)
+    assert first["status"] == "built"
+
+    graph_path = Path(first["graph_path"])
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["schema_version"] = SCHEMA_VERSION - 1
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    from agent_core.knowledge.graph.store import invalidate_cached
+    invalidate_cached(graph_path.parent)
+
+    # force=False is the API button / auto-build path (the tool op itself
+    # forces by default, which would mask the fast-path condition under test)
+    again = await tool.execute({"operation": "build", "force": False}, ctx)
+    assert again["status"] == "built", "stale-schema graph was served as up_to_date"
+
+    rewritten = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert rewritten["schema_version"] == SCHEMA_VERSION
+
+    # and with the schema now matching, the fast path goes quiet again
+    third = await tool.execute({"operation": "build", "force": False}, ctx)
+    assert third["status"] == "up_to_date"
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 Covers the upstream constraints the adapter exists to enforce (module
 docstring of graphify_adapter): the process-wide lock, the lazy import
 with timing, incremental SHA256 cache reuse, failure degradation back to
-the builder, and the schema-v2 conversion rules (edge direction from
+the builder, and the schema-v3 conversion rules (edge direction from
 _src/_tgt, qname derivation through containment, collision-safe ids).
 """
 from __future__ import annotations
@@ -26,12 +26,20 @@ from agent_core.knowledge.graph.graphify_adapter import (
 )
 from agent_core.knowledge.graph.model import (
     EDGE_CALLS,
+    EDGE_EXECUTES,
     EDGE_FOREIGN_KEY,
+    EDGE_IMPLEMENTS,
     EDGE_IMPORTS,
+    EDGE_LISTENED_BY,
+    EDGE_REFERENCES,
+    EDGE_READS,
+    EDGE_TRIGGERS,
     NODE_CLASS,
     NODE_FILE,
     NODE_FUNCTION,
+    NODE_PROCEDURE,
     NODE_TABLE,
+    NODE_TRIGGER,
 )
 
 @pytest.fixture(autouse=True)
@@ -350,6 +358,118 @@ def test_conversion_counts_unresolved_edges():
     )
     assert graph.stats["unresolved_calls"] == 1
     assert all(e.src != "f:a.py" for e in graph.edges) or not graph.edges
+
+
+def test_rich_relations_keep_their_own_edge_types():
+    """graphify's implements/listened_by/case_of/defines must not collapse
+    into `references` — that flattening is what made the graph look like
+    file relations only."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_node("f1", label="a.ts", source_file="a.ts")
+    g.add_node("iface", label="IFace", source_file="a.ts",
+               _callable_class=True, source_location="L1")
+    g.add_node("impl", label="Impl", source_file="a.ts",
+               _callable_class=True, source_location="L5")
+    g.add_node("handler", label="onReady", source_file="a.ts",
+               _callable=True, source_location="L9")
+    g.add_node("emitter", label="emitter", source_file="a.ts",
+               source_location="L10")
+    g.add_edge("impl", "iface", relation="implements",
+               _src="impl", _tgt="iface")
+    g.add_edge("emitter", "handler", relation="listened_by",
+               _src="emitter", _tgt="handler")
+    # unknown relation still degrades to references (traversal crosses it)
+    g.add_edge("iface", "emitter", relation="bound_to",
+               _src="iface", _tgt="emitter")
+
+    graph = to_repo_graph(
+        GraphifyResult(graph=g, extracted=1), repo_name="r", head_sha="",
+        candidates=["a.ts"], langs=["typescript"],
+    )
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    assert ("s:a.ts:Impl", "s:a.ts:IFace", EDGE_IMPLEMENTS) in edges
+    assert ("s:a.ts:emitter", "s:a.ts:onReady", EDGE_LISTENED_BY) in edges
+    # unmapped upstream relation still degrades to references, not dropped
+    assert ("s:a.ts:IFace", "s:a.ts:emitter", EDGE_REFERENCES) in edges
+
+
+def test_rich_relations_folds_re_exports_and_indirect_call():
+    """re_exports -> imports and indirect_call -> calls: distinct graphify
+    labels that belong to existing families, not to the references sink."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_node("fa", label="a.ts", source_file="a.ts")
+    g.add_node("fb", label="b.ts", source_file="b.ts")
+    g.add_node("fa2", label="a.ts", source_file="src/a.ts")
+    g.add_node("fa3", label="b.ts", source_file="src/b.ts")
+    g.add_edge("fa", "fb", relation="re_exports", _src="fa", _tgt="fb")
+    g.add_edge("fa2", "fa3", relation="indirect_call", _src="fa2", _tgt="fa3")
+
+    graph = to_repo_graph(
+        GraphifyResult(graph=g, extracted=1), repo_name="r", head_sha="",
+        candidates=["a.ts", "b.ts", "src/a.ts", "src/b.ts"],
+        langs=["typescript"],
+    )
+    types = {(e.src, e.dst): e.type for e in graph.edges}
+    assert types[("f:a.ts", "f:b.ts")] == EDGE_IMPORTS
+    assert types[("f:src/a.ts", "f:src/b.ts")] == EDGE_CALLS
+
+
+def test_sql_procedure_and_trigger_typing():
+    """Recovered SQL routines (label `name()`) become procedures; tables
+    that own a `triggers` edge become triggers, not tables."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_node("f", label="s.sql", source_file="s.sql")
+    g.add_node("users", label="users", source_file="s.sql",
+               source_location="L1")
+    g.add_node("proc", label="usp_Load()", source_file="s.sql",
+               source_location="L10")
+    g.add_node("trig", label="trg_users", source_file="s.sql",
+               source_location="L20")
+    g.add_edge("trig", "users", relation="triggers",
+               _src="trig", _tgt="users")
+    g.add_edge("trig", "proc", relation="executes",
+               _src="trig", _tgt="proc")
+    g.add_edge("proc", "users", relation="reads_from",
+               _src="proc", _tgt="users")
+
+    graph = to_repo_graph(
+        GraphifyResult(graph=g, extracted=1), repo_name="r", head_sha="",
+        candidates=["s.sql"], langs=["sql"],
+    )
+    by_id = {n.id: n for n in graph.nodes}
+    assert by_id["s:s.sql:usp_Load"].type == NODE_PROCEDURE
+    assert by_id["s:s.sql:trg_users"].type == NODE_TRIGGER
+    assert by_id["s:s.sql:users"].type == NODE_TABLE
+    edges = {(e.src, e.dst, e.type) for e in graph.edges}
+    assert ("s:s.sql:trg_users", "s:s.sql:users", EDGE_TRIGGERS) in edges
+    assert ("s:s.sql:trg_users", "s:s.sql:usp_Load", EDGE_EXECUTES) in edges
+    assert ("s:s.sql:usp_Load", "s:s.sql:users", EDGE_READS) in edges
+
+
+def test_unresolved_split_counts_refs_separately():
+    """Non-call drops land in unresolved_refs (report line), calls stay in
+    unresolved_calls."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_node("keep", label="a.py", source_file="a.py")
+    g.add_node("ghost", label="mystery")  # no source_file -> dropped
+    g.add_node("ghost2", label="unknown")  # no source_file -> dropped
+    # distinct pairs: an undirected nx.Graph stores only one edge per pair
+    g.add_edge("keep", "ghost", relation="calls", _src="keep", _tgt="ghost")
+    g.add_edge("keep", "ghost2", relation="uses", _src="keep", _tgt="ghost2")
+    graph = to_repo_graph(
+        GraphifyResult(graph=g, extracted=1), repo_name="r", head_sha="",
+        candidates=["a.py"], langs=["python"],
+    )
+    assert graph.stats["unresolved_calls"] == 1
+    assert graph.stats["unresolved_refs"] == 1
 
 
 def test_lang_of_covers_contract_extensions():

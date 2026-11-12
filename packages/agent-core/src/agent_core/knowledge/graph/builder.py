@@ -3,7 +3,7 @@
 Candidate selection (git ls-files, exclusion dirs, size caps, head_sha fast
 path) stays here; AST extraction, cross-file resolution and clustering are
 graphify's job, reached through ``graphify_adapter`` — the only module that
-imports the library. Results are converted to our schema-v2 RepoGraph, so
+imports the library. Results are converted to our schema-v3 RepoGraph, so
 store/queries/report and every tool consumer are unchanged.
 
 Git subprocess calls here (rev-parse, ls-files) never take a token and run
@@ -30,6 +30,7 @@ from .graphify_adapter import (
     to_repo_graph,
 )
 from .model import (
+    SCHEMA_VERSION,
     RepoGraph,
     repo_graph_dir,
 )
@@ -377,7 +378,7 @@ async def _build_repo_graph_locked(
     Fast path: head unchanged AND the stored manifest already covers every
     candidate source file -> up_to_date with zero hashing. Otherwise every
     candidate is size/containment-checked and handed to graphify (its SHA256
-    AST cache skips unchanged files internally), then converted to schema v2
+    AST cache skips unchanged files internally), then converted to schema v3
     and persisted.
 
     By default only *tracked* files are indexed (the graph mirrors committed
@@ -417,6 +418,10 @@ async def _build_repo_graph_locked(
         and head
         and existing is not None
         and manifest is not None
+        # Schema drift (e.g. v2 graphs with collapsed relations) must bypass
+        # the head_sha fast path so the first build after an upgrade rewrites
+        # them; graphify's AST cache keeps that re-conversion cheap.
+        and existing.schema_version == SCHEMA_VERSION
         and existing.repo.head_sha == head
         and manifest.get("tracked_only") == (not include_untracked)
         and set(candidates) <= set(manifest.get("candidates") or [])

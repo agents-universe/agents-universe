@@ -15,8 +15,11 @@ import pytest
 from agent_core.knowledge.graph import project
 from agent_core.knowledge.graph.model import (
     EDGE_CALLS,
+    EDGE_CASE_OF,
     EDGE_FOREIGN_KEY,
+    EDGE_IMPLEMENTS,
     EDGE_IMPORTS,
+    EDGE_LISTENED_BY,
     EDGE_READS,
     GraphEdge,
     GraphNode,
@@ -156,6 +159,45 @@ def test_overview_keeps_sql_objects_as_tables(tmp_path: Path):
                       "db:s:db/schema.sql:dbo.Orders")}
 
 
+def test_new_edge_types_survive_overview(tmp_path: Path):
+    """schema-v3 relations must reach the default overview view: implements/
+    listened_by keep their endpoints (symbol endpoints roll up to files),
+    while within-file member edges (case_of) fold away as self-edges."""
+    _clone(tmp_path, "svc")
+    _write_graph(tmp_path, "svc", RepoGraph(
+        repo=RepoMeta(name="svc", head_sha="x", langs=["typescript"], built_at=1.0),
+        nodes=[
+            GraphNode(id="f:a.ts", type="file", name="a.ts", lang="typescript"),
+            GraphNode(id="f:b.ts", type="file", name="b.ts", lang="typescript"),
+            GraphNode(id="s:a.ts:Impl", type="class", name="Impl"),
+            GraphNode(id="s:a.ts:IFace", type="class", name="IFace"),
+            GraphNode(id="s:a.ts:Ready", type="symbol", name="Ready"),
+            GraphNode(id="s:a.ts:emitter", type="symbol", name="emitter"),
+            GraphNode(id="s:b.ts:Handler", type="symbol", name="Handler"),
+        ],
+        edges=[
+            GraphEdge(src="s:a.ts:Impl", dst="s:a.ts:IFace", type=EDGE_IMPLEMENTS),
+            GraphEdge(src="s:b.ts:Handler", dst="s:a.ts:emitter", type=EDGE_LISTENED_BY),
+            GraphEdge(src="s:a.ts:Ready", dst="s:a.ts:IFace", type=EDGE_CASE_OF),
+        ],
+    ))
+    payload = project.aggregate_project_graph(str(tmp_path), docs=[], level="overview")
+    ids = {node["id"] for node in payload["nodes"]}
+    assert "svc:s:a.ts:Impl" not in ids  # symbols stay hidden at overview
+    edges = {(e["src"], e["dst"], e["type"]) for e in payload["edges"]}
+    # class endpoints roll up to their files, relation type preserved
+    assert ("svc:f:a.ts", "svc:f:a.ts", EDGE_IMPLEMENTS) not in edges  # self-edge dropped
+    assert ("svc:f:b.ts", "svc:f:a.ts", EDGE_LISTENED_BY) in edges
+    # within-file case_of rolls both endpoints into f:a.ts -> dropped
+    assert not any(t == EDGE_CASE_OF for _, _, t in edges)
+
+    # drill-down view (full) exposes the symbol-level edges behind the rollup
+    full = project.aggregate_project_graph(str(tmp_path), docs=[], level="full")
+    full_edges = {(e["src"], e["dst"], e["type"]) for e in full["edges"]}
+    assert ("svc:s:a.ts:Impl", "svc:s:a.ts:IFace", EDGE_IMPLEMENTS) in full_edges
+    assert ("svc:s:a.ts:Ready", "svc:s:a.ts:IFace", EDGE_CASE_OF) in full_edges
+
+
 def test_full_level_emits_symbols(tmp_path: Path):
     payload = project.aggregate_project_graph(str(_fs(tmp_path)), docs=[], level="full")
     ids = {node["id"] for node in payload["nodes"]}
@@ -242,3 +284,50 @@ def test_graph_node_neighbors_unknown(tmp_path: Path):
 def test_invalid_level_rejected(tmp_path: Path):
     with pytest.raises(ValueError):
         project.aggregate_project_graph(str(tmp_path), docs=[], level="deep")
+
+
+def test_edge_expansion_returns_raw_edges_behind_overview_edge(tmp_path: Path):
+    """The overview folds foo->bar into f:x.py->f:y.py and drops the symbols;
+    expansion must return exactly those raw edges (BFS from the file endpoint
+    cannot — containment is not an edge)."""
+    fs = _fs(tmp_path)
+    result = project.graph_edge_expansion(
+        str(fs), "api", "f:src/x.py", "f:src/y.py", EDGE_CALLS
+    )
+    assert result is not None
+    assert result["count"] >= 1
+    assert result["edges"] == [
+        {"src": "api:s:src/x.py:foo", "dst": "api:s:src/y.py:bar",
+         "type": EDGE_CALLS}
+    ]
+    node_ids = {node["id"] for node in result["nodes"]}
+    assert node_ids == {"api:s:src/x.py:foo", "api:s:src/y.py:bar"}
+
+    # type filter separates rolled-up layers of the same pair (calls vs imports)
+    imports = project.graph_edge_expansion(
+        str(fs), "api", "f:src/x.py", "f:src/y.py", EDGE_IMPORTS
+    )
+    assert imports is not None
+    assert [e["src"] for e in imports["edges"]] == ["api:f:src/x.py"]
+
+    # a structural pair with no raw edges under it returns an empty expansion,
+    # not None (the pair exists; nothing is hidden beneath it)
+    empty = project.graph_edge_expansion(
+        str(fs), "web", "f:src/x.py", "f:src/x.py", None
+    )
+    assert empty is not None and empty["edges"] == []
+
+    # unknown repo / unknown endpoint -> None (404 upstream)
+    assert project.graph_edge_expansion(str(fs), "ghost", "f:a.py", "f:b.py") is None
+    assert project.graph_edge_expansion(
+        str(fs), "api", "f:ghost.py", "f:src/y.py"
+    ) is None
+
+
+def test_edge_expansion_no_match_between_unrelated_nodes(tmp_path: Path):
+    fs = _fs(tmp_path)
+    # x.py has no rolled edge into x.py's own symbol (direction matters)
+    result = project.graph_edge_expansion(
+        str(fs), "api", "f:src/y.py", "f:src/x.py", None
+    )
+    assert result is not None and result["edges"] == []

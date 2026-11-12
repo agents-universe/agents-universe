@@ -56,6 +56,16 @@ export interface GraphNeighbors {
   truncated?: boolean
 }
 
+/** Raw symbol-level edges rolled up into one overview edge (drill-down). */
+export interface GraphEdgeExpansion {
+  src: string
+  dst: string
+  count: number
+  edges: GraphEdgeDto[]
+  nodes: GraphNodeDto[]
+  truncated?: boolean
+}
+
 export interface GraphBuildResult {
   repos: Array<GraphRepoStatus & Record<string, unknown>>
 }
@@ -79,6 +89,18 @@ export const projectGraphApi = {
   getNeighbors: (projectId: string, node: string, depth = 1, signal?: AbortSignal) =>
     apiFetch<GraphNeighbors>(
       `/api/projects/${enc(projectId)}/graph/neighbors?node=${enc(node)}&depth=${depth}`,
+      { signal },
+    ),
+
+  expandEdge: (
+    projectId: string,
+    src: string,
+    dst: string,
+    type: string,
+    signal?: AbortSignal,
+  ) =>
+    apiFetch<GraphEdgeExpansion>(
+      `/api/projects/${enc(projectId)}/graph/edge?src=${enc(src)}&dst=${enc(dst)}&type=${enc(type)}`,
       { signal },
     ),
 

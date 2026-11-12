@@ -112,6 +112,27 @@
             {{ typeLabel(type) }}
           </button>
         </div>
+        <div v-if="edgeTypeOptions.length" class="graph-chip-group">
+          <span class="graph-chip-label">{{ t('graphPage.edgeLabel') }}</span>
+          <button
+            class="graph-chip"
+            :class="{ on: visibleEdgeTypes.size === 0 }"
+            @click="visibleEdgeTypes = new Set()"
+          >
+            {{ t('graphPage.filterAll') }}
+          </button>
+          <button
+            v-for="type in edgeTypeOptions"
+            :key="type"
+            class="graph-chip"
+            :class="{ on: visibleEdgeTypes.has(type) }"
+            :title="edgeLabel(type)"
+            @click="toggleEdgeType(type)"
+          >
+            <span class="graph-swatch" :style="{ background: edgeColor(type) }" />
+            {{ edgeLabel(type) }}
+          </button>
+        </div>
         <input
           v-model="search"
           class="graph-search"
@@ -127,11 +148,13 @@
           :nodes="graph.nodes"
           :edges="graph.edges"
           :visible-types="visibleTypes"
+          :visible-edge-types="visibleEdgeTypes"
           :visible-repos="visibleRepos"
           :search="search"
           :focus-node="focusNode"
           :selected-id="selectedId"
           @select="onSelect"
+          @edge-select="onEdgeSelect"
         />
         <div v-else class="graph-state graph-empty">
           <span class="graph-empty-icon"><Network :size="28" /></span>
@@ -173,6 +196,7 @@ import {
 } from '@/api/projectGraph'
 import GraphCanvas from '@/components/graph/GraphCanvas.vue'
 import GraphDetailPanel from '@/components/graph/GraphDetailPanel.vue'
+import { EDGE_I18N, edgeColor } from '@/components/graph/edgeStyle'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -186,6 +210,7 @@ const error = ref('')
 const message = ref<{ text: string; ok: boolean }>({ text: '', ok: true })
 
 const visibleTypes = ref<Set<string>>(new Set())
+const visibleEdgeTypes = ref<Set<string>>(new Set())
 const visibleRepos = ref<Set<string>>(new Set())
 const search = ref('')
 
@@ -262,6 +287,24 @@ function typeLabel(type: string): string {
   return key ? t(key) : type
 }
 
+const edgeTypeOptions = computed(() => {
+  const types = new Set<string>()
+  for (const edge of graph.value?.edges ?? []) types.add(edge.type)
+  return [...types].sort()
+})
+
+function edgeLabel(type: string): string {
+  const key = EDGE_I18N[type]
+  return key ? t(key) : type
+}
+
+function toggleEdgeType(type: string): void {
+  const next = new Set(visibleEdgeTypes.value)
+  if (next.has(type)) next.delete(type)
+  else next.add(type)
+  visibleEdgeTypes.value = next
+}
+
 let loadSeq = 0
 
 async function load(): Promise<void> {
@@ -335,6 +378,28 @@ function toggleType(type: string): void {
   visibleTypes.value = next
 }
 
+/** Merge server-fetched nodes/edges into the payload (deduped by id/key).
+ * Best-effort: a stale or failed fetch leaves the canvas untouched. */
+function mergeExpansion(
+  extraNodes: GraphNodeDto[],
+  extraEdges: GraphEdgeDto[],
+): void {
+  if (!graph.value) return
+  const known = nodeById.value
+  const freshNodes = extraNodes.filter((entry) => !known.has(entry.id))
+  const existing = new Set(graph.value.edges.map((e) => `${e.src}|${e.dst}|${e.type}`))
+  const freshEdges = extraEdges.filter(
+    (edge) => !existing.has(`${edge.src}|${edge.dst}|${edge.type}`),
+  )
+  if (freshNodes.length || freshEdges.length) {
+    graph.value = {
+      ...graph.value,
+      nodes: [...graph.value.nodes, ...freshNodes],
+      edges: [...graph.value.edges, ...freshEdges] as GraphEdgeDto[],
+    }
+  }
+}
+
 async function onSelect(nodeId: string | null): Promise<void> {
   selectedId.value = nodeId
   focusNode.value = null
@@ -349,21 +414,28 @@ async function onSelect(nodeId: string | null): Promise<void> {
   try {
     const result = await projectGraphApi.getNeighbors(pid, nodeId)
     if (!graph.value || selectedId.value !== nodeId) return
-    const known = nodeById.value
-    const extraNodes = result.neighbors.filter((entry) => !known.has(entry.id))
-    const existing = new Set(graph.value.edges.map((e) => `${e.src}|${e.dst}|${e.type}`))
-    const extraEdges = result.edges.filter(
-      (edge) => !existing.has(`${edge.src}|${edge.dst}|${edge.type}`),
-    )
-    if (extraNodes.length || extraEdges.length) {
-      graph.value = {
-        ...graph.value,
-        nodes: [...graph.value.nodes, ...extraNodes],
-        edges: [...graph.value.edges, ...extraEdges] as GraphEdgeDto[],
-      }
-    }
+    mergeExpansion(result.neighbors, result.edges)
   } catch {
     // Expansion is best-effort; the detail panel still shows what we have.
+  }
+}
+
+/** Edge tap: open the detail panel on the edge's source and pull the raw
+ * symbol-level edges the overview folded into it. Doc edges ship complete
+ * with the payload, so they skip the fetch. */
+async function onEdgeSelect(payload: { src: string; dst: string; type: string }): Promise<void> {
+  selectedId.value = payload.src
+  focusNode.value = null
+  const srcNode = nodeById.value.get(payload.src)
+  if (!srcNode?.repo) return
+  const pid = projectId.value
+  if (!pid) return
+  try {
+    const result = await projectGraphApi.expandEdge(pid, payload.src, payload.dst, payload.type)
+    if (!graph.value) return
+    mergeExpansion(result.nodes, result.edges)
+  } catch {
+    // Best-effort, same as node expansion.
   }
 }
 
@@ -376,6 +448,7 @@ watch(projectId, () => {
   graph.value = null
   selectedId.value = null
   visibleTypes.value = new Set()
+  visibleEdgeTypes.value = new Set()
   visibleRepos.value = new Set()
   message.value = { text: '', ok: true }
   void load()
@@ -553,6 +626,16 @@ onMounted(() => {
   border-color: #0ea5e9;
   background: #0c4a6e33;
   color: #7dd3fc;
+}
+
+/* Relation-color swatch: chips double as the edge legend, so the palette is
+   readable without hovering the canvas (identity never color-alone). */
+.graph-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  flex: none;
 }
 
 .graph-chip.warn {

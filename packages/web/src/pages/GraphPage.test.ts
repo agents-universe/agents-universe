@@ -11,14 +11,24 @@ vi.mock('vue-router', () => ({ useRoute: () => routeState }))
 const projectGraphApi = vi.hoisted(() => ({
   getGraph: vi.fn(),
   getNeighbors: vi.fn(),
+  expandEdge: vi.fn(),
   build: vi.fn(),
 }))
 vi.mock('@/api/projectGraph', () => ({ projectGraphApi }))
 
 const GraphCanvasStub = vi.hoisted(() => ({
   name: 'GraphCanvasStub',
-  props: ['nodes', 'edges', 'visibleTypes', 'visibleRepos', 'search', 'focusNode', 'selectedId'],
-  emits: ['select'],
+  props: [
+    'nodes',
+    'edges',
+    'visibleTypes',
+    'visibleEdgeTypes',
+    'visibleRepos',
+    'search',
+    'focusNode',
+    'selectedId',
+  ],
+  emits: ['select', 'edgeSelect'],
   template: '<div class="graph-canvas-stub" />',
 }))
 vi.mock('@/components/graph/GraphCanvas.vue', () => ({ default: GraphCanvasStub }))
@@ -118,6 +128,91 @@ describe('GraphPage', () => {
     expect(projectGraphApi.getNeighbors).toHaveBeenCalledWith('p-1', 'api:f:src/x.py')
     const nodes = panel.props('neighbors') as Array<{ id: string }>
     expect(nodes.some((entry) => entry.id === 'api:s:src/y.py:bar')).toBe(true)
+  })
+
+  it('renders relation chips with swatches and toggles edge visibility', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const relationGroup = wrapper
+      .findAll('.graph-chip-group')
+      .find((g) => g.find('.graph-chip-label').text() === '关系')
+    expect(relationGroup, 'relation chip group missing').toBeTruthy()
+    const chips = relationGroup!.findAll('.graph-chip')
+    expect(chips.some((c) => c.text().includes('导入'))).toBe(true)
+    expect(relationGroup!.find('.graph-swatch').exists()).toBe(true)
+
+    const importsChip = chips.find((c) => c.text().includes('导入'))!
+    await importsChip.trigger('click')
+    const canvas = wrapper.findComponent(GraphCanvasStub)
+    const selected = canvas.props('visibleEdgeTypes') as Set<string>
+    expect(selected.has('imports')).toBe(true)
+
+    // "All" clears the set again.
+    await chips[0].trigger('click')
+    expect((canvas.props('visibleEdgeTypes') as Set<string>).size).toBe(0)
+  })
+
+  it('expands a tapped edge into its raw symbol edges', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload())
+    projectGraphApi.expandEdge.mockResolvedValue({
+      src: 'api:f:src/x.py',
+      dst: 'api:f:src/y.py',
+      count: 1,
+      edges: [
+        { src: 'api:s:src/x.py:foo', dst: 'api:s:src/y.py:bar', type: 'imports' },
+      ],
+      nodes: [
+        { id: 'api:s:src/x.py:foo', repo: 'api', type: 'function', name: 'foo' },
+        { id: 'api:s:src/y.py:bar', repo: 'api', type: 'function', name: 'bar' },
+      ],
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.findComponent(GraphCanvasStub).vm.$emit('edgeSelect', {
+      src: 'api:f:src/x.py',
+      dst: 'api:f:src/y.py',
+      type: 'imports',
+    })
+    await flushPromises()
+
+    expect(projectGraphApi.expandEdge).toHaveBeenCalledWith(
+      'p-1',
+      'api:f:src/x.py',
+      'api:f:src/y.py',
+      'imports',
+    )
+    // Detail panel opens on the edge's source.
+    const panel = wrapper.findComponent(GraphDetailPanelStub)
+    expect((panel.props('node') as { id: string }).id).toBe('api:f:src/x.py')
+    // Raw symbol edges/nodes merged into the payload the canvas reads.
+    const canvas = wrapper.findComponent(GraphCanvasStub)
+    const nodes = canvas.props('nodes') as Array<{ id: string }>
+    const edges = canvas.props('edges') as Array<{ src: string }>
+    expect(nodes.some((n) => n.id === 'api:s:src/x.py:foo')).toBe(true)
+    expect(edges.some((e) => e.src === 'api:s:src/x.py:foo')).toBe(true)
+  })
+
+  it('skips the edge fetch for doc edges (their edges ship with the payload)', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(
+      graphPayload({
+        nodes: [{ id: 'd:domain/context', repo: null, type: 'module', name: 'ctx' }],
+        edges: [{ src: 'd:domain/context', dst: 'd:domain/context', type: 'references' }],
+      }),
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+
+    wrapper.findComponent(GraphCanvasStub).vm.$emit('edgeSelect', {
+      src: 'd:domain/context',
+      dst: 'd:domain/context',
+      type: 'references',
+    })
+    await flushPromises()
+
+    expect(projectGraphApi.expandEdge).not.toHaveBeenCalled()
   })
 
   it('reports load failures instead of a blank canvas', async () => {

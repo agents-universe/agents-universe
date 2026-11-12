@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+# v3: graphify's richer relations (implements/case_of/defines/listened_by/
+# triggers/executes/indexes, ...) keep their own edge types instead of
+# collapsing into `references`; SQL procedure/trigger nodes stop being tables.
+# Builder fast-path checks this so v2 graphs rebuild on first touch.
+SCHEMA_VERSION = 3
 
 # stats keys (also written into graph.json "stats")
 STAT_FILES = "files"            # tracked source files in the repo
@@ -54,6 +58,18 @@ EDGE_PRIMARY_KEY = "primary_key"
 # Generic reference (graphify "uses"/"references" edges that are neither a
 # call nor a schema relation); traversal treats it like any other edge.
 EDGE_REFERENCES = "references"
+# Interface conformance (Java/C#/TS `implements`), distinct from inherits.
+EDGE_IMPLEMENTS = "implements"
+# Structural member edges: TS/Pascal/etc enum member -> enum, C# class -> member.
+# Within-file by construction, so overview rollup drops them as self-edges.
+EDGE_CASE_OF = "case_of"
+EDGE_DEFINES = "defines"
+# Event listener registration (addEventListener / emitter.on).
+EDGE_LISTENED_BY = "listened_by"
+# sql action edges: trigger -> table, routine -> routine, index -> table.
+EDGE_TRIGGERS = "triggers"
+EDGE_EXECUTES = "executes"
+EDGE_INDEXES = "indexes"
 # "contains" remains schema-reserved: containment is derived from node ids.
 
 
@@ -140,7 +156,9 @@ class RepoGraph:
     def from_dict(cls, data: dict[str, Any]) -> "RepoGraph":
         repo = data["repo"]
         return cls(
-            schema_version=data.get("schema_version", SCHEMA_VERSION),
+            # Missing field = pre-v2 artifact: compare as 0 so the builder's
+            # schema check treats it as stale instead of inheriting current.
+            schema_version=data.get("schema_version", 0),
             repo=RepoMeta(
                 name=repo["name"],
                 head_sha=repo.get("head_sha", ""),

@@ -34,7 +34,7 @@ from .model import (
     parse_node_id,
     repo_graph_dir,
 )
-from .queries import neighbors as query_neighbors
+from .queries import NEIGHBOR_LIMIT, neighbors as query_neighbors
 from .store import load_cached
 
 _log = logging.getLogger(__name__)
@@ -179,6 +179,67 @@ def _rollup(raw_id: str, level: str, type_by_id: dict[str, str]) -> str:
         return raw_id  # structural, or unknown endpoint (final filter drops it)
     _, rel, _ = parse_node_id(raw_id)
     return "f:" + rel
+
+
+def graph_edge_expansion(
+    project_fs_path: str, repo: str, raw_src: str, raw_dst: str, etype: str | None = None
+) -> dict[str, Any] | None:
+    """Raw (symbol-level) edges that roll up into one overview edge.
+
+    The overview folds ``s:a:foo -calls-> s:b:bar`` into ``f:a -calls-> f:b``
+    and drops the symbols, and BFS from the file endpoint cannot recover them
+    (containment is id-derived, never an edge — the file has no traversal
+    path to its own symbols). So expansion matches on the rollup itself:
+    every raw edge whose rolled endpoints equal the clicked pair. None when
+    the repo/graph is unknown or either endpoint is not a node of it.
+
+    Response mirrors the neighbors contract (namespaced ids, nodes carried
+    along) so the canvas merges both the same way.
+    """
+    graph = load_cached(repo_graph_dir(project_fs_path, repo))
+    if graph is None:
+        return None
+    type_by_id = {node.id: node.type for node in graph.nodes}
+    if raw_src not in type_by_id or raw_dst not in type_by_id:
+        return None
+
+    matched: list[Any] = []
+    endpoint_ids: dict[str, None] = {}
+    for edge in graph.edges:
+        if etype and edge.type != etype:
+            continue
+        if _rollup(edge.src, "overview", type_by_id) != raw_src:
+            continue
+        if _rollup(edge.dst, "overview", type_by_id) != raw_dst:
+            continue
+        matched.append(edge)
+        endpoint_ids.setdefault(edge.src, None)
+        endpoint_ids.setdefault(edge.dst, None)
+        if len(matched) >= NEIGHBOR_LIMIT:
+            break
+
+    nodes: list[dict[str, Any]] = []
+    for raw_id in endpoint_ids:
+        node = graph.node(raw_id)
+        if node is None:
+            continue
+        entry = _code_node(node, repo)
+        entry["direction"] = None
+        entry["via"] = None
+        entry["depth"] = None
+        nodes.append(entry)
+    return {
+        "src": f"{repo}:{raw_src}",
+        "dst": f"{repo}:{raw_dst}",
+        "count": len(matched),
+        "edges": [
+            {"src": f"{repo}:{edge.src}", "dst": f"{repo}:{edge.dst}",
+             "type": edge.type}
+            for edge in matched
+        ],
+        "nodes": nodes,
+        **({"truncated": True} if len(matched) >= NEIGHBOR_LIMIT else {}),
+    }
 
 
 def aggregate_project_graph(

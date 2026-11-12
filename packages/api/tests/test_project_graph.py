@@ -171,6 +171,51 @@ async def test_neighbors_endpoint(client, make_project, ws):
     assert resp.status_code == 400
 
 
+async def test_edge_expansion_endpoint(client, make_project, ws):
+    """Overview edge click drill-down: returns the raw symbol edges rolled
+    up into the clicked file→file edge."""
+    project = await make_project(slug="graph-edge")
+    _seed_repo(ws / "graph-edge", "api", _api_graph())
+
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph/edge",
+        params={"src": "api:f:src/x.py", "dst": "api:f:src/y.py",
+                "type": "calls"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["edges"] == [
+        {"src": "api:s:src/x.py:foo", "dst": "api:s:src/y.py:bar",
+         "type": "calls"}
+    ]
+    assert {node["id"] for node in body["nodes"]} == {
+        "api:s:src/x.py:foo", "api:s:src/y.py:bar",
+    }
+
+    # endpoints of different repos -> 400
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph/edge",
+        params={"src": "api:f:src/x.py", "dst": "web:f:src/y.py"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "GRAPH_EDGE_INVALID"
+
+    # unknown endpoint -> 404
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph/edge",
+        params={"src": "api:f:ghost.py", "dst": "api:f:src/y.py"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "GRAPH_EDGE_NOT_FOUND"
+
+    # doc edge shape -> 400 (doc edges ship with the main payload)
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph/edge",
+        params={"src": "d:domain/context", "dst": "d:technical/api"},
+    )
+    assert resp.status_code == 400
+
+
 async def test_build_endpoint_reports_per_repo_status(client, make_project, ws):
     project = await make_project(slug="graph-build")
     _seed_repo(ws / "graph-build", "tiny", None)

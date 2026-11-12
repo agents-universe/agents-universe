@@ -18,6 +18,7 @@ from agent_core.knowledge.graph.project import (
     DEFAULT_MAX_NODES,
     aggregate_project_graph,
     build_project_graphs,
+    graph_edge_expansion,
     graph_node_neighbors,
 )
 from api.database import get_db
@@ -98,6 +99,41 @@ async def get_graph_neighbors(
     result = await asyncio.to_thread(graph_node_neighbors, fs_path, repo, raw_id, depth)
     if result is None:
         raise api_error(404, "GRAPH_NODE_NOT_FOUND", f"Unknown graph node: {node!r}")
+    return result
+
+
+@router.get("/graph/edge")
+async def get_graph_edge(
+    project_id: str,
+    src: str,
+    dst: str,
+    type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+    project: Project = Depends(authorize_project),
+):
+    """Symbol-level edges rolled up into one overview edge (its drill-down).
+
+    Both endpoints must be code node ids of the SAME repo (``{repo}:{f:|s:}``,
+    same validation as neighbors); doc edges ship complete with the payload
+    and never reach here.
+    """
+    src_repo, src_sep, src_raw = src.partition(":")
+    dst_repo, dst_sep, dst_raw = dst.partition(":")
+    valid = (
+        src_sep and dst_sep and src_repo and src_repo == dst_repo
+        and src_raw[:2] in ("f:", "s:") and dst_raw[:2] in ("f:", "s:")
+    )
+    if not valid:
+        raise api_error(400, "GRAPH_EDGE_INVALID",
+                        f"src/dst must be code node ids of one repo: {src!r}, {dst!r}")
+    fs_path = await get_project_fs_path(project_id, db)
+    result = await asyncio.to_thread(
+        graph_edge_expansion, fs_path, src_repo, src_raw, dst_raw, type
+    )
+    if result is None:
+        raise api_error(404, "GRAPH_EDGE_NOT_FOUND",
+                        f"Unknown graph edge: {src!r} -[{type}]-> {dst!r}")
     return result
 
 

@@ -212,6 +212,7 @@ const twoNodes = {
     type: string
   }>,
   visibleTypes: new Set<string>(),
+  visibleEdgeTypes: new Set<string>(),
   visibleRepos: new Set<string>(),
   search: '',
   focusNode: null,
@@ -323,6 +324,75 @@ describe('GraphCanvas', () => {
 
     expect(harness.state.layoutCalls.length).toBe(layoutsAfterMount)
     expect(harness.state.removeCalls).toBe(0)
+
+    wrapper.unmount()
+  })
+
+  it('hides edges whose type is filtered out without relayout', async () => {
+    harness.reset()
+    const wrapper = mount(GraphCanvas, { props: twoNodes })
+    await flushPromises()
+    const layoutsAfterMount = harness.state.layoutCalls.length
+
+    const imports = harness.state.eles.find((e) => e._kind === 'edge')
+    expect(imports?.style).toHaveBeenCalledWith('display', 'element')
+
+    // Empty = all on; picking only `calls` hides the imports edge.
+    await wrapper.setProps({ ...twoNodes, visibleEdgeTypes: new Set(['calls']) })
+    expect(imports?.style).toHaveBeenLastCalledWith('display', 'none')
+    expect(harness.state.layoutCalls.length).toBe(layoutsAfterMount)
+
+    // Back to all-visible: element again.
+    await wrapper.setProps({ ...twoNodes, visibleEdgeTypes: new Set<string>() })
+    expect(imports?.style).toHaveBeenLastCalledWith('display', 'element')
+
+    wrapper.unmount()
+  })
+
+  it('emits edgeSelect with endpoints and type when an edge is tapped', async () => {
+    harness.reset()
+    const wrapper = mount(GraphCanvas, { props: twoNodes })
+    await flushPromises()
+
+    // Handlers are registered through cy.on(selector, handler); the harness
+    // accumulates calls across mounts, so take the latest registration.
+    const edgeTap = harness.cy.on.mock.calls.filter(
+      (call) => call[0] === 'tap' && call[1] === 'edge',
+    ).at(-1)
+    expect(edgeTap, 'tap handler for edges not registered').toBeTruthy()
+
+    const edge = harness.state.eles.find((e) => e._kind === 'edge')!
+    edgeTap![2]({ target: edge })
+
+    expect(wrapper.emitted('edgeSelect')?.[0]).toEqual([
+      { src: 'a', dst: 'b', type: 'imports' },
+    ])
+    // Selected edge is highlighted and labeled with the translated relation.
+    expect(edge._classes.has('selected-edge')).toBe(true)
+    expect(edge.style).toHaveBeenCalledWith('label', '导入')
+
+    wrapper.unmount()
+  })
+
+  it('labels an edge on hover and clears it on mouseout', async () => {
+    harness.reset()
+    const wrapper = mount(GraphCanvas, { props: twoNodes })
+    await flushPromises()
+
+    const over = harness.cy.on.mock.calls.filter(
+      (call) => call[0] === 'mouseover' && call[1] === 'edge',
+    ).at(-1)
+    const out = harness.cy.on.mock.calls.filter(
+      (call) => call[0] === 'mouseout' && call[1] === 'edge',
+    ).at(-1)
+    expect(over, 'mouseover handler not registered').toBeTruthy()
+    expect(out, 'mouseout handler not registered').toBeTruthy()
+
+    const edge = harness.state.eles.find((e) => e._kind === 'edge')!
+    over![2]({ target: edge })
+    expect(edge.style).toHaveBeenCalledWith('label', '导入')
+    out![2]({ target: edge })
+    expect(edge.style).toHaveBeenLastCalledWith('label', '')
 
     wrapper.unmount()
   })

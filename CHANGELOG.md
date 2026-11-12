@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-12
+
 ### 新增
 
 - **超级智能体（orchestrator）总入口 + 委派名册注入** - 新增全局「超级智能体」智能体（`platform-assistant` 分类）作为对话总入口：协调风格为「能自己做就自己做」——简单事务用自带工具直接完成，复杂/专业任务按内置路由表（覆盖全部 11 个专家智能体）经 `delegate_agent` 委派并由自己写整合终稿；正文含自己做/委派/绝不委派判据、自包含 brief 规则（隔离上下文、4000 字 summary 上限、深度 2、会话内串行）、`plan_task` 多智能体编排流程。工具集刻意精简（filesystem/knowledge_rw/memory_rw/web_fetch/web_search/plan_task/deliver_file/user_confirm/delegate_agent/list_agents），以能力边界 enforcement 而非仅靠文案。前端默认收藏表（`DEFAULT_AGENT_SLUGS_BY_PROJECT_CATEGORY`）六个项目类别全部前置 `orchestrator`（侧边栏第一位 + 选择器「默认」徽章，只存 delta 即达存量项目）。配套框架增强：凡 frontmatter 声明 `delegate_agent` 的智能体，系统提示词在工具节后注入 `## Available Agents` 紧凑名册（复用 `list_delegation_candidates` 同源同 `delegates_to`/链过滤，随静态提示词每轮重建、知识写入失效即刷新；`list_agents` 仍是新鲜视图）。新增 agent-core 14 测试（名册注入 6 用例 + orchestrator 资产校验，含「路由表必须点名其余每个全局智能体」的诚实性断言）；web 两个硬编码默认表的测试同步
@@ -17,6 +19,38 @@
 - **web_search 首选 Keenable keyless 搜索** - 默认引擎链改为 Keenable（`POST api.keenable.ai/v1/search/public`，免 API key，结果自带已提取页面正文，snippet 限 500 字）→ Bing RSS → 百度 → DuckDuckGo；429（免费小时限速）/ 402 / 其他报错与非 JSON 响应均记入 engines_tried 后静默降级，全灭时 hint 说明 429 会自行恢复。`engine` 参数新增 `keenable` 可钉单引擎；`keenable.ai` 加入提交卫生 URL 白名单
 
 - **委派子代理隔离上下文 + 按需历史回填工具** - 委派子轮此前预载完整会话历史（最多 200 条 / 50MB），与 `delegate_agent` 要求 brief 自包含的描述自相矛盾，且深度 2 委派链上同一历史被逐层重复读取。现子轮以隔离上下文启动（自有 system prompt + brief + 知识，不预载历史），框架注入 `load_conversation_history` 工具（不可声明、仅嵌套轮可见）供其按需分页回读历史（`limit` 1-50 / `before` 游标 / `agent` 过滤，沿用 `[display_name]:` 归属前缀，每条 ≤2000 字符头尾截断、每页 ≤48KB）。`brief` 参数描述与 G8 系统提示同步改写（父侧写自包含 brief、子侧被告知无历史可调工具）；新增 `AGENT_DELEGATION_ISOLATED_CONTEXT` 开关（默认 true，置 false 恢复预载历史的遗留行为——不注入工具、保留旧系统提示）。归属徽标、委派锁、深度/环路/策略校验、`DelegationTransport` 白名单与 token 记账均不变
+
+- **项目级知识图谱标签页（图谱）** - 项目布局新增第五个顶层页签「图谱」（`/projects/:id/graph`，会话/工作区/发布/定时任务之后）：把每个已克隆仓库的 graphify 图与知识页节点聚合成一张 cytoscape 视图——后端 `knowledge/graph/project.py` 多仓聚合，输出侧 id 加命名空间（`{repo}:{raw_id}` / `d:{slug}`）使仓间同名相对路径不冲突，概览层保留文件/SQL/文档节点并把符号边按属主文件卷起（按类型卷，SQL 对象共享 `s:` 前缀仍是表）；`GET /graph`、`GET /graph/neighbors`（按需展开符号邻居）、`POST /graph/build` 三个端点。前端 GraphCanvas 懒加载 cytoscape + fcose，类型/语言着色、客户端过滤与搜索不打服务端、选中时压暗非邻居；GraphDetailPanel 展示节点卡与邻居列表、文档节点按 slug 打开。工具栏提供概览/完整层级切换与 1500/3000/5000 节点上限选择（服务端钳制 [200, 5000]，概览首载不带查询串保持字节级不变）；刷新/换级/换上限时旧画布暗化 + spinner、GraphCanvas 在 cytoscape/fcose 分块加载期也盖占位层，快速切换由 loadSeq 守卫。fcose 布局确定性化：`randomize:false` + 网格种子、按节点 id/边内容键做 diff、幸存节点 `fixedNodeConstraint` 钉住、展开保视口（`fit:false`）、相同载荷跳过布局，重复布局可复现且选择态在合并后存活
+
+- **代码图谱引擎替换为 graphify** - `knowledge/graph` 手写的 tree-sitter 解析器/缓存/语言栈（`parser.py` 1900 行 + `languages.py` + `cache.py`）整体替换为上游 Graphify-Labs/graphify 库（`graphifyy 0.9.100`），`repo_graph` 工具对外契约逐字节保持：同操作、同结果形状、同 schema-v2 `graph.json`、同「歧义不猜」解析、同 `.tmp/repo_graph/<name>/` 布局。`graphify_adapter.py` 是唯一接入点：进程级 RLock 包住每次调用（上游 `_ACTIVE_SCAN_ROOT` 全局跨根非线程安全）、lazy import 计时、恒 `parallel=False`（其 ProcessPool 在 uvicorn/Windows spawn 下必死）、边方向读 `_src/_tgt` 弧标记而非无向 `(u, v)` 序。builder 保留 git ls-files 候选、体积上限、head_sha 快路径、按 kg_dir 构建锁与未跟踪告警，提取/转换/持久化全走 `asyncio.to_thread`。删除 `parser.py`、`fetch_ts_grammars.py` 与烘焙的 12MB `docker/ts-grammars` .so（graphify 自带编译 grammar wheel），Dockerfile 冒烟改为提取 Python + SQL 并构建一张图
+
+- **代码图谱边类型保真与边可见** - graphify 的 `implements`/`case_of`/`defines`/`listened_by`/`triggers`/`executes`/`indexes`（及 `re_exports`/`indirect_call` 折叠）此前被压扁进 `references`，SQL `()` 后缀不分存储过程——图上无从区分「谁实现谁」「谁触发谁」。现适配器按原生边类型映射、unresolved calls 与 refs 分列，schema 升 v3（缺/旧 `schema_version` 的图绕过构建快路径、下次构建强制重建）；`GET /graph/edge` 支持概览边按双端 rollup 匹配展开回原始符号边（点边下钻）。前端共享 `edgeStyle.ts`（15 种关系的颜色 + i18n），边过滤 chips 带色块作常驻图例，hover/选中显示边标签，点边展开符号级边并打开源码面板，详情面板邻居行翻译「经由关系」
+
+- **项目用量仪表盘** - 项目布局新增第六个页签「用量」：`GET /api/projects/{id}/usage?days=7|30|90` 一次窗口查询出汇总 + Top-10 用户 + 零填充日趋势（`conversation_runs` 存逐会话累计值，逐轮用量按 running-max 差分，时间过滤留在外层查询——窗口内首条 run 不会把终身账本一次倒进来）。Top-10 排行纯 CSS 条形、趋势内联 SVG（列宽上限 24px、图下附表格孪生），无新表无迁移（现有索引覆盖查询）。显示名：会话是 display_name 的唯一存储且随登录过期，故在每次鉴权请求把名字镜像进不过期的 Redis hash，排行按 id `HMGET`，名字未知或 Redis 降级时回退裸 user id
+
+- **脚本声明式密钥注入与工具桥** - 脚本可在 `secrets_json`/`tools_json` 里声明所需密钥与工具：运行时按触发身份（定时→任务创建者、手动→点击者）的密钥库以 project→user 回退解析，注入 `AGENT_SECRET_*` 环境变量——只存在于子进程 env、持久化日志前脱敏、绝不写进 `ScriptRun` 列；声明的工具经 per-run loopback `ToolBridge` 回调（PIN、串行、fail-closed `SCRIPT_TOOL_DENY` 拒绝表、无头上下文拒绝一切确认门）。REST 补 script get/patch/tool-catalog，前端加声明徽标 + 设置弹窗 + 定时任务表单注解；Windows 上 runner 改为解析 Git Bash 而非 WSL launcher（后者会静默丢注入的 env）
+
+- **公共工作流（`public: true`）** - 镜像公共技能机制：`public: true` 的工作流注入每个智能体的 Available Workflows 提示段与 API 响应（按 slug 去重），UI tooltip 显示「公共」徽标；`knowledge-ingestion` 成为第一个公共工作流
+
+- **filesystem 路径加固与按需 tree 操作** - 模型此前瞎猜工作区路径：从不给目录树、not-found 错误无从纠正、绝对前缀剥离漏盘符大小写/8.3 变体。现 not-found 返回 scope、`closest_existing_dir` 与 difflib `did_you_mean` 候选（沿 knowledge_rw 模式，上溯到最深已存在祖先，中段拼错也有列表上下文）；`_normalize_rel_path` 前缀比较走 `canonical()`（normcase+realpath）大小写不敏感，裸 slug 剥离同规则；新增 tree 操作（深度钳制、噪音目录跳过、200 条上限的缩进文本）并改提示词要求先探索再读；overlay 读取报告 source `workspace|framework`，框架兜底不再冒充工作区文件。`did_you_mean` 建议的每一段路径按大小写修正
+
+- **定时任务显示负责人** - `_task_dict` 暴露 `created_by`/`created_by_name`（创建时快照 display_name，工具创建的行为 NULL），卡片渲染负责人 chip（回退 user id）；回归测试钉住执行身份——agent 轮次与 `ScriptRun.triggered_by` 都用任务创建者
+
+- **技能/工作流描述悬浮完整显示与侧边栏精简** - 技能与工作流的描述改原生 `title` 悬浮展示全文（此前截断后无处可读）；侧边栏项目名悬浮显示完整名称；项目列表移除分类/可见性标签（仅收藏选择器弹窗保留）、完整度按类别拆条改为分数点显示
+
+### 修复
+
+- **多页签 WebSocket 互踢与重连风暴根除** - 连接注册表此前每会话只留一个 socket、新页签接入即用 4409 关旧的，而前端每次 onopen 都重置退避——两个页签开着同一会话就互相踢成约 1s 的永久重连循环（每个新页签都会自动加载最新会话，无需用户操作即可触发）。现 `_connections` 改为 `dict[conversation_id, set[WebSocket]]`：connect 不再驱逐（超 8 socket 上限只拒最新者），disconnect 只摘自己的 socket、集合空了才弹键，send 编码一次经 gather 多播（逐 socket `_SEND_TIMEOUT_S` 预算，半开页签单独淘汰不拖累其他接收方），多播同时消除了旧踢机制要防的分裂脑。配套两腿：会话失效的 close 此前在 accept 前发出会被 uvicorn 答成 HTTP 403，浏览器只见 1006、与网络抖动无法区分而永远重试——改为先 accept、发 `WS_UNAUTHENTICATED` 错误帧、再 close(4001)（与既有 4403 拒绝路径结构一致）；前端 onclose 读关闭码，4001（会话过期）/4403（无权限）为终态——标记 failed、卸掉已布防的退避、停止阶梯，4001 经既有守卫跳登录页，`send()` 不静默复活终态条目、只有显式 `reconnect()` 重开，其余关闭码照常走永不放弃的阶梯。退避只在连接存活 `STABLE_RESET_MS`（10s）后才重置（原先每次 onopen 都重置，短暂握手成功使阶梯永远停在 1s 快相位，抖动代理/双页签下持续锤击）；`user_selection_recorded` 按 prompt_id 移除待答弹窗，一个页签作答后另一页签的弹窗即时关闭（而非等用户点击、再被 `WS_PROMPT_NOT_PENDING` 弹回）
+
+- **Gemini 工具调用重放携带 thought signature** - Gemini 4/3 拒绝不带模型原返 `thoughtSignature` 的 functionCall 重放（400 INVALID_ARGUMENT，仅当前轮校验）。现从流式/完整响应按生成的 tool-call id 捕获签名并在 `_to_gemini_contents` 写回；提供方从未见过的调用回退文档记载的 `skip_thought_signature_validator` 占位符
+
+- **可下载文件芯片跨会话切换不丢** - 终态 `stream_end` 之后迟到的 `file_output` 事件被缓冲但已无持久化触发器（任务 stream_end 被 task_id 守卫跳过），交付物落不进任何 DB 行；loadHistory 的时间戳掉队规则又会在本地残留气泡早于最后一条历史行时把它丢掉——任一侧单独发作都会在切走再切回后丢芯片。现 forward_events 在事件队列排空后冲刷残留文件/图像缓冲，合并进最终 assistant 行（或新开一行）；loadHistory 在流式与掉队两条路径上都保留附件/图像未被历史行完全覆盖的本地消息
+
+- **QA 闭环强制第 7 步 spec 生成与显式无 spec 结尾** - 首次跑卡片任务有时不出 Playwright spec：playbook 闭环枚举漏了生成步骤、技能加载靠自评阶段标签门控、`test_generator` 错误被吞进 completed 摘要。现 playbook 默认循环显式包含 Step 7、跳过的阶段必须点名、补首跑/重跑与禁止吞错规则并用生成的 spec 链接收口；quality-assurance 智能体 Step 7 无条件执行；playwright-generator 按步骤号触发并加完成契约；jira-test-case-manager 在 spec 路径或显式无 spec 理由陈述前阻断 completed 回写
+
+- **Jira 测试卡按目标与类型去重** - `create_test_issue` 此前对同一 target + kind 重复建 `[AI test]` 卡；现先查已有卡返回 `already_exists`，`_project_issue` 投影 issuelinks 使卡优先读取能看见关联测试卡，QA 技能/工作流补发现、原地更新与 Done 重开规则
+
+- **上传回读测试改轮询** - 上传页 await `file.text()` 后才写 `#out`，慢速 runner 上单次 `get_text` 读到空 pre（CI 实际踩过）——改为轮询到读回非空为止
 
 ## [1.6.0] - 2026-10-28
 

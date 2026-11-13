@@ -34,6 +34,12 @@ def _make_context(fs_path: Path, framework_root: Path | None) -> ToolContext:
     )
 
 
+@pytest.fixture(autouse=True)
+def _clean_skill_markets(monkeypatch):
+    """A developer's SKILL_MARKETS must not leak into baseline assertions."""
+    monkeypatch.delenv("SKILL_MARKETS", raising=False)
+
+
 def _write_project_catalog(fs_path: Path, body: str) -> None:
     target = fs_path / "knowledge" / "integrations" / "skill-sources.md"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -200,4 +206,137 @@ async def test_shipped_template_is_parseable_and_carries_real_sources():
     assert result["origin"] == "template"
     repos = {s["repo"] for s in result["sources"] if s["valid"]}
     assert "anthropics/skills" in repos
+    assert "obra/superpowers-skills" in repos
+    assert "coreyhaines31/marketingskills" in repos
+    assert "K-Dense-AI/scientific-agent-skills" in repos
+    assert "addyosmani/agent-skills" in repos
     assert all(s["error"] is None for s in result["sources"] if s["valid"])
+
+
+# ---------------------------------------------------------------------------
+# SKILL_MARKETS (deployment-wide env tier)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_env_entries_merge_into_project_catalog(tmp_path, monkeypatch):
+    _write_project_catalog(tmp_path, """---
+slug: integrations/skill-sources
+---
+
+```yaml
+sources:
+  - key: mine
+    repo: acme/mine
+```
+""")
+    monkeypatch.setenv("SKILL_MARKETS", "other/market-skills")
+
+    result = await load_skill_sources(_make_context(tmp_path, None))
+
+    assert result["origin"] == "project"
+    assert [s["key"] for s in result["sources"]] == ["mine", "market-skills"]
+    env_entry = result["sources"][1]
+    assert env_entry["origin"] == "env"
+    assert env_entry["repo"] == "other/market-skills"
+    assert env_entry["valid"] is True
+    # File entries carry no origin marker — absence means the file tier.
+    assert "origin" not in result["sources"][0]
+
+
+@pytest.mark.asyncio
+async def test_env_overrides_file_on_key_collision(tmp_path, monkeypatch, caplog):
+    _write_project_catalog(tmp_path, """---
+slug: integrations/skill-sources
+---
+
+```yaml
+sources:
+  - key: shared
+    repo: project/shadowed
+```
+""")
+    monkeypatch.setenv("SKILL_MARKETS", "ops/shared@v2")
+
+    with caplog.at_level("WARNING"):
+        result = await load_skill_sources(_make_context(tmp_path, None))
+
+    by_key = {s["key"]: s for s in result["sources"]}
+    assert by_key["shared"]["repo"] == "ops/shared"
+    assert by_key["shared"]["ref"] == "v2"
+    assert by_key["shared"]["origin"] == "env"
+    assert any("SKILL_MARKETS" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_env_merges_with_template_when_no_project_file(tmp_path, monkeypatch):
+    _write_template(tmp_path / "framework")
+    monkeypatch.setenv("SKILL_MARKETS", "extra/market")
+
+    result = await load_skill_sources(_make_context(tmp_path, tmp_path / "framework"))
+
+    assert result["origin"] == "template"
+    keys = [s["key"] for s in result["sources"]]
+    assert keys == ["template-src", "market"]
+
+
+@pytest.mark.asyncio
+async def test_env_parses_short_repo_url_and_ref_forms(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "SKILL_MARKETS",
+        "a/b, c/d@v1.2, https://git.example.com/team/tools.git, e/f@feature/x",
+    )
+
+    result = await load_skill_sources(_make_context(tmp_path, None))
+
+    by_key = {s["key"]: s for s in result["sources"]}
+    assert by_key["b"] == {
+        "key": "b", "repo": "a/b", "url": None, "ref": None, "path": None,
+        "notes": "", "tags": [], "valid": True, "error": None, "origin": "env",
+    }
+    assert by_key["d"]["repo"] == "c/d"
+    assert by_key["d"]["ref"] == "v1.2"
+    assert by_key["tools"]["url"] == "https://git.example.com/team/tools.git"
+    assert by_key["tools"]["repo"] is None
+    assert by_key["f"]["ref"] == "feature/x"
+
+
+@pytest.mark.asyncio
+async def test_env_malformed_tokens_are_flagged_not_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "SKILL_MARKETS",
+        "not-a-repo, https://user:pass@host/x/y.git, a/b@"
+        + "f" * 40
+        + ", , acme/good",
+    )
+
+    result = await load_skill_sources(_make_context(tmp_path, None))
+
+    by_key = {s["key"]: s for s in result["sources"]}
+    assert by_key["not-a-repo"]["valid"] is False
+    assert "owner/name" in by_key["not-a-repo"]["error"]
+    assert by_key["y"]["valid"] is False
+    assert "credentials" in by_key["y"]["error"]
+    assert by_key["good"]["valid"] is True
+    # The 40-char SHA token keeps its derived key but is flagged.
+    sha_entry = next(
+        s for s in result["sources"] if s["ref"] and len(s["ref"]) == 40
+    )
+    assert sha_entry["valid"] is False
+    assert "SHA" in sha_entry["error"]
+    # Empty segments are dropped, not surfaced.
+    assert "" not in by_key
+
+
+@pytest.mark.asyncio
+async def test_env_empty_or_unset_is_noop(tmp_path):
+    _write_template(tmp_path / "framework")
+    ctx = _make_context(tmp_path, tmp_path / "framework")
+
+    baseline = await load_skill_sources(ctx)
+    # cfg() reads integration_settings first — an empty string behaves as unset.
+    ctx.integration_settings["SKILL_MARKETS"] = ""
+    with_empty = await load_skill_sources(ctx)
+
+    assert with_empty == baseline
+    assert [s["key"] for s in with_empty["sources"]] == ["template-src"]

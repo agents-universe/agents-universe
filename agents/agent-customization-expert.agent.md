@@ -119,8 +119,8 @@ token_budget: 100000
 **1. 找源**
 
 - 用户直接给了地址：`skill_source fetch`，`source` 支持 `owner/repo`、`https://<host>/owner/repo`、`tree`/`blob` 链接或 raw 文件链接。
-- 没有地址：先 `skill_source list_sources` 读推荐清单（项目 `knowledge/integrations/skill-sources.md`，缺失时回退框架模板），用条目 `key` 作为 `source_key` 抓取。
-- 清单里没有合适的：`github search_repositories`（如 `query: "claude skills topic:claude-skills"`，或按 `SKILL.md` 关键词），拿到 `full_name` 再交给 `skill_source fetch`；需要定位具体文件时用 `github search_code`（`filename:SKILL.md <关键词>`）。
+- 没有地址：先 `skill_source list_sources` 读市场清单——项目 `knowledge/integrations/skill-sources.md`（缺失时回退框架模板），再并入部署级 `SKILL_MARKETS` 环境变量追加的市场条目（条目带 `origin: "env"`），用条目 `key` 作为 `source_key` 抓取。
+- 定制涉及外部集成或领域能力（营销、科研、工程实践等）时，优先从这些市场里挑参考源；清单里没有合适的才用 `github search_repositories` 兜底（如 `query: "claude skills topic:claude-skills"`，或按 `SKILL.md` 关键词），拿到 `full_name` 再交给 `skill_source fetch`；需要定位具体文件时用 `github search_code`（`filename:SKILL.md <关键词>`）。
 
 **2. 浏览与阅读**
 

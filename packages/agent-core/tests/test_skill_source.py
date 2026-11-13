@@ -137,6 +137,12 @@ class _FakeSession:
         return self.answer
 
 
+@pytest.fixture(autouse=True)
+def _clean_skill_markets(monkeypatch):
+    """A developer's SKILL_MARKETS must not leak into catalog assertions."""
+    monkeypatch.delenv("SKILL_MARKETS", raising=False)
+
+
 def _make_context(
     fs_path: Path,
     session: Any = None,
@@ -395,6 +401,30 @@ async def test_unknown_source_key_lists_the_known_keys(tmp_path):
     result = await SkillSourceTool().execute({"operation": "fetch", "source_key": "nope"}, ctx)
 
     assert "unknown source_key" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_list_sources_includes_env_markets_and_fetch_resolves_them(
+    tmp_path, remote, monkeypatch
+):
+    """SKILL_MARKETS entries flow through list_sources and source_key fetch."""
+    monkeypatch.setenv("SKILL_MARKETS", "acme/skills")
+    ctx = _make_context(tmp_path / "proj")
+
+    catalog = await SkillSourceTool().execute({"operation": "list_sources"}, ctx)
+    by_key = {s["key"]: s for s in catalog["sources"]}
+
+    assert by_key["skills"]["origin"] == "env"
+    assert by_key["skills"]["repo"] == "acme/skills"
+    assert by_key["skills"]["valid"] is True
+
+    fetched = await SkillSourceTool().execute(
+        {"operation": "fetch", "source_key": "skills"}, ctx
+    )
+
+    assert "error" not in fetched, fetched
+    assert fetched["status"] == "fetched"
+    assert fetched["source"] == "https://github.com/acme/skills.git"
 
 
 @pytest.mark.asyncio

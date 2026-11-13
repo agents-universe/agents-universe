@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **Skill Markets：部署级技能源市场** - 新增 `SKILL_MARKETS` 环境变量（逗号分隔的 `owner/repo`、`owner/repo@ref` 或完整 https URL），在 `_skill_sources_catalog.load_skill_sources` 里与项目/模板清单**合并**（env 条目标 `origin: "env"`，key 冲突时 env 覆盖文件条目并记警告；只合并不替换——整体替换仍靠项目自己的 `skill-sources.md`）。解析自包含在 catalog 模块（避免与 `skill_source` 循环导入），ref/URL 做轻量校验（拒绝 40 位 SHA、凭据、非 https），畸形 token 降级为 `valid: false` 条目不抛异常；`list_sources` 与 `fetch` 的 `source_key` 解析同点合流，抓取/缓存/确认门零改动。内置模板清单扩充为 5 个知名市场（新增 `coreyhaines31/marketingskills`、`K-Dense-AI/scientific-agent-skills`、`addyosmani/agent-skills`，均验证 `skills/*/SKILL.md` 布局），智能体定制专家「外部技能参考」改为优先从市场挑源、`github search_*` 兜底；`.env.example` 与模板文档同步（`template_words` 重校准为 240）。新增 catalog env 合并矩阵测试 + `list_sources`/`fetch` 集成测试
+
 ## [1.7.0] - 2026-11-12
 
 ### 新增

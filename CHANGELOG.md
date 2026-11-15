@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **代码图谱构建上限提升与超大文件部分索引** - 构建侧两处硬限制放宽，支持更大项目：`MAX_BUILD_FILES` 10k → **50k**（分层不变：≤3000 内联、3001–50000 后台排队、>50000 才拒绝 `too_many_files`——原先 10001–50000 的仓库现在入队而非拒绝）；`MAX_FILE_BYTES`/`SQL_MAX_FILE_BYTES` 2MB → **10MB**，且超限文件不再整文件跳过——`_prepare` 把超限候选记入 `partial_list`（计入 stats/manifest 但不送 graphify 提取），`to_repo_graph` 注入裸文件节点 `partial: true`（无符号、无边），`graph_report.md` 新增 "Partial files (oversized, file node only)" 小节，构建汇总带 warning。缺失/不可读文件仍走 `skipped_files` 硬跳过。schema 升 **v4**（v3 图跳过了超限文件，快路径绕过一次补建节点；graphify SHA 缓存使未变文件免重抽）。SQL 保持独立常量（实测 6.9MB AST 走 ~3.5 分钟占进程级锁，可单独下调）。展示侧节点上限/前端渲染不动。同步 tool-reference/legacy-resources；新增 adapter 注入、builder 超限分流、分层边界回归测试
+
 ### 新增
 
 - **Skill Markets：部署级技能源市场** - 新增 `SKILL_MARKETS` 环境变量（逗号分隔的 `owner/repo`、`owner/repo@ref` 或完整 https URL），在 `_skill_sources_catalog.load_skill_sources` 里与项目/模板清单**合并**（env 条目标 `origin: "env"`，key 冲突时 env 覆盖文件条目并记警告；只合并不替换——整体替换仍靠项目自己的 `skill-sources.md`）。解析自包含在 catalog 模块（避免与 `skill_source` 循环导入），ref/URL 做轻量校验（拒绝 40 位 SHA、凭据、非 https），畸形 token 降级为 `valid: false` 条目不抛异常；`list_sources` 与 `fetch` 的 `source_key` 解析同点合流，抓取/缓存/确认门零改动。内置模板清单扩充为 5 个知名市场（新增 `coreyhaines31/marketingskills`、`K-Dense-AI/scientific-agent-skills`、`addyosmani/agent-skills`，均验证 `skills/*/SKILL.md` 布局），智能体定制专家「外部技能参考」改为优先从市场挑源、`github search_*` 兜底；`.env.example` 与模板文档同步（`template_words` 重校准为 240）。新增 catalog env 合并矩阵测试 + `list_sources`/`fetch` 集成测试

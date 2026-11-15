@@ -3,7 +3,7 @@
 Candidate selection (git ls-files, exclusion dirs, size caps, head_sha fast
 path) stays here; AST extraction, cross-file resolution and clustering are
 graphify's job, reached through ``graphify_adapter`` — the only module that
-imports the library. Results are converted to our schema-v3 RepoGraph, so
+imports the library. Results are converted to our schema-v4 RepoGraph, so
 store/queries/report and every tool consumer are unchanged.
 
 Git subprocess calls here (rev-parse, ls-files) never take a token and run
@@ -47,8 +47,11 @@ _log = logging.getLogger(__name__)
 AUTO_BUILD_MAX_FILES = 3000
 # Explicit `repo_graph build` may force past AUTO_BUILD_MAX_FILES but still
 # refuses absurd trees: extracting tens of thousands of files holds the build
-# lock and bloats graph.json far past what the LLM can use.
-MAX_BUILD_FILES = 10_000
+# lock and bloats graph.json far past what the LLM can use. Tiering:
+#   <= AUTO_BUILD_MAX_FILES  → inline in the turn
+#   AUTO..MAX_BUILD_FILES    → background queue (Semaphore(2) bounds memory)
+#   >  MAX_BUILD_FILES       → refused (too_many_files), even when forced
+MAX_BUILD_FILES = 50_000
 # Per-file skip reasons recorded in stats/report (rel -> reason). Bounded so
 # a repo of a thousand giant generated files cannot bloat graph.json.
 SKIPPED_FILES_MAX = 100
@@ -95,12 +98,14 @@ def _auto_build_sem() -> asyncio.Semaphore:
         _auto_build_sem._state = state  # type: ignore[attr-defined]
     return state[1]
 
-# Skip giant / minified / generated files outright. graphify's SQL extractor
-# is an AST walk, not our old streaming parser: a spike-measured 6.9MB /
-# 60k-table dump took ~3.5 minutes, so SQL gets a much smaller cap than the
-# old 1GiB — anything past 2MB is a generated dump, not a migration script.
-MAX_FILE_BYTES = 2 * 1024 * 1024
-SQL_MAX_FILE_BYTES = 2 * 1024 * 1024
+# Files past these limits are not extracted — they still get a bare file
+# node (partial=true) so the candidate shows up in the graph and report.
+# graphify's SQL extractor is an AST walk, not our old streaming parser: a
+# spike-measured 6.9MB / 60k-table dump took ~3.5 minutes under the
+# process-wide graphify lock, so SQL keeps its own constant — ops can lower
+# it alone if builds prove slow, without touching the general cap.
+MAX_FILE_BYTES = 10 * 1024 * 1024
+SQL_MAX_FILE_BYTES = 10 * 1024 * 1024
 
 # Committed vendor/build dirs are still skipped even when git ls-files lists
 # them — they are noise, not architecture. bin/obj/.vs are .NET build output
@@ -378,7 +383,7 @@ async def _build_repo_graph_locked(
     Fast path: head unchanged AND the stored manifest already covers every
     candidate source file -> up_to_date with zero hashing. Otherwise every
     candidate is size/containment-checked and handed to graphify (its SHA256
-    AST cache skips unchanged files internally), then converted to schema v3
+    AST cache skips unchanged files internally), then converted to schema v4
     and persisted.
 
     By default only *tracked* files are indexed (the graph mirrors committed
@@ -454,6 +459,8 @@ async def _build_repo_graph_locked(
         }
 
     skipped_files: dict[str, str] = {}
+    partial_files: dict[str, str] = {}  # bounded, for stats/report
+    partial_list: list[str] = []        # full list for node injection
     repo_resolved = repo.resolve()
     paths: list[Path] = []
     accepted: list[str] = []
@@ -482,8 +489,14 @@ async def _build_repo_graph_locked(
                 continue
             limit = _max_file_bytes(rel)
             if size > limit:
-                if len(skipped_files) < SKIPPED_FILES_MAX:
-                    skipped_files[rel] = f"over {limit // (1 << 20)}MB limit"
+                # Oversized: no extraction, but the file still joins the
+                # graph as a bare partial node (accepted counts in stats
+                # and the fast-path manifest).
+                reason = f"over {limit // (1 << 20)}MB limit; file node only"
+                if len(partial_files) < SKIPPED_FILES_MAX:
+                    partial_files[rel] = reason
+                partial_list.append(rel)
+                accepted.append(rel)
                 continue
             paths.append(path)
             accepted.append(rel)
@@ -512,8 +525,11 @@ async def _build_repo_graph_locked(
         head_sha=head,
         candidates=accepted,
         langs=langs,
+        partial_files=partial_list,
         extra_stats={
             "skipped_files": skipped_files,
+            "partial_files": partial_files,
+            "partial_files_count": len(partial_list),
             "untracked_sources": 0 if include_untracked else len(untracked_candidates),
         },
     )
@@ -539,6 +555,12 @@ async def _build_repo_graph_locked(
             f"{len(result.failed_sources)} source file(s) failed to extract "
             "(see graph_report.md)"
         )
+    if partial_list:
+        hint = (
+            f"{len(partial_list)} oversized file(s) indexed as file nodes only "
+            "(see graph_report.md)"
+        )
+        summary["warning"] = f"{summary['warning']} {hint}" if "warning" in summary else hint
     if untracked_candidates and not include_untracked:
         hint = _untracked_hint(untracked_candidates)
         summary["warning"] = f"{summary['warning']} {hint}" if "warning" in summary else hint

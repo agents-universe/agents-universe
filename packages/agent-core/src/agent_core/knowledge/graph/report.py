@@ -130,6 +130,20 @@ def render_report(graph: RepoGraph) -> str:
         lines += ["## Skipped files (too large / unreadable)", ""]
         for rel, reason in sorted(skipped_files.items()):
             lines.append(f"- `{rel}` — {reason}")
+    partial_files = stats.get("partial_files") or {}
+    partial_count = stats.get("partial_files_count", len(partial_files))
+    if partial_count:
+        lines += [
+            f"## Partial files (oversized, file node only: {partial_count})",
+            "",
+        ]
+        for rel, reason in sorted(partial_files.items()):
+            lines.append(f"- `{rel}` — {reason}")
+        if partial_count > len(partial_files):
+            lines.append(
+                f"- … {partial_count - len(partial_files)} more not listed "
+                f"(cap {len(partial_files)})"
+            )
     lines += ["", "## God nodes (most connected)", ""]
     for node_id, degree in god_nodes(graph):
         kind, rel, qname = parse_node_id(node_id)

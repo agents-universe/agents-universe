@@ -242,9 +242,11 @@ Key operations:
   path      — shortest call path between two symbols
   report    — compact repo map (also embedded in clone/pull results)
   build     — (re)create the graph; auto-build runs inline up to 3000 files
-              and queues a background build up to 10k after git ops (result
-              status `queued`); beyond 10k even explicit build refuses
-              ("use search/read tools instead")
+              and queues a background build up to 50k after git ops (result
+              status `queued`); beyond 50k even explicit build refuses
+              ("use search/read tools instead"). Files over 10MB are not
+              parsed — they appear as file-only nodes marked partial (see
+              graph_report.md)
 ```
 
 Graph-first order for clone work: `repo_graph` (locate) → `git_repo search/log/show` or `filesystem` read (semantics of the pointed-to file). The graph is deterministic and may miss dynamic references — a navigation aid, not a spec; always read files for behavior/semantics. Covers `.py .ts .tsx .js .jsx .vue .java .cs .sql` in **git clones only**, tracked files by default — workspace code outside clones, untracked files, and skipped repos fall back to grep/filesystem as usual.

@@ -2,7 +2,7 @@
 
 Every graphify call in agent-core goes through this module so upstream API
 churn is confined to one file. The builder orchestrates it; model/store/
-queries keep our own schema-v3 contract and never see graphify types.
+queries keep our own schema-v4 contract and never see graphify types.
 
 Three upstream constraints shape everything here (verified against v0.9.100):
 
@@ -66,11 +66,11 @@ _log = logging.getLogger(__name__)
 # never touches the event loop.
 _GRAPHIFY_LOCK = threading.RLock()
 
-# graphify relations we do not translate into schema-v3 edges: containment is
+# graphify relations we do not translate into schema-v4 edges: containment is
 # derived from our node ids, never stored as edges (model.py).
 _SKIP_RELATIONS = frozenset({"contains", "method"})
 
-# graphify relation -> schema-v3 edge type. Unknown relations degrade to
+# graphify relation -> schema-v4 edge type. Unknown relations degrade to
 # EDGE_REFERENCES so traversal (neighbors/impact/path) still crosses them;
 # to_repo_graph logs the unseen ones once per build so an upstream graphify
 # upgrade surfaces new relations instead of silently flattening them.
@@ -329,13 +329,16 @@ def to_repo_graph(
     head_sha: str,
     candidates: list[str],
     langs: list[str],
+    partial_files: list[str] | None = None,
     extra_stats: dict[str, Any] | None = None,
 ) -> RepoGraph:
-    """Convert a graphify nx.Graph into our schema-v3 RepoGraph.
+    """Convert a graphify nx.Graph into our schema-v4 RepoGraph.
 
     Direction comes from the ``_src``/``_tgt`` arc markers, never from the
     undirected (u, v) ordering. Edges touching a skipped or unmapped node
     are dropped and counted as unresolved so traversal never hits a hole.
+    ``partial_files`` (oversized, never extracted) get bare file nodes with
+    ``partial=True`` so they still appear in the graph.
     """
     graph = result.graph
     qnames = _derive_qnames(graph)
@@ -378,6 +381,19 @@ def to_repo_graph(
     unresolved_refs = 0
     unknown_relations: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
+
+    # Oversized files never reach graphify — inject their bare file nodes so
+    # the candidate still shows up (with partial=True, no symbols, no edges).
+    for rel in partial_files or []:
+        fid = file_id(rel)
+        if fid in taken:
+            continue  # graphify somehow already emitted it
+        taken.add(fid)
+        nodes.append(GraphNode(
+            id=fid, type=NODE_FILE, name=os.path.basename(rel),
+            lang=lang_by_rel.get(rel), partial=True,
+        ))
+
     for u, v, data in graph.edges(data=True):
         relation = str(data.get("relation") or "")
         if relation in _SKIP_RELATIONS:
@@ -462,7 +478,7 @@ def to_repo_graph(
 
 
 def parse_rel(node_id: str) -> str | None:
-    """Repo-relative path carried by a schema-v3 node id (None for symbols
+    """Repo-relative path carried by a schema-v4 node id (None for symbols
     whose qname contains no path separator pattern we trust)."""
     if node_id.startswith("f:"):
         return node_id[2:]

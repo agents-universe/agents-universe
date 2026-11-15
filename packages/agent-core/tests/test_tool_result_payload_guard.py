@@ -107,7 +107,7 @@ async def test_files_count_does_not_crash_the_turn():
         "status": "skipped",
         "reason": "too_many_files",
         "files": 12345,
-        "max": 10_000,
+        "max": 50_000,
         "hint": "Repo has 12345 source files",
     }
     events = await _run_turn(_make_agent(skipped), _ScriptedProvider("probe", "{}"))

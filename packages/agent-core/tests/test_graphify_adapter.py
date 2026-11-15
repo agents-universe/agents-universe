@@ -3,7 +3,7 @@
 Covers the upstream constraints the adapter exists to enforce (module
 docstring of graphify_adapter): the process-wide lock, the lazy import
 with timing, incremental SHA256 cache reuse, failure degradation back to
-the builder, and the schema-v3 conversion rules (edge direction from
+the builder, and the schema-v4 conversion rules (edge direction from
 _src/_tgt, qname derivation through containment, collision-safe ids).
 """
 from __future__ import annotations

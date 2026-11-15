@@ -15,7 +15,10 @@ from typing import Any
 # triggers/executes/indexes, ...) keep their own edge types instead of
 # collapsing into `references`; SQL procedure/trigger nodes stop being tables.
 # Builder fast-path checks this so v2 graphs rebuild on first touch.
-SCHEMA_VERSION = 3
+# v4: oversized files are no longer dropped — they become file-only nodes
+# with `partial: true`. v3 graphs skipped them, so the fast path must bypass
+# once and inject the missing nodes.
+SCHEMA_VERSION = 4
 
 # stats keys (also written into graph.json "stats")
 STAT_FILES = "files"            # tracked source files in the repo
@@ -32,6 +35,8 @@ STAT_WITH_SYMBOLS = "with_symbols"    # files that produced >= 1 symbol
 STAT_LANG_COVERAGE = "lang_coverage"  # per-language {files, with_symbols}
 STAT_FAILED_REASONS = "failed_reasons"  # error string -> file count
 STAT_SKIPPED_FILES = "skipped_files"  # rel path -> skip reason (bounded)
+STAT_PARTIAL_FILES = "partial_files"  # rel path -> oversize reason (bounded)
+STAT_PARTIAL_FILES_COUNT = "partial_files_count"  # true total, even when dict is truncated
 STAT_UNTRACKED = "untracked_sources"  # untracked source files not indexed
 
 NODE_FILE = "file"
@@ -81,6 +86,8 @@ class GraphNode:
     line: int = 0                # 1-based symbol start line; 0 for files
     lang: str | None = None     # file nodes only
     lines: int = 0              # file nodes only
+    # Oversized file indexed as a bare file node (no symbol extraction).
+    partial: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "type": self.type, "name": self.name}
@@ -90,6 +97,8 @@ class GraphNode:
             data["lang"] = self.lang
         if self.lines:
             data["lines"] = self.lines
+        if self.partial:
+            data["partial"] = True
         return data
 
     @classmethod
@@ -101,6 +110,7 @@ class GraphNode:
             line=data.get("line", 0),
             lang=data.get("lang"),
             lines=data.get("lines", 0),
+            partial=data.get("partial", False),
         )
 
 

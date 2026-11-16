@@ -91,6 +91,69 @@ async def test_list_mcp_servers_secret_configured(client, make_project):
     assert "ghp_supersecret" not in resp.text
 
 
+async def test_list_secret_missing_when_environment_tagged(client, make_project):
+    """Runtime get_secret only reads env-agnostic rows — a secret tagged with
+    an environment must not flip the badge (it would lie about resolvability)."""
+    project = await make_project()
+    await _write_catalog(project)
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/secrets",
+        json={"service_key": "mcp:github-copilot", "environment": "dev", "value": "v"},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get(f"/api/projects/{project.project_id}/mcp-servers")
+    servers = {s["slug"]: s for s in resp.json()}
+    assert servers["github-copilot"]["has_secret"] is False
+
+
+async def test_list_secret_missing_when_secret_name_not_default(client, make_project):
+    project = await make_project()
+    await _write_catalog(project)
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/secrets",
+        json={"service_key": "mcp:github-copilot", "secret_name": "staging", "value": "v"},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get(f"/api/projects/{project.project_id}/mcp-servers")
+    servers = {s["slug"]: s for s in resp.json()}
+    assert servers["github-copilot"]["has_secret"] is False
+
+
+async def test_list_secret_scope_user_ignores_project_secret(client, make_project, db):
+    """A scope=user row resolves from user_tokens only — a matching project
+    secret must not satisfy its badge."""
+    from api.models.mcp_server import MCPServer
+
+    project = await make_project()
+    db.add(MCPServer(
+        slug="user-scope-srv", name="User Scope", url="https://u.example.com",
+        auth_type="bearer", secret_ref="mcp:user-scope-srv", secret_scope="user",
+    ))
+    await db.commit()
+
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/secrets",
+        json={"service_key": "mcp:user-scope-srv", "value": "v"},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get(f"/api/projects/{project.project_id}/mcp-servers")
+    servers = {s["slug"]: s for s in resp.json()}
+    assert servers["user-scope-srv"]["has_secret"] is False
+    assert servers["user-scope-srv"]["secret_scope"] == "user"
+
+    # Storing the same key as a user token flips it.
+    from api.models.user import UserToken
+    db.add(UserToken(user_id="test-user", service_key="mcp:user-scope-srv",
+                     encrypted_value="ciphertext"))
+    await db.commit()
+    resp = await client.get(f"/api/projects/{project.project_id}/mcp-servers")
+    servers = {s["slug"]: s for s in resp.json()}
+    assert servers["user-scope-srv"]["has_secret"] is True
+
+
 async def test_list_mcp_servers_missing_catalog_empty(client, make_project):
     """No catalog file → no project-scoped rows (global rows may remain
     from other tests in the shared DB)."""

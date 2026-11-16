@@ -425,6 +425,28 @@
                   >
                     {{ s.has_secret ? t('tokenConfig.secretConfigured') : t('tokenConfig.secretMissing') }}
                   </span>
+                  <button
+                    v-if="s.auth_type && s.auth_type !== 'none' && s.secret_ref"
+                    class="btn-sm secondary"
+                    @click="toggleSecretConfig(s)"
+                  >
+                    {{ t('tokenConfig.configureSecret') }}
+                  </button>
+                  <template v-if="secretConfigFor === s.server_id">
+                    <input
+                      v-model="secretConfigValue"
+                      class="input mcp-secret-input"
+                      type="password"
+                      :placeholder="t('tokenConfig.secretValuePlaceholder')"
+                      @keyup.enter="saveSecretValue(s)"
+                    />
+                    <button class="btn-sm" :disabled="secretSaving || !secretConfigValue" @click="saveSecretValue(s)">
+                      {{ secretSaving ? t('common.saving') : t('common.save') }}
+                    </button>
+                    <button class="btn-sm secondary" @click="secretConfigFor = null; secretConfigValue = ''">
+                      {{ t('common.cancel') }}
+                    </button>
+                  </template>
                   <template v-if="s.scope === 'global'">
                     <button class="btn-sm" @click="openMcpForm(s)">{{ t('tokenConfig.edit') }}</button>
                     <button class="btn-sm secondary" @click="testMcpServer(s)" :disabled="mcpTesting === s.server_id">
@@ -892,12 +914,19 @@ interface McpServerInfo {
   /** Header name for auth_type 'header' (metadata, never the value). */
   auth_header_name: string | null
   has_secret: boolean
+  /** Where the secret value must be stored for the runtime to resolve it. */
+  secret_scope: 'project' | 'user'
   tool_allowlist: string[]
   tool_denylist: string[]
   scope: 'global' | 'project'
 }
 const mcpServers = ref<McpServerInfo[]>([])
 const mcpLoading = ref(false)
+
+// Inline "configure secret" writer for one MCP row.
+const secretConfigFor = ref<string | null>(null)
+const secretConfigValue = ref('')
+const secretSaving = ref(false)
 
 // Global MCP server add/edit form (project servers are file-managed).
 const showMcpForm = ref(false)
@@ -946,6 +975,9 @@ async function saveMcpServer() {
       transport: mcpForm.transport,
       auth_type: mcpForm.auth_type,
       secret_ref: mcpForm.secret_ref.trim() || null,
+      // Global CRUD has no project context — UI-managed rows resolve from
+      // user_tokens, so declare that scope explicitly.
+      secret_scope: 'user' as const,
       auth_header_name: mcpForm.auth_header_name.trim() || null,
       enabled: mcpForm.enabled,
     }
@@ -971,17 +1003,74 @@ async function testMcpServer(server: McpServerInfo) {
   mcpMessage.ok = true
   mcpMessage.text = ''
   try {
-    const res = await apiFetch<{ ok: boolean; error?: string; tools?: number }>(
+    // Send the current project so project-scoped secrets resolve the same
+    // way they do at conversation time (the backend used a fake project id).
+    const res = await apiFetch<{ ok: boolean; error?: string; tools?: number; code?: string }>(
       `/api/mcp/servers/${server.server_id}/test`,
-      { method: 'POST' }
+      {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectStore.currentProject?.project_id ?? null }),
+      }
     )
     mcpMessage.ok = res.ok
-    mcpMessage.text = res.ok ? t('tokenConfig.connectionOkTools', { count: res.tools ?? 0 }) : (res.error || t('common.connectionFailed'))
+    if (res.ok) {
+      mcpMessage.text = t('tokenConfig.connectionOkTools', { count: res.tools ?? 0 })
+    } else if (res.code === 'SECRET_MISSING') {
+      mcpMessage.text = t('tokenConfig.secretMissingError', { key: server.secret_ref || '' })
+    } else {
+      mcpMessage.text = res.error || t('common.connectionFailed')
+    }
   } catch (e) {
     mcpMessage.ok = false
     mcpMessage.text = e instanceof Error ? e.message : t('common.testFailed')
   } finally {
     mcpTesting.value = null
+  }
+}
+
+function toggleSecretConfig(server: McpServerInfo) {
+  if (secretConfigFor.value === server.server_id) {
+    secretConfigFor.value = null
+    secretConfigValue.value = ''
+  } else {
+    secretConfigFor.value = server.server_id
+    secretConfigValue.value = ''
+  }
+}
+
+async function saveSecretValue(server: McpServerInfo) {
+  const refKey = (server.secret_ref || '').trim()
+  const value = secretConfigValue.value
+  if (!refKey || !value) return
+  secretSaving.value = true
+  try {
+    if (server.secret_scope === 'user') {
+      await apiFetch(`/api/tokens/${encodeURIComponent(refKey)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      })
+    } else {
+      const projectId = projectStore.currentProject?.project_id
+      if (!projectId) throw new Error(t('tokenConfig.secretNoProject'))
+      const existing = (await listProjectSecrets(projectId)).find(
+        (s) => s.service_key === refKey && !s.environment
+      )
+      if (existing) {
+        await updateProjectSecret(projectId, existing.secret_id, { value })
+      } else {
+        await createProjectSecret(projectId, { service_key: refKey, value })
+      }
+    }
+    mcpMessage.ok = true
+    mcpMessage.text = t('tokenConfig.secretSaved')
+    secretConfigFor.value = null
+    secretConfigValue.value = ''
+    await loadMcpServers()
+  } catch (e) {
+    mcpMessage.ok = false
+    mcpMessage.text = e instanceof Error ? e.message : t('common.saveFailed')
+  } finally {
+    secretSaving.value = false
   }
 }
 
@@ -1789,5 +1878,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 .mcp-auth.warn {
   background: rgba(245, 158, 11, 0.15);
   color: #fbbf24;
+}
+.mcp-secret-input {
+  width: 200px;
+  font-size: 11px;
+  padding: 3px 6px;
 }
 </style>

@@ -320,3 +320,99 @@ async def test_create_rejects_an_oversized_options_payload(client):
     resp = await _create(client, options={"blob": "x" * 4000})
     assert resp.status_code == 400
     assert "options" in resp.text
+
+
+async def test_response_includes_secret_scope(client):
+    resp = await _create(client, auth_type="bearer", secret_ref=f"mcp:{_slug()}",
+                         secret_scope="user")
+    assert resp.status_code == 201
+    assert resp.json()["secret_scope"] == "user"
+
+    listing = {s["slug"]: s for s in (await client.get("/api/mcp/servers")).json()}
+    assert listing[resp.json()["slug"]]["secret_scope"] == "user"
+
+
+async def test_secret_ref_is_trimmed_on_write(client, db):
+    """A secret_ref saved with padding must match the stored (trimmed) key."""
+    resp = await _create(client, auth_type="bearer", secret_ref=f"  mcp:{_slug()}  ",
+                         secret_scope="user")
+    assert resp.status_code == 201, resp.text
+    stored = resp.json()["secret_ref"]
+    assert stored == stored.strip()
+
+    from sqlalchemy import select
+
+    from api.models.mcp_server import MCPServer
+    row = (await db.execute(select(MCPServer).where(
+        MCPServer.server_id == resp.json()["server_id"]
+    ))).scalar_one()
+    assert row.secret_ref == stored
+
+
+async def test_user_token_key_is_trimmed_on_write(client, db):
+    """PUT /api/tokens strips the key — readers match service_key exactly."""
+    resp = await client.put("/api/tokens/%20mcp:trim-key%20", json={"value": "v"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["service_key"] == "mcp:trim-key"
+
+    from sqlalchemy import select
+
+    from api.models.user import UserToken
+    row = (await db.execute(select(UserToken).where(
+        UserToken.service_key == "mcp:trim-key"
+    ))).scalar_one_or_none()
+    assert row is not None
+
+
+async def test_test_endpoint_reports_missing_secret(client):
+    """No stored secret → SECRET_MISSING, not the generic connection error."""
+    secret_ref = f"mcp:{_slug()}"
+    resp = await _create(client, auth_type="bearer", secret_ref=secret_ref,
+                         secret_scope="user")
+    server_id = resp.json()["server_id"]
+
+    resp = await client.post(f"/api/mcp/servers/{server_id}/test", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["code"] == "SECRET_MISSING"
+    assert secret_ref in body["error"]
+
+
+async def test_test_endpoint_resolves_project_secret_with_project_context(client, db, make_project):
+    """With the caller's project_id, a project-scoped secret resolves —
+    no more fake 'mcp-test' project id hiding it."""
+    project = await make_project()
+    secret_ref = f"mcp:{_slug()}"
+    resp = await _create(client, auth_type="bearer", secret_ref=secret_ref,
+                         secret_scope="project")
+    server_id = resp.json()["server_id"]
+
+    resp = await client.post(
+        f"/api/projects/{project.project_id}/secrets",
+        json={"service_key": secret_ref, "value": "tok"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        f"/api/mcp/servers/{server_id}/test",
+        json={"project_id": project.project_id},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The secret resolved; the connection itself may still fail (example.com).
+    assert body.get("code") != "SECRET_MISSING"
+
+
+async def test_test_endpoint_rejects_foreign_project(client, make_project):
+    """A private project the caller does not manage must not be usable as context."""
+    project = await make_project(created_by="someone-else", visibility="private")
+
+    resp = await _create(client, auth_type="bearer", secret_ref=f"mcp:{_slug()}",
+                         secret_scope="project")
+    server_id = resp.json()["server_id"]
+    resp = await client.post(
+        f"/api/mcp/servers/{server_id}/test",
+        json={"project_id": project.project_id},
+    )
+    assert resp.status_code in (403, 404)

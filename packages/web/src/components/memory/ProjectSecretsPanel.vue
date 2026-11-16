@@ -81,11 +81,13 @@ watch(() => store.resetToken, () => {
 })
 
 async function handleAdd() {
-  if (!projectId.value || !newKey.value.service_key || !newKey.value.value) return
+  // Trim key/env: get_secret and the MCP badge match service_key exactly.
+  const key = newKey.value.service_key.trim()
+  if (!projectId.value || !key || !newKey.value.value) return
   try {
     await store.create(projectId.value, {
-      service_key: newKey.value.service_key,
-      environment: newKey.value.environment || undefined,
+      service_key: key,
+      environment: newKey.value.environment?.trim() || undefined,
       display_name: newKey.value.display_name || undefined,
       value: newKey.value.value,
     })

@@ -15,7 +15,7 @@ When an agent declares `mcp` (or `mcp:<slug>`) in its `tools:` list, the framewo
 
 MCP servers have two tiers, merged at runtime with the same shadowing rule as agents/skills/workflows:
 
-- **全局服务器** — stored in the `mcp_servers` table (`project_id` NULL), managed in **Settings → 外部集成 → MCP 服务器**（本页表单 + 测试连接）。跨项目生效，密钥从当前用户的**用户密钥**（user_tokens）解析。
+- **全局服务器** — stored in the `mcp_servers` table (`project_id` NULL), managed in **Settings → 外部集成 → MCP 服务器**（本页表单 + 测试连接）。跨项目生效。密钥按各行 `secret_scope` 解析：UI 创建的行是 `user`（只从**用户密钥** user_tokens 取）；本文件同步的行缺省 `project`（从**当前项目**的 project_secrets 取，回退用户密钥）。
 - **项目服务器** — defined in **this file** (`integrations/mcp-servers.md`)；每次对话开始时与列表接口读取时懒同步进 `mcp_servers` 表（项目行），密钥从**项目密钥**（project_secrets）解析，缺省回退用户密钥。
 - **同 slug 遮蔽** — 项目条目与全局条目同名（按运行时规范化 slug）时，**项目条目覆盖全局条目**，与项目 agent/skill/workflow 遮蔽规则一致。
 - 项目级文件的变更由外部系统集成专家写入，保存后下次对话/列表即生效，无需重启。
@@ -43,8 +43,9 @@ servers:
     allow_private_network: false   # set true for internal MCP servers (bypasses private-IP block)
     auth:
       type: bearer                 # bearer | header | none (default none)
-      secret_ref: mcp:<slug>       # service_key in project_secrets / user_tokens
-      secret_scope: project        # project (default, falls back to user_tokens) | user
+      secret_ref: mcp:<slug>       # service_key must match exactly (trimmed); stored in
+                                   # project_secrets (scope project) or user_tokens (scope user)
+      secret_scope: project        # project (default, current project's project_secrets → user_tokens fallback) | user
       header_name: Authorization   # for type=header; bearer is always Authorization
       value_template: "Bearer {secret}"  # optional; bearer defaults to "Bearer {secret}"
     headers:                       # non-sensitive extra headers (sensitive names are rejected)
@@ -64,10 +65,10 @@ servers:
 
 1. **Enable per agent**: add `mcp` (all enabled servers) or `mcp:<slug>` (specific server) to the agent's `tools:` frontmatter.
 2. **Tool naming**: discovered tools appear as `mcp__<server>__<tool>` - the prefix avoids collisions with built-in tools.
-3. **Secret management**: store the MCP server's API key/token in **Project Secrets** (Settings panel) using the `secret_ref` value (e.g. `mcp:github-copilot`) as the service key.
+3. **Secret management**: store the MCP server's API key/token in the vault matching the entry's `secret_scope` — `project` → **Project Secrets** of the project in use, `user` → **User Keys** — using the `secret_ref` value (e.g. `mcp:github-copilot`) as the service key (exact match, trimmed). In the Settings MCP list, the row's **配置密钥** button writes directly to the right vault.
 4. **Tool filtering**: use `allowlist`/`denylist` with glob patterns to control which tools are exposed to the agent.
 5. **Write protection**: tools that modify state should have `require_confirmation` entries or rely on `require_confirmation_for_write: true` (which checks the server's `destructiveHint` annotation).
 6. **Troubleshooting**:
    - Server not connecting? Check the `warning` event in the chat (MCP failures never block the conversation).
    - Tool not appearing? Verify `enabled: true`, check `allowlist`/`denylist` patterns.
-   - Auth failing? Confirm the secret is stored with the exact `secret_ref` key in Project Secrets.
+   - Auth failing? Confirm the secret is stored under the exact `secret_ref` key in the vault that matches `secret_scope` (project → Project Secrets of the current project with `secret_name` default and no environment tag; user → User Keys), or re-save via the row's **配置密钥** button.

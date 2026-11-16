@@ -445,7 +445,7 @@ async def list_mcp_servers(
     already configured.
     """
     from api.models.mcp_server import MCPServer
-    from api.routers.mcp_servers import _configured_refs, serialize_mcp_server
+    from api.routers.mcp_servers import _has_secret, serialize_mcp_server
     from api.services.mcp_sync import sync_mcp_servers_from_file
 
     # The raw PROJECTS_ROOT/slug join below pointed child projects (workspace
@@ -472,10 +472,6 @@ async def list_mcp_servers(
         )
     )
     rows = result.scalars().all()
-    refs = {r.secret_ref for r in rows if r.secret_ref}
-    configured_refs = await _configured_refs(
-        db, current_user.user_id, project_id, refs
-    )
 
     # Project entries shadow global ones with the same slug — the dict
     # keeps the last writer per (sanitized) slug, so global rows must be
@@ -487,14 +483,20 @@ async def list_mcp_servers(
     winning: dict[str, MCPServer] = {}
     for row in sorted(rows, key=_rank):
         winning[sanitize_slug(row.slug)] = row
-    return [
-        serialize_mcp_server(
-            row,
-            row.secret_ref in configured_refs,
-            "project" if row.project_id == project_id else "global",
+    serialized = []
+    for row in winning.values():
+        has_secret = await _has_secret(
+            db, current_user.user_id, project_id,
+            row.secret_ref, row.secret_scope or "project",
         )
-        for row in winning.values()
-    ]
+        serialized.append(
+            serialize_mcp_server(
+                row,
+                has_secret,
+                "project" if row.project_id == project_id else "global",
+            )
+        )
+    return serialized
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

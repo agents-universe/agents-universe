@@ -72,7 +72,9 @@ async def create_secret(
     # Normalize a missing environment to "" — SQL Server unique indexes treat
     # NULLs as distinct, so environment=NULL rows would never collide and two
     # concurrent creates could insert duplicates that later reads trip on.
-    env = body.environment or ""
+    # Trim the key: readers (MCP secret_ref, get_secret) match exactly.
+    body.service_key = body.service_key.strip()
+    env = (body.environment or "").strip()
     # Match legacy NULL rows too — they predate the "" normalization; SQL
     # Server unique indexes treat NULL as distinct, so a NULL row and a ""
     # row for the same key can both exist. Prefer the "" row and collapse

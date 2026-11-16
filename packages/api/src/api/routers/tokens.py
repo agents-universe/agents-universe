@@ -101,6 +101,9 @@ async def upsert_token(
     current_user: UserInfo = Depends(get_current_user),
 ):
     user_id = current_user.user_id
+    # Exact-match key against every reader (MCP secret_ref, agent tools):
+    # store the trimmed form so a stray space can't hide a saved secret.
+    service_key = service_key.strip()
 
     result = await db.execute(
         select(UserToken).where(

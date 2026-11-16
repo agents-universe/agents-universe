@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import get_settings
@@ -71,6 +71,11 @@ def validate_mcp_server_body(body: MCPServerBody) -> None:
         raise api_error(400, "MCP_URL_INVALID", "url must be an http(s) address")
     if body.auth_type not in _AUTH_TYPES:
         raise api_error(400, "MCP_AUTH_TYPE_UNSUPPORTED", f"auth_type only supports {', '.join(_AUTH_TYPES)}")
+    if body.secret_ref is not None:
+        # Normalize once at write: the vault panels store exact keys, so a
+        # stray leading/trailing space here would make the badge read
+        # "unconfigured" while the form looks filled in.
+        body.secret_ref = body.secret_ref.strip()
     if body.auth_type != "none" and not body.secret_ref:
         raise api_error(400, "MCP_SECRET_REF_REQUIRED", "auth_type other than none requires secret_ref")
     if body.secret_scope not in ("project", "user"):
@@ -155,39 +160,42 @@ async def _assert_global_slug_unique(
             raise api_error(409, "MCP_SERVER_SLUG_EXISTS", f"MCP server slug already exists: {row.slug}")
 
 
-async def _configured_refs(
-    db: AsyncSession, user_id: str, project_id: str | None, refs: set[str],
-) -> set[str]:
-    """Return which of ``refs`` have a stored secret for the given scope.
+async def _has_secret(
+    db: AsyncSession, user_id: str, project_id: str | None, ref: str | None, scope: str,
+) -> bool:
+    """Whether the runtime can actually resolve ``ref`` under these conditions.
 
-    Global servers (project_id None) resolve from user_tokens only; project
-    servers resolve from project_secrets with a user_tokens fallback.
+    Mirrors ``agent_core.tools._auth.get_secret`` / ``get_token`` exactly —
+    the badge must not claim a credential the resolver would reject:
+    - ``scope == "user"`` (or no project context) → user_tokens only.
+    - ``scope == "project"`` → project_secrets with ``secret_name='default'``
+      and an empty environment first, then user_tokens fallback.
     """
-    configured: set[str] = set()
-    if not refs:
-        return configured
-    if project_id is not None:
+    if not ref:
+        return False
+    if scope == "project" and project_id is not None:
         from api.models.project_secret import ProjectSecret
         ps_result = await db.execute(
             select(ProjectSecret.service_key).where(
                 ProjectSecret.project_id == project_id,
-                ProjectSecret.service_key.in_(refs),
+                ProjectSecret.service_key == ref,
                 ProjectSecret.is_active == True,  # noqa: E712
+                ProjectSecret.secret_name == "default",
+                or_(
+                    ProjectSecret.environment.is_(None),
+                    ProjectSecret.environment == "",
+                ),
             )
         )
-        configured.update(row[0] for row in ps_result.fetchall())
-        remaining = refs - configured
-        if not remaining:
-            return configured
-        refs = remaining
+        if ps_result.first() is not None:
+            return True
     ut_result = await db.execute(
         select(UserToken.service_key).where(
             UserToken.user_id == user_id,
-            UserToken.service_key.in_(refs),
+            UserToken.service_key == ref,
         )
     )
-    configured.update(row[0] for row in ut_result.fetchall())
-    return configured
+    return ut_result.first() is not None
 
 
 def serialize_mcp_server(
@@ -214,6 +222,7 @@ def serialize_mcp_server(
         # round-trip, otherwise saving the form clears it.
         "auth_header_name": row.auth_header_name,
         "has_secret": has_secret,
+        "secret_scope": row.secret_scope or "project",
         "tool_allowlist": tools.get("allowlist") or [],
         "tool_denylist": tools.get("denylist") or [],
         "options": options,
@@ -247,10 +256,12 @@ async def list_global_servers(
         select(MCPServer).where(MCPServer.project_id.is_(None)).order_by(MCPServer.name)
     )
     rows = result.scalars().all()
-    refs = {r.secret_ref for r in rows if r.secret_ref}
-    configured = await _configured_refs(db, current_user.user_id, None, refs)
     return [
-        serialize_mcp_server(r, r.secret_ref in configured, "global")
+        serialize_mcp_server(
+            r,
+            await _has_secret(db, current_user.user_id, None, r.secret_ref, r.secret_scope or "project"),
+            "global",
+        )
         for r in rows
     ]
 
@@ -285,8 +296,10 @@ async def update_global_server(
     _apply_body(row, body)
     await db.commit()
     await db.refresh(row)
-    configured = await _configured_refs(db, _current_user.user_id, None, {row.secret_ref} if row.secret_ref else set())
-    return serialize_mcp_server(row, row.secret_ref in configured, "global")
+    has_secret = await _has_secret(
+        db, _current_user.user_id, None, row.secret_ref, row.secret_scope or "project",
+    )
+    return serialize_mcp_server(row, has_secret, "global")
 
 
 @router.delete("/{server_id}", status_code=204)
@@ -303,9 +316,20 @@ async def delete_global_server(
 # ── Connection test ───────────────────────────────────────────────────────
 
 
+class McpTestBody(BaseModel):
+    """Optional test context — the UI sends the project the user is on.
+
+    Without it the test runs with no project context, so project-scoped
+    secrets fall through to user_tokens (same as runtime with no project).
+    """
+
+    project_id: str | None = None
+
+
 @router.post("/{server_id}/test")
 async def test_global_server(
     server_id: str,
+    body: McpTestBody | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
@@ -319,12 +343,23 @@ async def test_global_server(
     cfg = mcp_row_to_config(row)
     slug = sanitize_slug(row.slug)
 
+    from agent_core.tools._auth import ToolAuthError, get_secret, get_token
     from agent_core.tools.base import ToolContext
     from agent_core.tools.mcp_client import McpConnectionManager
 
     settings = get_settings()
+
+    project_id = (body.project_id if body else None) or ""
+    if project_id:
+        from api.dependencies.auth import has_project_access
+        from api.models.project import Project
+        proj = await db.execute(select(Project).where(Project.project_id == project_id))
+        project_row = proj.scalar_one_or_none()
+        if project_row is None or not await has_project_access(db, project_row, current_user.user_id):
+            raise api_error(404, "PROJECT_NOT_FOUND", "Project not found")
+
     ctx = ToolContext(
-        project_id="mcp-test",
+        project_id=project_id,
         project_fs_path="",
         conversation_id="",
         user_id=current_user.user_id,
@@ -332,18 +367,51 @@ async def test_global_server(
         secret_key=settings.secret_key,
     )
     ctx.ssl_verify = settings.llm_ssl_verify
+
+    # Preflight: surface a missing secret as its own error instead of letting
+    # discover_tools swallow ToolAuthError into a generic connection failure.
+    auth_cfg = cfg.get("auth") or {}
+    if auth_cfg.get("type", "none") != "none":
+        secret_ref = auth_cfg.get("secret_ref") or ""
+        scope = auth_cfg.get("secret_scope") or "project"
+        try:
+            if scope == "user":
+                await get_token(ctx, secret_ref)
+            else:
+                await get_secret(ctx, secret_ref)
+        except ToolAuthError as exc:
+            _log.warning(
+                "MCP server %r test: secret not resolvable (ref=%r scope=%r): %s",
+                row.slug, secret_ref, scope, exc,
+            )
+            return {
+                "ok": False,
+                "tools": 0,
+                "code": "SECRET_MISSING",
+                "error": f"Secret not configured for key '{secret_ref}'. 点击本行「配置密钥」保存后再测试",
+            }
+        except Exception as exc:
+            _log.warning("MCP server %r test: secret resolution failed: %s", row.slug, exc)
+            return {
+                "ok": False,
+                "tools": 0,
+                "code": "SECRET_AUTH_FAILED",
+                "error": str(exc)[:300],
+            }
+
     manager = McpConnectionManager(ctx)
     try:
         tools = await manager.discover_tools({slug: cfg}, {slug})
     except Exception as exc:
         _log.warning("MCP server %r test connection failed: %s", row.slug, exc)
-        return {"ok": False, "tools": 0, "error": str(exc)[:300]}
+        return {"ok": False, "tools": 0, "code": "CONNECT_FAILED", "error": str(exc)[:300]}
     finally:
         await manager.close_all()
     if not tools:
         return {
             "ok": False,
             "tools": 0,
+            "code": "CONNECT_FAILED",
             "error": "连接失败或未发现工具（已检查 URL 安全、认证头与连接超时）",
         }
     return {"ok": True, "tools": len(tools)}

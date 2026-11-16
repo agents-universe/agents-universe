@@ -461,3 +461,171 @@ describe('TokenConfigModal — email servers', () => {
     expect(emailSection.text()).toContain('someone@example.com')
   })
 })
+
+describe('TokenConfigModal — MCP secret configuration', () => {
+  const MCP_USER = {
+    server_id: 'm1',
+    slug: 'github-copilot',
+    name: 'GitHub Copilot',
+    url: 'https://mcp.example.com/mcp',
+    transport: 'auto',
+    enabled: true,
+    auth_type: 'bearer',
+    secret_ref: 'mcp:github-copilot',
+    auth_header_name: null,
+    has_secret: false,
+    secret_scope: 'user' as const,
+    tool_allowlist: [],
+    tool_denylist: [],
+    scope: 'global' as const,
+  }
+  const MCP_PROJECT = {
+    ...MCP_USER,
+    server_id: 'm2',
+    slug: 'proj-srv',
+    name: 'Project Server',
+    secret_ref: 'mcp:proj-srv',
+    secret_scope: 'project' as const,
+    scope: 'project' as const,
+  }
+
+  function stubMcp(servers: Array<Omit<typeof MCP_USER, 'secret_scope' | 'scope'> & {
+    secret_scope: 'user' | 'project'
+    scope: 'global' | 'project'
+  }>) {
+    apiMock.apiFetch.mockImplementation((url: string, options?: RequestInit) => {
+      if (url === '/api/integrations/defaults') return Promise.resolve({})
+      if (url === '/api/tokens') return Promise.resolve([])
+      if (url.endsWith('/mcp-servers')) return Promise.resolve(servers)
+      if (url.endsWith('/test') && options?.method === 'POST') {
+        return Promise.resolve({ ok: true, tools: 3 })
+      }
+      if (options?.method === 'PUT' || options?.method === 'POST') return Promise.resolve({})
+      return Promise.resolve({})
+    })
+    secretsMock.listProjectSecrets.mockResolvedValue([])
+  }
+
+  function mcpSectionOf(wrapper: Awaited<ReturnType<typeof mountOnIntegrationsTab>>) {
+    return wrapper.findAll('.mcp-section').find((s) => s.text().includes('MCP 服务器'))!
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    stubMcp([MCP_USER, MCP_PROJECT])
+    useProjectStore().currentProject = makeProject('p1')
+  })
+
+  it('user-scope row saves the secret value to the user vault', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    const section = mcpSectionOf(wrapper)
+    const row = section.findAll('.mcp-item').find((r) => r.text().includes('GitHub Copilot'))!
+
+    await row.findAll('.btn-sm').find((b) => b.text() === '配置密钥')!.trigger('click')
+    await nextTick()
+    const input = wrapper.find('.mcp-secret-input')
+    expect(input.exists()).toBe(true)
+    await input.setValue('tok-123')
+    await wrapper.findAll('.mcp-item .btn-sm').find((b) => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+
+    const putCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === `/api/tokens/${encodeURIComponent('mcp:github-copilot')}` && opts?.method === 'PUT',
+    )
+    expect(putCall).toBeDefined()
+    expect(JSON.parse(putCall![1].body as string)).toEqual({ value: 'tok-123' })
+    // The list reloads so the badge refreshes.
+    expect(apiMock.apiFetch).toHaveBeenCalledWith('/api/projects/p1/mcp-servers')
+  })
+
+  it('project-scope row saves the secret value to project secrets', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    const section = mcpSectionOf(wrapper)
+    const row = section.findAll('.mcp-item').find((r) => r.text().includes('Project Server'))!
+
+    await row.findAll('.btn-sm').find((b) => b.text() === '配置密钥')!.trigger('click')
+    await nextTick()
+    await wrapper.find('.mcp-secret-input').setValue('proj-tok')
+    await wrapper.findAll('.mcp-item .btn-sm').find((b) => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+
+    expect(secretsMock.createProjectSecret).toHaveBeenCalledWith('p1', {
+      service_key: 'mcp:proj-srv',
+      value: 'proj-tok',
+    })
+  })
+
+  it('test button sends the current project_id in the body', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    const section = mcpSectionOf(wrapper)
+    const row = section.findAll('.mcp-item').find((r) => r.text().includes('GitHub Copilot'))!
+
+    // 测试 is the second per-item action for global rows (编辑 / 测试 / 删除).
+    await row.findAll('.btn-sm').find((b) => b.text() === '测试')!.trigger('click')
+    await flushPromises()
+
+    const testCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === '/api/mcp/servers/m1/test' && opts?.method === 'POST',
+    )
+    expect(testCall).toBeDefined()
+    expect(JSON.parse(testCall![1].body as string)).toEqual({ project_id: 'p1' })
+  })
+
+  it('SECRET_MISSING renders the configure-secret hint, not the generic failure', async () => {
+    apiMock.apiFetch.mockImplementation((url: string, options?: RequestInit) => {
+      if (url === '/api/integrations/defaults') return Promise.resolve({})
+      if (url === '/api/tokens') return Promise.resolve([])
+      if (url.endsWith('/mcp-servers')) return Promise.resolve([MCP_USER])
+      if (url.endsWith('/test') && options?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          tools: 0,
+          code: 'SECRET_MISSING',
+          error: "Secret not configured for key 'mcp:github-copilot'.",
+        })
+      }
+      return Promise.resolve({})
+    })
+    const wrapper = await mountOnIntegrationsTab()
+    const section = mcpSectionOf(wrapper)
+    const row = section.findAll('.mcp-item').find((r) => r.text().includes('GitHub Copilot'))!
+    await row.findAll('.btn-sm').find((b) => b.text() === '测试')!.trigger('click')
+    await flushPromises()
+
+    const msg = wrapper.find('.mcp-inline-msg')
+    expect(msg.exists()).toBe(true)
+    expect(msg.text()).toContain('密钥未配置：mcp:github-copilot')
+    expect(msg.text()).not.toContain('连接失败或未发现工具')
+  })
+
+  it('saving a new global server declares secret_scope: user', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    await mcpSectionOf(wrapper).find('.add-model-btn').trigger('click')
+    await nextTick()
+    // The Teleport stub rebuilds its subtree on re-render — re-query.
+    const section = mcpSectionOf(wrapper)
+
+    const inputs = section.findAll('.mcp-form-grid input')
+    // name, slug, url, [secret_ref when auth != none]
+    await inputs[1].setValue('new-srv')
+    await inputs[2].setValue('https://mcp.example.com/new')
+    // selects: transport first, auth_type second
+    await section.findAll('.mcp-form-grid select')[1].setValue('bearer')
+    await nextTick()
+    const secretInput = mcpSectionOf(wrapper)
+      .findAll('.mcp-form-grid input')
+      .find((i) => (i.element as HTMLInputElement).placeholder.includes('密钥键'))!
+    await secretInput.setValue('mcp:new-srv')
+    await mcpSectionOf(wrapper).find('.token-row-actions button').trigger('click')
+    await flushPromises()
+
+    const postCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === '/api/mcp/servers' && opts?.method === 'POST',
+    )
+    expect(postCall).toBeDefined()
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body.secret_scope).toBe('user')
+    expect(body.secret_ref).toBe('mcp:new-srv')
+  })
+})

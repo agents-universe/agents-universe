@@ -61,9 +61,12 @@ onMounted(() => {
 })
 
 async function handleAdd() {
-  if (!newKey.value.service_key || !newKey.value.value) return
+  // Trim: readers (MCP secret_ref, get_token) match keys exactly — a stray
+  // space here would save a secret nothing can find.
+  const key = newKey.value.service_key.trim()
+  if (!key || !newKey.value.value) return
   try {
-    await store.upsert(newKey.value.service_key, {
+    await store.upsert(key, {
       value: newKey.value.value,
       display_name: newKey.value.display_name || undefined,
       base_url: newKey.value.base_url || null,

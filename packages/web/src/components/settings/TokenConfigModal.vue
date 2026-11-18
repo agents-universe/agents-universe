@@ -361,7 +361,6 @@
             <div v-if="showMcpForm" class="token-edit-block mcp-edit-block">
               <div class="mcp-form-grid">
                 <input v-model="mcpForm.name" class="input" type="text" :placeholder="t('tokenConfig.mcpNamePlaceholder')" />
-                <input v-model="mcpForm.slug" class="input" type="text" :placeholder="t('tokenConfig.mcpSlugPlaceholder')" />
                 <input v-model="mcpForm.url" class="input" type="text" :placeholder="t('tokenConfig.mcpUrlPlaceholder')" />
                 <select v-model="mcpForm.transport" class="input">
                   <option value="auto">{{ t('tokenConfig.mcpTransportAuto') }}</option>
@@ -374,13 +373,6 @@
                   <option value="header">{{ t('tokenConfig.authHeader') }}</option>
                 </select>
                 <input
-                  v-if="mcpForm.auth_type !== 'none'"
-                  v-model="mcpForm.secret_ref"
-                  class="input"
-                  type="text"
-                  :placeholder="t('tokenConfig.secretRefPlaceholder')"
-                />
-                <input
                   v-if="mcpForm.auth_type === 'header'"
                   v-model="mcpForm.auth_header_name"
                   class="input"
@@ -392,8 +384,13 @@
                   {{ t('tokenConfig.enabled') }}
                 </label>
               </div>
+              <!-- slug / secret key are derived from the name — no inputs, shown as a preview -->
+              <p v-if="mcpDerivedSlug" class="mcp-derived-hint">
+                <span>{{ t('tokenConfig.mcpDerivedSlug', { slug: mcpDerivedSlug }) }}</span>
+                <span v-if="mcpForm.auth_type !== 'none'">{{ t('tokenConfig.secretKeyTitle', { key: mcpDerivedSecretRef }) }}</span>
+              </p>
               <div class="token-row-actions">
-                <button class="btn-sm" @click="saveMcpServer" :disabled="mcpSaving || !mcpForm.slug.trim()">
+                <button class="btn-sm" @click="saveMcpServer" :disabled="mcpSaving || (!mcpEditId && !mcpForm.name.trim())">
                   {{ mcpSaving ? t('common.saving') : t('common.save') }}
                 </button>
                 <button class="btn-sm secondary" @click="cancelMcpForm">{{ t('common.cancel') }}</button>
@@ -945,6 +942,31 @@ const mcpForm = reactive({
   enabled: true,
 })
 
+// slug / secret key are derived from the name — the form asks only for the
+// name, so a new server needs one field instead of three. Editing keeps the
+// stored values (renaming must not orphan the secret saved under the old key
+// or the mcp:<slug> markers in agent frontmatter).
+const mcpDerivedSlug = computed(() => {
+  if (mcpEditId.value) return mcpForm.slug
+  return deriveSlug(mcpForm.name)
+})
+const mcpDerivedSecretRef = computed(() => mcpForm.secret_ref || `mcp:${mcpDerivedSlug.value}`)
+
+function deriveSlug(name: string): string {
+  const base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90)
+  if (base) return base
+  // Non-Latin names (e.g. Chinese) slugify to nothing and the API rejects an
+  // empty slug — fall back to a short random id so save never needs a manual
+  // slug field.
+  if (!name.trim()) return ''
+  return `mcp-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function openMcpForm(server?: McpServerInfo) {
   mcpEditId.value = server?.server_id ?? null
   mcpForm.name = server?.name ?? ''
@@ -968,13 +990,14 @@ async function saveMcpServer() {
   mcpMessage.ok = true
   mcpMessage.text = ''
   try {
+    const slug = mcpDerivedSlug.value
     const body = {
-      slug: mcpForm.slug.trim(),
+      slug,
       name: mcpForm.name.trim() || null,
       url: mcpForm.url.trim() || null,
       transport: mcpForm.transport,
       auth_type: mcpForm.auth_type,
-      secret_ref: mcpForm.secret_ref.trim() || null,
+      secret_ref: mcpForm.auth_type !== 'none' ? mcpDerivedSecretRef.value : null,
       // Global CRUD has no project context — UI-managed rows resolve from
       // user_tokens, so declare that scope explicitly.
       secret_scope: 'user' as const,
@@ -1797,6 +1820,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.mcp-derived-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 8px;
   font-size: 12px;
   color: var(--text-secondary);
 }

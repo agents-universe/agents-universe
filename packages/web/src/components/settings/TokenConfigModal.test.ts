@@ -599,24 +599,25 @@ describe('TokenConfigModal — MCP secret configuration', () => {
     expect(msg.text()).not.toContain('连接失败或未发现工具')
   })
 
-  it('saving a new global server declares secret_scope: user', async () => {
+  it('saving a new global server derives slug and secret key from the name', async () => {
     const wrapper = await mountOnIntegrationsTab()
     await mcpSectionOf(wrapper).find('.add-model-btn').trigger('click')
     await nextTick()
     // The Teleport stub rebuilds its subtree on re-render — re-query.
-    const section = mcpSectionOf(wrapper)
+    let section = mcpSectionOf(wrapper)
 
     const inputs = section.findAll('.mcp-form-grid input')
-    // name, slug, url, [secret_ref when auth != none]
-    await inputs[1].setValue('new-srv')
-    await inputs[2].setValue('https://mcp.example.com/new')
+    // name, url (slug and secret_ref are derived — no inputs)
+    await inputs[0].setValue('New Server')
+    await inputs[1].setValue('https://mcp.example.com/new')
     // selects: transport first, auth_type second
     await section.findAll('.mcp-form-grid select')[1].setValue('bearer')
     await nextTick()
-    const secretInput = mcpSectionOf(wrapper)
-      .findAll('.mcp-form-grid input')
-      .find((i) => (i.element as HTMLInputElement).placeholder.includes('密钥键'))!
-    await secretInput.setValue('mcp:new-srv')
+    // The derived preview shows both values before saving.
+    section = mcpSectionOf(wrapper)
+    expect(section.find('.mcp-derived-hint').text()).toContain('new-server')
+    expect(section.find('.mcp-derived-hint').text()).toContain('mcp:new-server')
+
     await mcpSectionOf(wrapper).find('.token-row-actions button').trigger('click')
     await flushPromises()
 
@@ -625,7 +626,30 @@ describe('TokenConfigModal — MCP secret configuration', () => {
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse(postCall![1].body as string)
+    expect(body.slug).toBe('new-server')
     expect(body.secret_scope).toBe('user')
-    expect(body.secret_ref).toBe('mcp:new-srv')
+    expect(body.secret_ref).toBe('mcp:new-server')
+  })
+
+  it('editing keeps the stored slug and secret key even when the name changes', async () => {
+    const wrapper = await mountOnIntegrationsTab()
+    const section = mcpSectionOf(wrapper)
+    const row = section.findAll('.mcp-item').find((r) => r.text().includes('GitHub Copilot'))!
+    await row.findAll('.btn-sm').find((b) => b.text() === '编辑')!.trigger('click')
+    await nextTick()
+
+    let form = mcpSectionOf(wrapper)
+    await form.findAll('.mcp-form-grid input')[0].setValue('Renamed Server')
+    await mcpSectionOf(wrapper).find('.token-row-actions button').trigger('click')
+    await flushPromises()
+
+    const putCall = apiMock.apiFetch.mock.calls.find(
+      ([url, opts]) => url === '/api/mcp/servers/m1' && opts?.method === 'PUT',
+    )
+    expect(putCall).toBeDefined()
+    const body = JSON.parse(putCall![1].body as string)
+    expect(body.slug).toBe('github-copilot')
+    expect(body.secret_ref).toBe('mcp:github-copilot')
+    expect(body.name).toBe('Renamed Server')
   })
 })

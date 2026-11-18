@@ -638,7 +638,7 @@ describe('TokenConfigModal — MCP secret configuration', () => {
     await row.findAll('.btn-sm').find((b) => b.text() === '编辑')!.trigger('click')
     await nextTick()
 
-    let form = mcpSectionOf(wrapper)
+    const form = mcpSectionOf(wrapper)
     await form.findAll('.mcp-form-grid input')[0].setValue('Renamed Server')
     await mcpSectionOf(wrapper).find('.token-row-actions button').trigger('click')
     await flushPromises()

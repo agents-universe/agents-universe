@@ -136,6 +136,42 @@ async def test_full_level_and_invalid_level(client, make_project, ws):
     assert resp.json()["detail"]["code"] == "GRAPH_LEVEL_INVALID"
 
 
+async def test_types_filter_param(client, make_project, ws):
+    project = await make_project(slug="graph-types")
+    _seed_repo(ws / "graph-types", "api", _api_graph())
+
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph?types=file"
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {node["type"] for node in body["nodes"]} == {"file"}
+    assert body["type_counts"] == {"file": 2, "function": 2}
+
+    # Overview normally drops symbols; a function selection bypasses it.
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph?level=overview&types=function"
+    )
+    ids = {node["id"] for node in resp.json()["nodes"]}
+    assert "api:s:src/x.py:foo" in ids
+    assert "api:f:src/x.py" not in ids
+
+    # Empty and absent types both mean "no filter" (legacy behavior).
+    empty = await client.get(f"/api/projects/{project.project_id}/graph?types=")
+    absent = await client.get(f"/api/projects/{project.project_id}/graph")
+    assert empty.json()["nodes"] == absent.json()["nodes"]
+
+
+async def test_invalid_types_rejected(client, make_project, ws):
+    project = await make_project(slug="graph-badtypes")
+    _seed_repo(ws / "graph-badtypes", "api", _api_graph())
+    resp = await client.get(
+        f"/api/projects/{project.project_id}/graph?types=file,bogus"
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "GRAPH_TYPE_INVALID"
+
+
 async def test_neighbors_endpoint(client, make_project, ws):
     project = await make_project(slug="graph-nbr")
     _seed_repo(ws / "graph-nbr", "api", _api_graph())

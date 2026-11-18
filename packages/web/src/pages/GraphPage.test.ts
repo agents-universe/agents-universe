@@ -287,6 +287,53 @@ describe('GraphPage', () => {
     expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', undefined)
   })
 
+  it('offers type chips from type_counts even when truncation cut those nodes', async () => {
+    // Payload holds files only (functions were truncated server-side), but
+    // type_counts is counted pre-truncation — the 函数 chip must still exist.
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload({ type_counts: { file: 2, function: 3 } }))
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.findAll('.graph-chip').some((c) => c.text() === '函数')).toBe(true)
+  })
+
+  it('re-fetches with the types param when a type chip is toggled', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload({ type_counts: { file: 2, function: 3 } }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await wrapper.findAll('.graph-chip').find((c) => c.text() === '函数')!.trigger('click')
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', { types: ['function'] })
+
+    // "全部" drops the param again (bare overview = no query string).
+    await wrapper.findAll('.graph-chip').find((c) => c.text() === '全部')!.trigger('click')
+    await flushPromises()
+    expect(projectGraphApi.getGraph).toHaveBeenLastCalledWith('p-1', undefined)
+  })
+
+  it('keeps every chip rendered when a filtered payload only holds one type', async () => {
+    projectGraphApi.getGraph.mockResolvedValue(graphPayload({ type_counts: { file: 2, function: 3 } }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    projectGraphApi.getGraph.mockResolvedValue(
+      graphPayload({
+        type_counts: { file: 2, function: 3 },
+        nodes: [{ id: 'api:s:src/x.py:foo', repo: 'api', type: 'function', name: 'foo' }],
+        edges: [],
+        counts: { nodes: 1, edges: 0, docs: 0, repos: 1 },
+      }),
+    )
+    await wrapper.findAll('.graph-chip').find((c) => c.text() === '函数')!.trigger('click')
+    await flushPromises()
+
+    // Chips stay filter-independent: 文件 must not collapse away just because
+    // the active filter excluded files from the payload.
+    const chipTexts = wrapper.findAll('.graph-chip').map((c) => c.text())
+    expect(chipTexts).toContain('文件')
+    expect(chipTexts).toContain('函数')
+  })
+
   it('shows the loading state while the first graph request is pending', async () => {
     let resolveGraph!: (value: unknown) => void
     projectGraphApi.getGraph.mockReturnValue(

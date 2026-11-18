@@ -43,6 +43,9 @@ export interface ProjectGraph {
   truncated: boolean
   no_repos: boolean
   repos: GraphRepoStatus[]
+  /** Per-type node totals counted BEFORE level/type/truncation filtering —
+   * the source of the type chips, so hidden-out types stay discoverable. */
+  type_counts?: Record<string, number>
   counts: { nodes: number; edges: number; docs: number; repos: number }
   nodes: GraphNodeDto[]
   edges: GraphEdgeDto[]
@@ -73,12 +76,13 @@ export interface GraphBuildResult {
 export const projectGraphApi = {
   getGraph: (
     projectId: string,
-    params?: { level?: string; maxNodes?: number },
+    params?: { level?: string; maxNodes?: number; types?: string[] },
     signal?: AbortSignal,
   ) => {
     const query = new URLSearchParams()
     if (params?.level) query.set('level', params.level)
     if (params?.maxNodes) query.set('max_nodes', String(params.maxNodes))
+    if (params?.types?.length) query.set('types', params.types.join(','))
     const qs = query.toString()
     return apiFetch<ProjectGraph>(
       `/api/projects/${enc(projectId)}/graph${qs ? `?${qs}` : ''}`,

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_core.knowledge.graph.project import (
     DEFAULT_MAX_NODES,
+    KNOWN_NODE_TYPES,
     aggregate_project_graph,
     build_project_graphs,
     graph_edge_expansion,
@@ -63,19 +64,28 @@ async def get_project_graph(
     project_id: str,
     level: str = "overview",
     max_nodes: int = DEFAULT_MAX_NODES,
+    types: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
     project: Project = Depends(authorize_project),
 ):
     if level not in ("overview", "full"):
         raise api_error(400, "GRAPH_LEVEL_INVALID", f"Invalid level: {level!r}")
+    type_set: frozenset[str] | None = None
+    if types is not None:
+        parts = frozenset(part.strip() for part in types.split(",") if part.strip())
+        unknown = parts - KNOWN_NODE_TYPES
+        if unknown:
+            raise api_error(400, "GRAPH_TYPE_INVALID", f"Invalid types: {sorted(unknown)!r}")
+        type_set = parts or None  # `types=` empty behaves like no filter
     fs_path = await get_project_fs_path(project_id, db)
     docs = await _doc_rows(db, project_id)
     # to_thread: loading a large graph.json (multi-MB JSON parse) on the event
     # loop would stall every WS heartbeat in the process — same reasoning as
     # builder._persist.
     return await asyncio.to_thread(
-        aggregate_project_graph, fs_path, docs, level=level, max_nodes=max_nodes
+        aggregate_project_graph, fs_path, docs,
+        level=level, max_nodes=max_nodes, types=type_set,
     )
 
 

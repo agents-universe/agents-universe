@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,9 @@ _OVERVIEW_TYPES = frozenset({
 # architecture), symbol nodes fill whatever budget remains. Column is
 # symbol-class: same s:-prefixed ids, expanded on demand next to its table.
 _SYMBOL_TYPES = frozenset({NODE_CLASS, NODE_FUNCTION, NODE_SYMBOL, NODE_COLUMN})
+# Every node type the graph can emit; the `types` filter whitelist validates
+# against this.
+KNOWN_NODE_TYPES = _OVERVIEW_TYPES | _SYMBOL_TYPES
 
 _DOC_ID_PREFIX = "d:"
 
@@ -248,6 +252,7 @@ def aggregate_project_graph(
     *,
     level: str = "overview",
     max_nodes: int = DEFAULT_MAX_NODES,
+    types: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Merge every repo graph with knowledge-doc nodes into one payload.
 
@@ -255,9 +260,26 @@ def aggregate_project_graph(
     plain dicts, sourced from KnowledgeMetadata by the API layer. Doc
     ``references`` edges only land when both slugs resolve to emitted doc
     nodes; dangling slugs are dropped.
+
+    ``types`` whitelists node types: when non-empty it replaces the level
+    filter for node emission (selected symbol types surface even at
+    overview) and truncation then budget-limits only the selected set.
+    Edge rollup still keys off ``level``; with an active filter, raw
+    (symbol-level) edges survive as a fallback whenever their rolled form
+    is dropped for want of unselected endpoints — otherwise a symbol-only
+    selection would paint isolated nodes. Empty/absent ``types`` keeps the
+    legacy behavior byte-for-byte. ``type_counts`` is computed from the raw
+    graphs BEFORE any level/type/truncation filter: the UI builds its type
+    chips from it, so truncated-out or overview-hidden types stay
+    discoverable — do not "fix" it to count emitted nodes.
     """
     if level not in ("overview", "full"):
         raise ValueError(f"invalid level: {level!r}")
+    if types:
+        unknown = set(types) - KNOWN_NODE_TYPES
+        if unknown:
+            raise ValueError(f"invalid types: {sorted(unknown)!r}")
+    type_filter = frozenset(types) if types else None
     max_nodes = max(MIN_MAX_NODES, min(int(max_nodes or DEFAULT_MAX_NODES), MAX_MAX_NODES))
 
     loaded = _load_project_graphs(project_fs_path)
@@ -269,6 +291,12 @@ def aggregate_project_graph(
     symbols: list[dict[str, Any]] = []
     # (src, dst, type) in output ids; order-preserving, deduped on insert.
     edge_keys: dict[tuple[str, str, str], None] = {}
+    # Raw pre-rollup counterparts, collected only when a type filter is
+    # active at overview (full level already emits raw endpoints).
+    raw_fallback = type_filter is not None and level == "overview"
+    raw_edge_keys: dict[tuple[str, str, str], None] = {}
+    # Filter-independent per-type node totals for the UI chips.
+    type_counts: dict[str, int] = {}
 
     for name, graph in loaded:
         if graph is None:
@@ -288,8 +316,12 @@ def aggregate_project_graph(
         })
         type_by_id = {node.id: node.type for node in graph.nodes}
         for node in graph.nodes:
+            type_counts[node.type] = type_counts.get(node.type, 0) + 1
             is_structural = node.type in _OVERVIEW_TYPES
-            if level == "overview" and not is_structural:
+            if type_filter is not None:
+                if node.type not in type_filter:
+                    continue  # whitelist; selected symbols bypass the overview drop
+            elif level == "overview" and not is_structural:
                 continue
             entry = _code_node(node, name)
             (structural if is_structural else symbols).append(entry)
@@ -302,8 +334,17 @@ def aggregate_project_graph(
             dst = f"{name}:{_rollup(edge.dst, level, type_by_id)}"
             if src != dst:
                 edge_keys.setdefault((src, dst, edge.type), None)
+            if raw_fallback:
+                raw_src = f"{name}:{edge.src}"
+                raw_dst = f"{name}:{edge.dst}"
+                if raw_src != raw_dst:
+                    raw_edge_keys.setdefault((raw_src, raw_dst, edge.type), None)
 
     doc_nodes = [_doc_node(doc) for doc in docs if doc.get("slug")]
+    if doc_nodes:  # no module key at all when there are no docs (no empty chip)
+        type_counts[NODE_MODULE] = type_counts.get(NODE_MODULE, 0) + len(doc_nodes)
+    if type_filter is not None and NODE_MODULE not in type_filter:
+        doc_nodes = []
     structural.extend(doc_nodes)
     doc_ids = {node["id"] for node in doc_nodes}
     for doc in docs:
@@ -318,9 +359,16 @@ def aggregate_project_graph(
     if len(nodes) < max_nodes:
         nodes.extend(symbols[: max_nodes - len(nodes)])
     emitted_ids = {node["id"] for node in nodes}
+    # Raw fallback candidates merge in after the rolled edges (dedup keeps a
+    # file-file raw edge that already exists in rolled form from doubling).
+    candidates: dict[tuple[str, str, str], None] = edge_keys
+    if raw_fallback:
+        candidates = dict(edge_keys)
+        for key in raw_edge_keys:
+            candidates.setdefault(key, None)
     edges = [
         {"src": src, "dst": dst, "type": etype}
-        for (src, dst, etype) in edge_keys
+        for (src, dst, etype) in candidates
         if src in emitted_ids and dst in emitted_ids
     ]
 
@@ -331,6 +379,7 @@ def aggregate_project_graph(
         "truncated": truncated,
         "no_repos": not has_clones,
         "repos": repos,
+        "type_counts": type_counts,
         "counts": {
             "nodes": len(nodes),
             "edges": len(edges),

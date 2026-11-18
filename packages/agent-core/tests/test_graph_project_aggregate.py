@@ -243,6 +243,108 @@ def test_max_nodes_truncation_prefers_structural(tmp_path: Path):
     assert sum(1 for node_id in ids if node_id.startswith("big:s:")) == 70
 
 
+def test_types_filter_truncates_within_selection(tmp_path: Path):
+    # 150 files / 250 functions: with a functions-only selection the budget
+    # must be spent inside the selection — zero files are emitted and the
+    # functions themselves are what get truncated (not crowded out by files).
+    nodes = [GraphNode(id=f"f:m{i}.py", type="file", name=f"m{i}.py") for i in range(150)]
+    nodes += [
+        GraphNode(id=f"s:m{i}.py:fn{i}", type="function", name=f"fn{i}")
+        for i in range(250)
+    ]
+    _clone(tmp_path, "big")
+    _write_graph(tmp_path, "big", RepoGraph(
+        repo=RepoMeta(name="big", head_sha="", langs=["python"], built_at=0.0),
+        nodes=nodes, edges=[],
+    ))
+    payload = project.aggregate_project_graph(str(tmp_path), docs=[], level="full",
+                                              max_nodes=220, types={"function"})
+    assert payload["truncated"] is True
+    ids = [node["id"] for node in payload["nodes"]]
+    assert len(ids) == 220
+    assert sum(1 for node_id in ids if node_id.startswith("big:s:")) == 220
+    assert not any(node_id.startswith("big:f:") for node_id in ids)
+
+
+def test_overview_emits_selected_symbol_types(tmp_path: Path):
+    # A types whitelist replaces the overview symbol drop: functions surface,
+    # unselected files do not.
+    payload = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=DOCS, level="overview", types={"function"}
+    )
+    ids = {node["id"] for node in payload["nodes"]}
+    assert "api:s:src/x.py:foo" in ids
+    assert "api:s:src/y.py:bar" in ids
+    assert "api:f:src/x.py" not in ids
+    assert not any(node_id.startswith("d:") for node_id in ids)  # module unselected
+
+    both = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=[], level="overview", types={"file", "function"}
+    )
+    both_ids = {node["id"] for node in both["nodes"]}
+    assert "api:f:src/x.py" in both_ids and "api:s:src/x.py:foo" in both_ids
+    # The rolled imports edge (file endpoints) survives alongside symbols.
+    assert ("api:f:src/x.py", "api:f:src/y.py", EDGE_IMPORTS) in {
+        (e["src"], e["dst"], e["type"]) for e in both["edges"]
+    }
+
+
+def test_overview_symbol_filter_keeps_raw_edges(tmp_path: Path):
+    # Rolled calls edge points at files, which the whitelist excludes — the
+    # raw symbol edge must fall back in, or functions render isolated.
+    payload = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=[], level="overview", types={"function"}
+    )
+    edges = {(e["src"], e["dst"], e["type"]) for e in payload["edges"]}
+    assert ("api:s:src/x.py:foo", "api:s:src/y.py:bar", EDGE_CALLS) in edges
+    # Rolled file endpoints are not emitted, so no file edge leaks in.
+    assert not any(src.startswith("api:f:") or dst.startswith("api:f:")
+                   for src, dst, _ in edges)
+
+
+def test_types_filter_governs_docs(tmp_path: Path):
+    no_modules = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=DOCS, types={"file"}
+    )
+    assert not any(node["id"].startswith("d:") for node in no_modules["nodes"])
+    assert no_modules["counts"]["docs"] == 0
+
+    only_modules = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=DOCS, types={"module"}
+    )
+    ids = {node["id"] for node in only_modules["nodes"]}
+    assert ids == {"d:domain/context", "d:technical/api"}
+
+
+def test_empty_and_absent_types_match_legacy(tmp_path: Path):
+    fs = str(_fs(tmp_path))
+    none = project.aggregate_project_graph(fs, docs=DOCS, level="full")
+    empty = project.aggregate_project_graph(fs, docs=DOCS, level="full", types=frozenset())
+    for payload in (none, empty):
+        payload.pop("generated_at")
+    assert none == empty
+
+
+def test_invalid_types_rejected(tmp_path: Path):
+    with pytest.raises(ValueError):
+        project.aggregate_project_graph(str(tmp_path), docs=[], types={"bogus"})
+
+
+def test_type_counts_pre_truncation_and_filter(tmp_path: Path):
+    # Counts come from the raw graphs: hidden or truncated-out types stay
+    # visible so the UI can offer their chips.
+    overview = project.aggregate_project_graph(str(_fs(tmp_path)), docs=DOCS)
+    assert overview["type_counts"]["function"] == 2
+    assert overview["type_counts"]["file"] == 3
+    assert overview["type_counts"]["module"] == 2
+    assert not any(n["type"] == "function" for n in overview["nodes"])  # still dropped
+
+    filtered = project.aggregate_project_graph(
+        str(_fs(tmp_path)), docs=DOCS, types={"function"}
+    )
+    assert filtered["type_counts"] == overview["type_counts"]
+
+
 def test_needs_build_and_no_repos(tmp_path: Path):
     _clone(tmp_path, "lonely")  # clone without any graph.json
     payload = project.aggregate_project_graph(str(tmp_path), docs=[])

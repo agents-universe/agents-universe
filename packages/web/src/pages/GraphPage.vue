@@ -98,7 +98,7 @@
           <button
             class="graph-chip"
             :class="{ on: visibleTypes.size === 0 }"
-            @click="visibleTypes = new Set()"
+            @click="clearTypes"
           >
             {{ t('graphPage.filterAll') }}
           </button>
@@ -264,6 +264,12 @@ const selectedNeighbors = computed(() => {
 })
 
 const typeOptions = computed(() => {
+  // type_counts is counted server-side before level/type/truncation
+  // filtering: chips must not collapse to the currently loaded subset (and
+  // must still offer types a previous truncation cut). Fallback for
+  // payloads without the field.
+  const counts = graph.value?.type_counts
+  if (counts) return Object.keys(counts).sort()
   const types = new Set<string>()
   for (const node of graph.value?.nodes ?? []) types.add(node.type)
   return [...types].sort()
@@ -314,11 +320,19 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    // Overview omits the query string entirely: first load matches the
-    // server defaults byte-for-byte.
-    const params =
-      level.value === 'full' ? { level: 'full' as const, maxNodes: maxNodes.value } : undefined
-    const data = await projectGraphApi.getGraph(pid, params)
+    // Overview without filters omits the query string entirely: first load
+    // matches the server defaults byte-for-byte. Selected types travel to
+    // the server so truncation budget is spent inside the selection only.
+    const params: { level?: 'full'; maxNodes?: number; types?: string[] } = {}
+    if (level.value === 'full') {
+      params.level = 'full'
+      params.maxNodes = maxNodes.value
+    }
+    if (visibleTypes.value.size > 0) params.types = [...visibleTypes.value]
+    const data = await projectGraphApi.getGraph(
+      pid,
+      Object.keys(params).length ? params : undefined,
+    )
     if (seq !== loadSeq) return
     graph.value = data
     // Fresh payload: previously selected node may no longer exist.
@@ -376,6 +390,14 @@ function toggleType(type: string): void {
   if (next.has(type)) next.delete(type)
   else next.add(type)
   visibleTypes.value = next
+  // The server filters + truncates per selection, so a chip toggle must
+  // refetch. loadSeq discards rapid-toggle races (same as level/maxNodes).
+  void load()
+}
+
+function clearTypes(): void {
+  visibleTypes.value = new Set()
+  void load()
 }
 
 /** Merge server-fetched nodes/edges into the payload (deduped by id/key).

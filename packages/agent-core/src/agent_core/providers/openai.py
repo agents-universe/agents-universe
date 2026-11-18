@@ -169,6 +169,25 @@ class OpenAIProvider(LLMProvider):
         m = self._model.lower()
         return any(m.startswith(p) for p in ("o1", "o2", "o3", "o4")) or "gpt-5" in m
 
+    def _fixed_sampling(self) -> bool:
+        """Kimi k2.5+/k3 pin temperature server-side and 400 on any other.
+
+        Moonshot's model parameter reference: k3 / k2.7-code fix temperature
+        at 1.0, k2.6 at 1.0 (0.6 non-thinking) — "passing any other value
+        returns an error, so do not pass it explicitly". The agent never
+        passes a temperature, so the provider default 0.0 went on the wire
+        and the first message failed with "invalid temperature: only 1 is
+        allowed for this model". Omit the field and let the server default
+        apply.
+        """
+        m = self._model.lower()
+        ver = re.match(r"^kimi-k(\d+(?:\.\d+)*)", m)
+        if not ver:
+            return False
+        # Version-tuple compare, not float(): "2.10" would rank below "2.5".
+        version = tuple(int(part) for part in ver.group(1).split("."))
+        return version >= (2, 5)
+
     def _clamp_max_tokens(self, max_tokens: int) -> int:
         """Cap output tokens at the non-reasoning ceiling.
 
@@ -214,7 +233,8 @@ class OpenAIProvider(LLMProvider):
             kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
-            kwargs["temperature"] = temperature
+            if not self._fixed_sampling():
+                kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = self._to_openai_tools(tools)
 
@@ -267,7 +287,8 @@ class OpenAIProvider(LLMProvider):
             kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
-            kwargs["temperature"] = temperature
+            if not self._fixed_sampling():
+                kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = self._to_openai_tools(tools)
 
@@ -402,7 +423,8 @@ class AzureOpenAIProvider(OpenAIProvider):
             kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
-            kwargs["temperature"] = temperature
+            if not self._fixed_sampling():
+                kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = self._to_openai_tools(tools)
 
@@ -455,7 +477,8 @@ class AzureOpenAIProvider(OpenAIProvider):
             kwargs.update(self._reasoning_kwargs())
         else:
             kwargs["max_tokens"] = max_tokens
-            kwargs["temperature"] = temperature
+            if not self._fixed_sampling():
+                kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = self._to_openai_tools(tools)
 

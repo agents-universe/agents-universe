@@ -140,6 +140,25 @@ describe('ConversationTreePanel', () => {
     }
   })
 
+  it('passes a multi-keyword query through verbatim (no client-side split)', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = mount(ConversationTreePanel, {
+        props: { projectId: 'p1', agentSlug: 'agent' },
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      api.list.mockClear()
+
+      await wrapper.find('.conv-tree-search').setValue('  kafka docker  ')
+      await vi.advanceTimersByTimeAsync(300)
+      // Trimmed but otherwise untouched — keyword splitting is server-side.
+      expect(api.list).toHaveBeenCalledWith('p1', undefined, 'kafka docker')
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('restores the agent-scoped list when the search is cleared', async () => {
     vi.useFakeTimers()
     try {

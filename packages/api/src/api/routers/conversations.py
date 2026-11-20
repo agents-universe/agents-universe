@@ -6,9 +6,10 @@ import json
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent_core.compressor import SUMMARY_MARKER
 from api.database import get_db
 from api.dependencies.auth import UserInfo, authorize_conversation, authorize_project, get_current_user
 from api.errors import api_error
@@ -242,32 +243,49 @@ async def list_conversations(
     # agent-less conversations (create_conversation allows agent_id=None)
     # from listings. Show all active conversations without a slug filter.
 
-    # Keyword filter: title OR any message body. lower() on both sides keeps
-    # matching case-insensitive on PostgreSQL (whose LIKE is case-sensitive)
-    # and identical to the other three dialects; autoescape stops %/_ in the
+    # Keyword filter: title OR user-message body, whitespace-separated
+    # keywords AND-ed together (each keyword may match a different message
+    # or the title). Only role="user" rows count as body matches so AI/tool
+    # output never surfaces; compressed-history summary rows are also
+    # role="user" (they borrow the role so providers keep the system prompt —
+    # see agent_core.compressor.build_summary_pair) and are excluded by their
+    # SUMMARY_MARKER prefix. lower() on both sides keeps matching
+    # case-insensitive on PostgreSQL (whose LIKE is case-sensitive) and
+    # identical to the other three dialects; autoescape stops %/_ in the
     # user's text from acting as wildcards. The body test is a correlated
     # EXISTS so a conversation with many matching messages still appears once.
     # No index can serve a leading-wildcard LIKE: this scans the project's
     # messages. Fine at current scale — full-text search would need per-dialect
-    # support, and the .limit(50) below means "50 most recent matches".
-    term = (q or "").strip()
-    if term:
-        needle = _like_needle(term, db.get_bind().dialect.name)
-        body_match = (
-            select(DbMessage.message_id)
-            .where(
-                DbMessage.conversation_id == Conversation.conversation_id,
-                func.lower(DbMessage.content).contains(needle, autoescape=True),
+    # support, and the .limit(50) above means "50 most recent matches".
+    tokens = (q or "").split()
+    if tokens:
+        dialect = db.get_bind().dialect.name
+        marker = _like_needle(SUMMARY_MARKER, dialect)
+        conditions = []
+        for token in tokens:
+            needle = _like_needle(token, dialect)
+            body_match = (
+                select(DbMessage.message_id)
+                .where(
+                    DbMessage.conversation_id == Conversation.conversation_id,
+                    DbMessage.role == "user",
+                    not_(
+                        func.lower(DbMessage.content).startswith(
+                            marker, autoescape=True
+                        )
+                    ),
+                    func.lower(DbMessage.content).contains(needle, autoescape=True),
+                )
+                .correlate(Conversation)
+                .exists()
             )
-            .correlate(Conversation)
-            .exists()
-        )
-        query = query.where(
-            or_(
-                func.lower(Conversation.title).contains(needle, autoescape=True),
-                body_match,
+            conditions.append(
+                or_(
+                    func.lower(Conversation.title).contains(needle, autoescape=True),
+                    body_match,
+                )
             )
-        )
+        query = query.where(*conditions)
 
     result = await db.execute(query)
     rows = result.all()

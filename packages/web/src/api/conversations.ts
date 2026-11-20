@@ -5,7 +5,8 @@ const enc = encodeURIComponent
 
 export const conversationsApi = {
   /** Conversations of a project. Omit agentSlug to list every agent's
-   *  (used by search); q filters by title OR message body. */
+   *  (used by search); q filters by title OR user-message body, with
+   *  space-separated keywords AND-ed together server-side (passed verbatim). */
   list: (projectId: string, agentSlug?: string | null, q?: string) => {
     const params = new URLSearchParams()
     if (agentSlug) params.set('agent_slug', agentSlug)

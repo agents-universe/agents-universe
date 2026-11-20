@@ -81,6 +81,8 @@ let loadSeq = 0
 // Keyword search. `searchInput` is what the user types; `activeQuery` is the
 // debounced term the list is actually filtered by. Search is project-wide
 // (no agent_slug) so a conversation started under another agent is findable.
+// The term (spaces included) is passed verbatim — keyword splitting and
+// title/user-message matching all happen server-side.
 const searchInput = ref('')
 const activeQuery = ref('')
 const isSearching = computed(() => activeQuery.value.length > 0)

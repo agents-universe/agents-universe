@@ -388,7 +388,7 @@ export default {
     loadFailed: 'Failed to load conversation',
     deleteConfirm: 'Delete this conversation?',
     deleteFailed: 'Failed to delete conversation',
-    searchPlaceholder: 'Search conversations…',
+    searchPlaceholder: 'Search conversations… (space-separated)',
     clearSearch: 'Clear search',
     noMatches: 'No matching conversations',
     renameTitle: 'Rename',

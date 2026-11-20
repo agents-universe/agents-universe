@@ -1,14 +1,16 @@
 """Conversation keyword search (list_conversations?q=).
 
-Covers: title vs message-body matching, project/user isolation, publish and
-soft-deleted exclusion, cross-agent results, literal %/_ handling and the
-dialect-specific T-SQL bracket escape.
+Covers: title vs user-message-body matching (AI/tool output and compressed
+summary rows never match), space-separated multi-keyword AND semantics,
+project/user isolation, publish and soft-deleted exclusion, cross-agent
+results, literal %/_ handling and the dialect-specific T-SQL bracket escape.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from agent_core.compressor import SUMMARY_MARKER
 from api.models.agent import Agent
 from api.models.conversation import Conversation, Message as DbMessage
 from api.routers.conversations import _like_needle
@@ -21,6 +23,7 @@ async def _make_conversation(
     title: str | None = None,
     user_id: str = "test-user",
     messages: tuple[str, ...] = (),
+    roles: tuple[str, ...] | None = None,
     source: str | None = None,
     status: str = "active",
     agent: Agent | None = None,
@@ -41,9 +44,13 @@ async def _make_conversation(
     db.add(conv)
     await db.commit()
     for i, content in enumerate(messages):
+        if roles is not None:
+            role = roles[i]
+        else:
+            role = "user" if i % 2 == 0 else "assistant"
         db.add(DbMessage(
             conversation_id=str(conv.conversation_id),
-            role="user" if i % 2 == 0 else "assistant",
+            role=role,
             content=content,
             sequence_num=i + 1,
         ))
@@ -72,13 +79,92 @@ async def test_search_matches_title_case_insensitive(client, db, make_project):
 async def test_search_matches_message_body(client, db, make_project):
     project = await make_project("srch-body")
     await _make_conversation(db, project, title="first", messages=("discuss KAFKA topics",))
-    await _make_conversation(db, project, title="second", messages=("hello", "KAFKA again"))
+    await _make_conversation(
+        db, project, title="second",
+        messages=("KAFKA intro", "assistant replies without it", "more KAFKA detail"),
+    )
     await _make_conversation(db, project, title="third", messages=("nothing here",))
 
     rows = await _search(client, project, q="kafka")
     assert {r["title"] for r in rows} == {"first", "second"}
     # One row per conversation even though "second" has two matching messages.
     assert len(rows) == 2
+
+
+async def test_search_ignores_assistant_and_tool_messages(client, db, make_project):
+    project = await make_project("srch-roles")
+    await _make_conversation(
+        db, project, title="ai-side",
+        messages=("user asks something", "ZEBRA lives in the reply", "tool saw ZEBRA too"),
+        roles=("user", "assistant", "tool"),
+    )
+    await _make_conversation(
+        db, project, title="user-side",
+        messages=("about ZEBRA please", "irrelevant ack"),
+        roles=("user", "assistant"),
+    )
+
+    rows = await _search(client, project, q="zebra")
+    assert [r["title"] for r in rows] == ["user-side"]
+
+
+async def test_search_ignores_compression_summary_row(client, db, make_project):
+    # Compression persists its summary as role="user" (it borrows the role so
+    # providers keep the system prompt) — the SUMMARY_MARKER prefix must keep
+    # that AI-generated text out of search results.
+    project = await make_project("srch-summary")
+    await _make_conversation(
+        db, project, title="summarized",
+        messages=(
+            f"{SUMMARY_MARKER} - this is automated context, not a user message]\n\n"
+            "earlier they discussed QUOKKA in depth",
+        ),
+        roles=("user",),
+    )
+    await _make_conversation(
+        db, project, title="real-input",
+        messages=("tell me about QUOKKA",),
+        roles=("user",),
+    )
+
+    rows = await _search(client, project, q="quokka")
+    assert [r["title"] for r in rows] == ["real-input"]
+
+
+async def test_search_multiple_keywords_and_semantics(client, db, make_project):
+    project = await make_project("srch-multi")
+    # Both keywords present, in different user messages of one conversation.
+    await _make_conversation(
+        db, project, title="both",
+        messages=("alpha topic", "assistant noise", "beta topic"),
+        roles=("user", "assistant", "user"),
+    )
+    await _make_conversation(db, project, title="only alpha", messages=("alpha only",))
+
+    rows = await _search(client, project, q="alpha beta")
+    assert [r["title"] for r in rows] == ["both"]
+
+
+async def test_search_keywords_split_across_title_and_body(client, db, make_project):
+    project = await make_project("srch-title-body")
+    await _make_conversation(
+        db, project, title="gamma session", messages=("delta message",)
+    )
+    await _make_conversation(
+        db, project, title="other", messages=("gamma message",)
+    )
+
+    rows = await _search(client, project, q="gamma delta")
+    assert [r["title"] for r in rows] == ["gamma session"]
+
+
+async def test_search_extra_whitespace_between_keywords(client, db, make_project):
+    project = await make_project("srch-ws")
+    await _make_conversation(db, project, title="ws hit", messages=("epsilon msg",))
+    await _make_conversation(db, project, title="ws miss", messages=("epsilon only",))
+
+    rows = await _search(client, project, q="  epsilon   msg  ")
+    assert [r["title"] for r in rows] == ["ws hit"]
 
 
 async def test_search_scoped_to_project(client, db, make_project):

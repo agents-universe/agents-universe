@@ -479,7 +479,7 @@ export default {
     tabUsage: '用量',
   },
   emptyProject: {
-    tagline: '企业级 AI Agent 框架',
+    tagline: '智能体宇宙 —— 智能体即服务',
     featureChatTitle: '智能对话',
     featureChatDesc: '与 AI Agent 进行多轮对话，支持流式输出与工具调用',
     featureKnowledgeTitle: '知识条目',

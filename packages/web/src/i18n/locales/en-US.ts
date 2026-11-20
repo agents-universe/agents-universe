@@ -480,7 +480,7 @@ export default {
     tabUsage: 'Usage',
   },
   emptyProject: {
-    tagline: 'Enterprise AI Agent framework',
+    tagline: 'Agents Universe — Agents as a Service',
     featureChatTitle: 'Smart chat',
     featureChatDesc: 'Multi-turn conversations with AI agents, with streaming output and tool calling',
     featureKnowledgeTitle: 'Knowledge entries',

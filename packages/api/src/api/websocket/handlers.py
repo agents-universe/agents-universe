@@ -111,6 +111,73 @@ async def _deny_unauthenticated(ws: WebSocket) -> None:
         pass
 
 
+@router.websocket("/ws/user")
+async def user_ws(ws: WebSocket):
+    """User-level channel for sidebar running-count badges.
+
+    One socket per tab (opened from AppLayout). The manager's arbitrary-key
+    multicast is reused with the synthetic key ``user:{user_id}`` — that key
+    never enters ``_sessions``/``_claimed_turns``, so abort-event cleanup on
+    disconnect behaves exactly as for a conversation key with no session.
+    Server→client: ``running_counts`` full snapshots (connect + debounced
+    changes). Client→server: ``ping`` → ``pong`` only.
+    """
+    from api.config import get_settings
+    from api.services.redis_client import _get_pool, get_session
+    from api.services.running_counts import compute_running_counts
+
+    settings = get_settings()
+
+    if settings.auth_bypass_enabled:
+        user_id = settings.auth_bypass_user_id
+    else:
+        session_id = ws.cookies.get(settings.auth_cookie_name)
+        if not session_id:
+            await _deny_unauthenticated(ws)
+            return
+        try:
+            redis = _get_pool()
+            session_data = await get_session(redis, session_id)
+        except Exception:
+            _log.warning("WebSocket session auth failed for user channel", exc_info=True)
+            await _deny_unauthenticated(ws)
+            return
+        if not session_data or "user_id" not in session_data:
+            await _deny_unauthenticated(ws)
+            return
+        user_id = session_data["user_id"]
+
+    key = f"user:{user_id}"
+    await manager.connect(key, ws)
+
+    # Initial snapshot goes only to the connecting socket (manager.send would
+    # fan it to every tab on this user key, re-sending counts each tab already
+    # has). Sent before the receive loop: a client gone mid-handshake must not
+    # leave a dead socket pinned in manager._connections.
+    try:
+        counts = await compute_running_counts(user_id)
+        await ws.send_json({"type": "running_counts", **counts})
+    except Exception:
+        await manager.disconnect(key, ws)
+        return
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(msg, dict) and msg.get("type") == "ping":
+                await ws.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        _log.warning("user WS loop failed for %s", user_id, exc_info=True)
+    finally:
+        await manager.disconnect(key, ws)
+
+
 @router.websocket("/ws/conversations/{conversation_id}")
 async def conversation_ws(conversation_id: str, ws: WebSocket):
     """WebSocket endpoint for a conversation.

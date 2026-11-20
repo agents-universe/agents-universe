@@ -427,6 +427,13 @@
   flex-shrink: 0;
 }
 
+/* 侧边栏项目/智能体名右侧的运行中回合数徽标 — name 已 flex:1,徽标靠右 */
+.project-run-badge,
+.agent-run-badge {
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
 /* 「默认」标记:该智能体因项目分类而默认收藏,不是用户手动收藏的 */
 .picker-default-tag {
   flex-shrink: 0;

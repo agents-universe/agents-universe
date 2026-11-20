@@ -21,6 +21,11 @@
       >
         <Folder :size="14" class="project-icon" />
         <span class="project-name" :title="project.display_name">{{ project.display_name }}</span>
+        <span
+          v-if="runningCounts.projectCount(project.project_id) > 0"
+          class="badge badge--green project-run-badge"
+          :title="t('sidebar.runningBadge', { count: runningCounts.projectCount(project.project_id) })"
+        >{{ runningCounts.projectCount(project.project_id) }}</span>
       </div>
     </div>
 
@@ -37,12 +42,14 @@ import { useRouter } from 'vue-router'
 import { Plus, Folder } from 'lucide-vue-next'
 import { useProjectStore } from '@/stores/project'
 import { useFavoritesStore } from '@/stores/favorites'
+import { useRunningCountsStore } from '@/stores/runningCounts'
 import type { Project } from '@/types'
 import ProjectPickerDialog from './ProjectPickerDialog.vue'
 
 const { t } = useI18n()
 const projectStore = useProjectStore()
 const favoritesStore = useFavoritesStore()
+const runningCounts = useRunningCountsStore()
 const router = useRouter()
 const showPicker = ref(false)
 

@@ -18,6 +18,16 @@ const favorites = vi.hoisted(() => ({
 }))
 vi.mock('@/stores/favorites', () => ({ useFavoritesStore: () => favorites }))
 
+const runCounts = vi.hoisted(() => {
+  const counts: Record<string, number> = {}
+  return {
+    counts,
+    projectCount: (id: string) => counts[id] ?? 0,
+    reset: () => { for (const k of Object.keys(counts)) delete counts[k] },
+  }
+})
+vi.mock('@/stores/runningCounts', () => ({ useRunningCountsStore: () => runCounts }))
+
 function makeProject(over: Partial<Project> = {}): Project {
   return {
     project_id: 'p-1',
@@ -37,7 +47,10 @@ function makeProject(over: Partial<Project> = {}): Project {
 }
 
 describe('ProjectTree', () => {
-  afterEach(() => setLocale('zh-CN'))
+  afterEach(() => {
+    setLocale('zh-CN')
+    runCounts.reset()
+  })
 
   it('renders the project name without category or visibility tags', () => {
     favorites.resolvedFavoriteProjects = [makeProject()]
@@ -62,5 +75,30 @@ describe('ProjectTree', () => {
       favorites.resolvedFavoriteProjects[0],
     )
     expect(router.push).toHaveBeenCalledWith('/projects/p-1/chat')
+  })
+
+  it('shows the running-count badge when the project has running turns', () => {
+    runCounts.counts['p-1'] = 2
+    favorites.resolvedFavoriteProjects = [makeProject()]
+    const wrapper = mount(ProjectTree)
+    const badge = wrapper.find('.project-run-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('2')
+  })
+
+  it('hides the badge when the count is zero or absent', () => {
+    favorites.resolvedFavoriteProjects = [makeProject()]
+    const wrapper = mount(ProjectTree)
+    expect(wrapper.find('.project-run-badge').exists()).toBe(false)
+
+    runCounts.counts['p-1'] = 0
+    expect(mount(ProjectTree).find('.project-run-badge').exists()).toBe(false)
+  })
+
+  it('does not leak another project count into this row', () => {
+    runCounts.counts['p-other'] = 5
+    favorites.resolvedFavoriteProjects = [makeProject()]
+    const wrapper = mount(ProjectTree)
+    expect(wrapper.find('.project-run-badge').exists()).toBe(false)
   })
 })

@@ -22,6 +22,7 @@ from api.services.compression import (
     compress_once,
 )
 from api.services.conversation_runs import latest_run
+from api.services.running_counts import compute_running_counts
 from api.websocket.manager import manager as ws_manager
 
 router = APIRouter(prefix="/api")
@@ -292,6 +293,16 @@ async def list_conversations(
         }
         for row in rows
     ]
+
+
+@router.get("/running-counts")
+async def running_counts(current_user: UserInfo = Depends(get_current_user)):
+    """Current user's running-turn counts grouped by project and agent.
+
+    Cross-project aggregate for the sidebar badges: scoping is entirely in
+    `compute_running_counts` (owner + visibility), so no `authorize_project`.
+    """
+    return await compute_running_counts(current_user.user_id)
 
 
 @router.post("/projects/{project_id}/conversations")

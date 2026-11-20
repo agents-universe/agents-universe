@@ -1,5 +1,5 @@
 import { apiFetch } from './client'
-import type { CompressResult, ConversationItem, ConversationRun, DbMessage, DbTask } from '@/types'
+import type { CompressResult, ConversationItem, ConversationRun, DbMessage, DbTask, RunningCounts } from '@/types'
 
 const enc = encodeURIComponent
 
@@ -48,6 +48,9 @@ export const conversationsApi = {
         }
       | null
     >(`/api/projects/${enc(projectId)}/conversations/latest?agent_slug=${enc(agentSlug)}`),
+
+  /** Current user's running-turn counts grouped by project / agent slug. */
+  getRunningCounts: () => apiFetch<RunningCounts>('/api/running-counts'),
 
   create: (projectId: string, agentSlug: string | null) =>
     apiFetch<{ conversation_id: string; project_id: string; token_budget: number }>(

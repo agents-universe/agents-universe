@@ -40,6 +40,7 @@ export default {
       toggleFavorite: '点击收藏/取消收藏',
       favoriteToSidebar: '收藏到侧边栏',
     },
+    runningBadge: '运行中: {count}',
     footer: {
       tokenSettings: '密钥配置',
       logout: '退出登录',

@@ -392,6 +392,14 @@ export interface ConversationRun {
   tokens_used: number | null
 }
 
+// ── Running-turn counts (sidebar badges) ─────────────────────────────────────
+
+/** Absent key = 0. Keys present only when count ≥ 1. */
+export interface RunningCounts {
+  by_project: Record<string, number>
+  by_agent: Record<string, number>
+}
+
 // ── Project Secrets ──────────────────────────────────────────────────────────
 
 export interface ProjectSecret {

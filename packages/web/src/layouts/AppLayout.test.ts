@@ -17,6 +17,11 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/composables/useWebSocket', () => ({ closeAllConnections: vi.fn() }))
 vi.mock('@/composables/useProjectData', () => ({ useProjectData: vi.fn() }))
+// Opens a real /ws/user socket + pinia store — both are out of scope here.
+vi.mock('@/composables/useRunningCounts', () => ({
+  useRunningCounts: vi.fn(),
+  closeRunningCounts: vi.fn(),
+}))
 vi.mock('@/pages/ChatPage.vue', () => ({
   default: { name: 'ChatPageStub', template: '<div />' },
   invalidateLatestConversation: vi.fn(),

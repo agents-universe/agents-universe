@@ -128,8 +128,12 @@ import MemoryPanel from '@/components/memory/MemoryPanel.vue'
 import { closeAllConnections } from '@/composables/useWebSocket'
 import { invalidateLatestConversation } from '@/pages/ChatPage.vue'
 import { useProjectData } from '@/composables/useProjectData'
+import { useRunningCounts } from '@/composables/useRunningCounts'
 
 useProjectData()
+// One `/ws/user` socket for the whole sidebar: live running-turn counts on
+// project/agent names (opened once per app layout mount, idempotent).
+useRunningCounts()
 
 /* ── Sidebar state ────────────────────────────────────────────── */
 const MOBILE_BREAKPOINT = 1024

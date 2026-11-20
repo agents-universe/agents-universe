@@ -26,6 +26,9 @@ from api.models._compat import now_utc
 from api.models.conversation import AgentTask, Conversation
 from api.models.conversation import Message as DbMessage
 from api.models.conversation_run import ConversationRun
+from api.services.running_counts import (
+    notify_conversation_running_changed as _notify_running_changed,
+)
 
 _log = logging.getLogger("agents_universe.runs")
 
@@ -49,7 +52,8 @@ async def create_run(conversation_id: str, user_message_id: str | None) -> str:
         )
         db.add(run)
         await db.commit()
-        return run.run_id
+    await _notify_running_changed(conversation_id)
+    return run.run_id
 
 
 async def update_run_snapshot(run_id: str, text: str) -> None:
@@ -112,7 +116,21 @@ async def finish_run(
             .values(**values)
         )
         await db.commit()
-        return bool(result.rowcount)
+        transitioned = bool(result.rowcount)
+    if transitioned:
+        # Only a real transition changes the counts; the safety-net replay
+        # (rowcount 0) must not schedule a spurious broadcast.
+        async with AsyncSessionLocal() as db:
+            conversation_id = (
+                await db.execute(
+                    select(ConversationRun.conversation_id).where(
+                        ConversationRun.run_id == run_id
+                    )
+                )
+            ).scalar_one_or_none()
+        if conversation_id:
+            await _notify_running_changed(str(conversation_id))
+    return transitioned
 
 
 async def interrupt_stale_runs(db: AsyncSession) -> int:

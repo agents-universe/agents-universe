@@ -40,6 +40,7 @@ export default {
       toggleFavorite: 'Click to favorite / unfavorite',
       favoriteToSidebar: 'Favorite to sidebar',
     },
+    runningBadge: 'Running: {count}',
     footer: {
       tokenSettings: 'API keys',
       logout: 'Log out',

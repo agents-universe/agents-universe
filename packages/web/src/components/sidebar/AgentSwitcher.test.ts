@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AgentSwitcher from './AgentSwitcher.vue'
 import type { AgentInfo } from '@/types'
@@ -19,6 +19,16 @@ const projectStore = vi.hoisted(() => ({
   currentProject: null as { project_id: string } | null,
 }))
 vi.mock('@/stores/project', () => ({ useProjectStore: () => projectStore }))
+
+const runCounts = vi.hoisted(() => {
+  const counts: Record<string, number> = {}
+  return {
+    counts,
+    agentCount: (slug: string) => counts[slug] ?? 0,
+    reset: () => { for (const k of Object.keys(counts)) delete counts[k] },
+  }
+})
+vi.mock('@/stores/runningCounts', () => ({ useRunningCountsStore: () => runCounts }))
 
 function makeAgent(): AgentInfo {
   return {
@@ -45,6 +55,50 @@ function makeAgent(): AgentInfo {
 }
 
 describe('AgentSwitcher', () => {
+  afterEach(() => runCounts.reset())
+
+  it('shows the running-count badge between the label and the active pip', () => {
+    runCounts.counts['tech-lead'] = 3
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    const wrapper = mount(AgentSwitcher)
+
+    const row = wrapper.find('.agent-item')
+    const badge = row.find('.agent-run-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('3')
+
+    const children = [...row.element.children]
+    const labelIdx = children.findIndex((el) => el.classList.contains('agent-label'))
+    const badgeIdx = children.findIndex((el) => el.classList.contains('agent-run-badge'))
+    expect(labelIdx).toBeGreaterThanOrEqual(0)
+    expect(badgeIdx).toBe(labelIdx + 1)
+
+    wrapper.unmount()
+  })
+
+  it('hides the badge when the count is zero or belongs to another agent', () => {
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    const zero = mount(AgentSwitcher)
+    expect(zero.find('.agent-run-badge').exists()).toBe(false)
+    zero.unmount()
+
+    runCounts.counts['other-agent'] = 4
+    const foreign = mount(AgentSwitcher)
+    expect(foreign.find('.agent-run-badge').exists()).toBe(false)
+    foreign.unmount()
+  })
+
+  it('keeps the active pip independent of the badge', () => {
+    runCounts.counts['tech-lead'] = 1
+    favorites.resolvedFavoriteAgents = [makeAgent()]
+    agentStore.currentAgent = makeAgent()
+    const wrapper = mount(AgentSwitcher)
+    const row = wrapper.find('.agent-item')
+    expect(row.find('.agent-run-badge').exists()).toBe(true)
+    expect(row.find('.agent-active-pip').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('shows the 公共 badge on public skills in the hover tooltip', async () => {
     favorites.resolvedFavoriteAgents = [makeAgent()]
     const wrapper = mount(AgentSwitcher)

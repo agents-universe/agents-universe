@@ -24,6 +24,11 @@
         {{ initials(agentName(agent)) }}
       </div>
       <span class="agent-label">{{ agentName(agent) }}</span>
+      <span
+        v-if="runningCounts.agentCount(agent.slug) > 0"
+        class="badge badge--green agent-run-badge"
+        :title="t('sidebar.runningBadge', { count: runningCounts.agentCount(agent.slug) })"
+      >{{ runningCounts.agentCount(agent.slug) }}</span>
       <span v-if="agentStore.currentAgent?.agent_id === agent.agent_id" class="agent-active-pip" />
     </div>
 
@@ -95,6 +100,7 @@ import { Bot, Plus } from 'lucide-vue-next'
 import { useAgentStore } from '@/stores/agent'
 import { useFavoritesStore } from '@/stores/favorites'
 import { useProjectStore } from '@/stores/project'
+import { useRunningCountsStore } from '@/stores/runningCounts'
 import { agentStaticTools, agentMcpServers, initials, avatarColor } from '@/utils/agent'
 import { localizedText } from '@/utils/localize'
 import type { AgentInfo } from '@/types'
@@ -104,6 +110,7 @@ const { t } = useI18n()
 const agentStore = useAgentStore()
 const favoritesStore = useFavoritesStore()
 const projectStore = useProjectStore()
+const runningCounts = useRunningCountsStore()
 const showPicker = ref(false)
 const tooltipAgent = ref<AgentInfo | null>(null)
 let hideTimer: ReturnType<typeof setTimeout> | null = null

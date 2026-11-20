@@ -177,6 +177,7 @@ python -m agent_core.knowledge.index --global-dir ./knowledge
 - **职责边界** — 受理哪些审批（报销 / 采购 / 合同）、明确不做什么、哪些动作需要 `user_confirm` 确认
 - **处理流程** — 沉淀为项目专属 workflow（`workflows/*.workflow.md`）：读取单据 → 校验必填项与金额 → 比对审批规则 → 输出通过/驳回结论与理由
 - **文件类型** — 声明受理的单据格式，由 `doc_reader` 解析：`.pdf` / `.docx` / `.xlsx` / `.xlsm` / `.txt` / `.md` / `.csv`
+- **输出契约** — 给发布 API 的调用方约定**结构化返回**：要求每轮以固定 JSON 代码块收尾，例如 `{"decision": "approved|rejected", "amount": ..., "matchedRule": ..., "reason": ..., "followUps": [...]}`——字段与判定口径写死在定义里，业务系统拼接 `stream_delta` 后提取 ```json``` 块即可稳定解析，不用猜自然语言的版式
 - **工具矩阵** — 按最小能力声明 `filesystem`、`knowledge_rw`、`doc_reader`、`user_confirm` 等，引用的每个工具/技能/工作流都经 `definition_check` 校验真实存在
 
 生成的定义通过 `definition_check`（`ok: true`）才宣告完成，后续可随时再找它调整职责、增删技能。
@@ -199,7 +200,7 @@ curl -N -X POST "$BASE/api/p/$PUBLISH_ID/stream" \
   -d '{"message": "审批这笔报销：市场部差旅 4800 元，附行程单与发票", "thread_id": "expense-2026-041"}'
 ```
 
-`thread_id` 用业务单据号即可：同一单据的多次追问钉在同一条会话上保留上下文，不同单据互不串扰。流的每帧一行 `data: {json}`，`stream_delta` 是审批意见的流式输出，`stream_end` 表示本轮结束。
+`thread_id` 用业务单据号即可：同一单据的多次追问钉在同一条会话上保留上下文，不同单据互不串扰。流的每帧一行 `data: {json}`，`stream_delta` 是审批意见的流式输出，`stream_end` 表示本轮结束——调用方累积 `stream_delta` 拼出完整回复，按智能体定义里的输出契约提取 ```json``` 代码块，即得到可直接入库/流转的结构化审批结论。
 
 两点边界，设计时需知道：
 

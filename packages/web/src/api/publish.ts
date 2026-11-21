@@ -3,6 +3,9 @@ import type { LocaleOverrides } from '@/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/** Response shape of the external API: SSE frames or one JSON body. */
+export type PublishResponseMode = 'stream' | 'json'
+
 export interface PublishItem {
   publish_id: string
   agent_slug: string
@@ -12,6 +15,7 @@ export interface PublishItem {
   description: string | null
   page_enabled: boolean
   api_enabled: boolean
+  response_mode: PublishResponseMode
   created_at: string
   updated_at: string | null
 }
@@ -22,6 +26,7 @@ export interface PublishCreatePayload {
   model_config_id: string
   title?: string | null
   description?: string | null
+  response_mode?: PublishResponseMode
 }
 
 export interface PublishUpdatePayload {
@@ -30,6 +35,7 @@ export interface PublishUpdatePayload {
   page_enabled?: boolean
   api_enabled?: boolean
   model_config_id?: string
+  response_mode?: PublishResponseMode
 }
 
 export interface PublishKeyItem {

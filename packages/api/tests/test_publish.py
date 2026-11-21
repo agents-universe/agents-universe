@@ -1408,3 +1408,345 @@ async def test_session_non_ascii_token_is_rejected_not_500(
             params={"token": "签名签名签名签名"},
         )
     assert r.status_code == 404
+
+
+# ── response_mode + JSON response mode ──────────────────────────────────────
+
+
+async def test_create_publish_with_response_mode(client, db, make_project, as_user):
+    from api.models.agent import Agent
+    project = await make_project(created_by="test-user")
+    cfg = UserModelConfig(user_id="test-user", provider="openai", model_id="gpt-x", encrypted_key="k")
+    db.add(cfg)
+    await db.commit()
+    slug = f"t-agent-{uuid.uuid4().hex[:8]}"
+    db.add(Agent(slug=slug, display_name=slug, project_id=None))
+    await db.commit()
+
+    async with as_user("test-user"):
+        r = await client.post("/api/publishes", json={
+            "agent_slug": slug,
+            "project_id": str(project.project_id),
+            "model_config_id": cfg.config_id,
+            "response_mode": "json",
+        })
+    assert r.status_code == 201, r.text
+    assert r.json()["response_mode"] == "json"
+
+    # Invalid mode -> 422 (Literal), not a silent fallback.
+    slug2 = f"t-agent-{uuid.uuid4().hex[:8]}"
+    db.add(Agent(slug=slug2, display_name=slug2, project_id=None))
+    await db.commit()
+    async with as_user("test-user"):
+        r2 = await client.post("/api/publishes", json={
+            "agent_slug": slug2,
+            "project_id": str(project.project_id),
+            "model_config_id": cfg.config_id,
+            "response_mode": "websocket",
+        })
+    assert r2.status_code == 422
+
+
+async def test_patch_response_mode_roundtrip(client, db, make_project, as_user):
+    """PATCH flips the mode; a publish created before the column existed
+    (no response_mode in its create payload) must default to stream."""
+    publish, _ = await _make_publish(db, make_project)
+
+    # Legacy default: _make_publish never sets response_mode.
+    async with as_user("test-user"):
+        r = await client.get(f"/api/publishes/{publish.publish_id}")
+    assert r.json()["response_mode"] == "stream"
+
+    async with as_user("test-user"):
+        r = await client.patch(
+            f"/api/publishes/{publish.publish_id}", json={"response_mode": "json"}
+        )
+    assert r.status_code == 200
+    async with as_user("test-user"):
+        r = await client.get(f"/api/publishes/{publish.publish_id}")
+    assert r.json()["response_mode"] == "json"
+
+    # The list serializer carries it too (the card select binds to it).
+    async with as_user("test-user"):
+        r = await client.get("/api/publishes")
+    row = next(p for p in r.json() if p["publish_id"] == publish.publish_id)
+    assert row["response_mode"] == "json"
+
+
+async def _make_json_publish(db, make_project):
+    publish, _ = await _make_publish(db, make_project)
+    plain, digest = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=digest, key_hint="...j"))
+    publish.response_mode = "json"
+    await db.commit()
+    return publish, plain
+
+
+async def test_json_mode_returns_single_json_body(
+    client, db, make_project, monkeypatch
+):
+    """json mode answers with one application/json body assembled from the
+    turn's frames — no SSE, no client-side frame stitching."""
+    publish, plain = await _make_json_publish(db, make_project)
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "批准"})
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "，理由：合规"})
+        # Task-scoped frames must not leak into the main reply.
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "SUBTASK", "task_id": "t1"})
+        await transport.send(conversation_id, {"type": "thinking_delta", "delta": "在核对金额"})
+        await transport.send(conversation_id, {
+            "type": "image_output",
+            "images": [{"id": "i1", "url": "/api/media/p/c/i.png", "name": "i.png", "media_type": "image/png", "size": 3}],
+        })
+        await transport.send(conversation_id, {
+            "type": "file_output",
+            "files": [{"id": "f1", "url": "/api/media/p/c/o.pdf", "name": "o.pdf", "media_type": "application/pdf", "size": 9}],
+        })
+        await transport.send(conversation_id, {
+            "type": "stream_end", "message_id": "m1", "total_tokens": 7, "stop_reason": "stop",
+        })
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "审批", "thread_id": "doc-1"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["thread_id"] == "doc-1"
+    assert body["message_id"] == "m1"
+    assert body["content"] == "批准，理由：合规"
+    assert "SUBTASK" not in body["content"]
+    assert body["thinking"] == "在核对金额"
+    assert body["stop_reason"] == "stop"
+    assert body["usage"]["total_tokens"] == 7
+    assert body["error"] is None
+    assert body["images"][0]["name"] == "i.png"
+    assert body["files"][0]["name"] == "o.pdf"
+
+
+async def test_json_mode_validation_error_is_400(
+    client, db, make_project, monkeypatch
+):
+    """A terminal kernel error frame (e.g. expired attachment ref) maps to
+    400 with the standard api_error envelope — a caller mistake, not a crash."""
+    publish, plain = await _make_json_publish(db, make_project)
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        await transport.send(conversation_id, {
+            "type": "error",
+            "code": "CONVERSATION_MESSAGE_INVALID",
+            "message": "Attachment expired",
+            "terminal": True,
+        })
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hi"},
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "CONVERSATION_MESSAGE_INVALID"
+    assert detail["message"] == "Attachment expired"
+
+
+async def test_json_mode_crash_is_500(client, db, make_project, monkeypatch, caplog):
+    """A run that raises without any frame must not hang the waiter and must
+    not leak its exception as an unhandled task error."""
+    import logging
+
+    publish, plain = await _make_json_publish(db, make_project)
+
+    async def _boom(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        raise RuntimeError("kernel exploded")
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _boom)
+
+    with caplog.at_level(logging.ERROR, logger="agents_universe.publish"):
+        r = await client.post(
+            f"/api/p/{publish.publish_id}/stream",
+            headers={"Authorization": f"Bearer {plain}"},
+            json={"message": "hi"},
+        )
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "PUBLISH_RUN_FAILED"
+    assert "publish run task failed" in caplog.text
+
+
+async def test_stream_mode_still_sse_by_default(
+    client, db, make_project, monkeypatch
+):
+    """A publish with the legacy default (stream) keeps the SSE contract —
+    content-type included, so clients can branch on it."""
+    publish, plain = await _make_publish(db, make_project)
+    plain, digest = _mk_key(publish.publish_id)
+    db.add(PublishKey(publish_id=publish.publish_id, key_hash=digest, key_hint="...s"))
+    await db.commit()
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        await transport.send(conversation_id, {"type": "stream_delta", "delta": "hi"})
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hi"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert "stream_delta" in r.text
+
+
+async def test_json_mode_respects_claim(
+    client, db, make_project, monkeypatch
+):
+    """409 still fires for a busy conversation in json mode, and the run
+    semaphore returns exactly one permit per run."""
+    from api.services.publish import get_or_create_publish_conversation
+    from api.websocket.manager import manager
+
+    publish, plain = await _make_json_publish(db, make_project)
+    releases, unwound = _record_turn_ownership(monkeypatch)
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        await transport.send(conversation_id, {"type": "stream_end", "message_id": "m1", "total_tokens": 0})
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    # Hold the claim the way a live turn would.
+    conv = await get_or_create_publish_conversation(
+        db, publish, thread_id="busy", title="busy"
+    )
+    assert await manager.claim_turn(conv)
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hi", "thread_id": "busy"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "CONVERSATION_ALREADY_RUNNING"
+
+    # Free claim, run once: the permit comes back exactly once.
+    manager.release_turn(conv)
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "hi", "thread_id": "busy"},
+    )
+    assert r.status_code == 200
+    for _ in range(200):
+        if len(unwound) >= 2:
+            break
+        await asyncio.sleep(0.005)
+    # Two permit returns: the 409 rollback (acquired, never handed to a task)
+    # and the successful run's finally — never more. The claim itself was
+    # released exactly once, by the successful run.
+    assert len(unwound) == 2, unwound
+    assert releases == [conv]
+
+
+async def test_abort_stops_json_run(client, db, make_project, monkeypatch):
+    """The transport-agnostic /abort ends a json-mode run: the waiter wakes
+    with the synthetic aborted stream_end and answers 200."""
+    publish, plain = await _make_json_publish(db, make_project)
+    started = asyncio.Event()
+
+    async def _fake_run_turn(conversation_id, ws, msg, user_id, *, transport=None, interactive=True, actor_user_id=None):
+        from api.websocket.manager import manager
+        started.set()
+        ev = manager.get_abort_event(conversation_id)
+        assert ev is not None
+        await ev.wait()
+        await transport.send(conversation_id, {
+            "type": "stream_end", "message_id": None, "total_tokens": 0,
+            "stop_reason": "aborted",
+        })
+
+    monkeypatch.setattr("api.services.agent_turn.run_turn", _fake_run_turn)
+
+    run = asyncio.create_task(client.post(
+        f"/api/p/{publish.publish_id}/stream",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"message": "long job", "thread_id": "abort-me"},
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    r = await client.post(
+        f"/api/p/{publish.publish_id}/abort",
+        headers={"Authorization": f"Bearer {plain}"},
+        json={"thread_id": "abort-me"},
+    )
+    assert r.status_code == 200
+
+    resp = await asyncio.wait_for(run, timeout=5)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stop_reason"] == "aborted"
+    assert body["message_id"] is None
+
+
+# ── CollectingTransport unit ────────────────────────────────────────────────
+
+
+async def test_collecting_transport_terminal_frame_rules():
+    from api.services.publish import CollectingTransport
+
+    t = CollectingTransport()
+
+    # A real id-bearing terminal frame wins over an id-less synthetic one,
+    # in either arrival order.
+    await t.send("c", {"type": "stream_end", "message_id": None, "total_tokens": 1})
+    await t.send("c", {"type": "stream_end", "message_id": "m1", "total_tokens": 2})
+    assert t.stream_end["message_id"] == "m1"
+    await t.send("c", {"type": "stream_end", "message_id": None, "total_tokens": 3})
+    assert t.stream_end["message_id"] == "m1"
+    assert t.finished.is_set()
+
+    # Subtask / injection stream_ends are never terminal for the collector.
+    t2 = CollectingTransport()
+    await t2.send("c", {"type": "stream_end", "message_id": "task-1", "task_id": "t1"})
+    await t2.send("c", {"type": "stream_end", "message_id": "inj", "injection": True})
+    assert t2.stream_end is None
+    assert not t2.finished.is_set()
+    await t2.send("c", {"type": "stream_end", "message_id": "real", "total_tokens": 0})
+    assert t2.stream_end["message_id"] == "real"
+    assert t2.finished.is_set()
+
+
+async def test_collecting_transport_error_and_deltas():
+    from api.services.publish import CollectingTransport
+
+    t = CollectingTransport()
+    await t.send("c", {"type": "stream_delta", "delta": "a"})
+    await t.send("c", {"type": "stream_delta", "delta": "b", "task_id": "t1"})
+    await t.send("c", {"type": "thinking_delta", "delta": "hmm"})
+    await t.send("c", {"type": "thinking_delta", "delta": "TASK", "task_id": "t1"})
+    assert t.content == "a"
+    assert t.thinking == "hmm"
+    assert not t.finished.is_set()
+
+    # First error wins; a terminal one ends the wait.
+    await t.send("c", {"type": "error", "code": "E1", "message": "first"})
+    await t.send("c", {"type": "error", "code": "E2", "message": "second", "terminal": True})
+    assert t.error == {"code": "E1", "message": "first"}
+    assert t.finished.is_set()
+
+
+async def test_collecting_transport_file_upsert():
+    from api.services.publish import CollectingTransport
+
+    t = CollectingTransport()
+    await t.send("c", {"type": "file_output", "files": [{"name": "a.pdf", "url": "/u/1"}]})
+    await t.send("c", {"type": "file_output", "files": [{"name": "a.pdf", "url": "/u/2"}]})
+    assert len(t.files) == 1
+    assert t.files[0]["url"] == "/u/2"

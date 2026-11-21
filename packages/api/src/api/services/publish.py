@@ -113,6 +113,88 @@ class SSEStream:
             return False
 
 
+def is_terminal_stream_end(evt: dict) -> bool:
+    """True only for the turn's final stream_end (not subtask/injection ones).
+
+    A turn can emit several stream_end frames: one per plan subtask (which
+    carries ``task_id``), one at a mid-turn injection boundary
+    (``injection``), a synthetic one after an abort, and the real terminal
+    frame. Shared by the SSE drain and the JSON collector so both paths
+    settle on the same frame.
+    """
+    return (
+        evt.get("type") == "stream_end"
+        and not evt.get("task_id")
+        and not evt.get("injection")
+    )
+
+
+@dataclass
+class CollectingTransport:
+    """Transport that accumulates one turn's events for a single JSON reply.
+
+    Deliberately not a drain over SSEStream: that queue is bounded at 256
+    and DROPS frames when full — a dropped ``stream_delta`` would silently
+    truncate the reply. This collector is unbounded (a turn's event volume
+    is bounded by the run itself) and wakes the HTTP handler through an
+    ``asyncio.Event`` instead of polling.
+    """
+
+    content: str = ""
+    thinking: str = ""
+    images: list = field(default_factory=list)
+    files: list = field(default_factory=list)
+    stream_end: dict | None = None
+    error: dict | None = None
+    # Set on the first terminal frame so the handler need not wait for the
+    # task to unwind; also set unconditionally when the run task ends, so
+    # the wait can never hang on a crashed run.
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def send(self, conversation_id: str, data: dict) -> bool:
+        etype = data.get("type")
+        # Task-scoped frames belong to plan subtask panels; interleaving
+        # their deltas into the main reply would duplicate narration — same
+        # rule as run_turn's persistence branch.
+        if etype == "stream_delta" and not data.get("task_id"):
+            self.content += data.get("delta") or ""
+        elif etype == "thinking_delta" and not data.get("task_id"):
+            self.thinking += data.get("delta") or ""
+        elif etype == "image_output":
+            self.images.extend(data.get("images") or [])
+        elif etype == "file_output":
+            # Same deliverable delivered repeatedly updates in place, not
+            # appends — mirrors the chat's one-link-per-file rule.
+            from api.services.agent_turn import _upsert_file_records
+
+            _upsert_file_records(self.files, data.get("files") or [])
+        elif is_terminal_stream_end(data):
+            # Real id-bearing frames beat id-less synthetic ones (abort /
+            # outer-exception tails) and are never overwritten once
+            # recorded — the same rule as scheduled_runs._NullTransport.
+            recorded = self.stream_end or {}
+            recorded_real = bool(recorded.get("message_id")) and not recorded.get("injection")
+            frame_real = bool(data.get("message_id")) and not data.get("injection")
+            if frame_real and not recorded_real:
+                self.stream_end = data
+            elif self.stream_end is None:
+                self.stream_end = data
+            self.finished.set()
+        elif etype == "error":
+            # First error wins; a terminal error ends the turn (no
+            # stream_end will follow), while a non-terminal one is only
+            # informational — the task-end set in the run's finally still
+            # resolves the wait either way.
+            if self.error is None:
+                self.error = {
+                    "code": data.get("code") or "PUBLISH_RUN_FAILED",
+                    "message": data.get("message") or "Agent execution failed",
+                }
+            if data.get("terminal"):
+                self.finished.set()
+        return True
+
+
 def sse_format(data: dict) -> str:
     """Render a turn event as one SSE ``data:`` frame (JSON, no id/retry).
 

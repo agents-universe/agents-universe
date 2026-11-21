@@ -143,6 +143,16 @@
                   <span class="publish-switch-knob" />
                 </span>
               </label>
+              <select
+                :value="p.response_mode"
+                class="input publish-mode-select"
+                :title="t('publishesPage.responseMode')"
+                :disabled="busy"
+                @change="updateResponseMode(p, $event)"
+              >
+                <option value="stream">{{ t('publishesPage.modeStream') }}</option>
+                <option value="json">{{ t('publishesPage.modeJson') }}</option>
+              </select>
               <button class="btn-sm danger" @click="remove(p)" :disabled="busy">
                 <Trash2 :size="12" />
                 {{ t('common.delete') }}
@@ -197,6 +207,14 @@
             <label class="publish-field">
               <span class="publish-field-label">{{ t('publishesPage.description') }}</span>
               <textarea v-model="form.description" class="input" rows="2" :placeholder="t('publishesPage.descPlaceholder')" />
+            </label>
+
+            <label class="publish-field">
+              <span class="publish-field-label">{{ t('publishesPage.responseMode') }}</span>
+              <select v-model="form.response_mode" class="input">
+                <option value="stream">{{ t('publishesPage.modeStream') }}</option>
+                <option value="json">{{ t('publishesPage.modeJson') }}</option>
+              </select>
             </label>
 
             <p v-if="formMessage.text" class="publishes-message" :class="formMessage.ok ? 'success' : 'error'">
@@ -259,7 +277,13 @@ const message = reactive({ ok: true, text: '' })
 const showCreate = ref(false)
 const creating = ref(false)
 const formMessage = reactive({ ok: true, text: '' })
-const form = reactive({ agent_slug: '', model_config_id: '', title: '', description: '' })
+const form = reactive({
+  agent_slug: '',
+  model_config_id: '',
+  title: '',
+  description: '',
+  response_mode: 'stream' as 'stream' | 'json',
+})
 
 const scopedAgents = ref<Array<{ slug: string; label: string; project_id: string | null }>>([])
 const userModelConfigs = computed(() => agentStore.modelConfigs.filter(c => !c.is_system))
@@ -320,6 +344,7 @@ async function create() {
       model_config_id: form.model_config_id,
       title: form.title || null,
       description: form.description || null,
+      response_mode: form.response_mode,
     })
     publishes.value = [created, ...publishes.value]
     keysByPublish[created.publish_id] = []
@@ -328,6 +353,7 @@ async function create() {
     form.model_config_id = ''
     form.title = ''
     form.description = ''
+    form.response_mode = 'stream'
     message.ok = true
     message.text = t('publishesPage.created')
   } catch (e) {
@@ -443,6 +469,24 @@ async function toggleApi(p: PublishItem, e: Event) {
     message.ok = false
     message.text = err instanceof Error ? err.message : t('publishesPage.updateFailed')
     ;(e.target as HTMLInputElement).checked = !on
+  } finally {
+    busy.value = false
+  }
+}
+
+async function updateResponseMode(p: PublishItem, e: Event) {
+  const next = (e.target as HTMLSelectElement).value as 'stream' | 'json'
+  const prev = p.response_mode
+  if (next === prev) return
+  busy.value = true
+  try {
+    await publishApi.update(p.publish_id, { response_mode: next })
+    p.response_mode = next
+  } catch (err) {
+    message.ok = false
+    message.text = err instanceof Error ? err.message : t('publishesPage.updateFailed')
+    // Optimistic revert: the select rendered `next` already.
+    ;(e.target as HTMLSelectElement).value = prev
   } finally {
     busy.value = false
   }
@@ -899,6 +943,14 @@ onMounted(() => {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 .publish-switch.on .publish-switch-knob { transform: translateX(15px); }
+
+/* Compact response-mode picker in the card action row. */
+.publish-mode-select {
+  width: auto;
+  min-width: 96px;
+  font-size: 11.5px;
+  padding: 4px 8px;
+}
 
 /* ── Create modal ───────────────────────────────────────────────────── */
 .publish-create-modal {

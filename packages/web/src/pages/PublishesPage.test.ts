@@ -44,6 +44,7 @@ function makePublish(over: Partial<PublishItem> = {}): PublishItem {
     description: null,
     page_enabled: true,
     api_enabled: true,
+    response_mode: 'stream',
     created_at: '2026-08-01T00:00:00Z',
     updated_at: null,
     ...over,
@@ -109,8 +110,8 @@ describe('PublishesPage', () => {
 
     // The create modal is Teleported to <body>, outside the component tree.
     const selects = document.querySelectorAll('.publish-form select')
-    // Only agent and model config selects remain — no project select.
-    expect(selects.length).toBe(2)
+    // Agent, model config, response mode — still no project select.
+    expect(selects.length).toBe(3)
 
     await new DOMWrapper(selects[0] as HTMLSelectElement).setValue('qa-bot')
     await new DOMWrapper(selects[1] as HTMLSelectElement).setValue('m-1')
@@ -124,7 +125,28 @@ describe('PublishesPage', () => {
       model_config_id: 'm-1',
       title: null,
       description: null,
+      response_mode: 'stream',
     })
+    wrapper.unmount()
+  })
+
+  it('switches the response mode from the card and reverts on failure', async () => {
+    publishApi.list.mockResolvedValue([makePublish()])
+    publishApi.update.mockResolvedValueOnce({ publish_id: 'pub-1', updated: true })
+    const wrapper = mount(PublishesPage)
+    await flushPromises()
+
+    const select = wrapper.find('.publish-mode-select')
+    expect(select.exists()).toBe(true)
+    await select.setValue('json')
+    await flushPromises()
+    expect(publishApi.update).toHaveBeenCalledWith('pub-1', { response_mode: 'json' })
+
+    // A failed PATCH must not leave the card claiming a mode the server rejected.
+    publishApi.update.mockRejectedValueOnce(new Error('boom'))
+    await select.setValue('stream')
+    await flushPromises()
+    expect((select.element as HTMLSelectElement).value).toBe('json')
     wrapper.unmount()
   })
 

@@ -49,6 +49,12 @@ class AgentPublish(Base):
     page_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # External API enabled/disabled without deleting the publish.
     api_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # How POST /api/p/{id}/stream responds: "stream" (SSE frames) or "json"
+    # (one JSON body collected to completion). Chosen at publish time; the
+    # embedded page always streams regardless of this setting.
+    response_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="stream", server_default="stream"
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_now_utc)
     updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

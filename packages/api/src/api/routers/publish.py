@@ -18,14 +18,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.config import get_settings
 from api.database import get_db
 from api.dependencies.auth import UserInfo, get_current_user
 from api.errors import api_error
@@ -34,7 +38,14 @@ from api.models.agent import Agent
 from api.models.project import Project
 from api.models.publish import AgentPublish, PublishKey
 from api.models.user import UserModelConfig
+from api.routers.media import (
+    _IMAGE_SUFFIXES,
+    _MIME_BY_SUFFIX,
+    _image_size_bytes,
+    store_upload,
+)
 from api.services.publish import (
+    CollectingTransport,
     SSEStream,
     _find_publish_conversation_id,
     generate_publish_key,
@@ -63,6 +74,9 @@ class PublishCreate(BaseModel):
     model_config_id: str = Field(min_length=1, max_length=36)
     title: str | None = Field(None, max_length=255)
     description: str | None = None
+    # Response shape of the external API: SSE frames or one JSON body.
+    # Chosen once at publish time; the embedded page always streams.
+    response_mode: Literal["stream", "json"] = "stream"
 
 
 class PublishUpdate(BaseModel):
@@ -71,10 +85,25 @@ class PublishUpdate(BaseModel):
     page_enabled: bool | None = None
     api_enabled: bool | None = None
     model_config_id: str | None = Field(None, max_length=36)
+    response_mode: Literal["stream", "json"] | None = None
 
 
 class PublishKeyCreate(BaseModel):
     name: str | None = Field(None, max_length=100)
+
+
+class AttachmentRef(BaseModel):
+    """Attachment reference returned by POST /api/p/{id}/upload.
+
+    The URL is the same /api/media/{pid}/{cid}/{name} shape the WS message
+    path uses — the kernel's _validate_attachment_url matches on it, so a
+    ref that passes the router's prefix check here needs no second schema.
+    """
+
+    url: str = Field(max_length=500)
+    name: str | None = Field(None, max_length=255)
+    media_type: str | None = Field(None, max_length=100)
+    size: int | None = Field(None, ge=0)
 
 
 class RunRequest(BaseModel):
@@ -84,6 +113,10 @@ class RunRequest(BaseModel):
     # multi-turn agents keep their history without sharing it with other
     # threads of the same publish. Omitted → "default".
     thread_id: str | None = Field(None, max_length=100)
+    # Refs previously uploaded via /upload for THIS publish+thread. Same
+    # ≤10 bound as the WS message path; deep validation (filename, file
+    # exists in store, path containment) stays in the kernel.
+    attachments: list[AttachmentRef] = Field(default_factory=list, max_length=10)
 
 
 class AbortRequest(BaseModel):
@@ -166,6 +199,7 @@ async def list_publishes(
             "description": p.description,
             "page_enabled": p.page_enabled,
             "api_enabled": p.api_enabled,
+            "response_mode": p.response_mode,
             "created_at": p.created_at.isoformat(),
             "updated_at": p.updated_at.isoformat() if p.updated_at else None,
         }
@@ -232,6 +266,7 @@ async def create_publish(
         model_config_id=body.model_config_id,
         title=body.title,
         description=body.description,
+        response_mode=body.response_mode,
     )
     db.add(publish)
     try:
@@ -250,6 +285,7 @@ async def create_publish(
         "description": publish.description,
         "page_enabled": publish.page_enabled,
         "api_enabled": publish.api_enabled,
+        "response_mode": publish.response_mode,
         # Same shape as GET/list — the UI prepends this row and renders its
         # date chip straight away, without a reload.
         "created_at": publish.created_at.isoformat(),
@@ -273,6 +309,7 @@ async def get_publish(
         "description": publish.description,
         "page_enabled": publish.page_enabled,
         "api_enabled": publish.api_enabled,
+        "response_mode": publish.response_mode,
         "created_at": publish.created_at.isoformat(),
         "updated_at": publish.updated_at.isoformat() if publish.updated_at else None,
     }
@@ -294,6 +331,8 @@ async def update_publish(
         publish.page_enabled = body.page_enabled
     if body.api_enabled is not None:
         publish.api_enabled = body.api_enabled
+    if body.response_mode is not None:
+        publish.response_mode = body.response_mode
     if body.model_config_id is not None:
         cfg_result = await db.execute(
             select(UserModelConfig).where(
@@ -410,17 +449,12 @@ async def revoke_publish_key(
 def _is_terminal_frame(evt: dict) -> bool:
     """True only for the turn's final stream_end.
 
-    A turn can emit several stream_end frames: one per plan subtask (which
-    carries ``task_id`` and closes that task's panel stream), one at a
-    mid-turn injection boundary (``injection``), a synthetic one after an
-    abort, and the real terminal frame. Ending the SSE response on any of
-    the former truncated the answer while the run kept going.
+    Delegates to the shared predicate in services.publish so the SSE drain
+    and the JSON collector settle on the same frame.
     """
-    return (
-        evt.get("type") == "stream_end"
-        and not evt.get("task_id")
-        and not evt.get("injection")
-    )
+    from api.services.publish import is_terminal_stream_end
+
+    return is_terminal_stream_end(evt)
 
 
 async def _drain_publish_stream(stream: SSEStream, task: asyncio.Task, conversation: str):
@@ -509,6 +543,19 @@ async def publish_stream(
             title=f"发布会话: {publish.agent_slug}/{thread_suffix}",
         )
 
+        # Cheap shape check before burning the claim: refs must point into
+        # THIS publish's conversation. Filename pattern, file-exists and
+        # path containment stay in the kernel (_validate_attachment_url) —
+        # duplicating them here would fork the security gate.
+        ref_prefix = f"/api/media/{publish.project_id}/{conversation}/"
+        for att in body.attachments:
+            if not att.url.startswith(ref_prefix):
+                raise api_error(
+                    400,
+                    "PUBLISH_ATTACHMENT_INVALID",
+                    "Attachment does not belong to this publish thread — upload it via POST /api/p/{id}/upload first",
+                )
+
         # Claim the turn so a second concurrent stream on the same conversation
         # fails fast instead of interleaving two runs.
         from api.websocket.manager import manager
@@ -525,7 +572,8 @@ async def publish_stream(
     manager.ensure_abort_event(conversation)
     manager.reset_abort(conversation)
 
-    stream = SSEStream()
+    is_json = publish.response_mode == "json"
+    transport: SSEStream | CollectingTransport = CollectingTransport() if is_json else SSEStream()
     from types import SimpleNamespace
     from api.services.agent_turn import run_turn
 
@@ -534,13 +582,22 @@ async def publish_stream(
             await run_turn(
                 conversation,
                 ws=SimpleNamespace(app=request.app),
-                msg={"content": body.message, "fixed_config_id": publish.model_config_id, "agent_id": publish.agent_slug},
+                msg={
+                    "content": body.message,
+                    "fixed_config_id": publish.model_config_id,
+                    "agent_id": publish.agent_slug,
+                    "attachments": [a.model_dump() for a in body.attachments],
+                },
                 user_id=publish.owner_id,
-                transport=stream,
+                transport=transport,
                 interactive=False,
                 actor_user_id=publish.owner_id,
             )
         finally:
+            # A crashed run must never leave the JSON waiter hanging: the
+            # outcome mapping then reports 500 instead of blocking forever.
+            if is_json:
+                transport.finished.set()
             # No release_turn: run_turn's own finally released the claim
             # before its final await (agent.close), and a claim re-taken
             # during that window belongs to its new owner — releasing again
@@ -563,8 +620,14 @@ async def publish_stream(
 
     task.add_done_callback(_consume_run_exception)
 
+    if is_json:
+        return await _await_json_result(
+            transport, task, conversation,
+            thread_id=thread_suffix,
+        )
+
     return StreamingResponse(
-        _drain_publish_stream(stream, task, conversation),
+        _drain_publish_stream(transport, task, conversation),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -572,6 +635,130 @@ async def publish_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _await_json_result(
+    collector: CollectingTransport,
+    task: asyncio.Task,
+    conversation: str,
+    *,
+    thread_id: str,
+):
+    """Wait for a json-mode run to finish and map the outcome to one response.
+
+    No server-side timeout — parity with the SSE path, where the client
+    disconnect /abort and the client's own timeout are the levers. On
+    disconnect the run must stop too, or it keeps burning model quota for
+    a reply nobody will read.
+    """
+    from api.websocket.manager import manager
+
+    try:
+        await collector.finished.wait()
+    except BaseException:
+        manager.signal_abort(conversation, reason="publish_json_client_disconnect")
+        task.cancel()
+        raise
+
+    if collector.stream_end is not None:
+        end = collector.stream_end
+        # Aborted / api_error / refusal runs also end in a real stream_end
+        # (in-band, same as SSE) — callers check stop_reason and error
+        # rather than the status code.
+        return {
+            "thread_id": thread_id,
+            "message_id": end.get("message_id"),
+            "content": collector.content,
+            "thinking": collector.thinking or None,
+            "images": collector.images,
+            "files": collector.files,
+            "usage": {"total_tokens": end.get("total_tokens") or 0},
+            "stop_reason": end.get("stop_reason"),
+            "error": collector.error,
+        }
+    if collector.error is not None:
+        # Kernel input validation (bad/expired attachment ref etc.) lands
+        # here as a terminal error frame — a caller mistake, so 400.
+        raise api_error(
+            400,
+            collector.error.get("code") or "PUBLISH_RUN_FAILED",
+            collector.error.get("message") or "Agent execution failed",
+        )
+    raise api_error(
+        500,
+        "PUBLISH_RUN_FAILED",
+        "Agent execution failed. Check server logs for details.",
+    )
+
+
+@router.post("/api/p/{publish_id}/upload")
+async def publish_upload(
+    publish_id: str,
+    request: Request,
+    thread_id: str | None = Query(None, max_length=100),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload one attachment for a publish thread (API key auth).
+
+    Bytes go to the same in-memory store the WS path uses, keyed by the
+    publish conversation — never to disk. The returned record carries a
+    /api/media/{pid}/{cid}/{name} URL matching that conversation, so the
+    caller can pass it straight into RunRequest.attachments; the run then
+    validates and injects it through the ordinary kernel pipeline. One file
+    per call mirrors POST /api/media and keeps the Content-Length edge
+    check meaningful. Uploads are not runs: no semaphore, no turn claim.
+    """
+    publish = await _authorize_publish_key(request, db, publish_id)
+    thread_suffix = thread_id or "default"
+    conversation_id = await get_or_create_publish_conversation(
+        db, publish,
+        thread_id=thread_suffix,
+        title=f"发布会话: {publish.agent_slug}/{thread_suffix}",
+    )
+
+    settings = get_settings()
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+
+    # Same early Content-Length rejection as upload_media: Starlette has
+    # already spooled the multipart part (>1MB to temp disk) by the time the
+    # in-route read cap runs.
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > max_bytes + 64 * 1024:
+        raise api_error(
+            413,
+            "FILE_TOO_LARGE",
+            f"File exceeds the {settings.max_upload_size_mb}MB limit",
+        )
+
+    # Server-controlled storage name: sanitized ASCII suffix, uuid body —
+    # the client filename is display-only (same rule as upload_media).
+    suffix = Path(file.filename or "").suffix.lower()
+    if not suffix or len(suffix) > 16 or not (suffix[1:].isascii() and suffix[1:].isalnum()):
+        suffix = ""
+    storage_name = f"{uuid.uuid4().hex}{suffix}"
+
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise api_error(
+            413,
+            "FILE_TOO_LARGE",
+            f"File exceeds the {settings.max_upload_size_mb}MB limit",
+        )
+    store_upload(conversation_id, storage_name, data)
+
+    record = {
+        "id": storage_name[:32],
+        "url": f"/api/media/{publish.project_id}/{conversation_id}/{storage_name}",
+        "name": (file.filename or storage_name)[:255],
+        "media_type": _MIME_BY_SUFFIX.get(suffix, file.content_type or "application/octet-stream"),
+        "size": len(data),
+    }
+    if suffix in _IMAGE_SUFFIXES:
+        dims = _image_size_bytes(data)
+        if dims:
+            record["width"], record["height"] = dims
+    return record
 
 
 @router.post("/api/p/{publish_id}/abort")

@@ -267,7 +267,11 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def _upload_size_guard(request: Request, call_next):
-        if request.method == "POST" and request.url.path.startswith("/api/media/"):
+        path = request.url.path
+        is_upload = path.startswith("/api/media/") or (
+            path.startswith("/api/p/") and path.endswith("/upload")
+        )
+        if request.method == "POST" and is_upload:
             cl = request.headers.get("content-length", "")
             if cl.isdigit() and int(cl) > _max_upload_bytes + 64 * 1024:
                 return JSONResponse(

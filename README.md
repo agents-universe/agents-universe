@@ -191,20 +191,27 @@ SSO 登录后进入项目的 **发布** 页签（`/projects/{id}/publishes`，�
 
 发布会话绑定在所选项目上：外部调用触发的每一轮都会加载**该项目的完整知识上下文**（审批规则、角色矩阵……），并固定运行在你绑定的模型配置上——相当于把「项目 + 项目上下文 + 智能体」整体发布成一个 API。
 
-业务系统这样调用（SSE 流式返回标准 agent 事件帧）：
+业务系统这样调用（默认 SSE 流式返回标准 agent 事件帧；创建发布时把「响应模式」选成 JSON 则一次性返回一个 JSON 对象）：
 
 ```bash
+# 带附件调用：先上传（一次一个文件），返回的记录直接放进 attachments 数组
+UPLOAD=$(curl -s -X POST "$BASE/api/p/$PUBLISH_ID/upload?thread_id=expense-2026-041" \
+  -H "Authorization: Bearer $PUBLISH_KEY" \
+  -F "file=@invoice.pdf")
+
 curl -N -X POST "$BASE/api/p/$PUBLISH_ID/stream" \
   -H "Authorization: Bearer $PUBLISH_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"message": "审批这笔报销：市场部差旅 4800 元，附行程单与发票", "thread_id": "expense-2026-041"}'
+  -d "{\"message\": \"审批这笔报销：市场部差旅 4800 元，附行程单与发票\", \"thread_id\": \"expense-2026-041\", \"attachments\": [$UPLOAD]}"
 ```
 
-`thread_id` 用业务单据号即可：同一单据的多次追问钉在同一条会话上保留上下文，不同单据互不串扰。流的每帧一行 `data: {json}`，`stream_delta` 是审批意见的流式输出，`stream_end` 表示本轮结束——调用方累积 `stream_delta` 拼出完整回复，按智能体定义里的输出契约提取 ```json``` 代码块，即得到可直接入库/流转的结构化审批结论。
+上传返回 `{url, name, media_type, size}` 引用（`url` 指向该发布会话的 `/api/media/...` 路径），放进 `attachments` 数组发出即可——附件字节只驻留内存（1 小时 TTL、按线程配额），智能体经既有管线读取（图片走视觉、文本/表格内联、其余经 `doc_reader` 解析）。`thread_id` 用业务单据号即可：同一单据的多次追问钉在同一条会话上保留上下文，不同单据互不串扰。
+
+流式模式下，每帧一行 `data: {json}`，`stream_delta` 是审批意见的流式输出，`stream_end` 表示本轮结束——调用方累积 `stream_delta` 拼出完整回复，按智能体定义里的输出契约提取 ```json``` 代码块，即得到可直接入库/流转的结构化审批结论。JSON 模式则直接返回 `{content, message_id, images, files, usage, stop_reason, ...}`：`content` 即完整回复文本，调用方检查 `stop_reason` 与 `error` 判定成败，不用再拼帧。
 
 两点边界，设计时需知道：
 
-- **API 消息是纯文本**——`message` 暂不支持附件上传；单据文件的解析（`doc_reader`）用于平台内会话上传场景，外部系统可把单据内容以文本传入，或把文件放进工作区后在消息中指明路径
+- **附件走两步上传**——先 `POST /api/p/{id}/upload` 拿引用，再随 `message` 发送（每次 ≤10 个）；超大文档仍可走工作区路径（把文件放进项目工作区后在消息中指明路径，由 `doc_reader` 解析）
 - **发布运行是非交互模式**——`user_confirm` 等确认型工具会返回可读错误而非弹窗，因此发布给外部调用的智能体应把审批规则写成可自主执行的判定逻辑，人工确认环节留在平台内使用时
 
 页面形态（`/p/{publish_id}` 内嵌聊天页）与完整安全模型见 [智能体即服务](#智能体即服务agent-as-a-service)。
@@ -622,11 +629,11 @@ Agent 执行的每条命令、每段代码都运行在**双层沙箱**中，文�
 
 **发布管理**（SSO 登录后，`/settings/publishes`）：
 
-- 选择一个项目（需有管理权）、一个智能体、一个你自己的模型配置，即可创建发布
+- 选择一个项目（需有管理权）、一个智能体、一个你自己的模型配置，即可创建发布；「响应模式」可选 **SSE 流式**（默认）或 **JSON 一次性**，之后也能在卡片上随时切换
 - 发布可分别开关「页面」与「API」两个入口；删除发布会同时删除其全部密钥
 - 每次新建密钥只返回一次明文，之后仅存 SHA-256 哈希 + 4 位提示（`key_hint`）
 
-**API 形态** — SSE 流式对话，`Authorization: Bearer <key>` 鉴权：
+**API 形态** — `Authorization: Bearer <key>` 鉴权，响应形态由发布配置决定：
 
 ```bash
 curl -N -X POST "$BASE/api/p/{publish_id}/stream" \
@@ -635,7 +642,10 @@ curl -N -X POST "$BASE/api/p/{publish_id}/stream" \
   -d '{"message": "你好", "thread_id": "any-caller-thread-id"}'
 ```
 
-流返回标准的 agent 事件帧（`stream_delta` / `tool_call_start` / `stream_end` …），每帧一行 `data: {json}`。`thread_id` 把同一调用方的多轮对话钉在专属会话上以保留上下文。
+- **流式**（`response_mode: "stream"`）— 返回标准 agent 事件帧（`stream_delta` / `tool_call_start` / `stream_end` …），每帧一行 `data: {json}`
+- **JSON**（`response_mode: "json"`）— 跑完一轮返回单个 JSON：`{thread_id, message_id, content, thinking, images, files, usage, stop_reason, error}`，调用方检查 `stop_reason`/`error` 判定成败
+
+**附件上传** — `POST /api/p/{publish_id}/upload?thread_id=...`（multipart，一次一个文件，≤10MB）返回 `{url, name, media_type, size}` 引用，随 `RunRequest.attachments`（≤10 个）发出；字节驻留内存 1 小时、按线程配额，深度校验与注入复用平台内会话的同一条管线。`thread_id` 把同一调用方的多轮对话钉在专属会话上以保留上下文。
 
 **页面形态** — `/p/{publish_id}` 是系统内的一个链接：访问者必须已 SSO 登录（与主应用同一会话），页面按访问者签发**绑定（发布, 访问者）的 HMAC 查看令牌**（服务端派生、不落库），后续 `POST /api/p/{publish_id}/session/run` 用该令牌以**发布者身份**执行，走与 API 相同的 SSE 流。
 

@@ -175,8 +175,9 @@ hosts that must bypass the proxy belong in NO_PROXY/APP_NO_PROXY; pass
 APP_BASE_URL inline (`APP_BASE_URL=http://... npm run test:{slug}`) — it is
 stripped from server env.
 Playwright/npm test commands first auto-run dependency install + a browser
-preflight (`npx --no-install playwright install chromium`, 180s cap, cached
-per tests dir + Playwright version), then the command. Channel rule: `.spec.ts`
+preflight (`npx --no-install playwright install chromium --only-shell`, 180s
+cap, cached per tests dir + Playwright version), then the command. Channel
+rule: `.spec.ts`
 runs prefer the platform server-side spec channel (shell = last-resort
 fallback); ad-hoc browser probes belong to `browser_playwright` /
 `code_executor python-playwright`, never shell node/npx scripts.

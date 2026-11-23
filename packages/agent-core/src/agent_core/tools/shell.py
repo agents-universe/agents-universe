@@ -762,7 +762,10 @@ async def ensure_playwright_browsers(
     if version and cache_key in _browsers_verified:
         return None
 
-    cmd = "npx --no-install playwright install chromium"
+    # --only-shell: the image ships chrome-headless-shell only (all launches
+    # are headless); a bare `install chromium` would re-download the unused
+    # ~400MB full browser into the container's writable layer on first run.
+    cmd = "npx --no-install playwright install chromium --only-shell"
     try:
         if _SHELL_ARGS:
             proc = await asyncio.create_subprocess_exec(

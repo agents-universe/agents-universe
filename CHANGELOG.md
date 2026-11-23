@@ -6,6 +6,8 @@
 
 ### 变更
 
+- **运行镜像体积瘦身（解压 −1.4GB）** - final 镜像构建期四处减重，功能组件（semgrep、数据分析栈、JDK/Maven、noto-cjk、Node、pytest extras）全部保留：① `/ms-playwright` 改 `COPY --chown=appuser:appuser` 并从末段 `chown -R` 移除——overlay 对 chown 触发整目录 copy-up，此前把整个浏览器树复制了两遍（~721MB 纯浪费层）；② 主 apt 层同层 purge `openjdk-17-jre-headless`（maven 在 msopenjdk-21 之前安装，apt 为满足 java7-runtime OR 依赖双装 JVM，而 alternatives 本就指向 21；ephemeral 探针确认 purge 后 `apt-get check`/`mvn`/`javac` 全绿），`unixodbc-dev` 头文件换 `unixodbc` 运行时（pyodbc 实为 manylinux wheel，编译不需要头文件）；③ Playwright 安装加 `--only-shell` 只装 chrome-headless-shell（`DEBUG=pw:browser` 证实 `headless=True` spawn 的就是 shell、删 shell 启动失败删完整 chromium 启动成功；镜像无 Xvfb 不存在 headed 路径；ffmpeg 随 `--only-shell` 照常安装，录像不受影响），Dockerfile 验证层路径、shell browser preflight（否则首次 node spec 运行会把完整 chromium 下回可写层）与 tool-reference 文档同步；④ site-packages 与 semgrep venv 剥离第三方 `tests` 目录及 venv 内 pip/__pycache__（`dist-info` 不动，`pip check` 依赖）。预期解压 5.77GB → ~4.3GB、Hub 压缩 1.61GB → ~1.2GB
+
 - **代码图谱构建上限提升与超大文件部分索引** - 构建侧两处硬限制放宽，支持更大项目：`MAX_BUILD_FILES` 10k → **50k**（分层不变：≤3000 内联、3001–50000 后台排队、>50000 才拒绝 `too_many_files`——原先 10001–50000 的仓库现在入队而非拒绝）；`MAX_FILE_BYTES`/`SQL_MAX_FILE_BYTES` 2MB → **10MB**，且超限文件不再整文件跳过——`_prepare` 把超限候选记入 `partial_list`（计入 stats/manifest 但不送 graphify 提取），`to_repo_graph` 注入裸文件节点 `partial: true`（无符号、无边），`graph_report.md` 新增 "Partial files (oversized, file node only)" 小节，构建汇总带 warning。缺失/不可读文件仍走 `skipped_files` 硬跳过。schema 升 **v4**（v3 图跳过了超限文件，快路径绕过一次补建节点；graphify SHA 缓存使未变文件免重抽）。SQL 保持独立常量（实测 6.9MB AST 走 ~3.5 分钟占进程级锁，可单独下调）。展示侧节点上限/前端渲染不动。同步 tool-reference/legacy-resources；新增 adapter 注入、builder 超限分流、分层边界回归测试
 
 ### 新增

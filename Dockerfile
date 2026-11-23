@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && printf 'Acquire::https::Verify-Peer "false";\nAcquire::https::Verify-Host "false";\nAcquire::Retries "3";\n' \
         > /etc/apt/apt.conf.d/99no-verify \
     && apt-get update && apt-get install -y --no-install-recommends \
-        bash curl git gnupg jq unixodbc-dev maven nginx \
+        bash curl git gnupg jq unixodbc maven nginx \
     && if [ ! -f /tmp/ms-keys/microsoft.asc ]; then \
         curl -fsSLk $MS_REPO/keys/microsoft.asc -o /tmp/ms-keys/microsoft.asc; \
     fi \
@@ -73,6 +73,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 msopenjdk-21 \
+    # maven resolves its java7-runtime OR-dependency BEFORE msopenjdk-21 is
+    # present, so apt pulls openjdk-17-jre-headless alongside the Microsoft JDK
+    # (~184MB of a second, unused JVM - alternatives already point at 21).
+    # Purge in the same RUN so the layer never contains it; autoremove drops
+    # its now-orphaned deps. The later Playwright-deps RUN reinstalls whatever
+    # it needs, so autoremove here cannot break it.
+    && apt-get purge -y openjdk-17-jre-headless \
+    && apt-get autoremove -y --purge \
     && rm -f /etc/apt/apt.conf.d/99no-verify
 
 # Install Playwright system dependencies.
@@ -145,12 +153,23 @@ RUN if [ -f /usr/local/lib/python3.12/site-packages/sitecustomize.py ]; then \
     fi
 
 # Own layer, own cache key: pip dependency changes must not re-download the
-# ~170MB Playwright browser (and vice versa).
+# Playwright browser (and vice versa).
 # Cache the browser in BuildKit's cache store: playwright install checks if
 # the browser is already present and skips the download; we then copy it into
 # the image layer so COPY --from in the final stage can pick it up.
+# --only-shell: every runtime launch is headless (browser_playwright tool,
+# QA specs, code_executor) and DEBUG=pw:browser confirms Playwright spawns
+# chrome-headless-shell for headless=True - the full chromium build is never
+# executed (there is no X server for a headed run anyway). ffmpeg still comes
+# along with --only-shell, so video recording keeps working.
+# The cache mount is shared with every build on this daemon: another build
+# (or an earlier pre--only-shell step) can leave a full chromium build behind,
+# and playwright does not remove a variant it finds already present. Prune it
+# explicitly so only headless shell + ffmpeg reach the image layer.
 RUN --mount=type=cache,target=/tmp/pw-cache \
-    PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-cache python -m playwright install chromium \
+    PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-cache \
+        python -m playwright install chromium --only-shell \
+    && rm -rf /tmp/pw-cache/chromium-[0-9]* \
     && mkdir -p /ms-playwright \
     && cp -a /tmp/pw-cache/. /ms-playwright/
 
@@ -177,17 +196,33 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && /opt/semgrep-venv/bin/pip install --index-url $PIP_INDEX_URL \
         --trusted-host $PIP_TRUSTED_HOST \
         "semgrep==$SEMGREP_VERSION" \
-    && /opt/semgrep-venv/bin/semgrep --version
+    && /opt/semgrep-venv/bin/semgrep --version \
+    # The venv's own pip (~13MB) is only needed to install semgrep, never to
+    # run it; bytecode caches and test suites are dead weight at runtime.
+    && rm -rf /opt/semgrep-venv/lib/python3.12/site-packages/pip \
+    && find /opt/semgrep-venv -type d \
+        \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} +
+
+# Strip third-party test suites from site-packages (pandas/numpy/pyarrow/
+# matplotlib alone account for ~90MB): agents run pytest against PROJECT
+# checkouts, never against installed dependencies' own suites. dist-info is
+# untouched - `pip check` in the final stage depends on it.
+RUN find /usr/local/lib/python3.12/site-packages \
+        -type d -name tests -prune -exec rm -rf {} +
 
 # ── Stage 4: Final combined image (API + Web) ─────────────────────────────
 FROM python-base AS final
 RUN groupadd -r appuser && useradd -r -m -d /home/appuser -g appuser appuser
 WORKDIR /app
 
-# Copy Python environment and Playwright browser from deps stage
+# Copy Python environment and Playwright browser from deps stage.
+# /ms-playwright is chown'd at COPY time: a later `chown -R` over the browser
+# tree would copy every file into its own layer (overlay metadata copy-up
+# duplicates the whole ~700MB directory). appuser needs the tree writable so
+# a runtime `playwright install` can repair/upgrade browsers.
 COPY --from=python-deps /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=python-deps /usr/local/bin /usr/local/bin
-COPY --from=python-deps /ms-playwright /ms-playwright
+COPY --from=python-deps --chown=appuser:appuser /ms-playwright /ms-playwright
 COPY --from=python-deps /opt/semgrep-venv /opt/semgrep-venv
 
 # Copy Mermaid runtime from the web-build stage (no local npm install required)
@@ -230,8 +265,7 @@ RUN set -eux; \
     java --version; \
     javac --version; \
     mvn --version; \
-    test -x /ms-playwright/chromium-*/chrome-linux/chrome \
-        || test -x /ms-playwright/chromium-*/chrome-linux64/chrome; \
+    test -x /ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell; \
     python -m pytest --version; \
     pip check; \
     python -m sqlmap.sqlmap --version; \
@@ -292,8 +326,10 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN sed -i 's/\r$//' /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
+# /ms-playwright is intentionally absent: it was already chown'd at COPY time,
+# and chown'ing it here would duplicate the entire browser tree into this layer.
 RUN mkdir -p /home/appuser/.m2 /home/appuser/.gradle /app/projects /tmp/npm-cache \
-    && chown -R appuser:appuser /app /ms-playwright /home/appuser /tmp/npm-cache
+    && chown -R appuser:appuser /app /home/appuser /tmp/npm-cache
 
 EXPOSE 8000
 USER appuser

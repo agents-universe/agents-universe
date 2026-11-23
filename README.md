@@ -110,6 +110,30 @@ docker compose up --build
   docker compose up
   ```
 
+#### 使用预构建镜像（Docker Hub）
+
+发布版本会自动把合并镜像（nginx Web + Python API）推送到 Docker Hub，按版本号拉取即可，跳过本地构建：
+
+```bash
+docker pull chas3/agents-universe:v1.7.0
+```
+
+镜像打 `vX.Y.Z` / `X.Y.Z` / `latest` 三个 tag：`latest` 跟随最近一次发布，要求可复现的部署请 pin 精确版本。运行方式是在 compose 栈里替换掉 `build:` 块：
+
+```yaml
+# docker-compose.yml（从 docker-compose.example.yml 复制后）：
+services:
+  api:
+    image: chas3/agents-universe:v1.7.0   # 替换 build: 块，不再本地构建
+    # ports / environment / env_file / volumes / depends_on 保持不变
+```
+
+其余步骤与「Docker 一键启动」相同：`cp .env.example .env`、生成 `SECRET_KEY`、`docker compose up`。
+
+几点说明：
+- 容器启动即执行数据库迁移（`alembic upgrade head`），**必须先有可用数据库**，否则容器直接退出。
+- 环境契约（见 `docker-compose.example.yml`）：`SECRET_KEY`（必填、拒绝 `change-me` 占位值）、`DB_*` / `DB_TRUST_CERT`、`REDIS_URL`、`APP_BASE_URL` / `WEB_BASE_URL` / `CORS_ORIGINS`；`PROJECTS_ROOT=/app/projects` 已烘焙进镜像，持久数据走 `projects` / `maven` / `gradle` 三个卷；健康检查 `:8000/health`。
+
 ### 本地开发
 
 ```bash

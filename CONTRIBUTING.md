@@ -88,6 +88,21 @@ pre-commit install
 - **测试**：代码改动需通过对应包的测试（`pytest` / `npm test -- --run`），CI 会自动运行
 - **PR 描述**：说明改动目的与验证方式；UI 改动附截图
 
+## 发布流程
+
+1. **更新 CHANGELOG** — 把 `CHANGELOG.md` 的 `[Unreleased]` 条目移入新节 `## [X.Y.Z] - YYYY-MM-DD`，随代码提交。
+2. **打 tag 并推送**：
+
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin main vX.Y.Z
+   ```
+
+3. **自动发布镜像** — 推送 `v*` tag 会触发 `Release image` workflow（`.github/workflows/release-image.yml`）：构建根 `Dockerfile` 的 `final` 阶段（nginx Web + Python API 合并镜像）并推送到 Docker Hub 的 `chas3/agents-universe`，同时打 **`vX.Y.Z`**、**`X.Y.Z`** 与 **`latest`** 三个 tag。同一 tag 也会并行触发 `CI` 的测试 job——测试**不**门禁镜像推送，发布后请确认两个 workflow 都是绿的再对外宣布。
+4. **`latest` 跟随最近一次发布** — 要求可复现的部署请 pin 精确版本（如 `chas3/agents-universe:v1.7.0`）；`latest` 仅作便捷指针。
+
+前置条件（仓库管理员一次性配置）：GitHub 仓库 secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`（Docker Hub 的 Read & Write access token），且 Docker Hub 上 `chas3/agents-universe` 仓库已存在。
+
 ## 硬性准则
 
 1. **不提交任何秘密** — API Key、令牌、域名、内部路径只进 `.env`（已被 gitignore），提交前检查 diff；域名与提交身份另由 pre-commit 与 CI 的 `hygiene` 检查自动拦截

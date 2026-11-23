@@ -75,11 +75,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 msopenjdk-21 \
     && rm -f /etc/apt/apt.conf.d/99no-verify
 
-# Install Playwright system dependencies
+# Install Playwright system dependencies.
+# libatomic1: Playwright's bundled driver node links libatomic.so.1, absent
+# from slim images - without it `playwright install` dies with exit 127.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
         fonts-liberation fonts-noto-cjk libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+        libatomic1 \
         libcairo2 libcups2 libdbus-1-3 libdrm2 libfontconfig1 \
         libfreetype6 libgbm1 libglib2.0-0 libgtk-3-0 libnspr4 \
         libnss3 libpango-1.0-0 libx11-6 libx11-xcb1 libxcb1 \

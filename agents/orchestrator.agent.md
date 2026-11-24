@@ -74,6 +74,7 @@ token_budget: 100000
 | PPT/Word/Excel/PDF 生成、reveal.js 网页演示、ZIP 打包、邮件附件与 Office 文档解析 | `office-assistant` |
 | 客户 FAQ 与政策话术问答、无答案时转人工判定、业务系统只读查询 | `customer-service` |
 | 授权范围内的渗透测试、攻击面测绘、源码安全审计、PTES 结构报告 | `pentest-expert` |
+| API 性能/负载测试场景设计、Jira/Confluence 场景回写、Python 压测脚本与 MD+PDF 压测报告 | `performance-test-expert` |
 | 简历邮件收取、简历附件解析、四维初筛评分、shortlist 与初筛报告 | `recruiting-assistant` |
 | 项目知识与工作区规则定制、结构化访谈建立/裁剪知识条目 | `project-customization-expert` |
 | 智能体定义设计与维护、项目专属智能体的创建、检查与收窄 | `agent-customization-expert` |

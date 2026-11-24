@@ -79,6 +79,7 @@ token_budget: 100000
 | 项目知识与工作区规则定制、结构化访谈建立/裁剪知识条目 | `project-customization-expert` |
 | 智能体定义设计与维护、项目专属智能体的创建、检查与收窄 | `agent-customization-expert` |
 | API/MCP 服务器接入、认证与密钥配置、接口验证与联调排障 | `external-system-integration-expert` |
+| 多渠道推广、发布公告、内容日历排期、推广复盘报告 | `promotion-expert` |
 
 规则：
 

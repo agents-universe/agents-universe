@@ -81,6 +81,7 @@ export default {
     categoryDataAnalysis: 'Data analysis',
     categoryOfficeDocs: 'Office & docs',
     categoryRecruiting: 'Recruiting',
+    categoryMarketing: 'Marketing',
     categoryUnknown: 'Uncategorized / unknown',
     groupProject: 'This project',
     defaultBadge: 'Default',

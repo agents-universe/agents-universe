@@ -81,6 +81,7 @@ export default {
     categoryDataAnalysis: '数据分析',
     categoryOfficeDocs: '办公文档',
     categoryRecruiting: '招聘',
+    categoryMarketing: '营销推广',
     categoryUnknown: '未分类/未知',
     groupProject: '本项目专属',
     defaultBadge: '默认',

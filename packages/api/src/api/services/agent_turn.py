@@ -2270,7 +2270,7 @@ async def _load_personal_memories(db, user_id: str, project_id: str | None = Non
             if tag_str:
                 prefix += f"[{tag_str}]"
             lines.append(f"- {prefix} {m.content}")
-        return "## Personal Memories\n\n" + "\n".join(lines) if lines else ""
+        return "## Personal Preferences\n\n" + "\n".join(lines) if lines else ""
     except Exception:
         _log.warning("Failed to load personal memories for user %s", user_id, exc_info=True)
         return ""

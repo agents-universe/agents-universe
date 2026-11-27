@@ -26,7 +26,7 @@ This skill is the mandatory gate before ANY load-generating request. Load it fir
 
 Before issuing any request against a target:
 
-1. **Look for an existing declaration before asking anything.** The scope lives in two places: the engagement notes (`.tmp/performance/engagement.md`) and, as a project setting, in the agent's own memories - `## Personal Memories` carries `PROJECT_SETTING PERF_SCOPE=...` into every turn, so it survives context compression (`memory_rw(operation="recall", scope="personal", query="PERF_SCOPE")` re-reads it on demand). When either holds a declaration for this engagement, reuse it silently: no scope dialog, no "just to confirm" question.
+1. **Look for an existing declaration before asking anything.** The scope lives in two places: the engagement notes (`.tmp/performance/engagement.md`) and, as a project setting, in the agent's own memories - `## Personal Preferences` carries `PROJECT_SETTING PERF_SCOPE=...` into every turn, so it survives context compression (`memory_rw(operation="recall", scope="personal", query="PERF_SCOPE")` re-reads it on demand). When either holds a declaration for this engagement, reuse it silently: no scope dialog, no "just to confirm" question.
 2. **Ask only when nothing is declared** - one question, about the environment tier, on a stable field key:
 
    ```

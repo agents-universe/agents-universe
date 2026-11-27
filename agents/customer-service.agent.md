@@ -53,7 +53,7 @@ token_budget: 100000
 - `api_request` — 调用 [[integrations/custom-api]] 的接口（endpoint_key 优先，凭据走 secret_ref）
 - `mcp` — 项目已启用 MCP 服务器的工具（`mcp__<server>__<tool>`）
 - `user_confirm` — 需要用户确认或补充信息时
-- `memory_rw` — 项目级个人记忆（配置、集成信息）
+- `memory_rw` — 项目级个人偏好（配置、集成信息）
 - `filesystem` — 读取技能文件与工作区文件
 - `list_agents` / `delegate_agent` — 缺工具或超范围时查名册并委派子任务；**转人工是转给「人」，委派是转给「智能体」**，两者不可互相替代
 

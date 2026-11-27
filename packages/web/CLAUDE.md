@@ -44,7 +44,7 @@ Pinia stores in `stores/`. **不要用 Vue provide/inject** 做跨面板状态�
 - `conversation.ts` — 消息、流式内容、Token 用量、任务列表、工具调用
 - `knowledge.ts` — 知识文件、完整度、本轮加载、动态加载
 - `agent.ts` — 智能体列表、当前智能体、模型配置
-- `memory.ts` — 会话笔记、个人记忆、情节记忆
+- `memory.ts` — 会话笔记、个人偏好、情节记忆
 - `schedules.ts` — 定时任务列表、加载态（`loadSeq` 守卫）；`setEnabled`/`runNow` 复用 `mutate()`
 - `auth.ts` — 用户信息、认证状态
 
@@ -64,7 +64,7 @@ Pinia stores in `stores/`. **不要用 Vue provide/inject** 做跨面板状态�
 
 使用 **CodeMirror 6** — 不是 `<textarea>`。关键行为：
 - `Ctrl/Cmd + Enter` 发送；`Enter` 换行
-- `@` 触发 `MentionPopup.vue`（搜索知识 + 个人记忆）
+- `@` 触发 `MentionPopup.vue`（搜索知识 + 个人偏好）
 - `/` 触发 `SlashPopup.vue`（内置命令列表）
 - 附件：回形针选择、剪贴板粘贴、拖拽文件到**对话面板任意位置**（`ChatPanel.vue` 是放置区）三条入口都汇入 `Composer.vue` 的 `addFiles`，上传队列与附件条只在 Composer 里
 

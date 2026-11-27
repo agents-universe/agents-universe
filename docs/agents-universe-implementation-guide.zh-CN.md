@@ -6,7 +6,7 @@
 
 Agents Universe 是一个把大语言模型（LLM）放进受控工作环境的全栈平台：
 
-1. 用角色定义、项目知识、会话历史和个人记忆组成模型上下文；
+1. 用角色定义、项目知识、会话历史和个人偏好组成模型上下文；
 2. 让模型通过标准化的 tool/function calling 选择工具；
 3. 在平台代码中执行工具、记录事件、把结果再交回模型；
 4. 通过任务计划、权限、沙箱、加密和持久化，让过程可见、可控、可追溯。
@@ -85,7 +85,7 @@ packages/web/src/composables/useWebSocket.ts
 - 解析会话默认 Agent，或处理 `@Agent` 仅当前轮切换；
 - 加载该角色的 Markdown frontmatter 与正文；
 - 构造项目级 `ToolContext`，其中含 `project_id`、`user_id`、项目根目录、数据库会话、附件索引和集成配置；
-- 装载项目知识、对话历史、个人记忆、未完成计划；
+- 装载项目知识、对话历史、个人偏好、未完成计划；
 - 先持久化用户消息，再创建可恢复的 `ConversationRun`；
 - 创建短生命周期 `Agent` 并把事件转发到 WebSocket，同时将结果与工具活动写回数据库。
 
@@ -157,7 +157,7 @@ tools = 当前 Agent 实际可用工具的名称、说明、参数 JSON Schema
 | 可用工具行为说明 | 当前实际注册的工具，含成功接入且被授权的 MCP 工具 | system 中的 `Available Tools & Behaviors`；详细参数另放 `tools` |
 | primary 知识正文 | 当前项目知识目录中符合 Agent `knowledge` 过滤条件、非延迟加载且未超限的文件 | system 的 `Project Knowledge`，按 `### [[slug]]` 拼接全文；不是只挑与这句话相似的几段 |
 | 超大 primary 知识 | 文件过大，或请求降级时被移出全文区 | system 的 `Additional Knowledge` 只列 `[[slug]]`，提示通过工具读取 |
-| 个人记忆 | 当前用户、未归档、全局或当前项目范围；按创建时间倒序最多 50 条 | system 的 `Personal Memories`，例如 `- [project][preference] 优先用中文回答` |
+| 个人偏好 | 当前用户、未归档、全局或当前项目范围；按创建时间倒序最多 50 条 | system 的 `Personal Preferences`，例如 `- [project][preference] 优先用中文回答` |
 | 已保存的任务计划 | 当前会话已有的任务记录，包含完成、进行中、失败等状态 | system 的 `Current Task Plan`；完成摘要或失败原因最多附带前 200 个字符 |
 | 待续任务文件 | 会话有 pending/running 任务时，扫描其媒体目录中的非图片、可读 UTF-8 且少于 5,000 字符的文件 | system 的 `Pending Task Files`，按文件名和内容拼接；不是扫描整个项目目录 |
 | 工作流目录 | 当前 Agent 声明、且在全局或项目工作流注册表中能找到的工作流 | system 的 `Available Workflows` 只列 slug 和说明；步骤正文需要模型调用 `filesystem read_file` |
@@ -205,8 +205,8 @@ tools = 当前 Agent 实际可用工具的名称、说明、参数 JSON Schema
 ## Additional Knowledge (use knowledge_rw read)
 [[超限知识的 slug 列表]]
 
-## Personal Memories
-[适用的个人记忆条目]
+## Personal Preferences
+[适用的个人偏好条目]
 
 ## Current Task Plan
 [从数据库恢复的任务状态和简短结果]
@@ -270,7 +270,7 @@ Content-Type: application/json
   "messages": [
     {
       "role": "system",
-      "content": "你是项目技术负责人。\n\n## Workspace Convention\n工作区根目录：/workspaces/orders-demo。\n\n## Project Knowledge\n### [[technical/api-map]]\n订单接口为 POST /api/orders；错误日志位于 .tmp/work/order-error.log。\n\n## Personal Memories\n- [global] 使用中文回答。\n\n## Available Detail Knowledge\n| Slug | Summary | Parent |\n| technical/order-api-detail | 订单接口参数与错误码 | technical/api-map |"
+      "content": "你是项目技术负责人。\n\n## Workspace Convention\n工作区根目录：/workspaces/orders-demo。\n\n## Project Knowledge\n### [[technical/api-map]]\n订单接口为 POST /api/orders；错误日志位于 .tmp/work/order-error.log。\n\n## Personal Preferences\n- [global] 使用中文回答。\n\n## Available Detail Knowledge\n| Slug | Summary | Parent |\n| technical/order-api-detail | 订单接口参数与错误码 | technical/api-map |"
     },
     {
       "role": "user",
@@ -515,7 +515,7 @@ user: 本轮用户输入
 
 浏览器开发者工具只能直接看到浏览器与本系统之间的 WebSocket 数据，不能据此认定那就是后端发给 LLM 的完整 JSON。需要核对模型侧请求时，应在后端测试中用模拟 HTTP transport 或 mock SDK 捕获序列化结果，优先检查字段、角色顺序、消息数量、字节数和工具调用配对。
 
-生产排查不要默认记录完整 system、历史、Base64 图片或鉴权头：它们可能包含个人记忆、业务知识和附件正文。服务端保管密钥只解决凭据暴露问题，**并不意味着业务上下文不会离开本系统**。选择外部模型服务或网关之前，需要确认这些输入数据允许发送到该服务。
+生产排查不要默认记录完整 system、历史、Base64 图片或鉴权头：它们可能包含个人偏好、业务知识和附件正文。服务端保管密钥只解决凭据暴露问题，**并不意味着业务上下文不会离开本系统**。选择外部模型服务或网关之前，需要确认这些输入数据允许发送到该服务。
 
 ## 6. Agent 定义、技能与工作流：把 Prompt 变成文件资产
 
@@ -562,7 +562,7 @@ user: 本轮用户输入
 | 概念 | 典型内容 | 生命周期 | 注入位置 |
 | --- | --- | --- | --- |
 | 会话历史 | 用户与 Agent 的已说内容、工具结果摘要 | 一个 conversation | 每轮 history |
-| 个人记忆 | 用户偏好、项目相关的稳定个人事实 | 跨会话、按项目可筛选 | system prompt 的 personal memory context |
+| 个人偏好 | 用户偏好、项目相关的稳定个人事实 | 跨会话、按项目可筛选 | system prompt 的 personal memory context |
 | 项目知识 | 领域规则、API、页面图、测试模式 | 项目长期资产 | static/dynamic knowledge context |
 | 全局知识 | 框架规则和通用模板 | 仓库长期资产 | 全局知识目录 |
 
